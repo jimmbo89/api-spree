@@ -1,55 +1,66 @@
+// app/middlewares/validateSchema.js
 const logger = require("../../config/logger");
-const Joi = require('joi'); // Asegúrate de usar Joi para validaciones
 
-const validateSchema = (schema) => {
-  return (req, res, next) => {
-    // Normalización de valores en req.body
-    const normalizeValue = (value) => {
-      if (value === "" || value === 0 || value === null) {
-        return null;
-      }
-      return value;
-    };
+/**
+ * Middleware de validación flexible
+ * Uso:
+ *   validateSchema({ body: schemaBody, params: schemaParams })
+ */
+const validateSchema = (schemas) => {
+  // Normalización recursiva
+  const normalizeValue = (value) => {
+    if (value === "" || value === null) return null;
+    if (typeof value === "string") {
+      const num = Number(value);
+      if (!isNaN(num) && value.trim() === value) return num;
+    }
+    return value;
+  };
 
-    const normalizeObject = (obj) => {
-      for (const key in obj) {
-        if (Object.prototype.hasOwnProperty.call(obj, key)) {
-          if (typeof obj[key] === "object" && obj[key] !== null) {
-            normalizeObject(obj[key]); // Llamada recursiva para objetos anidados
-          } else {
-            obj[key] = normalizeValue(obj[key]); // Normaliza valores primitivos
-          }
+  const normalizeObject = (obj) => {
+    for (const key in obj) {
+      if (Object.prototype.hasOwnProperty.call(obj, key)) {
+        if (typeof obj[key] === "object" && obj[key] !== null && !Array.isArray(obj[key])) {
+          normalizeObject(obj[key]);
+        } else if (Array.isArray(obj[key])) {
+          obj[key] = obj[key].map(item => typeof item === 'object' && item !== null ? normalizeObject({ ...item }) : normalizeValue(item));
+        } else {
+          obj[key] = normalizeValue(obj[key]);
         }
       }
-    };
+    }
+    return obj;
+  };
 
-    // Si Multer procesó la imagen, ahora los datos deben estar en req.body
-    if (req.file) {
-      logger.info("Archivo recibido:", req.file); // Aquí puedes ver los detalles del archivo
+  return (req, res, next) => {
+    const sources = ['body', 'params', 'query'];
+    const errors = [];
+
+    for (const source of sources) {
+      if (schemas[source] && req[source]) {
+        const data = source === 'body' ? normalizeObject({ ...req[source] }) : { ...req[source] };
+        const { error } = schemas[source].validate(data, { abortEarly: false });
+        if (error) {
+          errors.push(...error.details.map(err => ({
+            source,
+            message: err.message,
+            path: err.path.join('.')
+          })));
+        }
+      }
     }
 
-    // Normaliza req.body antes de la validación
-    if (req.body) {
-      normalizeObject(req.body);
-    }
-
-    // Valida los datos normalizados con Joi
-    const { error } = schema.validate(req.body, { abortEarly: false });
-
-    if (error) {
+    if (errors.length > 0) {
       logger.error(
-        `Validation error in ${req.method} ${req.originalUrl} - Body: ${JSON.stringify(req.body)} - Errors: ${error.details
-          .map((err) => err.message)
-          .join(", ")}`
+        `Validation error in ${req.method} ${req.originalUrl} - Errors: ${JSON.stringify(errors)}`
       );
 
       return res.status(400).json({
         msg: "Error de validación",
-        details: error.details.map((err) => err.message),
+        details: errors.map(e => `${e.source}.${e.path}: ${e.message}`)
       });
     }
 
-    // Continua al siguiente middleware o controlador si no hay errores
     next();
   };
 };
