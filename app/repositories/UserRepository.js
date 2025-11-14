@@ -132,37 +132,37 @@ const UserRepository = {
   },
 
   async delete(user) {
-  try {
-    // Asegurarnos de que el usuario tiene su rol cargado
-    if (!user.role) {
-      await user.reload({ include: [{ association: 'role' }] });
-    }
-
-    // Verificar si el usuario es Admin
-    if (user.role && user.role.name === 'Admin') {
-      // Contar cuántos usuarios tienen rol "Admin"
-      const adminCount = await User.count({
-        include: [{
-          model: Role,
-          as: 'role', // debe coincidir con tu asociación `as: 'role'`
-          where: { name: 'Admin' }
-        }]
-      });
-
-      if (adminCount <= 1) {
-        throw new Error('No se puede eliminar el último usuario administrador');
+    try {
+      // Asegurarnos de que el usuario tiene su rol cargado
+      if (!user.role) {
+        await user.reload({ include: [{ association: 'role' }] });
       }
+
+      // Verificar si el usuario es Admin
+      if (user.role && user.role.name === 'Admin') {
+        // Contar cuántos usuarios tienen rol "Admin"
+        const adminCount = await User.count({
+          include: [{
+            model: Role,
+            as: 'role', // debe coincidir con tu asociación `as: 'role'`
+            where: { name: 'Admin' }
+          }]
+        });
+
+        if (adminCount <= 1) {
+          throw new Error('No se puede eliminar el último usuario administrador');
+        }
+      }
+
+      // Si pasa las validaciones, eliminar
+      await user.destroy();
+      return { success: true, message: 'Usuario eliminado' };
+
+    } catch (error) {
+      logger.error(`Error al eliminar usuario (ID: ${user.id}):`, error);
+      throw new Error(`Error al eliminar usuario: ${error.message}`);
     }
-
-    // Si pasa las validaciones, eliminar
-    await user.destroy();
-    return { success: true, message: 'Usuario eliminado' };
-
-  } catch (error) {
-    logger.error(`Error al eliminar usuario (ID: ${user.id}):`, error);
-    throw new Error(`Error al eliminar usuario: ${error.message}`);
-  }
-},
+  },
 
 };
 
