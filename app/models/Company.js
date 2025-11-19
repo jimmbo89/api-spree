@@ -23,6 +23,9 @@ module.exports = (sequelize, DataTypes) => {
         as: 'businessType',
         onDelete: 'SET NULL'
       });
+
+      Company.hasMany(models.Product, { foreignKey: 'company_id', as: 'products', onDelete: 'SET NULL' });
+      Company.hasMany(models.Warehouse, { foreignKey: 'company_id', as: 'warehouses', onDelete: 'SET NULL' });
     }
   }
 

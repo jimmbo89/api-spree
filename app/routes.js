@@ -17,6 +17,14 @@ const { updateCompanySchema, byUserIdSchema, storeCompanySchema, idCompanySchema
 const { listBranchesSchema, storeBranchSchema, updateBranchSchema, idBranchSchema } = require("./middlewares/validations/branchValidations.js");
 const { listWarehouseSchema, storeWarehouseSchema, updateWarehouseSchema, idWarehouseSchema } = require("./middlewares/validations/warehouseValidations.js");
 const { businessTypeSchema, updateBusinessTypeSchema, idBusinessTypeSchema } = require("./middlewares/validations/businessTypeValidations.js");
+const ProductCategoryController = require("./controllers/ProductCategoryController.js");
+const { productCategorySchema, updateProductCategorySchema, idProductCategorySchema } = require("./middlewares/validations/productCategoryValidations.js");
+const { listProductsSchema, storeProductSchema, updateProductSchema, idProductSchema } = require("./middlewares/validations/productValidations.js");
+const ProductController = require("./controllers/ProductController.js");
+const { listWarehouseProductSchema, storeWarehouseProductSchema, updateWarehouseProductSchema, idWarehouseProductSchema, transferSchema, bulkUploadSchema } = require("./middlewares/validations/warehouseProductValidations.js");
+const WarehouseProductController = require("./controllers/WarehouseProductController.js");
+const multerImage = require("./middlewares/multerImage.js");
+const multerGeneric = require("./middlewares/multerGeneric.js");
 const router = express.Router();
 
 
@@ -47,21 +55,42 @@ router.post("/business-type-destroy", requireRoles(['Admin']), validateSchema(id
 
 //Rutas de Companies
 router.post("/company-by-user", requireRoles(['Admin']), validateSchema(byUserIdSchema), CompanyController.getCompaniesByUser);
-router.post("/company", requireRoles(['Admin']), validateSchema(storeCompanySchema), CompanyController.store);
-router.post("/company-update", requireRoles(['Admin']), validateSchema(updateCompanySchema), CompanyController.update);
+router.post("/company", requireRoles(['Admin']), multerImage("image", "companies"), validateSchema(storeCompanySchema), CompanyController.store);
+router.post("/company-update", requireRoles(['Admin']), multerImage("image", "companies"), validateSchema(updateCompanySchema), CompanyController.update);
 router.post("/company-destroy", requireRoles(['Admin']), validateSchema(idCompanySchema), CompanyController.destroy);
 
 //Rutas de Sucursales
 router.post("/branch-user-company", requireRoles(['Admin']), validateSchema(listBranchesSchema), BranchController.list);
-router.post("/branch", requireRoles(['Admin']), validateSchema(storeBranchSchema), BranchController.store);
-router.post("/branch-update", requireRoles(['Admin']), validateSchema(updateBranchSchema), BranchController.update);
+router.post("/branch", requireRoles(['Admin']), multerImage("image", "branches"), validateSchema(storeBranchSchema), BranchController.store);
+router.post("/branch-update", requireRoles(['Admin']), multerImage("image", "branches"), validateSchema(updateBranchSchema), BranchController.update);
 router.post("/branch-destroy", requireRoles(['Admin']), validateSchema(idBranchSchema), BranchController.destroy);
 
 //Rutas de Almacénes
 router.post("/warehouse-branch-company", requireRoles(['Admin']), validateSchema(listWarehouseSchema), WarehouseController.list);
-router.post("/warehouse", requireRoles(['Admin']), validateSchema(storeWarehouseSchema), WarehouseController.store);
-router.post("/warehouse-update", requireRoles(['Admin']), validateSchema(updateWarehouseSchema), WarehouseController.update);
+router.post("/warehouse", requireRoles(['Admin']), multerImage("image", "warehouses"), validateSchema(storeWarehouseSchema), WarehouseController.store);
+router.post("/warehouse-update", requireRoles(['Admin']), multerImage("image", "warehouses"), validateSchema(updateWarehouseSchema), WarehouseController.update);
 router.post("/warehouse-destroy", requireRoles(['Admin']), validateSchema(idWarehouseSchema), WarehouseController.destroy);
+
+//Rutas de categoria de productos
+router.get("/product-category", requireRoles(['Admin']), ProductCategoryController.index);
+router.post("/product-category", requireRoles(['Admin']), validateSchema(productCategorySchema), ProductCategoryController.store);
+router.post("/product-category-update", requireRoles(['Admin']), validateSchema(updateProductCategorySchema), ProductCategoryController.update);
+router.post("/product-category-destroy", requireRoles(['Admin']), validateSchema(idProductCategorySchema), ProductCategoryController.destroy);
+
+// Rutas de Productos
+router.post("/product-user-company", requireRoles(['Admin']), validateSchema(listProductsSchema), ProductController.list);
+router.post("/product", requireRoles(['Admin']), validateSchema(storeProductSchema), ProductController.store);
+router.post("/product-update", requireRoles(['Admin']), validateSchema(updateProductSchema), ProductController.update);
+router.post("/product-destroy", requireRoles(['Admin']), validateSchema(idProductSchema), ProductController.destroy);
+
+// Mismo patrón que branches y products
+router.post("/warehouse-product-user-company", requireRoles(['Admin']), validateSchema(listWarehouseProductSchema), WarehouseProductController.list);
+router.post("/warehouse-product", requireRoles(['Admin']), multerImage("image", "warehouse_products"), validateSchema(storeWarehouseProductSchema), WarehouseProductController.store);
+router.post("/warehouse-product-update", requireRoles(['Admin']), multerImage("image", "warehouse_products"), validateSchema(updateWarehouseProductSchema), WarehouseProductController.update);
+router.post("/warehouse-product-destroy", requireRoles(['Admin']), validateSchema(idWarehouseProductSchema), WarehouseProductController.destroy);
+router.post("/warehouse-product-transfer", requireRoles(['Admin']), validateSchema(transferSchema), WarehouseProductController.transfer );
+router.post("/warehouse-product-bulk-preview", requireRoles(['Admin']), multerGeneric('file'), validateSchema(bulkUploadSchema), WarehouseProductController.bulkUploadPreview);
+router.post("/warehouse-product-bulk-confirm", requireRoles(['Admin']), WarehouseProductController.bulkUploadConfirm);
 
 //Rutas de los logs
 router.post("/get-logs", requireRoles(['Admin']), LogController.getLogs);

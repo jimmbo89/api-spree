@@ -11,6 +11,7 @@ module.exports = (sequelize, DataTypes) => {
       User.hasMany(models.Invitation, { foreignKey: 'invited_by', as: 'inviteds', onDelete: 'SET NULL' });
       User.hasMany(models.Company, { foreignKey: 'user_id', as: 'companies', onDelete: 'SET NULL' });
       User.hasMany(models.Branch, { foreignKey: 'user_id', as: 'branches', onDelete: 'SET NULL' });
+      User.hasMany(models.Product, { foreignKey: 'user_id', as: 'products', onDelete: 'SET NULL' });
     }
   }
 

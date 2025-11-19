@@ -17,6 +17,9 @@ module.exports = (sequelize, DataTypes) => {
         as: 'user',
         onDelete: 'SET NULL'
       });
+
+      Branch.hasMany(models.Product, { foreignKey: 'branch_id', as: 'products', onDelete: 'SET NULL' });
+      Branch.hasMany(models.Warehouse, { foreignKey: 'branch_id', as: 'warehouses', onDelete: 'SET NULL' });
     }
   }
 

@@ -90,16 +90,25 @@ const WarehouseRepository = {
     return await warehouse.destroy();
   },
 
-  async existsPrincipalByCompany(companyId, transaction = null) {
+  async existsPrincipalByEntity({ companyId = null, branchId = null }, transaction = null) {
+    // Validación básica: al menos uno debe estar presente
+    if (companyId === null && branchId === null) {
+      throw new Error('Debe proporcionar companyId o branchId');
+    }
+
+    const whereCondition = {
+      // El almacén debe ser principal (el campo opuesto debe ser null)
+      ...(companyId !== null && { company_id: companyId, branch_id: null }),
+      ...(branchId !== null && { branch_id: branchId, company_id: null }),
+    };
+
     const warehouse = await Warehouse.findOne({
-      where: {
-        company_id: companyId,
-        branch_id: null,
-      },
-      transaction
+      where: whereCondition,
+      transaction,
     });
+
     return !!warehouse; // true si existe, false si no
-  },
+  }
 };
 
 module.exports = WarehouseRepository;

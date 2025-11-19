@@ -67,7 +67,7 @@ const CompanyController = {
 
       const company = await CompanyRepository.create(req.body, req.file, transaction);
        // ✅ Usar el nuevo método del repositorio
-      const hasPrincipal = await WarehouseRepository.existsPrincipalByCompany(company.id, transaction);
+      const hasPrincipal = await WarehouseRepository.existsPrincipalByEntity({ companyId: company.id }, transaction);
 
       if (!hasPrincipal) {
         await WarehouseRepository.create({

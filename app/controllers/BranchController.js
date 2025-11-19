@@ -1,5 +1,5 @@
 const logger = require('../../config/logger');
-const { BranchRepository, CompanyRepository, UserRepository, LogRepository } = require('../repositories');
+const { BranchRepository, CompanyRepository, UserRepository, LogRepository, WarehouseRepository } = require('../repositories');
 const { detectChanges } = require('../util/auditUtils');
 const { getRequestMetadata } = require('../util/requestUtil');
 
@@ -82,6 +82,18 @@ const BranchController = {
 
     try {
       const branch = await BranchRepository.create(req.body, req.file);
+      const hasPrincipal = await WarehouseRepository.existsPrincipalByEntity({ branchId: branch.id }, transaction);
+
+      if (!hasPrincipal) {
+        await WarehouseRepository.create({
+          name: `Almacén Principal - ${branch.name}`,
+          type: 1,
+          branch_id: branch.id,
+          user_id: branch.user_id,
+          address: branch.address || null
+        }, null, transaction); // null = sin archivo
+        logger.info(`Almacén principal creado para la sucursal ID ${branch.id}`);
+      }
       const branches = await BranchRepository.findFiltered({
         companyId: branch.company_id,
         userId: branch.user_id
