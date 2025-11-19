@@ -7,6 +7,10 @@ module.exports = (sequelize, DataTypes) => {
       User.hasMany(models.UserToken, { foreignKey: 'user_id', as: 'tokens', onDelete: 'CASCADE' });
       // Relación con Role
       User.belongsTo(models.Role, { foreignKey: 'role_id', as: 'role', onDelete: 'SET NULL' });
+      User.hasMany(models.Invitation, { foreignKey: 'user_id', as: 'invitations', onDelete: 'SET NULL' });
+      User.hasMany(models.Invitation, { foreignKey: 'invited_by', as: 'inviteds', onDelete: 'SET NULL' });
+      User.hasMany(models.Company, { foreignKey: 'user_id', as: 'companies', onDelete: 'SET NULL' });
+      User.hasMany(models.Branch, { foreignKey: 'user_id', as: 'branches', onDelete: 'SET NULL' });
     }
   }
 
