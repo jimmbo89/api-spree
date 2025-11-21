@@ -9,7 +9,10 @@ const storeProductSchema = Joi.object({
   base_price: Joi.number().precision(2).positive().optional().allow(null),
   company_id: Joi.number().integer().positive().required(),
   user_id: Joi.number().integer().positive().optional().allow(null),
-  branch_id: Joi.number().integer().positive().optional().allow(null)
+  branch_id: Joi.number().integer().positive().optional().allow(null),
+   images: Joi.array()
+    .items(Joi.string().pattern(/\.(jpg|jpeg|png|gif)$/i))
+    .optional()
 });
 
 const updateProductSchema = Joi.object({
@@ -22,7 +25,10 @@ const updateProductSchema = Joi.object({
   base_price: Joi.number().precision(2).positive().optional().allow(null),
   company_id: Joi.number().integer().positive().optional(),
   user_id: Joi.number().integer().positive().optional().allow(null),
-  branch_id: Joi.number().integer().positive().optional().allow(null)
+  branch_id: Joi.number().integer().positive().optional().allow(null),
+   images: Joi.array()
+    .items(Joi.string().pattern(/\.(jpg|jpeg|png|gif)$/i))
+    .optional()
 });
 
 const idProductSchema = Joi.object({

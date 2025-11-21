@@ -54,6 +54,11 @@ module.exports = (sequelize, DataTypes) => {
     branch_id: {
       type: DataTypes.BIGINT,
       allowNull: true
+    },
+     images: {
+      type: DataTypes.JSON,
+      allowNull: true,
+      defaultValue: []
     }
   }, {
     sequelize,

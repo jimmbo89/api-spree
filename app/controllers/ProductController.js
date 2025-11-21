@@ -11,7 +11,7 @@ const { detectChanges } = require('../util/auditUtils');
 const { getRequestMetadata } = require('../util/requestUtil');
 const PRODUCT_AUDIT_FIELDS = [
   'sku', 'name', 'description', 'status', 'category_id',
-  'base_price', 'user_id', 'company_id', 'branch_id'
+  'base_price', 'user_id', 'company_id', 'branch_id', 'images'
 ];
 const ProductController = {
   async list(req, res) {
@@ -121,8 +121,9 @@ const ProductController = {
       return res.status(400).json({ msg: "skuAlreadyExists" });
     }
 
+    const files = (req.files && Array.isArray(req.files.images)) ? req.files.images : [];
     try {
-      const product = await ProductRepository.create(req.body);
+      const product = await ProductRepository.create(req.body, files );
 
       const products = await ProductRepository.findFiltered({
         companyId: product.company_id,
@@ -220,7 +221,8 @@ const ProductController = {
 
       const originalData = { ...product.get({ plain: true }) };
 
-      const updated = await ProductRepository.update(product, req.body);
+      const files = (req.files && Array.isArray(req.files.images)) ? req.files.images : [];
+      const updated = await ProductRepository.update(product, req.body, files );
 
       // ✅ Detectar cambios y crear log
         const fieldChanges = detectChanges(originalData, updated.get({ plain: true }), PRODUCT_AUDIT_FIELDS);

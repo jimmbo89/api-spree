@@ -122,7 +122,7 @@ const WarehouseProductController = {
             branch_id: warehouse.branch_id,
             user_id,
             company_id: warehouse.company_id
-          }, { transaction }); // 👈 pasar transaction al repositorio
+          }, null, { transaction }); // 👈 pasar transaction al repositorio
 
           logger.info(`Producto creado con SKU ${sku} (ID: ${product.id})`);
         }
@@ -542,108 +542,145 @@ const WarehouseProductController = {
   },
 
   async bulkUploadConfirm(req, res) {
-    const { warehouse_id, rows } = req.body;
-    const user_id = req.user.id;
-    const metadata = getRequestMetadata(req);
+  logger.info(`${req.user?.name || 'Unknown'} - Asignar carga masiva de productos al almacén`);
+  logger.info('Datos recibidos:');
+  logger.info(JSON.stringify(req.body));
 
-    let transaction;
+  const { warehouse_id, rows } = req.body;
+  const user_id = req.user.id;
+  const metadata = getRequestMetadata(req);
 
-    try {
-      const warehouse = await WarehouseRepository.findById(warehouse_id);
-      if (!warehouse) {
-        return res.status(400).json({ msg: "warehouseNotFound" });
-      }
+  let transaction;
 
-      transaction = await sequelize.transaction();
-
-      const results = [];
-      for (const row of rows) {
-        if (row.errors && row.errors.length > 0) {
-          results.push({ ...row, status: 'skipped', reason: 'validation_error' });
-          continue;
-        }
-
-        try {
-          let product = row.product_exists ? row.product : null;
-
-          // Crear producto si no existe
-          if (!product) {
-            product = await ProductRepository.create({
-              sku: row.sku,
-              name: row.name,
-              company_id: warehouse.company_id,
-              user_id,
-              branch_id: warehouse.branch_id
-            }, { transaction });
-          }
-
-          // Obtener o crear warehouse_product
-          let wp = await WarehouseProductRepository.findByProductAndWarehouse(
-            product.id,
-            warehouse_id
-          );
-
-          if (wp) {
-            // Actualizar stock y otros campos
-            const newStock = wp.stock + row.stock;
-            await WarehouseProductRepository.updateStock(wp, newStock, { transaction });
-            if (row.price !== undefined) await wp.update({ price: row.price }, { transaction });
-            if (row.published !== undefined) await wp.update({ published: row.published }, { transaction });
-          } else {
-            // Crear nuevo
-            wp = await WarehouseProductRepository.create({
-              product_id: product.id,
-              warehouse_id,
-              stock: row.stock,
-              price: row.price,
-              published: row.published,
-              company_id: warehouse.company_id,
-              branch_id: warehouse.branch_id,
-              user_id
-            }, { transaction });
-          }
-
-          results.push({ ...row, status: 'success', warehouse_product_id: wp.id });
-
-        } catch (err) {
-          results.push({ ...row, status: 'error', reason: err.message });
-        }
-      }
-
-      await transaction.commit();
-
-      // Log
-      const successCount = results.filter(r => r.status === 'success').length;
-      await LogRepository.create({
-        user_id: metadata.user_id,
-        action: 'warehouse_product.bulk_upload',
-        description: `Carga masiva completada: ${successCount} productos procesados`,
-        ip_address: metadata.ip_address,
-        user_agent: metadata.user_agent,
-        status: 'success',
-        meta: { warehouse_id, company_id, total: rows.length, success: successCount }
-      });
-
-      res.status(200).json({
-        message: "Importación completada",
-        results
-      });
-
-    } catch (error) {
-      if (transaction) await transaction.rollback();
-      await LogRepository.create({
-        user_id: metadata?.user_id,
-        action: 'warehouse_product.bulk_upload',
-        description: `Error en carga masiva: ${error.message}`,
-        ip_address: metadata?.ip_address,
-        user_agent: metadata?.user_agent,
-        status: 'error',
-        meta: null
-      });
-      logger.error('WarehouseProductController->bulkUploadConfirm: ' + error.message);
-      res.status(500).json({ error: 'ServerError' });
+  try {
+    // Validar warehouse
+    const warehouse = await WarehouseRepository.findById(warehouse_id);
+    if (!warehouse) {
+      logger.info('[DEBUG] warehouse no encontrado');
+      return res.status(400).json({ msg: "warehouseNotFound" });
     }
+    const company_id = warehouse.company_id; // Puede ser null
+
+    // === PASO 2: Crear productos nuevos FUERA de transacción ===
+    const productsMap = {};
+    for (const row of rows) {
+      if (row.product_exists) continue;
+
+      const product = await ProductRepository.create({
+        sku: row.sku,
+        name: row.name,
+        company_id, // puede ser null
+        user_id,
+        branch_id: warehouse.branch_id
+      });
+      productsMap[row.sku] = product;
+      logger.info(`[DEBUG] Producto ${row.sku} creado con ID: ${product.id}`);
+    }
+
+    transaction = await sequelize.transaction();
+
+    const results = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+
+      if (row.errors && row.errors.length > 0) {
+        logger.warn(`[DEBUG] Fila ${i + 1} saltada por errores:`, row.errors);
+        results.push({ ...row, status: 'skipped', reason: 'validation_error' });
+        continue;
+      }
+
+      try {
+        // Obtener producto (existente o recién creado)
+        let product;
+        if (row.product_exists) {
+          // En un escenario real, row.product debería venir completo desde la vista previa
+          // Pero para este flujo, asumimos que solo se envían filas sin errores y sin producto existente
+          logger.info('[DEBUG] Filas con product_exists=true no están soportadas en bulkUploadConfirm');
+          throw new Error('Fila con producto existente no soportada en esta implementación');
+        } else {
+          product = productsMap[row.sku];
+          if (!product) {
+            throw new Error('Producto no encontrado para asociar');
+          }
+        }
+
+        // Buscar o crear warehouse_product DENTRO de la transacción
+        let wp = await WarehouseProductRepository.findByProductAndWarehouse(
+          product.id,
+          warehouse_id,
+          { transaction }
+        );
+
+        if (wp) {
+          const newStock = wp.stock + row.stock;
+          await WarehouseProductRepository.updateStock(wp, newStock, { transaction });
+          if (row.price !== undefined) {
+            await wp.update({ price: row.price }, { transaction });
+          }
+          if (row.published !== undefined) {
+            await wp.update({ published: row.published }, { transaction });
+          }
+        } else {
+          wp = await WarehouseProductRepository.create({
+            product_id: product.id,
+            warehouse_id,
+            stock: row.stock,
+            price: row.price,
+            published: row.published,
+            company_id: warehouse.company_id,
+            branch_id: warehouse.branch_id,
+            user_id
+          }, { transaction });
+        }
+
+        results.push({ ...row, status: 'success', warehouse_product_id: wp.id });
+
+      } catch (err) {
+        results.push({ ...row, status: 'error', reason: err.message });
+      }
+    }
+
+    // Confirmar transacción
+    await transaction.commit();
+
+    // Log de éxito
+    const successCount = results.filter(r => r.status === 'success').length;
+
+    await LogRepository.create({
+      user_id: metadata.user_id,
+      action: 'warehouse_product.bulk_upload',
+      description: `Carga masiva completada: ${successCount} productos procesados`,
+      ip_address: metadata.ip_address,
+      user_agent: metadata.user_agent,
+      status: 'success',
+      meta: { warehouse_id, company_id, total: rows.length, success: successCount }
+    });
+    res.status(200).json({
+      message: "Importación completada",
+      results
+    });
+
+  } catch (error) {
+    if (transaction) {
+      await transaction.rollback();
+      logger.info('[DEBUG] Transacción revertida');
+    }
+
+    await LogRepository.create({
+      user_id: metadata?.user_id,
+      action: 'warehouse_product.bulk_upload',
+      description: `Error en carga masiva: ${error.message}`,
+      ip_address: metadata?.ip_address,
+      user_agent: metadata?.user_agent,
+      status: 'error',
+      meta: null
+    });
+
+    logger.error('WarehouseProductController->bulkUploadConfirm: ' + error.message);
+    res.status(500).json({ error: 'ServerError', details: error.message });
   }
+}
 };
 
 module.exports = WarehouseProductController;

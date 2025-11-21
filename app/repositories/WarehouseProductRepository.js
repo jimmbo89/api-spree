@@ -42,18 +42,28 @@ const WarehouseProductRepository = {
     });
   },
 
-  async findByProductAndWarehouse(productId, warehouseId) {
-    return await WarehouseProduct.findOne({
-      where: { product_id: productId, warehouse_id: warehouseId }
-    });
-  },
+  async findByProductAndWarehouse(productId, warehouseId, options = {}) {
+  return await WarehouseProduct.findOne({
+    where: { product_id: productId, warehouse_id: warehouseId },
+    transaction: options.transaction // 👈
+  });
+},
 
   async create(body, file, options = {}) {
-    const {
-      product_id, warehouse_id, stock, price, published,
-      company_id, branch_id, user_id
-    } = body;
+  const {
+    product_id, warehouse_id, stock, price, published,
+    company_id, branch_id, user_id
+  } = body;
 
+  logger.info(`[REPO] Creando warehouse_product:`, {
+    product_id,
+    warehouse_id,
+    company_id,
+    branch_id,
+    user_id
+  });
+
+  try {
     const record = await WarehouseProduct.create({
       product_id,
       warehouse_id,
@@ -72,7 +82,11 @@ const WarehouseProductRepository = {
     }
 
     return record;
-  },
+  } catch (error) {
+    logger.error(`[REPO] ERROR al crear warehouse_product:`, error.message);
+    throw error;
+  }
+},
 
   async update(record, body, file) {
     const fieldsToUpdate = [

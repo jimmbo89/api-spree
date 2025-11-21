@@ -71,6 +71,12 @@ module.exports = {
         onUpdate: 'CASCADE',
         onDelete: 'SET NULL'
       },
+      images: {
+        type: Sequelize.JSON,
+        allowNull: true,
+        defaultValue: JSON.stringify([]),
+        comment: 'Array de rutas de imágenes del producto'
+      },
       createdAt: {
         allowNull: false,
         type: Sequelize.DATE

@@ -25,6 +25,7 @@ const { listWarehouseProductSchema, storeWarehouseProductSchema, updateWarehouse
 const WarehouseProductController = require("./controllers/WarehouseProductController.js");
 const multerImage = require("./middlewares/multerImage.js");
 const multerGeneric = require("./middlewares/multerGeneric.js");
+const multerFieldFolders = require("./middlewares/multerFieldFolders.js");
 const router = express.Router();
 
 
@@ -77,10 +78,18 @@ router.post("/product-category", requireRoles(['Admin']), validateSchema(product
 router.post("/product-category-update", requireRoles(['Admin']), validateSchema(updateProductCategorySchema), ProductCategoryController.update);
 router.post("/product-category-destroy", requireRoles(['Admin']), validateSchema(idProductCategorySchema), ProductCategoryController.destroy);
 
+const productImageFields = {
+  images: {
+    folder: 'products',
+    multiple: true,
+    maxCount: 10  // o el límite que desees
+  }
+};
+
 // Rutas de Productos
 router.post("/product-user-company", requireRoles(['Admin']), validateSchema(listProductsSchema), ProductController.list);
-router.post("/product", requireRoles(['Admin']), validateSchema(storeProductSchema), ProductController.store);
-router.post("/product-update", requireRoles(['Admin']), validateSchema(updateProductSchema), ProductController.update);
+router.post("/product", requireRoles(['Admin']), multerFieldFolders(productImageFields), validateSchema(storeProductSchema), ProductController.store);
+router.post("/product-update", requireRoles(['Admin']), multerFieldFolders(productImageFields), validateSchema(updateProductSchema), ProductController.update);
 router.post("/product-destroy", requireRoles(['Admin']), validateSchema(idProductSchema), ProductController.destroy);
 
 // Mismo patrón que branches y products
