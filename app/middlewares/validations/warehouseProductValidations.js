@@ -85,7 +85,7 @@ const idWarehouseProductSchema = Joi.object({
 });
 
 const listWarehouseProductSchema = Joi.object({
-  company_id: Joi.number().integer().positive().required(),
+  company_id: Joi.number().allow(null).empty('').optional(),
   user_id: Joi.number().allow(null).empty('').optional(),
   branch_id: Joi.number().allow(null).empty('').optional(),
   warehouse_id: Joi.number().allow(null).empty('').optional()

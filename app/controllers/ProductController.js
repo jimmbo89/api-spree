@@ -7,6 +7,8 @@ const {
   ProductCategoryRepository,
   LogRepository
 } = require('../repositories');
+const BulkProductUploadService = require('../services/BulkProductUploadService');
+const MarketplaceTransformer = require('../services/MarketplaceTransformer');
 const { detectChanges } = require('../util/auditUtils');
 const { getRequestMetadata } = require('../util/requestUtil');
 const PRODUCT_AUDIT_FIELDS = [
@@ -314,7 +316,71 @@ const ProductController = {
       logger.error('ProductController->destroy: ' + error.message);
       res.status(500).json({ error: 'ServerError', details: error.message });
     }
+  },
+
+  async previewPublishing(req, res) {
+  logger.info(`${req.user?.name || 'Unknown'} - Vista previa de publicación para marketplace`);
+  logger.info('Datos recibidos:');
+  logger.info(JSON.stringify(req.body));
+
+  const { rows, marketplace_id } = req.body;
+
+  if (!marketplace_id) {
+    return res.status(400).json({ msg: "marketplace_id es obligatorio" });
   }
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return res.status(400).json({ msg: "Debe proporcionar al menos una fila de productos" });
+  }
+
+  try {
+    const formatted = await BulkProductUploadService.formatForMarketplace(rows, marketplace_id);
+
+    const has_errors = formatted.some(r => (r.errors.length > 0) || (r.payload_errors && r.payload_errors.length > 0));
+
+    res.status(200).json({
+      success: !has_errors,
+      message: has_errors ? "Hay errores en los datos o en el mapeo" : "Listo para publicar",
+      rows: formatted.map(r => ({
+        row_number: r.index,
+        sku: r.parsed?.sku,
+        name: r.parsed?.name,
+        stock: r.parsed?.stock,
+        price: r.parsed?.price,
+        errors: r.errors,
+        payload_errors: r.payload_errors,
+        payload: r.payload
+      }))
+    });
+  } catch (error) {
+    logger.error('ProductController->previewPublishing: ' + error.message);
+    res.status(500).json({ error: 'ServerError', details: error.message });
+  }
+},
+
+async transformForMarketplace(req, res) {
+  logger.info(`${req.user?.name || 'Unknown'} - Transformar productos para marketplace`);
+  logger.info('Datos recibidos:');
+  logger.info(JSON.stringify(req.body));
+
+  const { products, marketplace_id } = req.body;
+
+  if (!marketplace_id) {
+    return res.status(400).json({ msg: "marketplace_id es obligatorio" });
+  }
+
+  if (!Array.isArray(products) || products.length === 0) {
+    return res.status(400).json({ msg: "Debe proporcionar al menos un producto" });
+  }
+
+  try {
+    const transformed = await MarketplaceTransformer.transformProducts(products, marketplace_id);
+    res.status(200).json({ success: true, transformed_products: transformed });
+  } catch (error) {
+    logger.error('ProductController->transformForMarketplace: ' + error.message);
+    res.status(500).json({ error: 'ServerError', details: error.message });
+  }
+}
 };
 
 module.exports = ProductController;

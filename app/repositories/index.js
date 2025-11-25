@@ -3,7 +3,10 @@ const BusinessTypeRepository = require("./BusinessTypeRepository");
 const CompanyRepository = require("./CompanyRepository");
 const InvitationRepository = require("./InvitationRepository");
 const LogRepository = require("./LogRepository");
+const MarketplaceRepository = require("./MarketplaceRepository");
 const ProductCategoryRepository = require("./ProductCategoryRepository");
+const ProductFieldMappingRepository = require("./ProductFieldMappingRepository");
+const ProductPublishingTaskRepository = require("./ProductPublishingTaskRepository");
 const ProductRepository = require("./ProductRepository");
 const RoleRepository = require("./RoleRepository");
 const UserRepository = require("./UserRepository");
@@ -23,5 +26,8 @@ module.exports = {
     BusinessTypeRepository,
     ProductCategoryRepository,
     ProductRepository,
-    WarehouseProductRepository
+    WarehouseProductRepository,
+    MarketplaceRepository,
+    ProductFieldMappingRepository,
+    ProductPublishingTaskRepository
 };

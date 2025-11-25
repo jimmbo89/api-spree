@@ -26,6 +26,12 @@ const WarehouseProductController = require("./controllers/WarehouseProductContro
 const multerImage = require("./middlewares/multerImage.js");
 const multerGeneric = require("./middlewares/multerGeneric.js");
 const multerFieldFolders = require("./middlewares/multerFieldFolders.js");
+const { storeMarketplaceSchema, updateMarketplaceSchema, idMarketplaceSchema } = require("./middlewares/validations/marketplaceValidations.js");
+const MarketplaceController = require("./controllers/MarketplaceController.js");
+const { createProductFieldMappingSchema, updateProductFieldMappingSchema, idProductFieldMappingSchema, listProductFieldMappingSchema } = require("./middlewares/validations/productFieldMappingValidations.js");
+const ProductFieldMappingController = require("./controllers/ProductFieldMappingController.js");
+const { storeProductPublishingTaskSchema, updateProductPublishingTaskStatusSchema, listProductPublishingTaskSchema } = require("./middlewares/validations/productPublishingTaskValidations.js");
+const ProductPublishingTaskController = require("./controllers/ProductPublishingTaskController.js");
 const router = express.Router();
 
 
@@ -78,6 +84,7 @@ router.post("/product-category", requireRoles(['Admin']), validateSchema(product
 router.post("/product-category-update", requireRoles(['Admin']), validateSchema(updateProductCategorySchema), ProductCategoryController.update);
 router.post("/product-category-destroy", requireRoles(['Admin']), validateSchema(idProductCategorySchema), ProductCategoryController.destroy);
 
+
 const productImageFields = {
   images: {
     folder: 'products',
@@ -91,6 +98,7 @@ router.post("/product-user-company", requireRoles(['Admin']), validateSchema(lis
 router.post("/product", requireRoles(['Admin']), multerFieldFolders(productImageFields), validateSchema(storeProductSchema), ProductController.store);
 router.post("/product-update", requireRoles(['Admin']), multerFieldFolders(productImageFields), validateSchema(updateProductSchema), ProductController.update);
 router.post("/product-destroy", requireRoles(['Admin']), validateSchema(idProductSchema), ProductController.destroy);
+router.post("/products-transform", requireRoles(['Admin']), ProductController.transformForMarketplace);
 
 // Mismo patrón que branches y products
 router.post("/warehouse-product-user-company", requireRoles(['Admin']), validateSchema(listWarehouseProductSchema), WarehouseProductController.list);
@@ -100,6 +108,25 @@ router.post("/warehouse-product-destroy", requireRoles(['Admin']), validateSchem
 router.post("/warehouse-product-transfer", requireRoles(['Admin']), validateSchema(transferSchema), WarehouseProductController.transfer );
 router.post("/warehouse-product-bulk-preview", requireRoles(['Admin']), multerGeneric('file'), validateSchema(bulkUploadSchema), WarehouseProductController.bulkUploadPreview);
 router.post("/warehouse-product-bulk-confirm", requireRoles(['Admin']), WarehouseProductController.bulkUploadConfirm);
+
+// Marketplaces
+router.post("/marketplace", requireRoles(['Admin']), validateSchema(storeMarketplaceSchema), MarketplaceController.store);
+router.post("/marketplace-update", requireRoles(['Admin']), validateSchema(updateMarketplaceSchema), MarketplaceController.update);
+router.post("/marketplace-destroy", requireRoles(['Admin']), validateSchema(idMarketplaceSchema), MarketplaceController.destroy);
+router.post("/marketplace-show", requireRoles(['Admin']), validateSchema(idMarketplaceSchema), MarketplaceController.show);
+router.post("/marketplace-list", requireRoles(['Admin']), MarketplaceController.list); // list no necesita schema (validación manual de company_id)
+
+// Metadatos de los marketplaces
+router.post("/product-field-mapping", requireRoles(['Admin']), validateSchema(createProductFieldMappingSchema), ProductFieldMappingController.store);
+router.post("/product-field-mapping-update", requireRoles(['Admin']), validateSchema(updateProductFieldMappingSchema), ProductFieldMappingController.update);
+router.post("/product-field-mapping-destroy", requireRoles(['Admin']), validateSchema(idProductFieldMappingSchema), ProductFieldMappingController.destroy);
+router.post("/product-field-mapping-show", requireRoles(['Admin']), validateSchema(idProductFieldMappingSchema), ProductFieldMappingController.show);
+router.post("/product-field-mapping-list", requireRoles(['Admin']), validateSchema(listProductFieldMappingSchema), ProductFieldMappingController.list);
+
+//Rutas de publicaciones de productos
+router.post("/publishing-task", requireRoles(['Admin']), validateSchema(storeProductPublishingTaskSchema), ProductPublishingTaskController.store);
+router.post("/publishing-task-update-status", requireRoles(['Admin']), validateSchema(updateProductPublishingTaskStatusSchema), ProductPublishingTaskController.updateStatus);
+router.post("/publishing-task-list", requireRoles(['Admin']), validateSchema(listProductPublishingTaskSchema), ProductPublishingTaskController.list);
 
 //Rutas de los logs
 router.post("/get-logs", requireRoles(['Admin']), LogController.getLogs);

@@ -5,8 +5,9 @@ const logger = require('../../config/logger');
 
 const WarehouseProductRepository = {
   async findFiltered({ companyId, userId, branchId, warehouseId }) {
-    const where = { company_id: companyId };
+    const where = {  };
 
+    if (companyId !== undefined) where.company_id = companyId;
     if (userId !== undefined) where.user_id = userId;
     if (branchId !== undefined) where.branch_id = branchId;
     if (warehouseId !== undefined) where.warehouse_id = warehouseId;

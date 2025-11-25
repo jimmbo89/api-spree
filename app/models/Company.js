@@ -5,27 +5,12 @@ module.exports = (sequelize, DataTypes) => {
   class Company extends Model {
     static associate(models) {
       // Relación: una empresa tiene muchas sucursales
-      Company.hasMany(models.Branch, {
-        foreignKey: 'company_id',
-        as: 'branches',
-        onDelete: 'CASCADE'
-      });
-
-      // Relación: una empresa pertenece a un usuario (opcional)
-      Company.belongsTo(models.User, {
-        foreignKey: 'user_id',
-        as: 'user',
-        onDelete: 'SET NULL'
-      });
-
-      Company.belongsTo(models.BusinessType, {
-        foreignKey: 'business_type_id',
-        as: 'businessType',
-        onDelete: 'SET NULL'
-      });
-
+      Company.hasMany(models.Branch, { foreignKey: 'company_id', as: 'branches', onDelete: 'CASCADE' });
+      Company.belongsTo(models.User, { foreignKey: 'user_id', as: 'user', onDelete: 'SET NULL' });
+      Company.belongsTo(models.BusinessType, { foreignKey: 'business_type_id', as: 'businessType', });
       Company.hasMany(models.Product, { foreignKey: 'company_id', as: 'products', onDelete: 'SET NULL' });
       Company.hasMany(models.Warehouse, { foreignKey: 'company_id', as: 'warehouses', onDelete: 'SET NULL' });
+      Company.hasMany(models.Marketplace, { foreignKey: 'company_id', as: 'marketplaces', onDelete: 'SET NULL' });
     }
   }
 

@@ -4,23 +4,10 @@ const { Model } = require('sequelize');
 module.exports = (sequelize, DataTypes) => {
   class Warehouse extends Model {
     static associate(models) {
-      Warehouse.belongsTo(models.Company, {
-        foreignKey: 'company_id',
-        as: 'company',
-        onDelete: 'SET NULL'
-      });
-
-      Warehouse.belongsTo(models.Branch, {
-        foreignKey: 'branch_id',
-        as: 'branch',
-        onDelete: 'SET NULL'
-      });
-
-      Warehouse.belongsTo(models.User, {
-        foreignKey: 'user_id',
-        as: 'user',
-        onDelete: 'SET NULL'
-      });
+      Warehouse.belongsTo(models.Company, { foreignKey: 'company_id', as: 'company', onDelete: 'SET NULL' });
+      Warehouse.belongsTo(models.Branch, { foreignKey: 'branch_id', as: 'branch', onDelete: 'SET NULL' });
+      Warehouse.belongsTo(models.User, { foreignKey: 'user_id', as: 'user', onDelete: 'SET NULL' });
+      Warehouse.hasMany(models.ProductPublishingTask, { foreignKey: 'warehouse_id', as: 'publishingTasks', onDelete: 'SET NULL' });
     }
   }
 

@@ -22,8 +22,7 @@ const WarehouseProductController = {
   async list(req, res) {
     logger.info(`${req.user?.name || 'Unknown'} - Lista warehouse_products`);
 
-    const { company_id, user_id: bodyUserId, branch_id, warehouse_id } = req.body;
-    const user_id = bodyUserId || req.user.id;
+    const { company_id, user_id, branch_id, warehouse_id } = req.body;
 
     if (company_id) {
       const company = await CompanyRepository.findById(company_id);
@@ -31,8 +30,6 @@ const WarehouseProductController = {
         logger.info(`WarehouseProductController->list: Compañía no encontrada con ID ${company_id}`);
         return res.status(400).json({ msg: "companyNotFound" });
       }
-    } else {
-      return res.status(400).json({ msg: "company_id es obligatorio" });
     }
 
     if (user_id) {
