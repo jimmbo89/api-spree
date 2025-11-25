@@ -25,8 +25,14 @@ const listSchema = Joi.object({
   status: Joi.string().valid('pending', 'published', 'error', 'out_of_sync', 'archived').optional()
 });
 
+const retrySchema = Joi.object({
+  task_id: Joi.number().integer().positive().required(),
+  payload: Joi.object().optional() // 👈 payload corregido por el usuario
+});
+
 module.exports = {
   storeProductPublishingTaskSchema: storeSchema,
   updateProductPublishingTaskStatusSchema: updateStatusSchema,
-  listProductPublishingTaskSchema: listSchema
+  listProductPublishingTaskSchema: listSchema,
+  retryProductPublishingTaskSchema: retrySchema
 };

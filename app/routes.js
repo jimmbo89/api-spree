@@ -30,7 +30,7 @@ const { storeMarketplaceSchema, updateMarketplaceSchema, idMarketplaceSchema } =
 const MarketplaceController = require("./controllers/MarketplaceController.js");
 const { createProductFieldMappingSchema, updateProductFieldMappingSchema, idProductFieldMappingSchema, listProductFieldMappingSchema } = require("./middlewares/validations/productFieldMappingValidations.js");
 const ProductFieldMappingController = require("./controllers/ProductFieldMappingController.js");
-const { storeProductPublishingTaskSchema, updateProductPublishingTaskStatusSchema, listProductPublishingTaskSchema } = require("./middlewares/validations/productPublishingTaskValidations.js");
+const { storeProductPublishingTaskSchema, updateProductPublishingTaskStatusSchema, listProductPublishingTaskSchema, retryProductPublishingTaskSchema } = require("./middlewares/validations/productPublishingTaskValidations.js");
 const ProductPublishingTaskController = require("./controllers/ProductPublishingTaskController.js");
 const router = express.Router();
 
@@ -127,6 +127,7 @@ router.post("/product-field-mapping-list", requireRoles(['Admin']), validateSche
 router.post("/publishing-task", requireRoles(['Admin']), validateSchema(storeProductPublishingTaskSchema), ProductPublishingTaskController.store);
 router.post("/publishing-task-update-status", requireRoles(['Admin']), validateSchema(updateProductPublishingTaskStatusSchema), ProductPublishingTaskController.updateStatus);
 router.post("/publishing-task-list", requireRoles(['Admin']), validateSchema(listProductPublishingTaskSchema), ProductPublishingTaskController.list);
+router.post("/publishing-task-retry", requireRoles(['Admin']), validateSchema(retryProductPublishingTaskSchema), ProductPublishingTaskController.retry);
 
 //Rutas de los logs
 router.post("/get-logs", requireRoles(['Admin']), LogController.getLogs);

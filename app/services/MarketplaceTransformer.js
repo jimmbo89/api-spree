@@ -88,6 +88,33 @@ class MarketplaceTransformer {
       return null;
     }
   }
+
+  /**
+ * Transforma un payload de marketplace a formato interno, usando mapeos con direction: 'import' o 'both'.
+ * @param {Object} externalPayload - Payload recibido del marketplace (ej: { title: "...", price: 100 })
+ * @param {number} marketplaceId - ID del marketplace
+ * @returns {Promise<Object>} - Objeto con campos internos (ej: { name: "...", base_price: 100 })
+ */
+static async reverseTransform(externalPayload, marketplaceId) {
+  const mappings = await MarketplaceRepository.findMappingsByMarketplace(marketplaceId);
+  // Usar mapeos que permitan importación
+  const importMappings = mappings.filter(m => 
+    m.direction === 'import' || m.direction === 'both' || m.direction === 'export'
+  );
+
+  const internalData = {};
+
+  for (const mapping of importMappings) {
+    const { internal_field, external_field } = mapping;
+
+    // Si el payload externo tiene este campo, asignarlo al interno
+    if (externalPayload.hasOwnProperty(external_field)) {
+      internalData[internal_field] = externalPayload[external_field];
+    }
+  }
+
+  return internalData;
+}
 }
 
 module.exports = MarketplaceTransformer;

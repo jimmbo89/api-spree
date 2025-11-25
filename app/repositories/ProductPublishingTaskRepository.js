@@ -34,7 +34,17 @@ const ProductPublishingTaskRepository = {
       where: { warehouse_id: warehouseId, status },
       order: [['createdAt', 'DESC']]
     });
+  },
+  async updateTask(task, updateData, options = {}) {
+  logger.info(`[REPO] Actualizando tarea de publicación ID ${task.id}`);
+  try {
+    await task.update(updateData, options);
+    return task;
+  } catch (error) {
+    logger.error(`[REPO] ERROR al actualizar tarea:`, error.message);
+    throw error;
   }
+}
 };
 
 module.exports = ProductPublishingTaskRepository;
