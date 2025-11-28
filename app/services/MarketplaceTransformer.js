@@ -60,6 +60,14 @@ class MarketplaceTransformer {
       return;
     }
 
+    if (path === 'attributes' && Array.isArray(value)) {
+    obj.attributes = value.map(attr => ({
+      id: attr.id,
+      valueName: attr.valueName
+    }));
+    return;
+  }
+
     // Caso especial: descripción anidada
     if (path === 'description.plain_text') {
       if (!obj.description) obj.description = {};

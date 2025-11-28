@@ -6,7 +6,8 @@ const {
   CompanyRepository,
   UserRepository,
   LogRepository,
-  BranchRepository
+  BranchRepository,
+  ProductFieldMappingRepository
 } = require('../repositories');
 const { getRequestMetadata } = require('../util/requestUtil');
 
@@ -45,9 +46,21 @@ const MarketplaceController = {
         config: req.body.config,
         active: req.body.active !== undefined ? req.body.active : true
       }, { transaction });
-
+      const marketplace_id = mp.id;
       if (Array.isArray(req.body.mappings)) {
-        for (const m of req.body.mappings) {
+      const cleanMappings = req.body.mappings.map(m => ({
+        marketplace_id,
+        internal_field: m.internal_field,
+        external_field: m.external_field,
+        required: Boolean(m.required),
+        data_type: m.data_type || null,
+        direction: m.direction || 'export',
+        default_value: m.default_value,
+        validation_rules: m.validation_rules // asume validación previa con Joi.object()
+      }));
+
+      await ProductFieldMappingRepository.bulkCreate(cleanMappings, { transaction });
+        /*for (const m of req.body.mappings) {
           await MarketplaceRepository.createMapping({
             marketplace_id: mp.id,
             internal_field: m.internal_field,
@@ -58,7 +71,7 @@ const MarketplaceController = {
             default_value: m.default_value,
             validation_rules: m.validation_rules
           }, { transaction });
-        }
+        }*/
       }
 
       await transaction.commit();
