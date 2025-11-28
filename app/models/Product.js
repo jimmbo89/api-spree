@@ -9,6 +9,7 @@ module.exports = (sequelize, DataTypes) => {
       Product.belongsTo(models.Company, { foreignKey: 'company_id', as: 'company', onDelete: 'SET NUll' });
       Product.belongsTo(models.Branch, { foreignKey: 'branch_id', as: 'branch', onDelete: 'SET NULL' });
       Product.hasMany(models.ProductPublishingTask, { foreignKey: 'product_id', as: 'publishingTasks', onDelete: 'CASCADE'});
+      Product.hasMany(models.ProductMarketplaceLink, { foreignKey: 'product_id', as: 'marketplaceLinks', onDelete: 'CASCADE' });
     }
   }
 

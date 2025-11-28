@@ -2,6 +2,7 @@ const { Op } = require('sequelize');
 const { WarehouseProduct } = require('../models');
 const ImageService = require('../services/ImageService');
 const logger = require('../../config/logger');
+const ProductRepository = require('./ProductRepository');
 
 const WarehouseProductRepository = {
   async findFiltered({ companyId, userId, branchId, warehouseId }) {
@@ -150,6 +151,22 @@ const WarehouseProductRepository = {
 // Actualizar stock (con transacción)
 async updateStock(record, newStock, options = {}) {
   return await record.update({ stock: newStock }, options);
+},
+
+async getProductAndWarehouseData(productId, warehouseId) {
+  const [product, warehouseProduct] = await Promise.all([
+    ProductRepository.findById(productId),
+    WarehouseProductRepository.findByProductAndWarehouse(productId, warehouseId)
+  ]);
+
+  if (!product) {
+    throw new Error('productNotFound');
+  }
+  if (!warehouseProduct) {
+    throw new Error('warehouseProductNotFound');
+  }
+
+  return { product, warehouseProduct };
 }
 };
 

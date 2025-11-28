@@ -9,26 +9,6 @@ module.exports = {
         primaryKey: true,
         type: Sequelize.BIGINT
       },
-      company_id: {
-        type: Sequelize.BIGINT,
-        allowNull: true,
-        references: {
-          model: 'companies',
-          key: 'id'
-        },
-        onUpdate: 'CASCADE',
-        onDelete: 'SET NULL'
-      },
-      user_id: {
-        type: Sequelize.BIGINT,
-        allowNull: true,
-        references: {
-          model: 'users',
-          key: 'id'
-        },
-        onUpdate: 'CASCADE',
-        onDelete: 'SET NULL'
-      },
       name: {
         type: Sequelize.STRING,
         allowNull: false
@@ -63,14 +43,6 @@ module.exports = {
         allowNull: false,
         type: Sequelize.DATE
       }
-    });
-
-    await queryInterface.addIndex('marketplaces', ['company_id', 'name'], {
-      unique: true,
-      name: 'marketplaces_company_name_unique'
-    });
-    await queryInterface.addIndex('marketplaces', ['company_id'], {
-      name: 'marketplaces_company_idx'
     });
   },
 

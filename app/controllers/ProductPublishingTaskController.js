@@ -9,9 +9,13 @@ const {
   CompanyRepository,
   UserRepository,
   LogRepository,
-  WarehouseProductRepository
+  WarehouseProductRepository,
+  MarketplaceCredentialRepository,
+  ProductMarketplaceLinkRepository
 } = require('../repositories');
+const MercadoLibreAdapter = require('../services/adapters/MercadoLibreAdapter');
 const MarketplaceTransformer = require('../services/MarketplaceTransformer');
+const PublishingService = require('../services/PublishingService');
 const { getRequestMetadata } = require('../util/requestUtil');
 
 const ProductPublishingTaskController = {
@@ -159,84 +163,57 @@ const ProductPublishingTaskController = {
 
     // Procesar cada producto
     for (const product of products) {
-        try {
+      try {
         // Validar producto
-        const prod = await ProductRepository.findById(product.product_id);
-        if (!prod) {
-            errorResults.push({
-            product_id: product.product_id,
-            error: 'productNotFound'
-            });
-            continue;
+       const result = await PublishingService.publishProduct(
+          product,
+          marketplace,
+          warehouse,
+          user_id
+        );
+
+          if (result.auth_required) {
+          return res.status(401).json({
+            msg: "auth_required",
+            auth_url: result.auth_url
+          });
         }
 
-        // Transformar
-        const [transformed] = await MarketplaceTransformer.transformProducts([product], marketplace_id);
-        if (!transformed) {
-            errorResults.push({
-            product_id: product.product_id,
-            error: 'productTransformFailed'
-            });
-            continue;
-        }
-
-        // ✅ SIMULACIÓN DE ENVÍO A API EXTERNA
-        const mockApiResponse = {
-            success: Math.random() > 0.3, // 70% éxito
-            external_id: `EXT-${product.product_id}-${Date.now()}`,
-            external_url: `https://marketplace.com/item/${product.product_id}`,
-            error: Math.random() > 0.7 ? "El título debe tener al menos 10 caracteres" : null
-        };
-
-        if (mockApiResponse.success) {
-            // Crear tarea en BD (con transacción individual o sin transacción)
-            const task = await ProductPublishingTaskRepository.create({
-            product_id: product.product_id,
-            marketplace_id,
-            warehouse_id,
-            user_id,
-            date: new Date(), // DATEONLY
-            status: 'published',
-            payload: transformed,
-            external_id: mockApiResponse.external_id,
-            external_url: mockApiResponse.external_url
-            });
-
-            successResults.push({
-            product_id: product.product_id,
-            task_id: task.id,
-            external_id: task.external_id
-            });
+        if (result.success) {
+          successResults.push({
+            product_id: result.product_id,
+            task_id: result.task_id,
+            external_id: result.external_id
+          });
         } else {
-            // Registrar tarea con error
-            const task = await ProductPublishingTaskRepository.create({
-            product_id: product.product_id,
-            marketplace_id,
-            warehouse_id,
-            company_id,
-            user_id,
+          // Registrar tarea de error
+          const task = await ProductPublishingTaskRepository.create({
+            product_id: result.product_id,
+            marketplace_id: marketplace.id,
+            warehouse_id: warehouse.id,
+            user_id: user_id,
             date: new Date(),
             status: 'error',
-            error_message: mockApiResponse.error || 'Error desconocido al publicar',
-            payload: transformed
-            });
+            error_message: result.error,
+            payload: result.payload || {}
+          });
 
-            errorResults.push({
-            product_id: product.product_id,
+          errorResults.push({
+            product_id: result.product_id,
             task_id: task.id,
-            payload: transformed, // 👈 se devuelve para corrección
-            error: mockApiResponse.error || 'Error desconocido al publicar'
-            });
+            error: result.error,
+            payload: result.payload || {}
+          });
         }
 
-        } catch (err) {
+      } catch (err) {
         logger.error(`Error procesando producto ${product.product_id}:`, err.message);
         errorResults.push({
-            product_id: product.product_id,
-            error: err.message || 'Error interno'
+          product_id: product.product_id,
+          error: err.message || 'Error interno'
         });
-        }
-    }
+      }
+}
 
     // Log general
     await LogRepository.create({
@@ -380,6 +357,11 @@ const ProductPublishingTaskController = {
 
         transaction = await sequelize.transaction();
 
+        const credential = await MarketplaceCredentialRepository.findByMarketplaceAndContext(
+          payloadToSend.marketplace_id,
+          warehouse.company_id,
+          warehouse.branch_id // si aplica
+        );
         // 8. ✅ SIMULACIÓN DE ENVÍO CON NUEVO PAYLOAD
         const mockApiResponse = {
         success: Math.random() > 0.1, // 90% éxito
@@ -400,6 +382,19 @@ const ProductPublishingTaskController = {
             external_url: mockApiResponse.external_url,
             error_message: null
         }, { transaction });
+
+         // ✅ INTEGRACIÓN: Crear/Actualizar ProductMarketplaceLink
+          await ProductMarketplaceLinkRepository.upsert({
+            product_id: task.product_id,
+            marketplace_id: task.marketplace_id,
+            company_id: warehouse.company_id,
+            branch_id: warehouse.branch_id,
+            status: 'published',
+            external_id: mockApiResponse.external_id,
+            external_url: mockApiResponse.external_url,
+            last_synced_at: new Date()
+          }, { transaction });
+
         } else {
         await ProductPublishingTaskRepository.updateTask(task, {
             status: 'error',

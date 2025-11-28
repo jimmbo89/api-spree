@@ -11,7 +11,9 @@ class MarketplaceTransformer {
    */
   static async transformProducts(products, marketplaceId) {
     const mappings = await MarketplaceRepository.findMappingsByMarketplace(marketplaceId);
-    const exportMappings = mappings.filter(m => m.direction === 'export');
+    const exportMappings = mappings.filter(m => 
+      m.direction === 'export' || m.direction === 'both'
+    );
 
     return products.map(product => {
       const transformed = {};
@@ -37,8 +39,8 @@ class MarketplaceTransformer {
           value = this.applyValidationRules(value, validation_rules, internal_field);
         }
 
-        // 4. Asignar al campo externo
-        transformed[external_field] = value;
+        // 4. Asignar al campo externo (con soporte para anidados y pictures)
+        this.setNestedField(transformed, external_field, value);
       }
 
       return transformed;
@@ -46,9 +48,43 @@ class MarketplaceTransformer {
   }
 
   /**
+   * Establece un campo en un objeto, soportando rutas anidadas y transformaciones especiales.
+   * @param {Object} obj - Objeto destino
+   * @param {string} path - Ruta del campo (ej: 'description.plain_text' o 'pictures')
+   * @param {*} value - Valor a asignar
+   */
+  static setNestedField(obj, path, value) {
+    // Caso especial: imágenes
+    if (path === 'pictures' && Array.isArray(value)) {
+      obj.pictures = value.map(url => ({ source: url }));
+      return;
+    }
+
+    // Caso especial: descripción anidada
+    if (path === 'description.plain_text') {
+      if (!obj.description) obj.description = {};
+      obj.description.plain_text = value;
+      return;
+    }
+
+    // Soporte genérico para rutas anidadas (a.b.c)
+    if (path.includes('.')) {
+      const keys = path.split('.');
+      let current = obj;
+      for (let i = 0; i < keys.length - 1; i++) {
+        if (!current[keys[i]]) current[keys[i]] = {};
+        current = current[keys[i]];
+      }
+      current[keys[keys.length - 1]] = value;
+    } else {
+      obj[path] = value;
+    }
+  }
+
+  /**
    * Aplica reglas de validación a un valor.
    * @param {*} value - Valor a validar
-   * @param {Object} rules - Reglas: { min, max, minLength, maxLength, regex }
+   * @param {Object} rules - Reglas: { min, max, minLength, maxLength, regex, enum }
    * @param {string} field - Nombre del campo (para logs)
    * @returns {*} - Valor transformado o null si falla
    */
@@ -80,6 +116,9 @@ class MarketplaceTransformer {
             return null;
           }
         }
+        if (rules.enum && !rules.enum.includes(value)) {
+          return null;
+        }
       }
 
       return value;
@@ -90,31 +129,45 @@ class MarketplaceTransformer {
   }
 
   /**
- * Transforma un payload de marketplace a formato interno, usando mapeos con direction: 'import' o 'both'.
- * @param {Object} externalPayload - Payload recibido del marketplace (ej: { title: "...", price: 100 })
- * @param {number} marketplaceId - ID del marketplace
- * @returns {Promise<Object>} - Objeto con campos internos (ej: { name: "...", base_price: 100 })
- */
-static async reverseTransform(externalPayload, marketplaceId) {
-  const mappings = await MarketplaceRepository.findMappingsByMarketplace(marketplaceId);
-  // Usar mapeos que permitan importación
-  const importMappings = mappings.filter(m => 
-    m.direction === 'import' || m.direction === 'both' || m.direction === 'export'
-  );
+   * Transforma un payload de marketplace a formato interno.
+   * @param {Object} externalPayload - Payload del marketplace
+   * @param {number} marketplaceId - ID del marketplace
+   * @returns {Promise<Object>} - Objeto con campos internos
+   */
+  static async reverseTransform(externalPayload, marketplaceId) {
+    const mappings = await MarketplaceRepository.findMappingsByMarketplace(marketplaceId);
+    const importMappings = mappings.filter(m => 
+      m.direction === 'import' || m.direction === 'both'
+    );
 
-  const internalData = {};
+    const internalData = {};
 
-  for (const mapping of importMappings) {
-    const { internal_field, external_field } = mapping;
+    for (const mapping of importMappings) {
+      const { internal_field, external_field } = mapping;
 
-    // Si el payload externo tiene este campo, asignarlo al interno
-    if (externalPayload.hasOwnProperty(external_field)) {
-      internalData[internal_field] = externalPayload[external_field];
+      // Extraer valor del payload externo (soporta anidados)
+      let value = externalPayload;
+      if (external_field.includes('.')) {
+        const keys = external_field.split('.');
+        for (const key of keys) {
+          if (value && typeof value === 'object') {
+            value = value[key];
+          } else {
+            value = undefined;
+            break;
+          }
+        }
+      } else {
+        value = externalPayload[external_field];
+      }
+
+      if (value !== undefined) {
+        internalData[internal_field] = value;
+      }
     }
-  }
 
-  return internalData;
-}
+    return internalData;
+  }
 }
 
 module.exports = MarketplaceTransformer;

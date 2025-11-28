@@ -1,5 +1,6 @@
 // src/controllers/ProductFieldMappingController.js
 const logger = require('../../config/logger');
+const { sequelize } = require('../models');
 const {
   ProductFieldMappingRepository,
   MarketplaceRepository,
@@ -76,6 +77,101 @@ const ProductFieldMappingController = {
       });
       logger.error('ProductFieldMappingController->store: ' + error.message);
       res.status(500).json({ error: 'ServerError' });
+    }
+  },
+
+  async storeBulk(req, res) {
+    logger.info(`${req.user?.name || 'Unknown'} - Crea múltiples mapeos de campo`);
+    logger.info('Datos recibidos:');
+    logger.info(JSON.stringify(req.body));
+
+    const metadata = getRequestMetadata(req);
+    const {
+      marketplace_id,
+      mappings // ← array de objetos de mapeo
+    } = req.body;
+
+    if (!marketplace_id) {
+      return res.status(400).json({ error: 'marketplace_id es requerido' });
+    }
+
+    if (!Array.isArray(mappings) || mappings.length === 0) {
+      return res.status(400).json({ error: 'El campo "mappings" debe ser un array no vacío' });
+    }
+
+    let transaction;
+
+    try {
+      // Validar que el marketplace exista
+      const mp = await MarketplaceRepository.findById(marketplace_id);
+      if (!mp) {
+        return res.status(400).json({ msg: "marketplaceNotFound" });
+      }
+
+      // Iniciar transacción
+      transaction = await sequelize.transaction();
+
+      // Validar y enriquecer los mapeos
+      const cleanMappings = mappings.map(mapping => ({
+        ...mapping,
+        marketplace_id, // aseguramos que todos tengan el mismo marketplace_id
+        // Corregir posibles errores de typo si es necesario (ej: 'default_alue' → 'default_value')
+        // Pero asumiremos que el frontend ya lo envía bien
+      }));
+
+      // Crear todos los registros en bulk
+      const createdMappings = await ProductFieldMappingRepository.bulkCreate(cleanMappings, { transaction });
+
+      // Registrar log de éxito
+      await LogRepository.create({
+        user_id: metadata.user_id,
+        action: 'field_mapping.create_bulk',
+        description: `Se crearon ${createdMappings.length} mapeos para marketplace ${marketplace_id}`,
+        ip_address: metadata.ip_address,
+        user_agent: metadata.user_agent,
+        status: 'success',
+        meta: {
+          marketplace_id,
+          count: createdMappings.length,
+          ids: createdMappings.map(m => m.id)
+        }
+      }, { transaction });
+
+      await transaction.commit();
+
+      // Formatear respuesta (opcional, para consistencia)
+      const formatted = createdMappings.map(m => ({
+        id: m.id,
+        marketplace_id: m.marketplace_id,
+        internal_field: m.internal_field,
+        external_field: m.external_field,
+        required: m.required,
+        data_type: m.data_type,
+        direction: m.direction,
+        default_value: m.default_value,
+        validation_rules: m.validation_rules
+      }));
+
+      return res.status(201).json({
+        message: `Se crearon ${formatted.length} mapeos correctamente`,
+        mappings: formatted
+      });
+
+    } catch (error) {
+      if (transaction) await transaction.rollback();
+
+      await LogRepository.create({
+        user_id: metadata?.user_id,
+        action: 'field_mapping.create_bulk',
+        description: `Error al crear mapeos en lote: ${error.message}`,
+        ip_address: metadata?.ip_address,
+        user_agent: metadata?.user_agent,
+        status: 'error',
+        meta: { marketplace_id, count: mappings?.length || 0 }
+      });
+
+      logger.error('ProductFieldMappingController->storeBulk: ' + error.message);
+      return res.status(500).json({ error: 'ServerError' });
     }
   },
 

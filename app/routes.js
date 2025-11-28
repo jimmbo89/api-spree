@@ -1,5 +1,8 @@
 const express = require("express");
 const logger = require('../config/logger');
+const fs = require("fs");
+const path = require("path");
+const mime = require("mime-types"); 
 const { requireRoles } = require('./policies/RolePolicity.js')
 const validateSchema = require("./middlewares/validateSchema");
 const auth = require("./middlewares/auth");
@@ -28,10 +31,13 @@ const multerGeneric = require("./middlewares/multerGeneric.js");
 const multerFieldFolders = require("./middlewares/multerFieldFolders.js");
 const { storeMarketplaceSchema, updateMarketplaceSchema, idMarketplaceSchema } = require("./middlewares/validations/marketplaceValidations.js");
 const MarketplaceController = require("./controllers/MarketplaceController.js");
-const { createProductFieldMappingSchema, updateProductFieldMappingSchema, idProductFieldMappingSchema, listProductFieldMappingSchema } = require("./middlewares/validations/productFieldMappingValidations.js");
+const { createProductFieldMappingSchema, updateProductFieldMappingSchema, idProductFieldMappingSchema, listProductFieldMappingSchema, bulkCreateProductFieldMappingSchema } = require("./middlewares/validations/productFieldMappingValidations.js");
 const ProductFieldMappingController = require("./controllers/ProductFieldMappingController.js");
 const { storeProductPublishingTaskSchema, updateProductPublishingTaskStatusSchema, listProductPublishingTaskSchema, retryProductPublishingTaskSchema } = require("./middlewares/validations/productPublishingTaskValidations.js");
 const ProductPublishingTaskController = require("./controllers/ProductPublishingTaskController.js");
+const { storeMarketplaceCredentialSchema, findByMarketplaceCredentialSchema } = require("./middlewares/validations/marketplaceCredentialValidations.js");
+const MarketplaceCredentialController = require("./controllers/MarketplaceCredentialController.js");
+const OAuthController = require("./controllers/OAuthController.js");
 const router = express.Router();
 
 
@@ -40,8 +46,33 @@ router.get("/", (req, res) => res.json({ hello: "World" }));
 router.post("/sign-up", validateSchema(registerSchema), AuthController.signUp);
 router.post("/sign-in", validateSchema(loginSchema), AuthController.signIn);
 router.get("/verific-invitation", InvitationController.verificInvitation);
+
+router.get('/ml-callback', OAuthController.mercadoLibreCallback);
 //rutas protegidas
 router.use(auth);
+
+router.get("/images/:foldername/:filename", (req, res) => {
+  const { foldername, filename } = req.params;
+  const imagePath = path.join(__dirname, "../public", foldername, filename);
+
+  // Verifica si el archivo existe
+  if (!fs.existsSync(imagePath)) {
+    return res.status(400).send("Imagen no encontrada");
+  }
+
+  // Obtén el tipo MIME del archivo
+  const fileType = mime.lookup(imagePath) || "application/octet-stream";
+
+  // Lee el archivo y envíalo en la respuesta
+  fs.readFile(imagePath, (err, file) => {
+    if (err) {
+      return res.status(500).send("Error al leer la imagen");
+    }
+    res.writeHead(200, { "Content-Type": fileType });
+    res.end(file);
+  });
+});
+
 router.get("/logout", AuthController.logout);
 router.post("/user-update", requireRoles(['Admin']), validateSchema(updateSchema), AuthController.update);
 router.post("/user-destroy", requireRoles(['Admin']), validateSchema(idRoleSchema), AuthController.destroy);
@@ -116,8 +147,13 @@ router.post("/marketplace-destroy", requireRoles(['Admin']), validateSchema(idMa
 router.post("/marketplace-show", requireRoles(['Admin']), validateSchema(idMarketplaceSchema), MarketplaceController.show);
 router.post("/marketplace-list", requireRoles(['Admin']), MarketplaceController.list); // list no necesita schema (validación manual de company_id)
 
+//Marketplace Credentiales
+router.post("/marketplace-credential", requireRoles(['Admin']), validateSchema(storeMarketplaceCredentialSchema), MarketplaceCredentialController.store);
+router.post("/marketplace-credential-show", requireRoles(['Admin']), validateSchema(findByMarketplaceCredentialSchema), MarketplaceCredentialController.show);
+
 // Metadatos de los marketplaces
 router.post("/product-field-mapping", requireRoles(['Admin']), validateSchema(createProductFieldMappingSchema), ProductFieldMappingController.store);
+router.post("/product-field-mapping-bulk", requireRoles(['Admin']), validateSchema(bulkCreateProductFieldMappingSchema), ProductFieldMappingController.storeBulk);
 router.post("/product-field-mapping-update", requireRoles(['Admin']), validateSchema(updateProductFieldMappingSchema), ProductFieldMappingController.update);
 router.post("/product-field-mapping-destroy", requireRoles(['Admin']), validateSchema(idProductFieldMappingSchema), ProductFieldMappingController.destroy);
 router.post("/product-field-mapping-show", requireRoles(['Admin']), validateSchema(idProductFieldMappingSchema), ProductFieldMappingController.show);

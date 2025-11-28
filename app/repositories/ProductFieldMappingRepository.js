@@ -37,6 +37,19 @@ const ProductFieldMappingRepository = {
     }
   },
 
+  async bulkCreate(mappingArray, options = {}) {
+    logger.info(`[REPO] Creando ${mappingArray.length} mapeos de campo en lote`);
+    try {
+      return await ProductFieldMapping.bulkCreate(mappingArray, {
+        ...options,
+        validate: true // opcional: activa validaciones del modelo
+      });
+    } catch (error) {
+      logger.error(`[REPO] ERROR al crear mapeos en lote:`, error.message);
+      throw error;
+    }
+  },
+
   async update(record, updateData) {
     const allowed = ['external_field', 'required', 'data_type', 'direction', 'default_value', 'validation_rules'];
     const clean = Object.keys(updateData)

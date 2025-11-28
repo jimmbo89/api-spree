@@ -9,8 +9,8 @@ const ProductRepository = {
     const where = { company_id: companyId };
 
     if (userId !== undefined) where.user_id = userId;
-    if (companyId !== undefined) where.user_id = companyId;
-    if (categoryId !== undefined) where.user_id = categoryId;
+    if (companyId !== undefined) where.company_id = companyId;
+    if (categoryId !== undefined) where.category_id = categoryId;
     if (branchId !== undefined) where.branch_id = branchId;
 
     const products = await Product.findAll({

@@ -54,6 +54,7 @@ const AuthController = {
         email: user.email,
         name: user.name,
         user: user.user,
+        image: user.image,
         role: roleName,
         role_id: user.role_id
         };
@@ -75,6 +76,7 @@ const AuthController = {
         name: userNew.name,
         email: userNew.email,
         user: userNew.user,
+        image: userNew.image,
         token,
         role: userNew.role,
         role_id: userNew.role_id,
@@ -154,6 +156,7 @@ const AuthController = {
         email: user.email,
         name: user.name,
         user: user.user,
+        image: user.image,
         role: roleName,
         role_id: user.role_id
         };
@@ -185,6 +188,7 @@ const AuthController = {
         name: userNew.name,
         user: userNew.user,
         email: userNew.email,
+        image: userNew.image,
         token,
         role: userNew.role,
         role_id: userNew.role_id,

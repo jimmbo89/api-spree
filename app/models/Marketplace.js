@@ -4,10 +4,10 @@ const { Model } = require('sequelize');
 module.exports = (sequelize, DataTypes) => {
   class Marketplace extends Model {
     static associate(models) {
-      Marketplace.belongsTo(models.Company, { foreignKey: 'company_id', as: 'company', onDelete: 'SET NULL' });
-      Marketplace.belongsTo(models.User, { foreignKey: 'user_id', as: 'user', onDelete: 'SET NULL' });
       Marketplace.hasMany(models.ProductFieldMapping, { foreignKey: 'marketplace_id', as: 'fieldMappings', onDelete: 'CASCADE' });
-      Marketplace.hasMany(models.ProductPublishingTask, { foreignKey: 'marketplace_id', as: 'publishingTasks', onDelete: 'SET NUll' });
+      Marketplace.hasMany(models.ProductPublishingTask, { foreignKey: 'marketplace_id', as: 'publishingTasks', onDelete: 'SET NULL' });
+      Marketplace.hasMany(models.ProductMarketplaceLink, { foreignKey: 'marketplace_id', as: 'productLinks', onDelete: 'CASCADE' });
+      Marketplace.hasOne(models.MarketplaceCredential, { foreignKey: 'marketplace_id', as: 'credential' });
     }
   }
 
@@ -16,16 +16,6 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.BIGINT,
       primaryKey: true,
       autoIncrement: true
-    },
-    company_id: {
-      type: DataTypes.BIGINT,
-      allowNull: true,
-      references: { model: 'companies', key: 'id' }
-    },
-    user_id: {
-      type: DataTypes.BIGINT,
-      allowNull: true,
-      references: { model: 'users', key: 'id' }
     },
     name: {
       type: DataTypes.STRING,

@@ -5,25 +5,18 @@ const {
   MarketplaceRepository,
   CompanyRepository,
   UserRepository,
-  LogRepository
+  LogRepository,
+  BranchRepository
 } = require('../repositories');
 const { getRequestMetadata } = require('../util/requestUtil');
 
 const MarketplaceController = {
-  async list(req, res) {
+   async list(req, res) {
     logger.info(`${req.user?.name || 'Unknown'} - Lista marketplaces`);
-
-    const { company_id } = req.body;
     const metadata = getRequestMetadata(req);
 
     try {
-      if (!company_id) return res.status(400).json({ msg: "company_id es obligatorio" });
-
-      const company = await CompanyRepository.findById(company_id);
-      if (!company) return res.status(400).json({ msg: "companyNotFound" });
-
-      const marketplaces = await MarketplaceRepository.findAllByCompany(company_id);
-
+      const marketplaces = await MarketplaceRepository.findAllByContext();
       res.status(200).json({ marketplaces });
     } catch (error) {
       logger.error('MarketplaceController->list: ' + error.message);
@@ -37,24 +30,14 @@ const MarketplaceController = {
     logger.info(JSON.stringify(req.body));
 
     const metadata = getRequestMetadata(req);
-    const { company_id, user_id: bodyUserId } = req.body;
+    const { user_id: bodyUserId } = req.body;
     const user_id = bodyUserId || req.user.id;
 
     let transaction;
     try {
-      const company = await CompanyRepository.findById(company_id);
-      if (!company) return res.status(400).json({ msg: "companyNotFound" });
-
-      if (user_id) {
-        const user = await UserRepository.findById(user_id);
-        if (!user) return res.status(400).json({ msg: "userNotFound" });
-      }
-
       transaction = await sequelize.transaction();
 
       const mp = await MarketplaceRepository.create({
-        company_id,
-        user_id,
         name: req.body.name,
         description: req.body.description,
         type: req.body.type,
@@ -72,14 +55,14 @@ const MarketplaceController = {
             required: m.required,
             data_type: m.data_type,
             direction: m.direction,
-            defaul_value: m.defaul_value,
+            default_value: m.default_value,
             validation_rules: m.validation_rules
           }, { transaction });
         }
       }
 
       await transaction.commit();
-
+      transaction = null; 
       await LogRepository.create({
         user_id: metadata.user_id,
         action: 'marketplace.create',
@@ -87,12 +70,11 @@ const MarketplaceController = {
         ip_address: metadata.ip_address,
         user_agent: metadata.user_agent,
         status: 'success',
-        meta: { id: mp.id, company_id }
+        meta: { id: mp.id }
       });
 
-      const marketplaces = await MarketplaceRepository.findAllByCompany(mp.company_id);
-
-      res.status(201).json({ message: "Marketplace creado correctamente", marketplaces: marketplaces });
+      const marketplaces = await MarketplaceRepository.findAllByContext();
+      res.status(201).json({ message: "Marketplace creado correctamente", marketplaces });
     } catch (error) {
       if (transaction) await transaction.rollback();
       await LogRepository.create({
@@ -120,8 +102,6 @@ const MarketplaceController = {
 
       const marketplace = {
         id: mp.id,
-        company_id: mp.company_id,
-        user_id: mp.user_id,
         name: mp.name,
         description: mp.description,
         type: mp.type,
@@ -148,16 +128,7 @@ const MarketplaceController = {
       const mp = await MarketplaceRepository.findById(req.body.id);
       if (!mp) return res.status(404).json({ msg: 'MarketplaceNotFound' });
 
-      if (req.body.company_id) {
-        const company = await CompanyRepository.findById(req.body.company_id);
-        if (!company) return res.status(400).json({ msg: "companyNotFound" });
-      }
-      if (req.body.user_id) {
-        const user = await UserRepository.findById(req.body.user_id);
-        if (!user) return res.status(400).json({ msg: "userNotFound" });
-      }
-
-      let transaction = await sequelize.transaction();
+       let transaction = await sequelize.transaction();
 
       await MarketplaceRepository.update(mp, req.body);
 
@@ -189,7 +160,7 @@ const MarketplaceController = {
         meta: { id: mp.id }
       });
 
-       const marketplaces = await MarketplaceRepository.findAllByCompany(mp.company_id);
+       const marketplaces = await MarketplaceRepository.findAllByContext();
       res.status(200).json({ message: "Marketplace actualizado correctamente", marketplaces: marketplaces });
     } catch (error) {
       await LogRepository.create({

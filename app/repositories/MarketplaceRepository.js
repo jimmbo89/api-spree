@@ -2,11 +2,8 @@
 const { Marketplace, ProductFieldMapping } = require('../models');
 const logger = require('../../config/logger');
 
-// Función auxiliar para formatear un marketplace
 const formatMarketplace = (record) => ({
   id: record.id,
-  company_id: record.company_id,
-  user_id: record.user_id,
   name: record.name,
   description: record.description,
   type: record.type,
@@ -15,7 +12,6 @@ const formatMarketplace = (record) => ({
   active: record.active
 });
 
-// Función auxiliar para formatear un mapeo
 const formatMapping = (record) => ({
   id: record.id,
   internal_field: record.internal_field,
@@ -28,24 +24,32 @@ const formatMapping = (record) => ({
 });
 
 const MarketplaceRepository = {
-  // --- Marketplaces ---
   async findById(id) {
-    // Devuelve instancia cruda de Sequelize (para update/delete)
     return await Marketplace.findByPk(id);
   },
 
-  async findByCompanyAndName(companyId, name) {
-    const record = await Marketplace.findOne({ where: { company_id: companyId, name } });
+  async findByContextAndName(name) {
+    const where = { name };
+    const record = await Marketplace.findOne({ where });
     return record ? formatMarketplace(record) : null;
   },
 
-  async findAllByCompany(companyId) {
-    const records = await Marketplace.findAll({ where: { company_id: companyId } });
-    return records.map(formatMarketplace);
+  async findAllByContext() {
+    const records = await Marketplace.findAll();
+    return records.map(record => {
+      // Parsear `config` solo si es string; si ya es objeto, dejarlo como está
+      const config = typeof record.config === 'string' && record.config.trim()
+        ? JSON.parse(record.config)
+        : record.config || {};
+
+      return {
+        ...record.get ? record.get({ plain: true }) : record, // soporta instancias Sequelize y objetos planos
+        config // sobrescribe el campo con la versión parseada
+      };
+    });
   },
 
   async create(marketplaceData, options = {}) {
-    logger.info(`[REPO] Creando marketplace: ${marketplaceData.name}`, { company_id: marketplaceData.company_id });
     try {
       return await Marketplace.create(marketplaceData, options);
     } catch (error) {
@@ -55,7 +59,7 @@ const MarketplaceRepository = {
   },
 
   async update(record, updateData) {
-    const allowed = ['name', 'description', 'type', 'domain', 'config', 'active', 'user_id', 'company_id'];
+    const allowed = ['name', 'description', 'type', 'domain', 'config', 'active'];
     const clean = Object.keys(updateData)
       .filter(k => allowed.includes(k) && updateData[k] !== undefined)
       .reduce((a, k) => ({ ...a, [k]: updateData[k] }), {});
@@ -67,7 +71,6 @@ const MarketplaceRepository = {
     return await record.destroy();
   },
 
-  // --- Mapeos ---
   async findMappingsByMarketplace(marketplaceId) {
     const records = await ProductFieldMapping.findAll({ where: { marketplace_id: marketplaceId } });
     return records.map(formatMapping);

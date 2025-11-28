@@ -80,7 +80,7 @@ const WarehouseProductController = {
     logger.info('Datos recibidos:');
     logger.info(JSON.stringify(req.body));
 
-    const { company_id: inputCompanyId, user_id: bodyUserId, product_id, sku, warehouse_id } = req.body;
+    const { company_id, user_id: bodyUserId, product_id, sku, warehouse_id } = req.body;
     const user_id = bodyUserId || req.user.id;
 
     let transaction;

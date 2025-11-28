@@ -1,19 +1,16 @@
 // src/validations/marketplaceValidation.js
 const Joi = require('joi');
-
 const mappingSchema = Joi.object({
-  internalField: Joi.string().required(),
-  externalField: Joi.string().required(),
+  internal_field: Joi.string().required(),
+  external_field: Joi.string().required(),
   required: Joi.boolean().optional(),
-  dataType: Joi.string().valid('string', 'number', 'boolean', 'array', 'object').optional(),
+  data_type: Joi.string().valid('string', 'number', 'boolean', 'array', 'object').optional(),
   direction: Joi.string().valid('export', 'import', 'both').optional(),
-  defaultValue: Joi.string().optional().allow(null),
-  validationRules: Joi.object().optional().allow(null)
+  default_value: Joi.string().optional().allow(null),
+  validation_rules: Joi.object().optional().allow(null)
 });
 
 const storeSchema = Joi.object({
-  company_id: Joi.number().integer().positive().required(),
-  user_id: Joi.number().integer().positive().optional().allow(null),
   name: Joi.string().max(100).required(),
   description: Joi.string().max(255).optional().allow(null, ''),
   type: Joi.number().integer().valid(0, 1).required(),
@@ -25,8 +22,6 @@ const storeSchema = Joi.object({
 
 const updateSchema = Joi.object({
   id: Joi.number().integer().positive().required(),
-  company_id: Joi.number().integer().positive().optional(),
-  user_id: Joi.number().integer().positive().optional().allow(null),
   name: Joi.string().max(100).optional(),
   description: Joi.string().max(255).optional().allow(null, ''),
   type: Joi.number().integer().valid(0, 1).optional(),
@@ -43,5 +38,5 @@ const idSchema = Joi.object({
 module.exports = {
   storeMarketplaceSchema: storeSchema,
   updateMarketplaceSchema: updateSchema,
-  idMarketplaceSchema: idSchema
+  idMarketplaceSchema: idSchema,
 };
