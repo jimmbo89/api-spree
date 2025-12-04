@@ -2,7 +2,6 @@ const BaseAdapter = require('./BaseAdapter');
 const axios = require('axios');
 const logger = require('../../../config/logger');
 const { MarketplaceCredentialRepository } = require('../../repositories');
-const { SocksProxyAgent } = require('socks-proxy-agent');
 
 
 class MercadoLibreAdapter extends BaseAdapter {
@@ -30,13 +29,10 @@ class MercadoLibreAdapter extends BaseAdapter {
     // 2. **NO verificar la fecha de expiración - solo verificar si el token funciona**
     // Muchos tokens de ML siguen funcionando después de la fecha de "expiración"
     logger.info(`Bearer ${this.credential.access_token}`);
-    const agent = new SocksProxyAgent('socks5://127.0.0.1:1080');
 
     try {
       // Verificación rápida del token
       const tokenCheck = await axios.get('https://api.mercadolibre.com/users/me', {
-       httpAgent: agent,
-        httpsAgent: agent,
         headers: {
           'Authorization': `Bearer ${this.credential.access_token}`
         },
@@ -91,12 +87,9 @@ class MercadoLibreAdapter extends BaseAdapter {
     logger.info('[MercadoLibreAdapter] Refrescando token...');
     logger.info(`- Client ID: ${this.credential.client_id}`);
     logger.info(`- Refresh token: ${this.credential.refresh_token.substring(0, 15)}...`);
-    const agent = new SocksProxyAgent('socks5://127.0.0.1:1080');
     
     try {
       const response = await axios.post(oauthTokenUrl, params, {
-        httpAgent: agent,
-        httpsAgent: agent,
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
           'Accept': 'application/json'
@@ -159,7 +152,6 @@ class MercadoLibreAdapter extends BaseAdapter {
 
     const siteId = this.getSiteId(); // MLC, MLA, etc.
     logger.info(siteId)
-    const agent = new SocksProxyAgent('socks5://127.0.0.1:1080');
     try {
       // ⚠️ IMPORTANTE: NO usar proxy aquí (mercado libre bloquea proxies)
       //https://api.mercadolibre.com/sites/MLC/domain_discovery/search?q=Tinta%20HP%20664%20Magenta
@@ -167,8 +159,6 @@ class MercadoLibreAdapter extends BaseAdapter {
         `https://api.mercadolibre.com/sites/${siteId}/domain_discovery/search`,
         {
           params: { q: title, limit: 8 },
-          httpAgent: agent,
-          httpsAgent: agent
         }
       );
 
@@ -302,13 +292,10 @@ class MercadoLibreAdapter extends BaseAdapter {
     
     logger.info('[MercadoLibreAdapter] Payload COMPLETO a enviar:');
     logger.info(JSON.stringify(productToPublish, null, 2));
-      const agent = new SocksProxyAgent('socks5://127.0.0.1:1080');
       // 5. Publicar en Mercado Libre
       
      const response = await axios.post( `https://api.mercadolibre.com/items?access_token=${this.credential.access_token}`, JSON.stringify(productToPublish),
           {
-            httpAgent: agent,
-            httpsAgent: agent,
             headers: {
               'Content-Type': 'application/json',
               'Accept': 'application/json'

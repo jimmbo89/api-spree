@@ -2,7 +2,7 @@ const BaseAdapter = require('./BaseAdapter');
 const axios = require('axios');
 const logger = require('../../../config/logger');
 const { MarketplaceCredentialRepository } = require('../../repositories');
-const { SocksProxyAgent } = require('socks-proxy-agent');
+const proxyHelper = require('../../util/proxyHelper');
 
 class MercadoLibreAdapter extends BaseAdapter {
   static supportsCategoryPrediction() {
@@ -26,14 +26,9 @@ class MercadoLibreAdapter extends BaseAdapter {
       return false;
     }
 
-    // 2. **NO verificar la fecha de expiración - solo verificar si el token funciona**
-    const agent = new SocksProxyAgent('socks5://127.0.0.1:1080');
-
     try {
       // Verificación rápida del token
-      const tokenCheck = await axios.get('https://api.mercadolibre.com/users/me', {
-        httpAgent: agent,
-        httpsAgent: agent,
+      const tokenCheck = await proxyHelper.get('https://api.mercadolibre.com/users/me', {
         headers: {
           'Authorization': `Bearer ${this.credential.access_token}`
         },
@@ -87,12 +82,9 @@ class MercadoLibreAdapter extends BaseAdapter {
     logger.info('[MercadoLibreAdapter] Refrescando token...');
     logger.info(`- Client ID: ${this.credential.client_id}`);
     logger.info(`- Refresh token: ${this.credential.refresh_token.substring(0, 15)}...`);
-    const agent = new SocksProxyAgent('socks5://127.0.0.1:1080');
     
     try {
-      const response = await axios.post(oauthTokenUrl, params, {
-        httpAgent: agent,
-        httpsAgent: agent,
+      const response = await proxyHelper.post(oauthTokenUrl, params, {
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
           'Accept': 'application/json'
@@ -150,15 +142,12 @@ class MercadoLibreAdapter extends BaseAdapter {
 
   const siteId = this.getSiteId();
   logger.info(siteId);
-  const agent = new SocksProxyAgent('socks5://127.0.0.1:1080');
   
   try {
-    const response = await axios.get(
+    const response = await proxyHelper.get(
       `https://api.mercadolibre.com/sites/${siteId}/domain_discovery/search`,
       {
         params: { q: title, limit: 8 },
-        httpAgent: agent,
-        httpsAgent: agent,
         headers: { 'Authorization': `Bearer ${this.credential.access_token}` } // AÑADIR token
       }
     );
@@ -173,19 +162,15 @@ class MercadoLibreAdapter extends BaseAdapter {
     
     // 🔴 NUEVO: Obtener información COMPLETA de la categoría para detectar User Products
     const [categoryRes, categoryInfo] = await Promise.all([
-      axios.get(
+      proxyHelper.get(
         `https://api.mercadolibre.com/categories/${prediction.category_id}/attributes`,
         {
-          httpAgent: agent,
-          httpsAgent: agent,
           headers: { 'Authorization': `Bearer ${this.credential.access_token}` }
         }
       ),
-      axios.get(
+      proxyHelper.get(
         `https://api.mercadolibre.com/categories/${prediction.category_id}`,
         {
-          httpAgent: agent,
-          httpsAgent: agent,
           headers: { 'Authorization': `Bearer ${this.credential.access_token}` }
         }
       )
@@ -207,11 +192,9 @@ class MercadoLibreAdapter extends BaseAdapter {
     }
     
     // Verificar si family_name es requerido
-    const categorySettingsRes = await axios.get(
+    const categorySettingsRes = await proxyHelper.get(
       `https://api.mercadolibre.com/categories/${prediction.category_id}`,
       {
-        httpAgent: agent,
-        httpsAgent: agent,
         headers: { 'Authorization': `Bearer ${this.credential.access_token}` }
       }
     );
@@ -362,14 +345,10 @@ class MercadoLibreAdapter extends BaseAdapter {
         throw new Error('warranty no debe estar en payload, debe ir en sale_terms');
       }
       
-      // 10. Publicar
-      const agent = new SocksProxyAgent('socks5://127.0.0.1:1080');
-      const response = await axios.post(
+      const response = await proxyHelper.post(
         'https://api.mercadolibre.com/items',
         productToPublish,
         {
-          httpAgent: agent,
-          httpsAgent: agent,
           headers: {
             'Authorization': `Bearer ${this.credential.access_token}`,
             'Content-Type': 'application/json',
@@ -410,13 +389,10 @@ class MercadoLibreAdapter extends BaseAdapter {
         const productToPublishWithoutTitle = { ...productToPublish };
         delete productToPublishWithoutTitle.title;
         
-        const agent = new SocksProxyAgent('socks5://127.0.0.1:1080');
-        const retryResponse = await axios.post(
+        const retryResponse = await proxyHelper.post(
           'https://api.mercadolibre.com/items',
           productToPublishWithoutTitle,
           {
-            httpAgent: agent,
-            httpsAgent: agent,
             headers: {
               'Authorization': `Bearer ${this.credential.access_token}`,
               'Content-Type': 'application/json',

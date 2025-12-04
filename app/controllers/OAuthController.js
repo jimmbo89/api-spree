@@ -6,7 +6,7 @@ const {
   LogRepository
 } = require('../repositories');
 const { getRequestMetadata } = require('../util/requestUtil');
-const { SocksProxyAgent } = require('socks-proxy-agent');
+const proxyHelper = require('../util/proxyHelper');
 
 const OAuthController = {
   async mercadoLibreCallback(req, res) {
@@ -54,9 +54,8 @@ const OAuthController = {
           code: code,
           redirect_uri: credential.redirect_uri.trim() // ✅ elimina espacios
         })));
-        const agent = new SocksProxyAgent('socks5://127.0.0.1:1080');
       // ✅ Petición exactamente como en tu ejemplo que funciona
-      const tokenRes = await axios.post(
+      const tokenRes = await proxyHelper.post(
         oauthTokenUrl,
         qs.stringify({
           grant_type: 'authorization_code',
@@ -66,8 +65,6 @@ const OAuthController = {
           redirect_uri: credential.redirect_uri.trim() // ✅ elimina espacios
         }),
         {
-          httpAgent: agent,
-          httpsAgent: agent,
           headers: {
             'Content-Type': 'application/x-www-form-urlencoded'
             // ❌ NO incluir 'Authorization' header

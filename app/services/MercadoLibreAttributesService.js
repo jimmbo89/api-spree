@@ -1,26 +1,23 @@
 const axios = require('axios');
 const logger = require('../../config/logger');
-const { SocksProxyAgent } = require('socks-proxy-agent');
+const proxyHelper = require('../util/proxyHelper');
 
 class MercadoLibreAttributesService {
   /**
    * Obtiene TODOS los atributos de una categoría desde la API
    */
   static async getCategoryAttributes(categoryId, accessToken, siteId = 'MLC') {
-    const agent = new SocksProxyAgent('socks5://127.0.0.1:1080');
     try {
       const url = `https://api.mercadolibre.com/categories/${categoryId}/attributes`;
-      
-      const response = await axios.get(url, {
-        httpAgent: agent,
-        httpsAgent: agent,
-        headers: { 
-          'Authorization': `Bearer ${accessToken}`,
-          'Accept': 'application/json'
-        },
-        params: { site_id: siteId },
-        timeout: 15000
-      });
+    
+    const response = await proxyHelper.get(url, {
+      headers: { 
+        'Authorization': `Bearer ${accessToken}`,
+        'Accept': 'application/json'
+      },
+      params: { site_id: siteId },
+      timeout: 15000
+    });
 
       // Procesar y clasificar atributos
       const attributes = response.data.map(attr => ({
@@ -74,7 +71,7 @@ class MercadoLibreAttributesService {
     try {
       const url = `https://api.mercadolibre.com/attributes/${attributeId}`;
       
-      const response = await axios.get(url, {
+      const response = await proxyHelper.get(url, {
         headers: { 
           'Authorization': `Bearer ${accessToken}`,
           'Accept': 'application/json'
@@ -117,7 +114,7 @@ class MercadoLibreAttributesService {
     try {
       const url = `https://api.mercadolibre.com/sites/${siteId}/search`;
       
-      const response = await axios.get(url, {
+      const response = await proxyHelper.get(url, {
         headers: { 
           'Authorization': `Bearer ${accessToken}`,
           'Accept': 'application/json'
