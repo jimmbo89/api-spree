@@ -2,6 +2,7 @@
 const { MarketplaceCredential, Marketplace } = require('../models');
 const EncryptionService = require('../services/EncryptionService');
 const logger = require('../../config/logger');
+const { Op } = require('sequelize');
 
 const MarketplaceCredentialRepository = {
   async findByMarketplaceAndContext(marketplaceId, companyId, branchId) {
@@ -35,22 +36,108 @@ const MarketplaceCredentialRepository = {
     };
   },
 
+  async findById(id) {
+    return await MarketplaceCredential.findByPk(id);
+  },
+
   async createOrUpdate(credentialData, options = {}) {
-    logger.info(`[REPO] Guardando credenciales para marketplace ${credentialData.marketplace_id}`);
     try {
-      // Validar contexto
-      if ((credentialData.company_id && credentialData.branch_id) || (!credentialData.company_id && !credentialData.branch_id)) {
+      // Validar contexto: debe tener exactamente company_id o branch_id
+      const finalCompanyId = credentialData.company_id ?? null;
+      const finalBranchId = credentialData.branch_id ?? null;
+      if (
+        (finalCompanyId && finalBranchId) ||
+        (!finalCompanyId && !finalBranchId)
+      ) {
         throw new Error('Debe proporcionar exactamente company_id O branch_id');
       }
 
+      // Buscar registro existente si se proporciona ID
+      let existing = null;
+      if (credentialData.id) {
+        existing = await MarketplaceCredential.findByPk(credentialData.id);
+        if (!existing) {
+          throw new Error('credentialNotFound');
+        }
+
+        // Validar duplicado de contexto (solo si se cambia el contexto o es edición)
+        const conflict = await MarketplaceCredential.findOne({
+          where: {
+            id: { [Op.ne]: credentialData.id },
+            marketplace_id: credentialData.marketplace_id ?? existing.marketplace_id,
+            company_id: finalCompanyId,
+            branch_id: finalBranchId,
+          },
+        });
+        if (conflict) {
+          throw new Error('Ya existe una credencial con este contexto (marketplace + company/branch)');
+        }
+      } else {
+        // Creación: verificar duplicado
+        const conflict = await MarketplaceCredential.findOne({
+          where: {
+            marketplace_id: credentialData.marketplace_id,
+            company_id: finalCompanyId,
+            branch_id: finalBranchId,
+          },
+        });
+        if (conflict) {
+          throw new Error('Ya existe una credencial para este contexto (marketplace + company/branch)');
+        }
+      }
+
+      // ✅ Construir solo los campos que se deben guardar
       const dataToSave = {
-        ...credentialData,
-        access_token: credentialData.access_token ? EncryptionService.encrypt(credentialData.access_token) : null,
-        refresh_token: credentialData.refresh_token ? EncryptionService.encrypt(credentialData.refresh_token) : null,
-        client_secret: credentialData.client_secret ? EncryptionService.encrypt(credentialData.client_secret) : null
+        // Campos no sensibles: siempre incluir si están definidos
+        marketplace_id: credentialData.marketplace_id ?? existing?.marketplace_id,
+        company_id: finalCompanyId,
+        branch_id: finalBranchId,
+        client_id: credentialData.client_id ?? existing?.client_id,
+        redirect_uri: credentialData.redirect_uri ?? existing?.redirect_uri,
+        scopes: credentialData.scopes ?? existing?.scopes,
+        active: credentialData.active ?? existing?.active,
+        expires_at: credentialData.expires_at ?? existing?.expires_at,
       };
 
-      const [record] = await MarketplaceCredential.upsert(dataToSave, options);
+      // Campos sensibles: solo actualizar si fueron explícitamente enviados
+      if (credentialData.access_token !== undefined) {
+        dataToSave.access_token = credentialData.access_token
+          ? EncryptionService.encrypt(credentialData.access_token)
+          : null;
+      }
+
+      if (credentialData.refresh_token !== undefined) {
+        dataToSave.refresh_token = credentialData.refresh_token
+          ? EncryptionService.encrypt(credentialData.refresh_token)
+          : null;
+      }
+
+      if (credentialData.client_secret !== undefined) {
+        dataToSave.client_secret = credentialData.client_secret
+          ? EncryptionService.encrypt(credentialData.client_secret)
+          : null;
+      }
+
+      if (credentialData.api_secret !== undefined) {
+        dataToSave.api_secret = credentialData.api_secret
+          ? EncryptionService.encrypt(credentialData.api_secret)
+          : null;
+      }
+
+      let record;
+      if (credentialData.id) {
+        // Actualización
+        await MarketplaceCredential.update(dataToSave, {
+          where: { id: credentialData.id },
+          ...options,
+        });
+        record = await MarketplaceCredential.findByPk(credentialData.id);
+      } else {
+        // Creación
+        dataToSave.id = credentialData.id; // en caso de que venga (poco común)
+        record = await MarketplaceCredential.create(dataToSave, options);
+      }
+
       return record;
     } catch (error) {
       logger.error(`[REPO] ERROR al guardar credenciales:`, error.message);

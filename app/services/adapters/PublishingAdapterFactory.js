@@ -6,7 +6,7 @@ const MercadoLibreAdapter = require('./MercadoLibreAdapter');
 class PublishingAdapterFactory {
   static getAdapter(marketplace, companyId, branchId = null) {
     // Detectar por dominio o tipo
-    if (marketplace.domain?.includes('mercadolibre')) {
+    if (MercadoLibreAdapter.supports(marketplace)) {
       return new MercadoLibreAdapter(marketplace.id, companyId, branchId);
     }
 

@@ -35,7 +35,7 @@ const { createProductFieldMappingSchema, updateProductFieldMappingSchema, idProd
 const ProductFieldMappingController = require("./controllers/ProductFieldMappingController.js");
 const { storeProductPublishingTaskSchema, updateProductPublishingTaskStatusSchema, listProductPublishingTaskSchema, retryProductPublishingTaskSchema } = require("./middlewares/validations/productPublishingTaskValidations.js");
 const ProductPublishingTaskController = require("./controllers/ProductPublishingTaskController.js");
-const { storeMarketplaceCredentialSchema, findByMarketplaceCredentialSchema } = require("./middlewares/validations/marketplaceCredentialValidations.js");
+const { storeMarketplaceCredentialSchema, findByMarketplaceCredentialSchema, updateMarketplaceCredentialSchema } = require("./middlewares/validations/marketplaceCredentialValidations.js");
 const MarketplaceCredentialController = require("./controllers/MarketplaceCredentialController.js");
 const OAuthController = require("./controllers/OAuthController.js");
 const router = express.Router();
@@ -48,10 +48,31 @@ router.post("/sign-in", validateSchema(loginSchema), AuthController.signIn);
 router.get("/verific-invitation", InvitationController.verificInvitation);
 
 router.get('/ml-callback', OAuthController.mercadoLibreCallback);
+router.get("/images/:foldername/:filename", (req, res) => {
+  const { foldername, filename } = req.params;
+  const imagePath = path.join(__dirname, "../public", foldername, filename);
+
+  // Verifica si el archivo existe
+  if (!fs.existsSync(imagePath)) {
+    return res.status(400).send("Imagen no encontrada");
+  }
+
+  // Obtén el tipo MIME del archivo
+  const fileType = mime.lookup(imagePath) || "application/octet-stream";
+
+  // Lee el archivo y envíalo en la respuesta
+  fs.readFile(imagePath, (err, file) => {
+    if (err) {
+      return res.status(500).send("Error al leer la imagen");
+    }
+    res.writeHead(200, { "Content-Type": fileType });
+    res.end(file);
+  });
+});
 //rutas protegidas
 router.use(auth);
 
-router.get("/images/:foldername/:filename", (req, res) => {
+router.get("/images-protect/:foldername/:filename", (req, res) => {
   const { foldername, filename } = req.params;
   const imagePath = path.join(__dirname, "../public", foldername, filename);
 
@@ -149,6 +170,7 @@ router.post("/marketplace-list", requireRoles(['Admin']), MarketplaceController.
 
 //Marketplace Credentiales
 router.post("/marketplace-credential", requireRoles(['Admin']), validateSchema(storeMarketplaceCredentialSchema), MarketplaceCredentialController.store);
+router.post("/marketplace-credential-update", requireRoles(['Admin']), validateSchema(updateMarketplaceCredentialSchema), MarketplaceCredentialController.update);
 router.post("/marketplace-credential-show", requireRoles(['Admin']), validateSchema(findByMarketplaceCredentialSchema), MarketplaceCredentialController.show);
 
 // Metadatos de los marketplaces

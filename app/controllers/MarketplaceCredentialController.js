@@ -56,6 +56,90 @@ const MarketplaceCredentialController = {
     }
   },
 
+  async update(req, res) {
+    logger.info(`${req.user?.name || 'Unknown'} - Actualiza credenciales de marketplace`);
+    logger.info(JSON.stringify(req.body));
+    const { marketplace_id, company_id, branch_id, id, ...credentialFields } = req.body;
+    const metadata = getRequestMetadata(req);
+
+    try {
+      // Validar que la credencial exista
+      const existing = await MarketplaceCredentialRepository.findById(id);
+      if (!existing) {
+        return res.status(404).json({ msg: "credentialNotFound" });
+      }
+
+      // Validar marketplace
+       if (company_id !== undefined || branch_id !== undefined) {
+      const marketplace = await MarketplaceRepository.findById(marketplace_id || existing.marketplace_id);
+      if (!marketplace) return res.status(400).json({ msg: "marketplaceNotFound" });
+       }
+      // Validar contexto si se está cambiando
+      if (company_id !== undefined || branch_id !== undefined) {
+        if (company_id) {
+          const company = await CompanyRepository.findById(company_id);
+          if (!company) return res.status(400).json({ msg: "companyNotFound" });
+        }
+        if (branch_id) {
+          const branch = await BranchRepository.findById(branch_id);
+          if (!branch) return res.status(400).json({ msg: "branchNotFound" });
+        }
+      }
+
+      // Construir payload completo para actualizar
+      const updatedData = {
+        id, // necesario para que upsert actualice el registro correcto
+        marketplace_id: marketplace_id ?? existing.marketplace_id,
+        company_id: company_id ?? existing.company_id,
+        branch_id: branch_id ?? existing.branch_id,
+        ...credentialFields
+      };
+
+      if (typeof updatedData.expires_at === 'number') {
+        updatedData.expires_at = new Date(Date.now() + updatedData.expires_at);
+      }
+
+      // Validación de contexto (company_id XOR branch_id)
+      if (
+        (updatedData.company_id && updatedData.branch_id) ||
+        (!updatedData.company_id && !updatedData.branch_id)
+      ) {
+        return res.status(400).json({
+          msg: "Debe proporcionar exactamente company_id O branch_id"
+        });
+      }
+
+      const credential = await MarketplaceCredentialRepository.createOrUpdate(updatedData);
+
+      await LogRepository.create({
+        user_id: metadata.user_id,
+        action: 'marketplace_credential.update',
+        description: `Credenciales actualizadas para marketplace ${credential.marketplace_id}`,
+        ip_address: metadata.ip_address,
+        user_agent: metadata.user_agent,
+        status: 'success',
+        meta: { id: credential.id }
+      });
+
+      res.status(200).json({
+        message: "Credenciales actualizadas correctamente",
+        credential: { id: credential.id }
+      });
+    } catch (error) {
+      await LogRepository.create({
+        user_id: metadata?.user_id,
+        action: 'marketplace_credential.update',
+        description: `Error: ${error.message}`,
+        ip_address: metadata?.ip_address,
+        user_agent: metadata?.user_agent,
+        status: 'error',
+        meta: { id }
+      });
+      logger.error('MarketplaceCredentialController->update: ' + error.message);
+      res.status(500).json({ error: 'ServerError' });
+    }
+  },
+
   async show(req, res) {
     try {
       const { marketplace_id, company_id, branch_id } = req.body;

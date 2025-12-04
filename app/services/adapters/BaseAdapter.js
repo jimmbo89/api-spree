@@ -13,6 +13,20 @@ class BaseAdapter {
   static supports(marketplace) {
     throw new Error('El método supports() debe ser implementado por el adapter');
   }
+
+   /**
+   * Indica si el adapter soporta predicción de categoría
+   */
+  static supportsCategoryPrediction() {
+    return false;
+  }
+
+  /**
+   * Método para predecir categoría (solo implementado por adapters que soportan)
+   */
+  async predictCategory(title) {
+    throw new Error('Este marketplace no soporta predicción de categoría');
+  }
 }
 
 module.exports = BaseAdapter;
