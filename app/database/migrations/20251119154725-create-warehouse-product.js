@@ -37,21 +37,25 @@ module.exports = {
           min: 0
         }
       },
+      // 👇 RUTA DE IMAGEN PRINCIPAL (por almacén, si se desea diferenciar)
       image: {
         type: Sequelize.STRING,
         allowNull: true,
         defaultValue: 'warehouse_products/default.jpg'
       },
+      // 👇 PRECIO DE VENTA (sobreescribe base_price del producto)
       price: {
         type: Sequelize.DECIMAL(16, 2),
-        allowNull: true
+        allowNull: true,
+        comment: 'Precio de venta en este almacén (sobreescribe base_price)'
       },
+      // 👇 ESTADO DE PUBLICACIÓN POR ALMACÉN
       published: {
         type: Sequelize.BOOLEAN,
         allowNull: false,
         defaultValue: false
       },
-      // Campos para filtrado rápido (como solicitaste)
+      // 👇 CAMPOS DE FILTRADO RÁPIDO (normalizados desde warehouse)
       company_id: {
         type: Sequelize.BIGINT,
         allowNull: true,
@@ -60,7 +64,8 @@ module.exports = {
           key: 'id'
         },
         onUpdate: 'CASCADE',
-        onDelete: 'SET NULL'
+        onDelete: 'SET NULL',
+        comment: 'Redundancia desde warehouse para optimizar queries'
       },
       branch_id: {
         type: Sequelize.BIGINT,
@@ -70,7 +75,8 @@ module.exports = {
           key: 'id'
         },
         onUpdate: 'CASCADE',
-        onDelete: 'SET NULL'
+        onDelete: 'SET NULL',
+        comment: 'Redundancia desde warehouse'
       },
       user_id: {
         type: Sequelize.BIGINT,
@@ -97,6 +103,11 @@ module.exports = {
       unique: true,
       name: 'warehouse_products_product_warehouse_unique'
     });
+
+    // Índices para mejor rendimiento
+    await queryInterface.addIndex('warehouse_products', ['company_id', 'published']);
+    await queryInterface.addIndex('warehouse_products', ['warehouse_id', 'published']);
+    await queryInterface.addIndex('warehouse_products', ['product_id', 'published']);
   },
 
   async down(queryInterface, Sequelize) {

@@ -15,6 +15,21 @@ const ProductCategoryRepository = {
     }
   },
 
+  // En ProductCategoryRepository.js
+async findActive() {
+  try {
+    const categories = await ProductCategory.findAll({
+      where: { status: 1 }, // o `active: true` si usas boolean
+      attributes: ["id", "name", "status", "description"],
+      order: [["name", "ASC"]]
+    });
+    return categories;
+  } catch (error) {
+    logger.error("Error en ProductCategoryRepository->findActive:", error);
+    throw new Error(`Error al obtener categorías activas: ${error.message}`);
+  }
+},
+
   async findById(id) {
     try {
       const category = await ProductCategory.findByPk(id, {

@@ -3,7 +3,7 @@ const Joi = require('joi');
 const storeWarehouseProductSchema = Joi.object({
   // product_id es opcional si se envían datos de producto
   product_id: Joi.number().integer().positive().optional(),
-  
+
   // Datos de producto (requeridos si no hay product_id)
   sku: Joi.when('product_id', {
     is: Joi.exist(),
@@ -15,55 +15,25 @@ const storeWarehouseProductSchema = Joi.object({
     then: Joi.string().max(255).optional(),
     otherwise: Joi.string().max(255).required()
   }),
-  // 👇 Campos nuevos para producto (requeridos para multi-plataforma)
-  brand: Joi.when('product_id', {
-    is: Joi.exist(),
-    then: Joi.string().max(100).optional(),
-    otherwise: Joi.string().max(100).required()
-  }),
-  condition: Joi.when('product_id', {
-    is: Joi.exist(),
-    then: Joi.string().valid('new', 'used', 'refurbished', 'not_specified').optional(),
-    otherwise: Joi.string().valid('new', 'used', 'refurbished', 'not_specified').required()
-  }),
-  model: Joi.string().max(100).optional().allow(null, ''),
-  gtin: Joi.string().max(50).optional().allow(null, ''),
-  mpn: Joi.string().max(100).optional().allow(null, ''),
-  warranty_months: Joi.number().integer().min(0).optional().allow(null),
-  warranty_text: Joi.string().max(255).optional().allow(null, ''),
-  weight_grams: Joi.number().integer().min(0).optional().allow(null),
-  length_cm: Joi.number().precision(2).min(0).optional().allow(null),
-  width_cm: Joi.number().precision(2).min(0).optional().allow(null),
-  height_cm: Joi.number().precision(2).min(0).optional().allow(null),
-  attributes: Joi.array().items(
-    Joi.object({
-      id: Joi.string().required(),
-      name: Joi.string().optional(),
-      value: Joi.alternatives().try(Joi.string(), Joi.number(), Joi.boolean()).required(),
-      unit: Joi.string().optional()
-    })
-  ).optional(),
-
-  // Descripción y categoría (opcionales)
   description: Joi.string().allow(null, '').optional(),
+  status: Joi.number().integer().min(0).max(3).optional(),
   category_id: Joi.number().integer().positive().optional().allow(null),
-
-  // Campos de warehouse_product
-  warehouse_id: Joi.number().integer().positive().required(),
-  stock: Joi.number().integer().min(0).optional().default(0),
-  price: Joi.number().precision(2).positive().optional().allow(null),
-  published: Joi.boolean().optional().default(false),
-  company_id: Joi.number().integer().positive().optional(),
+  base_price: Joi.number().precision(2).positive().optional().allow(null),
   branch_id: Joi.number().integer().positive().optional().allow(null),
-  user_id: Joi.number().integer().positive().optional().allow(null),
 
-  // Imagen
+  // WarehouseProduct fields
+  warehouse_id: Joi.number().integer().positive().required(),
+  stock: Joi.number().integer().min(0).optional(),
+  price: Joi.number().precision(2).positive().optional().allow(null),
+  published: Joi.boolean().optional(),
+  company_id: Joi.number().integer().positive().optional(),
+  user_id: Joi.number().integer().positive().optional().allow(null),
   image: Joi.any()
     .custom((value, helpers) => {
       if (value) {
-        const validMimeTypes = ['image/jpg', 'image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+        const validMimeTypes = ['image/jpg', 'image/jpeg', 'image/png', 'image/gif'];
         if (!validMimeTypes.includes(value.mimetype || value.type)) {
-          return helpers.message('El archivo debe ser una imagen válida (jpg, jpeg, png, gif, webp)');
+          return helpers.message('El archivo debe ser una imagen válida (jpg, jpeg, png, gif)');
         }
         const maxSize = 500 * 1024;
         if (value.size > maxSize) {
@@ -74,20 +44,14 @@ const storeWarehouseProductSchema = Joi.object({
     })
     .optional()
 })
-// Regla adicional: si no hay product_id, deben existir sku + name + brand + condition
+// Validación personalizada: si no hay product_id, deben existir sku y name
 .custom((value, helpers) => {
-  if (!value.product_id) {
-    const missing = [];
-    if (!value.sku) missing.push('sku');
-    if (!value.name) missing.push('name');
-    if (!value.brand) missing.push('brand');
-    if (!value.condition) missing.push('condition');
-    if (missing.length > 0) {
-      return helpers.message(`Si no se proporciona product_id, se requieren: ${missing.join(', ')}`);
-    }
+  if (!value.product_id && (!value.sku || !value.name)) {
+    return helpers.message('Si no se proporciona product_id, se requieren sku y name');
   }
   return value;
 });
+
 
 const updateWarehouseProductSchema = Joi.object({
   id: Joi.number().required(),
@@ -99,15 +63,12 @@ const updateWarehouseProductSchema = Joi.object({
   company_id: Joi.number().integer().positive().optional().allow(null),
   branch_id: Joi.number().integer().positive().optional().allow(null),
   user_id: Joi.number().integer().positive().optional().allow(null),
-  images: Joi.array()
-      .items(Joi.string().pattern(/\.(jpg|jpeg|png|gif|webp)$/i))
-      .optional().default([]),
   image: Joi.any()
     .custom((value, helpers) => {
       if (value) {
-        const validMimeTypes = ['image/jpg', 'image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+        const validMimeTypes = ['image/jpg', 'image/jpeg', 'image/png', 'image/gif'];
         if (!validMimeTypes.includes(value.mimetype || value.type)) {
-          return helpers.message('El archivo debe ser una imagen válida');
+          return helpers.message('El archivo debe ser una imagen válida (jpg, jpeg, png, gif)');
         }
         const maxSize = 500 * 1024;
         if (value.size > maxSize) {
@@ -127,8 +88,7 @@ const listWarehouseProductSchema = Joi.object({
   company_id: Joi.number().allow(null).empty('').optional(),
   user_id: Joi.number().allow(null).empty('').optional(),
   branch_id: Joi.number().allow(null).empty('').optional(),
-  warehouse_id: Joi.number().allow(null).empty('').optional(),
-  published: Joi.boolean().optional()
+  warehouse_id: Joi.number().allow(null).empty('').optional()
 });
 
 const transferSchema = Joi.object({

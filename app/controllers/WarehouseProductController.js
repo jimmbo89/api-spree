@@ -108,18 +108,33 @@ const WarehouseProductController = {
       } else if (sku) {
         product = await ProductRepository.findBySku(sku);
         if (!product) {
+          const files = (req.files && Array.isArray(req.files.images)) ? req.files.images : [];
           // Crear producto DENTRO de la transacción
           product = await ProductRepository.create({
-            sku,
-            name: req.body.name,
-            description: req.body.description,
-            status: req.body.status,
-            category_id: req.body.category_id,
-            base_price: req.body.base_price,
-            branch_id: warehouse.branch_id,
-            user_id,
-            company_id: warehouse.company_id
-          }, null, { transaction }); // 👈 pasar transaction al repositorio
+          sku,
+          name: req.body.name,
+          description: req.body.description,
+          status: req.body.status,
+          category_id: req.body.category_id,
+          base_price: req.body.base_price,
+          // 👇 Nuevos campos multi-plataforma
+          brand: req.body.brand || 'Generico',
+          condition: req.body.condition || 'new',
+          model: req.body.model || null,
+          gtin: req.body.gtin || null,
+          mpn: req.body.mpn || null,
+          attributes: Array.isArray(req.body.attributes) ? req.body.attributes : [],
+          warranty_months: req.body.warranty_months || null,
+          warranty_text: req.body.warranty_text || null,
+          weight_grams: req.body.weight_grams || null,
+          length_cm: req.body.length_cm || null,
+          width_cm: req.body.width_cm || null,
+          height_cm: req.body.height_cm || null,
+          // 👇 Datos de contexto
+          branch_id: warehouse.branch_id,
+          user_id,
+          company_id: warehouse.company_id
+        }, file, { transaction });
 
           logger.info(`Producto creado con SKU ${sku} (ID: ${product.id})`);
         }

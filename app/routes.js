@@ -151,6 +151,7 @@ router.post("/product", requireRoles(['Admin']), multerFieldFolders(productImage
 router.post("/product-update", requireRoles(['Admin']), multerFieldFolders(productImageFields), validateSchema(updateProductSchema), ProductController.update);
 router.post("/product-destroy", requireRoles(['Admin']), validateSchema(idProductSchema), ProductController.destroy);
 router.post("/products-transform", requireRoles(['Admin']), ProductController.transformForMarketplace);
+router.post("/product-category-status", requireRoles(['Admin']), ProductController.getProductMetadata);
 
 // Mismo patrón que branches y products
 router.post("/warehouse-product-user-company", requireRoles(['Admin']), validateSchema(listWarehouseProductSchema), WarehouseProductController.list);
