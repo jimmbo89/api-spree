@@ -1,6 +1,6 @@
 // app/repositories/UserRepository.js
 const { Op } = require('sequelize');
-const { User, Role } = require('../models'); // 👈 Añadido Role
+const { User, Role, Company } = require('../models'); // 👈 Añadido Role
 const logger = require('../../config/logger');
 
 const UserRepository = {
@@ -74,6 +74,7 @@ const UserRepository = {
         ],
         include: [
           { model: Role, as: 'role', attributes: ['id', 'name', 'status', 'description'] },
+          { model: Company, as: 'companies', attributes: ['id', 'name'] },
         ]
       });
       return user;
@@ -164,6 +165,84 @@ const UserRepository = {
     }
   },
 
+    // Método para buscar usuario por email con transacción
+  async findByEmailWithTransaction(email, transaction = null) {
+    try {
+      const options = { 
+        where: { email },
+        include: [
+          { model: Role, as: 'role', attributes: ['id', 'name', 'status', 'description'] }
+        ]
+      };
+      
+      if (transaction) {
+        options.transaction = transaction;
+      }
+      
+      const user = await User.findOne(options);
+      return user;
+    } catch (error) {
+      logger.error(`Error al buscar usuario por email (${email}):`, error);
+      throw new Error(`Error al buscar usuario: ${error.message}`);
+    }
+  },
+
+  // Método para actualizar token de recuperación con transacción
+  async updateResetTokenWithTransaction(id, resetData, transaction = null) {
+    try {
+      const options = { where: { id } };
+      
+      if (transaction) {
+        options.transaction = transaction;
+      }
+      
+      const result = await User.update(resetData, options);
+      return result;
+    } catch (error) {
+      logger.error(`Error al actualizar reset token para usuario (ID: ${id}):`, error);
+      throw new Error(`Error al actualizar token de recuperación: ${error.message}`);
+    }
+  },
+
+  // Método para buscar usuario por token de recuperación (para verificar código)
+  async findByResetToken(resetToken) {
+    try {
+      const user = await User.findOne({
+        where: {
+          reset_token: resetToken
+        },
+        attributes: ['id', 'email', 'reset_expire']
+      });
+      return user;
+    } catch (error) {
+      logger.error('Error al buscar usuario por reset token:', error);
+      throw new Error(`Error al buscar token de recuperación: ${error.message}`);
+    }
+  },
+
+  // Método para limpiar token de recuperación
+  async clearResetToken(id, transaction = null) {
+    try {
+      const options = { 
+        where: { id },
+        fields: ['reset_token', 'reset_expire']
+      };
+      
+      if (transaction) {
+        options.transaction = transaction;
+      }
+      
+      const result = await User.update({
+        reset_token: null,
+        reset_expire: null
+      }, options);
+      
+      return result;
+    } catch (error) {
+      logger.error(`Error al limpiar reset token para usuario (ID: ${id}):`, error);
+      throw new Error(`Error al limpiar token de recuperación: ${error.message}`);
+    }
+  },
 };
 
 module.exports = UserRepository;

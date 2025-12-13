@@ -41,7 +41,7 @@ const idSchema = Joi.object({
 });
 
 const findByMarketplaceSchema = Joi.object({
-  marketplace_id: Joi.number().integer().positive().required(),
+  marketplace_id: Joi.number().integer().positive().optional(),
   company_id: Joi.number().integer().positive().optional(),
   branch_id: Joi.number().integer().positive().optional()
 });

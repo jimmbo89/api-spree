@@ -1,5 +1,5 @@
 // repositories/MarketplaceCredentialRepository.js
-const { MarketplaceCredential, Marketplace } = require('../models');
+const { MarketplaceCredential, Marketplace, Company, Branch } = require('../models');
 const EncryptionService = require('../services/EncryptionService');
 const logger = require('../../config/logger');
 const { Op } = require('sequelize');
@@ -35,7 +35,54 @@ const MarketplaceCredentialRepository = {
       marketplace_domain: record.marketplace?.domain?.trim()
     };
   },
+  async findByContext(companyId = null, branchId = null, marketplaceId = null) {
+  const where = {};
+  
+  // Solo agregar company_id si no es null
+  if (companyId !== null && companyId !== undefined) {
+    where.company_id = companyId;
+  }
+  
+  // Solo agregar branch_id si no es null  
+  if (branchId !== null && branchId !== undefined) {
+    where.branch_id = branchId;
+  }
+  
+  // Solo agregar marketplace_id si no es null
+  if (marketplaceId !== null && marketplaceId !== undefined) {
+    where.marketplace_id = marketplaceId;
+  }
 
+  // Debe tener al menos company_id o branch_id
+  if (!where.company_id && !where.branch_id) {
+    throw new Error('Debe proporcionar al menos company_id o branch_id');
+  }
+
+  const records = await MarketplaceCredential.findAll({
+    where,
+    include: [
+      {
+        model: Marketplace,
+        as: 'marketplace',
+        attributes: ['id', 'name', 'description', 'type', 'domain', 'active']
+      },
+      {
+        model: Company,
+        as: 'company',
+        attributes: ['id', 'name', 'rut', 'city', 'country', 'image']
+      },
+      {
+        model: Branch,
+        as: 'branch',
+        attributes: ['id', 'name', 'city', 'address', 'image']
+      }
+    ],
+    order: [['createdAt', 'DESC']]
+  });
+
+  // Transformar resultados (sin desencriptar para lista)
+  return records.map(record => record.get({ plain: true }));
+},
   async findById(id) {
     return await MarketplaceCredential.findByPk(id);
   },

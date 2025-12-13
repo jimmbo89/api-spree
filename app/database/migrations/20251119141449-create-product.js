@@ -1,5 +1,4 @@
 'use strict';
-/** @type {import('sequelize-cli').Migration} */
 module.exports = {
   async up(queryInterface, Sequelize) {
     await queryInterface.createTable('products', {
@@ -22,132 +21,87 @@ module.exports = {
         type: Sequelize.TEXT,
         allowNull: true
       },
-      // 👇 NUEVOS CAMPOS MULTI-PLATAFORMA
       brand: {
         type: Sequelize.STRING,
         allowNull: false,
-        defaultValue: 'Generico',
-        comment: 'Marca del producto (requerido para marketplaces)'
+        defaultValue: 'Generico'
       },
       model: {
         type: Sequelize.STRING,
-        allowNull: true,
-        comment: 'Modelo o variante del producto'
+        allowNull: true
       },
       condition: {
-        type: Sequelize.STRING,
+        type: Sequelize.STRING,  //ENUM('new', 'used', 'refurbished', 'not_specified'),
         allowNull: false,
-        defaultValue: 'new',
-        comment: 'Estado del producto'
+        defaultValue: 'new'
       },
       gtin: {
         type: Sequelize.STRING(50),
-        allowNull: true,
-        comment: 'Código de barras (EAN/UPC/GTIN)'
+        allowNull: true
       },
       mpn: {
         type: Sequelize.STRING(100),
-        allowNull: true,
-        comment: 'Número de parte del fabricante'
+        allowNull: true
       },
       attributes: {
         type: Sequelize.JSON,
         allowNull: true,
-        defaultValue: JSON.stringify([]),
-        comment: 'Atributos genéricos para todos los marketplaces'
+        defaultValue: []
       },
       warranty_months: {
         type: Sequelize.INTEGER,
-        allowNull: true,
-        comment: 'Meses de garantía'
+        allowNull: true
       },
       warranty_text: {
-        type: Sequelize.STRING(255),
-        allowNull: true,
-        comment: 'Texto de garantía (ej: "6 meses de garantía")'
+        type: Sequelize.STRING,
+        allowNull: true
       },
       weight_grams: {
         type: Sequelize.INTEGER,
-        allowNull: true,
-        comment: 'Peso en gramos'
+        allowNull: true
       },
       length_cm: {
         type: Sequelize.DECIMAL(8, 2),
-        allowNull: true,
-        comment: 'Largo en cm'
+        allowNull: true
       },
       width_cm: {
         type: Sequelize.DECIMAL(8, 2),
-        allowNull: true,
-        comment: 'Ancho en cm'
+        allowNull: true
       },
       height_cm: {
         type: Sequelize.DECIMAL(8, 2),
-        allowNull: true,
-        comment: 'Alto en cm'
-      },
-      // 👇 CAMPOS EXISTENTES
-      status: {
-        type: Sequelize.TINYINT,
-        allowNull: false,
-        defaultValue: 0,
-        comment: 'Estado interno del producto'
+        allowNull: true
       },
       category_id: {
         type: Sequelize.BIGINT,
         allowNull: true,
-        references: {
-          model: 'product_categories',
-          key: 'id'
-        },
+        references: { model: 'product_categories', key: 'id' },
         onUpdate: 'CASCADE',
         onDelete: 'SET NULL'
-      },
-      base_price: {
-        type: Sequelize.DECIMAL(16, 2),
-        allowNull: true
       },
       user_id: {
         type: Sequelize.BIGINT,
         allowNull: true,
-        references: {
-          model: 'users',
-          key: 'id'
-        },
+        references: { model: 'users', key: 'id' },
         onUpdate: 'CASCADE',
         onDelete: 'SET NULL'
       },
       company_id: {
         type: Sequelize.BIGINT,
         allowNull: true,
-        references: {
-          model: 'companies',
-          key: 'id'
-        },
-        onUpdate: 'CASCADE',
-        onDelete: 'SET NULL'
-      },
-      branch_id: {
-        type: Sequelize.BIGINT,
-        allowNull: true,
-        references: {
-          model: 'branches',
-          key: 'id'
-        },
+        references: { model: 'companies', key: 'id' },
         onUpdate: 'CASCADE',
         onDelete: 'SET NULL'
       },
       images: {
         type: Sequelize.JSON,
         allowNull: true,
-        defaultValue: JSON.stringify([]),
-        comment: 'Array de rutas de imágenes del producto'
+        defaultValue: []
       },
       sync_meta: {
         type: Sequelize.JSON,
         allowNull: true,
-        defaultValue: JSON.stringify({}),
-        comment: 'Metadata de sincronización con marketplaces'
+        defaultValue: []
       },
       createdAt: {
         allowNull: false,
@@ -158,21 +112,12 @@ module.exports = {
         type: Sequelize.DATE
       }
     }, {
-      // 👇 ÍNDICES DEFINIDOS DENTRO DE createTable
       indexes: [
-        {
-          unique: true,
-          fields: ['sku']
-        },
-        {
-          fields: ['company_id', 'status']
-        },
-        {
-          fields: ['brand']
-        },
-        {
-          fields: ['gtin']
-        }
+        { unique: true, fields: ['sku'] },
+        { fields: ['company_id'] },
+        { fields: ['brand'] },
+        { fields: ['gtin'] },
+        { fields: ['category_id'] }
       ]
     });
   },

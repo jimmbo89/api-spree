@@ -4,6 +4,7 @@ const authConfig = require("../../config/auth");
 const { sequelize } = require("../models")
 const logger = require("../../config/logger");
 const { UserRepository, UserTokenRepository, RoleRepository, LogRepository } = require("../repositories");
+const { sendEmail } = require("../services/EmailService");
 
 const AuthController = {
 
@@ -150,6 +151,7 @@ const AuthController = {
         }
         // ✅ Rol desde la relación con tabla roles
         const roleName = user.role?.name || 'invited'; // fallback seguro
+        const company_id = user.companies?.[0].id || null; // fallback seguro
 
         const userNew = {
         id: user.id,
@@ -158,7 +160,8 @@ const AuthController = {
         user: user.user,
         image: user.image,
         role: roleName,
-        role_id: user.role_id
+        role_id: user.role_id,
+        company_id: company_id
         };
 
         const token = jwt.sign({ user: userNew }, authConfig.secret, {
@@ -192,6 +195,7 @@ const AuthController = {
         token,
         role: userNew.role,
         role_id: userNew.role_id,
+        company_id: userNew.company_id
         });
 
     } catch (error) {
@@ -458,6 +462,124 @@ const AuthController = {
 
       logger.error(`UserController->update: Error al actualizar el usuario: ${errorMsg}`);
       return res.status(500).json({ error: 'ServerError', details: errorMsg });
+    }
+  },
+
+  async forgotPassword(req, res) {
+    logger.info(`${req.body.email} - solicita recuperar contraseña`);
+    const t = await sequelize.transaction();
+    
+    try {
+      const { email } = req.body;
+      
+      // Usar el nuevo método con transacción
+      const user = await UserRepository.findByEmailWithTransaction(email, t);
+      
+      // Para evitar enumeración, responde éxito incluso si no existe
+      if (!user) {
+        await t.commit();
+        return res.status(404).json({ 
+          success: true, 
+          message: "No encontramos una cuenta con este correo." 
+        });
+      }
+
+      const code = Math.floor(100000 + Math.random() * 900000).toString(); // 6 dígitos
+      const hashedCode = bcrypt.hashSync(code, parseInt(authConfig.rounds));
+
+      // Usar el nuevo método con transacción
+      await UserRepository.updateResetTokenWithTransaction(
+        user.id,
+        {
+          reset_token: hashedCode,
+          reset_expire: Date.now() + 3 * 60 * 1000 // 3 min
+        },
+        t
+      );
+
+      
+    logger.info(`Código de recuperación generado: ${code} para el usuario ${user.email}`);
+
+      // Enviar correo (manteniendo tu lógica actual)
+      await sendEmail({
+        to: email,
+        subject: "Recuperación de contraseña - Huoon",
+        text: `Tu código es: ${code}`,
+        html: `<p>Tu código de recuperación es: <strong>${code}</strong></p>`
+      }, { transaction: t });
+      
+      await t.commit();
+      
+      res.status(200).json({ 
+        success: true, 
+        message: "Te enviamos un código para restablecer tu contraseña. Revisa tu correo." 
+      });
+      
+    } catch (error) {
+      if (!t.finished) {
+        await t.rollback();
+      }
+      
+      logger.error("Error en forgotPassword:", error);
+      res.status(500).json({ 
+        success: false, 
+        message: "Hubo un problema al enviar el correo. Inténtalo más tarde." 
+      });
+    }
+  },
+
+  async verifyCode(req, res) {
+    try {
+      const { email, code } = req.body;
+      const user = await UserRepository.findByEmailWithTransaction(email, null);
+
+      if (!user) {
+        logger.info('Usuario no encontrado');
+        return res.status(404).json({ success: false, message: "Usuario no encontrado" });
+      }
+
+      const isMatch = await bcrypt.compare(code, user.reset_token);
+      if (!isMatch) {
+        logger.info('Código incorrecto');
+        return res.status(400).json({ success: false, message: "Código incorrecto" });
+      }
+
+      // Opcional: verificar expiración
+      if (user.reset_expire < Date.now()) {
+        logger.info('Código expirado');
+        return res.status(400).json({ success: false, message: "Código expirado" });
+      }
+
+      res.status(200).json({
+        success: true,
+        userId: user.id,
+        email: user.email
+      });
+    } catch (error) {
+      logger.error("Error en verifyCode:", error);
+      res.status(500).json({ success: false, message: "Error interno" });
+    }
+  },
+  async resetPassword(req, res) {
+    try {
+      const { user_id, newPassword } = req.body;
+
+      const user = await UserRepository.findById(user_id);
+      if (!user) {
+        return res.json({ success: false, message: "Usuario no encontrado" });
+      }
+
+      const hashedPassword = bcrypt.hashSync(
+          newPassword,
+          Number.parseInt(authConfig.rounds)
+        );
+
+      await UserRepository.update(user, { password: hashedPassword, reset_expire: null, reset_token: null }, null);
+
+      res.json({ success: true, message: "Contraseña actualizada" });
+    } catch (error) {
+      logger.error("Error en resetPassword:", error);
+      res.status(500).json({ success: false, message: "Error interno" });
     }
   }
 };

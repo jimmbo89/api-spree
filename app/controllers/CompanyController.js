@@ -44,7 +44,7 @@ const CompanyController = {
     logger.info('Datos recibidos:');
     logger.info(JSON.stringify(req.body));
 
-    const { rut, business_type_id } = req.body;
+    const { rut, business_type_id, warehouse } = req.body;
     if (req.user) req.body.user_id = req.user.id;
       const existingCompany = await CompanyRepository.existsByRut(rut);
       if (existingCompany) {
@@ -67,9 +67,36 @@ const CompanyController = {
 
       const company = await CompanyRepository.create(req.body, req.file, transaction);
        // ✅ Usar el nuevo método del repositorio
-      const hasPrincipal = await WarehouseRepository.existsPrincipalByEntity({ companyId: company.id }, transaction);
+      //const hasPrincipal = await WarehouseRepository.existsPrincipalByEntity({ companyId: company.id }, transaction);
 
-      if (!hasPrincipal) {
+      if (warehouse) {
+        try {
+          const warehouseData = JSON.parse(warehouse);
+          
+          // Validar que tengamos los campos mínimos
+          if (!warehouseData.code || !warehouseData.name) {
+            throw new Error('El almacén debe tener código y nombre');
+          }
+          
+          // Asignar company_id y user_id
+          warehouseData.company_id = company.id;
+          warehouseData.user_id = company.user_id;
+          
+          // Si no viene address, usar el de la empresa
+          if (!warehouseData.address && company.address) {
+            warehouseData.address = company.address;
+          }
+          
+          await WarehouseRepository.create(warehouseData, null, transaction);
+          logger.info(`Almacén creado para la empresa ID ${company.id}: ${warehouseData.name}`);
+          
+        } catch (error) {
+          logger.error(`Error al procesar warehouse JSON: ${error.message}`);
+          // No hacemos rollback, solo logueamos el error
+          // El almacén se puede crear después manualmente
+        }
+      }
+      /*if (!hasPrincipal) {
         await WarehouseRepository.create({
           name: `Almacén Principal - ${company.name}`,
           type: 1,
@@ -78,7 +105,7 @@ const CompanyController = {
           address: company.address || null
         }, null, transaction); // null = sin archivo
         logger.info(`Almacén principal creado para la empresa ID ${company.id}`);
-      }
+      }*/
       await transaction.commit();
       const companies = await CompanyRepository.getMappedCompaniesByUserId(req.user.id);
       res.status(201).json({ message: "Compañía creada correctamente", companies: companies });

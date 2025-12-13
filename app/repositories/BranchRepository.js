@@ -43,7 +43,7 @@ const BranchRepository = {
     });
   },
 
-  async create(body, file) {
+  async create(body, file, transaction = null) {
     const { name, address, city, phone, status, company_id, user_id } = body;
 
     const branch = await Branch.create({
@@ -55,12 +55,12 @@ const BranchRepository = {
       company_id: company_id || null,
       user_id: user_id || null,
       image: 'branches/default.jpg',
-    });
+    }, { transaction });
 
     if (file) {
       const newFilename = ImageService.generateFilename('branches', branch.id, file.originalname);
       branch.image = await ImageService.moveFile(file, newFilename);
-      await branch.update({ image: branch.image });
+      await branch.update({ image: branch.image }, { transaction });
     }
 
     return branch;

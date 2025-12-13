@@ -10,10 +10,12 @@ const ProductFieldMappingRepository = require("./ProductFieldMappingRepository")
 const ProductMarketplaceLinkRepository = require("./ProductMarketplaceLinkRepository");
 const ProductPublishingTaskRepository = require("./ProductPublishingTaskRepository");
 const ProductRepository = require("./ProductRepository");
+const ProductVariantRepository = require("./ProductVariantRepository");
 const RoleRepository = require("./RoleRepository");
 const UserRepository = require("./UserRepository");
 const UserTokenRepository = require("./UserTokenRepository");
 const WarehouseProductRepository = require("./WarehouseProductRepository");
+const WarehouseProductVariantRepository = require("./WarehouseProductVariantRepository");
 const WarehouseRepository = require("./WarehouseRepository");
 
 module.exports = {
@@ -33,5 +35,7 @@ module.exports = {
     ProductFieldMappingRepository,
     ProductPublishingTaskRepository,
     MarketplaceCredentialRepository,
-    ProductMarketplaceLinkRepository
+    ProductMarketplaceLinkRepository,
+    ProductVariantRepository,
+    WarehouseProductVariantRepository
 };

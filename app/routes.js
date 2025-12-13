@@ -46,6 +46,9 @@ router.get("/", (req, res) => res.json({ hello: "World" }));
 router.post("/sign-up", validateSchema(registerSchema), AuthController.signUp);
 router.post("/sign-in", validateSchema(loginSchema), AuthController.signIn);
 router.get("/verific-invitation", InvitationController.verificInvitation);
+router.post('/forgot-password', AuthController.forgotPassword);
+router.post('/verify-code-password', AuthController.verifyCode);
+router.post('/reset-password', AuthController.resetPassword);
 
 router.get('/ml-callback', OAuthController.mercadoLibreCallback);
 router.get("/images/:foldername/:filename", (req, res) => {
@@ -129,6 +132,7 @@ router.post("/warehouse-branch-company", requireRoles(['Admin']), validateSchema
 router.post("/warehouse", requireRoles(['Admin']), multerImage("image", "warehouses"), validateSchema(storeWarehouseSchema), WarehouseController.store);
 router.post("/warehouse-update", requireRoles(['Admin']), multerImage("image", "warehouses"), validateSchema(updateWarehouseSchema), WarehouseController.update);
 router.post("/warehouse-destroy", requireRoles(['Admin']), validateSchema(idWarehouseSchema), WarehouseController.destroy);
+router.post("/warehouse-metadata", requireRoles(['Admin']), WarehouseController.getWarehouseMetadata);
 
 //Rutas de categoria de productos
 router.get("/product-category", requireRoles(['Admin']), ProductCategoryController.index);
@@ -155,12 +159,13 @@ router.post("/product-category-status", requireRoles(['Admin']), ProductControll
 
 // Mismo patrón que branches y products
 router.post("/warehouse-product-user-company", requireRoles(['Admin']), validateSchema(listWarehouseProductSchema), WarehouseProductController.list);
-router.post("/warehouse-product", requireRoles(['Admin']), multerImage("image", "warehouse_products"), validateSchema(storeWarehouseProductSchema), WarehouseProductController.store);
-router.post("/warehouse-product-update", requireRoles(['Admin']), multerImage("image", "warehouse_products"), validateSchema(updateWarehouseProductSchema), WarehouseProductController.update);
+router.post('/warehouse-products-not-in-warehouse', requireRoles(['Admin']), validateSchema(listWarehouseProductSchema), WarehouseProductController.getProductsNotInWarehouse);
+router.post("/warehouse-product", requireRoles(['Admin']), validateSchema(storeWarehouseProductSchema), WarehouseProductController.store);
+router.post("/warehouse-product-update", requireRoles(['Admin']), validateSchema(updateWarehouseProductSchema), WarehouseProductController.update);
 router.post("/warehouse-product-destroy", requireRoles(['Admin']), validateSchema(idWarehouseProductSchema), WarehouseProductController.destroy);
 router.post("/warehouse-product-transfer", requireRoles(['Admin']), validateSchema(transferSchema), WarehouseProductController.transfer );
-router.post("/warehouse-product-bulk-preview", requireRoles(['Admin']), multerGeneric('file'), validateSchema(bulkUploadSchema), WarehouseProductController.bulkUploadPreview);
-router.post("/warehouse-product-bulk-confirm", requireRoles(['Admin']), WarehouseProductController.bulkUploadConfirm);
+//router.post("/warehouse-product-bulk-preview", requireRoles(['Admin']), multerGeneric('file'), validateSchema(bulkUploadSchema), WarehouseProductController.bulkUploadPreview);
+//router.post("/warehouse-product-bulk-confirm", requireRoles(['Admin']), WarehouseProductController.bulkUploadConfirm);
 
 // Marketplaces
 router.post("/marketplace", requireRoles(['Admin']), validateSchema(storeMarketplaceSchema), MarketplaceController.store);
@@ -170,6 +175,7 @@ router.post("/marketplace-show", requireRoles(['Admin']), validateSchema(idMarke
 router.post("/marketplace-list", requireRoles(['Admin']), MarketplaceController.list); // list no necesita schema (validación manual de company_id)
 
 //Marketplace Credentiales
+router.post('/marketplace-credentials-by-context', validateSchema(findByMarketplaceCredentialSchema), MarketplaceCredentialController.index);
 router.post("/marketplace-credential", requireRoles(['Admin']), validateSchema(storeMarketplaceCredentialSchema), MarketplaceCredentialController.store);
 router.post("/marketplace-credential-update", requireRoles(['Admin']), validateSchema(updateMarketplaceCredentialSchema), MarketplaceCredentialController.update);
 router.post("/marketplace-credential-show", requireRoles(['Admin']), validateSchema(findByMarketplaceCredentialSchema), MarketplaceCredentialController.show);

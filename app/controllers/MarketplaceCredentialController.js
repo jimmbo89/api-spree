@@ -10,6 +10,79 @@ const {
 const { getRequestMetadata } = require('../util/requestUtil');
 
 const MarketplaceCredentialController = {
+
+  async index(req, res) {
+    logger.info(`${req.user?.name || 'Unknown'} - Lista credenciales por contexto`);
+    const { company_id, branch_id, marketplace_id } = req.body;
+    const metadata = getRequestMetadata(req);
+
+    try {
+      
+      if (company_id) {
+        // Validar que la empresa exista
+        const company = await CompanyRepository.findById(company_id);
+        if (!company) {
+          return res.status(400).json({ 
+            success: false, 
+            message: "Empresa no encontrada" 
+          });
+        }
+      }
+      
+      if (branch_id) {
+        // Validar que la sucursal exista
+        const branch = await BranchRepository.findById(branch_id);
+        if (!branch) {
+          return res.status(400).json({ 
+            success: false, 
+            message: "Sucursal no encontrada" 
+          });
+        }
+      }      
+
+      // Validar que al menos uno de los dos (company_id o branch_id) esté presente
+      if (!company_id && !branch_id) {
+        return res.status(400).json({ 
+          success: false, 
+          message: "Debe proporcionar al menos company_id o branch_id" 
+        });
+      }
+
+      const credentials = await MarketplaceCredentialRepository.findByContext(
+      company_id, 
+      branch_id, 
+      marketplace_id
+    );
+     
+      // Transformar resultados
+      const transformedCredentials = credentials.map(credential => {
+      // Ocultar client_secret real
+      if (credential.client_secret) {
+        credential.has_client_secret = true;
+        credential.client_secret = '••••••••';
+      } else {
+        credential.has_client_secret = false;
+        credential.client_secret = null;
+      }
+      
+      return credential;
+    });
+
+      res.status(200).json({
+        success: true,
+        message: "Credenciales obtenidas exitosamente",
+        credentials: transformedCredentials,
+        count: transformedCredentials.length
+      });
+
+    } catch (error) {
+      logger.error('MarketplaceCredentialController->index: ' + error.message);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Error del servidor' 
+      });
+    }
+  },
   async store(req, res) {
     logger.info(`${req.user?.name || 'Unknown'} - Guarda credenciales de marketplace`);
     const { marketplace_id, company_id, branch_id } = req.body;

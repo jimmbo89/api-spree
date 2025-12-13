@@ -9,6 +9,11 @@ module.exports = {
         primaryKey: true,
         type: Sequelize.BIGINT
       },
+      code: {
+        type: Sequelize.STRING(50),
+        allowNull: true,
+        unique: true
+      },
       user_id: {
         type: Sequelize.BIGINT,
         allowNull: true,
@@ -41,16 +46,59 @@ module.exports = {
       },
       name: {
         type: Sequelize.STRING,
+        allowNull: false
+      },
+      description: {
+        type: Sequelize.TEXT,
         allowNull: true
       },
       type: {
-        type: Sequelize.TINYINT,
-        allowNull: true,
-        defaultValue: 1
+        type: Sequelize.STRING(20),
+        allowNull: false,
+        defaultValue: 'central'
       },
       address: {
         type: Sequelize.STRING,
         allowNull: true
+      },
+      city: {
+        type: Sequelize.STRING(120),
+        allowNull: true
+      },
+      region: {
+        type: Sequelize.STRING(120),
+        allowNull: true
+      },
+      country: {
+        type: Sequelize.STRING(120),
+        allowNull: true
+      },
+      latitude: {
+        type: Sequelize.DECIMAL(10, 8),
+        allowNull: true
+      },
+      longitude: {
+        type: Sequelize.DECIMAL(11, 8),
+        allowNull: true
+      },
+      capacity_max_units: {
+        type: Sequelize.INTEGER,
+        allowNull: true
+      },
+      allow_mermas: {
+        type: Sequelize.BOOLEAN,
+        allowNull: false,
+        defaultValue: true
+      },
+      rotation_policy: {
+        type: Sequelize.STRING(10),
+        allowNull: false,
+        defaultValue: 'FIFO'
+      },
+      status: {
+        type: Sequelize.STRING(20),
+        allowNull: false,
+        defaultValue: 'activo'
       },
       image: {
         type: Sequelize.STRING,
@@ -59,12 +107,18 @@ module.exports = {
       },
       createdAt: {
         allowNull: false,
-        type: Sequelize.DATE
+        type: Sequelize.DATE,
       },
       updatedAt: {
         allowNull: false,
-        type: Sequelize.DATE
+        type: Sequelize.DATE,
       }
+    });
+
+    // Agregar índice único para el código después de crear la tabla
+    await queryInterface.addIndex('warehouses', ['code'], {
+      unique: true,
+      name: 'warehouses_code_unique'
     });
   },
 

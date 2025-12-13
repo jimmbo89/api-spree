@@ -1,122 +1,96 @@
+// validations/warehouseProductValidationSchemas.js
 const Joi = require('joi');
 
-const storeWarehouseProductSchema = Joi.object({
-  // product_id es opcional si se envían datos de producto
-  product_id: Joi.number().integer().positive().optional(),
-  
-  // Datos de producto (requeridos si no hay product_id)
-  sku: Joi.when('product_id', {
-    is: Joi.exist(),
-    then: Joi.string().max(100).optional(),
-    otherwise: Joi.string().max(100).required()
-  }),
-  name: Joi.when('product_id', {
-    is: Joi.exist(),
-    then: Joi.string().max(255).optional(),
-    otherwise: Joi.string().max(255).required()
-  }),
-  // 👇 Campos nuevos para producto (requeridos para multi-plataforma)
-  brand: Joi.when('product_id', {
-    is: Joi.exist(),
-    then: Joi.string().max(100).optional(),
-    otherwise: Joi.string().max(100).required()
-  }),
-  condition: Joi.when('product_id', {
-    is: Joi.exist(),
-    then: Joi.string().valid('new', 'used', 'refurbished', 'not_specified').optional(),
-    otherwise: Joi.string().valid('new', 'used', 'refurbished', 'not_specified').required()
-  }),
-  model: Joi.string().max(100).optional().allow(null, ''),
-  gtin: Joi.string().max(50).optional().allow(null, ''),
-  mpn: Joi.string().max(100).optional().allow(null, ''),
-  warranty_months: Joi.number().integer().min(0).optional().allow(null),
-  warranty_text: Joi.string().max(255).optional().allow(null, ''),
-  weight_grams: Joi.number().integer().min(0).optional().allow(null),
-  length_cm: Joi.number().precision(2).min(0).optional().allow(null),
-  width_cm: Joi.number().precision(2).min(0).optional().allow(null),
-  height_cm: Joi.number().precision(2).min(0).optional().allow(null),
-  attributes: Joi.array().items(
-    Joi.object({
-      id: Joi.string().required(),
-      name: Joi.string().optional(),
-      value: Joi.alternatives().try(Joi.string(), Joi.number(), Joi.boolean()).required(),
-      unit: Joi.string().optional()
-    })
-  ).optional(),
-
-  // Descripción y categoría (opcionales)
-  description: Joi.string().allow(null, '').optional(),
-  category_id: Joi.number().integer().positive().optional().allow(null),
-
-  // Campos de warehouse_product
-  warehouse_id: Joi.number().integer().positive().required(),
-  stock: Joi.number().integer().min(0).optional().default(0),
-  price: Joi.number().precision(2).positive().optional().allow(null),
+// Esquema para variantes en el cuerpo de la petición
+const variantItemSchema = Joi.object({
+  attributes: Joi.object().optional().default({}),
   published: Joi.boolean().optional().default(false),
+  local_sku: Joi.string().max(100).optional().allow(null, ''),
+  price: Joi.number().precision(2).min(0).required(),
+  stock: Joi.number().integer().min(0).required()
+}).unknown(false);
+
+const storeWarehouseProductSchema = Joi.object({
+  // ===== DATOS DE WAREHOUSE_PRODUCT =====
+  warehouse_id: Joi.number().integer().positive().required(),
   company_id: Joi.number().integer().positive().optional(),
   branch_id: Joi.number().integer().positive().optional().allow(null),
   user_id: Joi.number().integer().positive().optional().allow(null),
 
-  // Imagen
-  image: Joi.any()
+  // ===== PRODUCTO EXISTENTE =====
+  product_id: Joi.number().integer().positive().optional(),
+
+  // ===== NUEVO PRODUCTO (como JSON string) =====
+  product: Joi.string()
     .custom((value, helpers) => {
-      if (value) {
-        const validMimeTypes = ['image/jpg', 'image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-        if (!validMimeTypes.includes(value.mimetype || value.type)) {
-          return helpers.message('El archivo debe ser una imagen válida (jpg, jpeg, png, gif, webp)');
+      try {
+        if (value) {
+          const parsed = JSON.parse(value);
+          if (typeof parsed !== 'object' || parsed === null) {
+            return helpers.message('product debe ser un objeto JSON válido');
+          }
         }
-        const maxSize = 500 * 1024;
-        if (value.size > maxSize) {
-          return helpers.message('El archivo debe pesar máximo 500 KB');
-        }
+        return value;
+      } catch {
+        return helpers.message('product debe ser un JSON válido');
       }
-      return value;
     })
-    .optional()
+    .optional(),
+
+  // ===== ATRIBUTOS DEL PRODUCTO =====
+  attributes: Joi.string()
+    .custom((value, helpers) => {
+      try {
+        if (value) {
+          const parsed = JSON.parse(value);
+          if (!Array.isArray(parsed)) {
+            return helpers.message('attributes debe ser un array JSON válido');
+          }
+        }
+        return value;
+      } catch {
+        return helpers.message('attributes debe ser un JSON válido');
+      }
+    })
+    .optional(),
+
+  // ===== VARIANTES (stock/precio por variante) =====
+  variants: Joi.array().items(variantItemSchema).optional().default([]),
+
+  // ===== SI NO HAY VARIANTES, USAR ESTOS CAMPOS =====
+  price: Joi.when('variants', {
+    is: Joi.array().length(0),
+    then: Joi.number().precision(2).min(0).required(),
+    otherwise: Joi.forbidden()
+  }),
+  stock: Joi.when('variants', {
+    is: Joi.array().length(0),
+    then: Joi.number().integer().min(0).required(),
+    otherwise: Joi.forbidden()
+  }),
+
+  // ===== IMAGEN DEL PRODUCTO (si se crea nuevo) =====
+  images: Joi.any().optional()
 })
-// Regla adicional: si no hay product_id, deben existir sku + name + brand + condition
-.custom((value, helpers) => {
-  if (!value.product_id) {
-    const missing = [];
-    if (!value.sku) missing.push('sku');
-    if (!value.name) missing.push('name');
-    if (!value.brand) missing.push('brand');
-    if (!value.condition) missing.push('condition');
-    if (missing.length > 0) {
-      return helpers.message(`Si no se proporciona product_id, se requieren: ${missing.join(', ')}`);
+  // Validación cruzada: o producto existente o nuevo
+  .custom((value, helpers) => {
+    const { product_id, product } = value;
+    if (!product_id && !product) {
+      return helpers.message('Debe proporcionar product_id o datos de producto (product)');
     }
-  }
-  return value;
-});
+    if (product_id && product) {
+      return helpers.message('No se puede enviar product_id y product al mismo tiempo');
+    }
+    return value;
+  });
 
 const updateWarehouseProductSchema = Joi.object({
   id: Joi.number().required(),
-  product_id: Joi.number().integer().positive().optional(),
-  warehouse_id: Joi.number().integer().positive().optional(),
-  stock: Joi.number().integer().min(0).optional(),
-  price: Joi.number().precision(2).positive().optional().allow(null),
-  published: Joi.boolean().optional(),
+  active: Joi.boolean().optional(),
+  code: Joi.string().max(100).optional().allow(null, ''),
   company_id: Joi.number().integer().positive().optional().allow(null),
   branch_id: Joi.number().integer().positive().optional().allow(null),
-  user_id: Joi.number().integer().positive().optional().allow(null),
-  images: Joi.array()
-      .items(Joi.string().pattern(/\.(jpg|jpeg|png|gif|webp)$/i))
-      .optional().default([]),
-  image: Joi.any()
-    .custom((value, helpers) => {
-      if (value) {
-        const validMimeTypes = ['image/jpg', 'image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-        if (!validMimeTypes.includes(value.mimetype || value.type)) {
-          return helpers.message('El archivo debe ser una imagen válida');
-        }
-        const maxSize = 500 * 1024;
-        if (value.size > maxSize) {
-          return helpers.message('El archivo debe pesar máximo 500 KB');
-        }
-      }
-      return value;
-    })
-    .optional()
+  user_id: Joi.number().integer().positive().optional().allow(null)
 });
 
 const idWarehouseProductSchema = Joi.object({
@@ -127,8 +101,7 @@ const listWarehouseProductSchema = Joi.object({
   company_id: Joi.number().allow(null).empty('').optional(),
   user_id: Joi.number().allow(null).empty('').optional(),
   branch_id: Joi.number().allow(null).empty('').optional(),
-  warehouse_id: Joi.number().allow(null).empty('').optional(),
-  published: Joi.boolean().optional()
+  warehouse_id: Joi.number().allow(null).empty('').optional()
 });
 
 const transferSchema = Joi.object({
@@ -143,9 +116,7 @@ const bulkUploadSchema = Joi.object({
   file: Joi.any()
     .meta({ swaggerType: 'file' })
     .custom((value, helpers) => {
-      if (!value) {
-        return helpers.message('Archivo es obligatorio');
-      }
+      if (!value) return helpers.message('Archivo es obligatorio');
       const validMimeTypes = [
         'text/csv',
         'application/vnd.ms-excel',
@@ -154,8 +125,7 @@ const bulkUploadSchema = Joi.object({
       if (!validMimeTypes.includes(value.mimetype)) {
         return helpers.message('Formato no soportado. Use CSV o XLSX.');
       }
-      const maxSize = 5 * 1024 * 1024; // 5 MB
-      if (value.size > maxSize) {
+      if (value.size > 5 * 1024 * 1024) {
         return helpers.message('El archivo debe pesar máximo 5 MB');
       }
       return value;

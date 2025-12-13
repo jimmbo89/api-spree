@@ -1,4 +1,4 @@
-const { Product } = require("../models");
+const { Product, ProductVariant, sequelize } = require("../models");
 const { Op } = require("sequelize");
 const logger = require("../../config/logger");
 const ImageService = require("../services/ImageService");
@@ -19,12 +19,19 @@ const ProductRepository = {
     const products = await Product.findAll({
       where,
       attributes: [
-        "id", "sku", "name", "description", "status",
-        "category_id", "base_price", "user_id", "company_id", "branch_id",
+        "id", "sku", "name", "description",
+        "category_id", "user_id", "company_id",
         "brand", "model", "condition", "gtin", "mpn",
         "attributes", "warranty_months", "warranty_text",
         "weight_grams", "length_cm", "width_cm", "height_cm",
         "images", "sync_meta"
+      ],
+      include: [
+        {
+          model: ProductVariant,
+          as: 'variants',
+          attributes: ['id', 'sku', 'attributes', 'image']
+        }
       ]
     });
 
@@ -54,17 +61,13 @@ const ProductRepository = {
         sku: product.sku,
         name: product.name,
         description: product.description,
-        status: product.status, // valor original de BD (0, 1, 2)
-        statusValue: statusMatch ? statusMatch.name : 'Desconocido', // 'Inactivo', 'Activo', 'Archivado'
         category_id: product.category_id,
-        base_price: product.base_price,
         user_id: product.user_id,
         company_id: product.company_id,
-        branch_id: product.branch_id,
         brand: product.brand,
         model: product.model,
-        condition: product.condition, // valor original de BD ('new', 'used', etc.)
-        conditionValue: conditionMatch ? conditionMatch.name : product.condition, // 'Nuevo', 'Usado', etc.
+        condition: product.condition,
+        conditionValue: conditionMatch ? conditionMatch.name : product.condition,
         gtin: product.gtin,
         mpn: product.mpn,
         attributes: Array.isArray(product.attributes) ? product.attributes : [],
@@ -75,20 +78,20 @@ const ProductRepository = {
         width_cm: product.width_cm,
         height_cm: product.height_cm,
         images: Array.isArray(product.images) ? product.images : JSON.parse(product.images || "[]"),
-        sync_meta: product.sync_meta || {}
+        sync_meta: product.sync_meta || {},
+        variants: product.variants || []
       };
     });
   },
 
   async findById(id) {
     return await Product.findByPk(id, {
-      attributes: [
-        "id", "sku", "name", "description", "status",
-        "category_id", "base_price", "user_id", "company_id", "branch_id",
-        "brand", "model", "condition", "gtin", "mpn",
-        "attributes", "warranty_months", "warranty_text",
-        "weight_grams", "length_cm", "width_cm", "height_cm",
-        "images", "sync_meta"
+      include: [
+        {
+          model: ProductVariant,
+          as: 'variants',
+          attributes: ['id', 'sku', 'attributes', 'image']
+        }
       ]
     });
   },
@@ -111,21 +114,18 @@ const ProductRepository = {
         length_cm: body.length_cm || null,
         width_cm: body.width_cm || null,
         height_cm: body.height_cm || null,
-        status: body.status !== undefined ? body.status : 0,
         category_id: body.category_id || null,
-        base_price: body.base_price || null,
         user_id: body.user_id || null,
         company_id: body.company_id || null,
-        branch_id: body.branch_id || null,
         sync_meta: body.sync_meta || {}
       };
 
       const product = await Product.create(productData, options);
 
-      if (Array.isArray(files) && files.length > 0) {
+      if (files?.length > 0) {
         const imagePaths = [];
         for (const file of files) {
-          if (file && file.originalname) {
+          if (file?.originalname) {
             const newFilename = ImageService.generateFilename(
               "products",
               `${product.id}_${Date.now()}`,
@@ -136,7 +136,7 @@ const ProductRepository = {
           }
         }
         if (imagePaths.length > 0) {
-          await product.update({ images: imagePaths });
+          await product.update({ images: imagePaths }, options);
         }
       }
 
@@ -150,9 +150,29 @@ const ProductRepository = {
 
   async update(product, body, files = []) {
     try {
+      let finalImages = Array.isArray(product.images) ? [...product.images] : [];
+      
+      if (body.images !== undefined) {
+        finalImages = Array.isArray(body.images) ? [...body.images] : [];
+      }
+
+      if (files?.length > 0) {
+        for (const file of files) {
+          if (file?.originalname) {
+            const newFilename = ImageService.generateFilename(
+              "products",
+              `${product.id}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+              file.originalname
+            );
+            const filePath = await ImageService.moveFile(file, newFilename);
+            finalImages.push(filePath);
+          }
+        }
+      }
+      
       const fieldsToUpdate = [
-        "sku", "name", "description", "status", "category_id",
-        "base_price", "user_id", "company_id", "branch_id",
+        "sku", "name", "description", "category_id",
+        "user_id", "company_id",
         "brand", "model", "condition", "gtin", "mpn",
         "attributes", "warranty_months", "warranty_text",
         "weight_grams", "length_cm", "width_cm", "height_cm",
@@ -163,35 +183,10 @@ const ProductRepository = {
       for (const key of fieldsToUpdate) {
         if (body[key] !== undefined) updatedData[key] = body[key];
       }
-
-      if (Array.isArray(files) && files.length > 0) {
-        if (Array.isArray(product.images)) {
-          for (const imagePath of product.images) {
-            if (imagePath && imagePath !== DEFAULT_IMAGE) {
-              await ImageService.deleteFile(imagePath);
-            }
-          }
-        }
-
-        const newImagePaths = [];
-        for (const file of files) {
-          if (file && file.originalname) {
-            const newFilename = ImageService.generateFilename(
-              "products",
-              `${product.id}_${Date.now()}`,
-              file.originalname
-            );
-            const filePath = await ImageService.moveFile(file, newFilename);
-            newImagePaths.push(filePath);
-          }
-        }
-        updatedData.images = newImagePaths;
-      }
-
-      if (Object.keys(updatedData).length > 0) {
-        await product.update(updatedData);
-        logger.info(`Producto actualizado (ID: ${product.id})`);
-      }
+      updatedData.images = finalImages;
+      
+      await product.update(updatedData);
+      logger.info(`Producto actualizado (ID: ${product.id})`);
       return product;
     } catch (error) {
       logger.error(`Error en ProductRepository->update (ID: ${product.id}):`, error);
@@ -200,15 +195,56 @@ const ProductRepository = {
   },
 
   async delete(product) {
+    if (Array.isArray(product.images)) {
+      for (const imagePath of product.images) {
+        if (imagePath && imagePath !== DEFAULT_IMAGE) {
+          await ImageService.deleteFile(imagePath);
+        }
+      }
+    }
     return await product.destroy();
   },
 
-  async existsBySku(sku, excludeId = null) {
-    const whereCondition = excludeId
-      ? { sku, id: { [Op.ne]: excludeId } }
-      : { sku };
-    const product = await Product.findOne({ where: whereCondition });
-    return !!product;
+async existsBySku(sku, excludeId = null) {
+  try {
+    console.log('Verificando SKU:', sku);
+    
+    if (!sku || typeof sku !== 'string' || sku.trim() === '') {
+      console.log('SKU inválido o vacío');
+      return false;
+    }
+    
+    const cleanSku = sku.trim();
+    
+    // Usar el método estático del modelo
+    const exists = await Product.skuExists(cleanSku, excludeId);
+    console.log('SKU existe?', exists);
+    
+    return exists;
+    
+  } catch (error) {
+    console.error('Error en existsBySku:', error);
+    
+    // Fallback: consulta directa más simple
+    try {
+      const count = await sequelize.query(
+        'SELECT COUNT(*) as count FROM products WHERE sku = ?',
+        {
+          replacements: [sku],
+          type: sequelize.QueryTypes.SELECT
+        }
+      );
+      
+      return count[0].count > 0;
+    } catch (fallbackError) {
+      console.error('Error en fallback query:', fallbackError);
+      throw error; // Relanzar el error original
+    }
+  }
+},
+
+  async findBySku(sku) {
+    return await Product.findOne({ where: { sku } });
   },
 
   async findBySku(sku) {

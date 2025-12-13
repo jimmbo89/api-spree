@@ -1,4 +1,5 @@
 const logger = require('../../config/logger');
+const { sequelize } = require('../models');
 const { BranchRepository, CompanyRepository, UserRepository, LogRepository, WarehouseRepository } = require('../repositories');
 const { detectChanges } = require('../util/auditUtils');
 const { getRequestMetadata } = require('../util/requestUtil');
@@ -55,7 +56,7 @@ const BranchController = {
     logger.info(`${req.user?.name || 'Unknown'} - Crea nueva sucursal`);
     logger.info('Datos recibidos:');
     logger.info(JSON.stringify(req.body));
-    const { company_id, user_id:bodyUserId } = req.body;
+    const { company_id, user_id:bodyUserId, warehouse } = req.body;
 
     let user_id = bodyUserId || req.user.id;
 
@@ -80,11 +81,38 @@ const BranchController = {
         }
       }
 
+      const transaction = await sequelize.transaction();
     try {
-      const branch = await BranchRepository.create(req.body, req.file);
-      const hasPrincipal = await WarehouseRepository.existsPrincipalByEntity({ branchId: branch.id }, transaction);
+      const branch = await BranchRepository.create(req.body, req.file, transaction);
+      if (warehouse) {
+        try {
+          const warehouseData = JSON.parse(warehouse);
+          
+          // Validar que tengamos los campos mínimos
+          if (!warehouseData.code || !warehouseData.name) {
+            throw new Error('El almacén debe tener código y nombre');
+          }
+          
+          // Asignar branch_id y user_id
+          warehouseData.branch_id = branch.id;
+          warehouseData.user_id = branch.user_id;
+          
+          // Si no viene address, usar el de la sucursal
+          if (!warehouseData.address && branch.address) {
+            warehouseData.address = branch.address;
+          }
+          
+          await WarehouseRepository.create(warehouseData, null, transaction);
+          logger.info(`Almacén creado para la sucursal ID ${branch.id}: ${warehouseData.name}`);
+          
+        } catch (error) {
+          logger.error(`Error al procesar warehouse JSON: ${error.message}`);
+          // No hacemos rollback, solo logueamos el error
+        }
+      } 
+      //const hasPrincipal = await WarehouseRepository.existsPrincipalByEntity({ branchId: branch.id }, transaction);
 
-      if (!hasPrincipal) {
+      /*if (!hasPrincipal) {
         await WarehouseRepository.create({
           name: `Almacén Principal - ${branch.name}`,
           type: 1,
@@ -93,13 +121,15 @@ const BranchController = {
           address: branch.address || null
         }, null, transaction); // null = sin archivo
         logger.info(`Almacén principal creado para la sucursal ID ${branch.id}`);
-      }
+      }*/
+      await transaction.commit();
       const branches = await BranchRepository.findFiltered({
         companyId: branch.company_id,
         userId: branch.user_id
       });
       res.status(201).json({ message: "Sucursal creada correctamente", branches: branches });
     } catch (error) {
+         await transaction.rollback();
       const errorMsg = error.message || 'Error desconocido';
       logger.error('BranchController->store: ' + errorMsg);
       res.status(500).json({ error: 'ServerError', details: errorMsg });
@@ -234,7 +264,7 @@ const BranchController = {
         companyId: branch.company_id,
         userId:branch.user_id
       });
-      res.status(200).json({ message: "Sucursal eliminada correctamente", branches: branches });
+      res.status(200).json({  success: true, message: "Sucursal eliminada correctamente", branches: branches });
     } catch (error) {
       await LogRepository.create({
       user_id: metadata?.user_id,

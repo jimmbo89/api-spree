@@ -8,6 +8,20 @@ const storeBranchSchema = Joi.object({
   status: Joi.number().integer().optional(),
   company_id: Joi.number().integer().positive().optional().allow(null),
   user_id: Joi.number().integer().positive().optional().allow(null),
+  warehouse: Joi.string()
+      .custom((value, helpers) => {
+        try {
+          const parsed = JSON.parse(value);
+          // Validación básica del objeto warehouse
+          if (typeof parsed !== 'object' || parsed === null) {
+            return helpers.message('warehouse debe ser un objeto JSON válido');
+          }
+          return value;
+        } catch (error) {
+          return helpers.message('warehouse debe ser un JSON válido');
+        }
+      })
+      .optional(),
   image: Joi.any()
     .custom((value, helpers) => {
       if (value) {
@@ -57,6 +71,7 @@ const idBranchSchema = Joi.object({
 
 const listBranchesSchema = Joi.object({
   company_id: Joi.number().allow(null).empty('').optional(),
+  branch_id: Joi.number().allow(null).empty('').optional(),
   user_id: Joi.number().allow(null).empty('').optional(),
 });
 

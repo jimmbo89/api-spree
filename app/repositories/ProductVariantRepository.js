@@ -1,0 +1,53 @@
+// repositories/ProductVariantRepository.js
+const { error } = require("winston");
+const logger = require("../../config/logger");
+const { ProductVariant } = require("../models");
+
+const ProductVariantRepository = {
+  async findByProductId(productId) {
+    return await ProductVariant.findAll({
+      where: { product_id: productId },
+      attributes: ['id', 'product_id', 'sku', 'internal_code', 'attributes', 'image']
+    });
+  },
+
+  async create(variantData, options = {}) {
+    logger.info('Creando variante:', JSON.stringify(variantData));
+    
+    try {
+        // Asegurar que attributes sea un objeto (no array)
+        const processedData = { ...variantData };
+        
+        if (processedData.attributes) {
+            // Si es array, convertirlo a objeto
+            if (Array.isArray(processedData.attributes)) {
+                const obj = {};
+                processedData.attributes.forEach(item => {
+                    if (item.key && item.value !== undefined) {
+                        obj[item.key] = item.value;
+                    }
+                });
+                processedData.attributes = obj;
+            }
+            // Si ya es objeto, dejarlo como está
+        } else {
+            processedData.attributes = {};
+        }
+        
+        return await ProductVariant.create(processedData, options);
+    } catch (err) {
+        logger.error(err);
+        throw err;
+    }
+},
+
+  async update(variant, data, options = {}) {
+    return await variant.update(data, options);
+  },
+
+  async delete(variant, options = {}) {
+    return await variant.destroy(options);
+  }
+};
+
+module.exports = ProductVariantRepository;

@@ -9,6 +9,7 @@ module.exports = (sequelize, DataTypes) => {
       WarehouseProduct.belongsTo(models.Company, { foreignKey: 'company_id', as: 'company', onDelete: 'CASCADE' });
       WarehouseProduct.belongsTo(models.Branch, { foreignKey: 'branch_id', as: 'branch', onDelete: 'SET NULL' });
       WarehouseProduct.belongsTo(models.User, { foreignKey: 'user_id', as: 'user', onDelete: 'RESTRICT' });
+      WarehouseProduct.hasMany(models.WarehouseProductVariant, { foreignKey: 'warehouse_product_id', as: 'variants', onDelete: 'CASCADE' });
     }
   }
 
@@ -26,25 +27,14 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.BIGINT,
       allowNull: false
     },
-    stock: {
-      type: DataTypes.INTEGER,
-      allowNull: false,
-      defaultValue: 0,
-      validate: { min: 0 }
-    },
-    image: {
-      type: DataTypes.STRING,
-      allowNull: true,
-      defaultValue: 'warehouse_products/default.jpg'
-    },
-    price: {
-      type: DataTypes.DECIMAL(16, 2),
-      allowNull: true
-    },
-    published: {
+    active: {
       type: DataTypes.BOOLEAN,
       allowNull: false,
-      defaultValue: false
+      defaultValue: true
+    },
+    code: {
+      type: DataTypes.STRING,
+      allowNull: true
     },
     company_id: {
       type: DataTypes.BIGINT,

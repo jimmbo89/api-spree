@@ -9,7 +9,6 @@ module.exports = (sequelize, DataTypes) => {
 
       // Sucursal pertenece a un usuario (opcional)
       Branch.belongsTo(models.User, { foreignKey: 'user_id', as: 'user', onDelete: 'SET NULL' });
-      Branch.hasMany(models.Product, { foreignKey: 'branch_id', as: 'products', onDelete: 'SET NULL' });
       Branch.hasMany(models.Warehouse, { foreignKey: 'branch_id', as: 'warehouses', onDelete: 'SET NULL' });
       Branch.hasMany(models.MarketplaceCredential, { foreignKey: 'branch_id', as: 'marketplacecredentials', onDelete: 'SET NULL' });
       Branch.hasMany(models.ProductMarketplaceLink, { foreignKey: 'branch_id', as: 'productmarketplacelinks', onDelete: 'SET NULL' });
