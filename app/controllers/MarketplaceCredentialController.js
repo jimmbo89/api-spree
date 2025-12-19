@@ -14,7 +14,6 @@ const MarketplaceCredentialController = {
   async index(req, res) {
     logger.info(`${req.user?.name || 'Unknown'} - Lista credenciales por contexto`);
     const { company_id, branch_id, marketplace_id } = req.body;
-    const metadata = getRequestMetadata(req);
 
     try {
       

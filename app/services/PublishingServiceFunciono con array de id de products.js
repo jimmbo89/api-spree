@@ -1,5 +1,6 @@
 const PublishingAdapterFactory = require('./adapters/PublishingAdapterFactory');
 const MarketplaceTransformer = require('./MarketplaceTransformer');
+const MercadoLibreAttributesService = require('./MercadoLibreAttributesService'); // NUEVO
 const {
   ProductPublishingTaskRepository,
   ProductMarketplaceLinkRepository,
@@ -26,7 +27,7 @@ class PublishingService {
       });
 
       const requiredAttrs = response.data
-        .filter(attr => attr.tags?.includes('required') || attr.tags?.includes('catalog_required'))
+        .filter(attr => attr.tags?.required || attr.tags?.catalog_required)
         .map(attr => attr.id);
 
       const providedAttrs = (transformed.attributes || []).map(a => a.id);
@@ -94,65 +95,181 @@ class PublishingService {
 
       // 5. 🔑 PREDICCIÓN CONDICIONAL: Solo si el adapter soporta categoría (MercadoLibre)
       let productForTransform = { ...baseProductForTransform };
-      // 🔑 Paso 2: Asegurar credenciales VÁLIDAS antes de cualquier operación que requiera token
+
       if (adapter.constructor.supportsCategoryPrediction?.()) {
         const hasValidCreds = await adapter.ensureValidCredentials();
         try {
           const prediction = await adapter.predictCategory(product.name);
           productForTransform.category_id = prediction.category_id;
 
-             if (prediction.attributes && prediction.attributes.length > 0) {
-      logger.info(`[PublishingService] Atributos de predicción: ${JSON.stringify(prediction.attributes)}`);
-      
-      productForTransform.suggested_attributes = prediction.attributes.map(attr => ({
-        id: attr.id,
-        value_name: attr.value_name,
-        value_id: attr.value_id
-      }));
-    }
+            productForTransform.is_user_product = prediction.is_user_product;
     
-    // 👇 AGREGAR family_name SI LA CATEGORÍA LO REQUIERE
-    if (prediction.required_fields?.includes('family_name') || 
-        prediction.category_settings?.settings?.requires_family_name) {
-      
-      // Crear un family_name apropiado
-      const brandAttr = prediction.attributes?.find(a => a.id === 'BRAND');
-      const modelAttr = prediction.attributes?.find(a => a.id === 'MODEL');
-      const colorAttr = prediction.attributes?.find(a => a.id === 'COLOR');
-      
-      let familyName = 'Tinta ';
-      if (brandAttr?.value_name) familyName += brandAttr.value_name + ' ';
-      if (modelAttr?.value_name) familyName += modelAttr.value_name + ' ';
-      if (colorAttr?.value_name) familyName += colorAttr.value_name;
-      else familyName += 'Magenta';
-      
-      productForTransform.family_name = familyName;
-      logger.info(`[PublishingService] Family_name requerido: ${familyName}`);
-    }
-           // Guardar catalog_product_id si existe
-        if (prediction.catalog_product_id) {
-          productForTransform.catalog_product_id = prediction.catalog_product_id;
-        }
+            if (prediction.is_user_product) {
+              logger.info(`[PublishingService] Categoría ${prediction.category_id} es User Product - título manejado especial`);
+              
+              // Para User Products, el título puede necesitar ser diferente
+              // Usar un título genérico basado en la categoría
+              const categoryName = prediction.category_settings?.name || 'Producto';
+              productForTransform.title = `${categoryName} - ${product.name.substring(0, 30)}`;
+            }
+
+          // 🔴 CRÍTICO: SI REQUIERE family_name, ASEGURARLO
+          if (prediction.requires_family_name) {
+            logger.info(`[PublishingService] Categoría ${prediction.category_id} REQUIERE family_name`);
+            
+            // Intentar construir family_name
+            let familyName = '';
+            
+            // 1. Usar BRAND y MODEL de atributos predichos
+            if (prediction.attributes) {
+              const brandAttr = prediction.attributes.find(a => a.id === 'BRAND');
+              const modelAttr = prediction.attributes.find(a => a.id === 'MODEL');
+              
+              if (brandAttr?.value_name) familyName += brandAttr.value_name + ' ';
+              if (modelAttr?.value_name) familyName += modelAttr.value_name;
+            }
+            
+            // 2. Si no hay atributos, usar nombre del producto
+            if (!familyName.trim()) {
+              familyName = product.name.substring(0, 50);
+            }
+            
+            // 3. Limpiar y asegurar
+            familyName = familyName.replace(/(\b\w+\b)(?:\s+\1)+/gi, '$1')
+                                  .replace(/\s+/g, ' ')
+                                  .trim();
+            
+            // 4. Si aún está vacío, usar default
+            if (!familyName.trim()) {
+              familyName = 'Producto de catálogo';
+            }
+            
+            productForTransform.family_name = familyName;
+            logger.info(`[PublishingService] Family_name asignado: "${familyName}"`);
+          }
+
+          // 👇 NUEVO: OBTENER ATRIBUTOS DINÁMICAMENTE SI TENEMOS CREDENCIALES VÁLIDAS
+          if (prediction.category_id && hasValidCreds && adapter.credential?.access_token) {
+            const attributesResult = await MercadoLibreAttributesService.buildAttributesArray(
+              {
+                ...productForTransform,
+                brand: product.brand || productData.brand,
+                model: product.model || productData.model,
+                warranty: productData.warranty || productForTransform.warranty
+              },
+              prediction.category_id,
+              adapter.credential.access_token,
+              adapter.getSiteId()
+            );
+
+            // Combinar atributos de predicción con atributos dinámicos
+            const combinedAttributes = [];
+
+            // 1. Agregar atributos de predicción primero
+            if (prediction.attributes && prediction.attributes.length > 0) {
+              prediction.attributes.forEach(predAttr => {
+                const existingIndex = combinedAttributes.findIndex(a => a.id === predAttr.id);
+                if (existingIndex === -1) {
+                  combinedAttributes.push({
+                    id: predAttr.id,
+                    value_name: predAttr.value_name,
+                    ...(predAttr.value_id && { value_id: predAttr.value_id })
+                  });
+                }
+              });
+            }
+
+            // 2. Agregar atributos dinámicos (sobrescriben si existen)
+            attributesResult.attributes.forEach(dynAttr => {
+              const existingIndex = combinedAttributes.findIndex(a => a.id === dynAttr.id);
+              if (existingIndex !== -1) {
+                // Actualizar con datos más completos
+                combinedAttributes[existingIndex] = {
+                  ...combinedAttributes[existingIndex],
+                  value_name: dynAttr.value_name || combinedAttributes[existingIndex].value_name,
+                  ...(dynAttr.value_id && { value_id: dynAttr.value_id })
+                };
+              } else {
+                combinedAttributes.push(dynAttr);
+              }
+            });
+
+            // 3. Guardar atributos combinados
+            if (combinedAttributes.length > 0) {
+              productForTransform.suggested_attributes = combinedAttributes;
+              logger.info(`[PublishingService] Obtenidos ${combinedAttributes.length} atributos dinámicos`);
+            }
+
+            // 4. Log de atributos faltantes (solo para información)
+            if (attributesResult.missing_required.length > 0) {
+              logger.warn(`[PublishingService] Atributos requeridos faltantes:`, 
+                attributesResult.missing_required.map(a => `${a.id} (${a.name})`).join(', '));
+            }
+          }
+          
+          // 🔴 CRÍTICO: SI HAY WARRANTY, CONVERTIR A SALE_TERMS
+          if (productData.warranty || productForTransform.warranty) {
+            const warrantyText = productData.warranty || productForTransform.warranty || '6 meses de garantía';
+            
+            productForTransform.sale_terms = [
+              {
+                id: 'WARRANTY_TIME',
+                value_name: warrantyText
+              },
+              {
+                id: 'WARRANTY_TYPE',
+                value_name: 'Garantía del vendedor'
+              }
+            ];
+            
+            // 🔴 ELIMINAR WARRANTY DEL OBJETO PRINCIPAL - NO DEBE ESTAR EN EL PAYLOAD FINAL
+            delete productForTransform.warranty;
+            delete productData.warranty;
+            
+            logger.info(`[PublishingService] Warranty convertido a sale_terms: "${warrantyText}"`);
+          }
+          
           logger.info(`[PublishingService] Categoría predicha: ${prediction.category_id}`);
         } catch (predError) {
           logger.warn(`[PublishingService] Predicción falló:`, predError.message);
         }
       }
-
-      if (!productForTransform.title) {
-        productForTransform.title = productData.title || product.name;
-      }
+  
       // 6. Transformar producto
       const [transformedResult] = await MarketplaceTransformer.transformProducts([productForTransform], marketplace.id);
       transformed = transformedResult;
       if (!transformed) {
         return { success: false, error: 'productTransformFailed', product_id: product.id };
       }
+      // 🔴 AÑADIR: CAMPOS REQUERIDOS OBLIGATORIOS
+      // 1. Asegurar category_id
       if (productForTransform.category_id) {
         transformed.category_id = productForTransform.category_id;
       }
 
-      // 👇 También asegurar attributes si es necesario
+      // 2. Asegurar family_name si la categoría lo requiere
+      if (productForTransform.family_name && !transformed.family_name) {
+        transformed.family_name = productForTransform.family_name;
+      }
+
+      // 3. Asegurar listing_type_id (requerido por Mercado Libre)
+      if (!transformed.listing_type_id) {
+        transformed.listing_type_id = 'bronze';
+        logger.info(`[PublishingService] Asignado listing_type_id por defecto: bronze`);
+      }
+
+      // 4. Asegurar sale_terms para warranty
+      if (productForTransform.sale_terms && !transformed.sale_terms) {
+        transformed.sale_terms = productForTransform.sale_terms;
+      }
+
+      // 5. ELIMINAR WARRANTY - NO DEBE ESTAR EN EL PAYLOAD FINAL
+      if (transformed.warranty) {
+        logger.warn(`[PublishingService] Eliminando warranty del payload (debe ir en sale_terms)`);
+        delete transformed.warranty;
+      }
+
+      // 6. Asegurar atributos
       if (productForTransform.suggested_attributes && (!transformed.attributes || transformed.attributes.length === 0)) {
         transformed.attributes = productForTransform.suggested_attributes;
       }
@@ -175,10 +292,12 @@ class PublishingService {
           };
         }
       }
-      // 👇 Eliminar 'description' si es MercadoLibre
+      
+      // 👇 Para Mercado Libre: Eliminar description (no va en el endpoint /items)
       if (marketplace.domain?.includes('mercadolibre')) {
         delete transformed.description;
       }
+      
       // 10. Publicar
       const result = await adapter.publish(transformed);
       logger.info(`[PublishingService] Resultado del adapter.publish():`, JSON.stringify(result, null, 2));

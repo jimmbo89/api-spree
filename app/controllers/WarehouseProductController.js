@@ -48,6 +48,41 @@ const WarehouseProductController = {
     }
   },
 
+  async listByWarehouseIds(req, res) {
+    logger.info(`${req.user?.name || "Unknown"} - Lista warehouse_products en publicación`);
+    logger.info('Alamacenes recibidos')
+    logger.info(JSON.stringify(req.body))
+  const { company_id, warehouse_ids } = req.body;
+
+  try {
+    // Validar que la compañía exista (opcional, pero recomendado)
+    const companyExists = await CompanyRepository.findById(company_id);
+    if (!companyExists) {
+      return res.status(400).json({ msg: "companyNotFound" });
+    }
+
+    const invalidIds = [];
+    for (const wid of warehouse_ids) {
+      const exists = await WarehouseRepository.findById(wid);
+      if (!exists) invalidIds.push(wid);
+    }
+    if (invalidIds.length > 0) {
+      return res.status(400).json({ msg: "Algunos warehouse_ids no existen", invalid: invalidIds });
+    }
+
+    // Obtener y consolidar
+    const consolidatedProducts = await WarehouseProductRepository.findProductsByWarehouseIds({
+      companyId: company_id,
+      warehouseIds: warehouse_ids
+    });
+
+    res.status(200).json({ success: true, products: consolidatedProducts });
+  } catch (error) {
+    logger.error("WarehouseProductController->listByWarehouseIds:", error);
+    res.status(500).json({ success: false, error: "ServerError" });
+  }
+},
+
   async getProductsNotInWarehouse(req, res) {
     logger.info(
       `${req.user?.name || "Unknown"} - Obtiene productos no en almacén`

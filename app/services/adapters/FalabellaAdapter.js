@@ -3,11 +3,16 @@ const axios = require('axios');
 const crypto = require('crypto');
 const logger = require('../../../config/logger');
 const { MarketplaceCredentialRepository } = require('../../repositories');
+const MarketplaceTransformer = require('../MarketplaceTransformer');
 
 class FalabellaAdapter extends BaseAdapter {
   static supportsCategoryPrediction() {
   return false;
 }
+
+static getTransformer() {
+    return MarketplaceTransformer; // genérico
+  }
   async ensureValidCredentials() {
     this.credential = await MarketplaceCredentialRepository.findByMarketplaceAndContext(
       this.marketplaceId,
@@ -79,7 +84,7 @@ class FalabellaAdapter extends BaseAdapter {
     try {
       await this.ensureValidCredentials();
 
-      const required = ['sku', 'productName', 'brand', 'price', 'stock', 'PrimaryCategory'];
+      const required = ['sku', 'name', 'brand', 'price', 'stock', 'PrimaryCategory'];
       for (const field of required) {
         if (transformedProduct[field] == null || transformedProduct[field] === '') {
           const error = `Campo requerido por Falabella ausente o vacío: ${field}`;

@@ -9,7 +9,7 @@ module.exports = (sequelize, DataTypes) => {
       WarehouseProduct.belongsTo(models.Company, { foreignKey: 'company_id', as: 'company', onDelete: 'CASCADE' });
       WarehouseProduct.belongsTo(models.Branch, { foreignKey: 'branch_id', as: 'branch', onDelete: 'SET NULL' });
       WarehouseProduct.belongsTo(models.User, { foreignKey: 'user_id', as: 'user', onDelete: 'RESTRICT' });
-      WarehouseProduct.hasMany(models.WarehouseProductVariant, { foreignKey: 'warehouse_product_id', as: 'variants', onDelete: 'CASCADE' });
+      WarehouseProduct.hasMany(models.WarehouseProductVariant, { foreignKey: 'warehouse_product_id', as: 'warehouseVariants', onDelete: 'CASCADE' });
     }
   }
 

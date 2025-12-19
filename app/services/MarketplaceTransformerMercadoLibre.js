@@ -1,8 +1,8 @@
-// src/services/MarketplaceTransformer.js
+// src/services/MarketplaceTransformerMercadoLibre.js
 const { MarketplaceRepository } = require('../repositories');
 const logger = require('../../config/logger');
 
-class MarketplaceTransformer {
+class MarketplaceTransformerMercadoLibre {
   static async transformProducts(products, marketplaceId) {
     const mappings = await MarketplaceRepository.findMappingsByMarketplace(marketplaceId);
     const exportMappings = mappings.filter(m => 
@@ -208,4 +208,4 @@ class MarketplaceTransformer {
   }
 }
 
-module.exports = MarketplaceTransformer;
+module.exports = MarketplaceTransformerMercadoLibre;

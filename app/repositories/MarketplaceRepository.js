@@ -28,6 +28,40 @@ const MarketplaceRepository = {
     return await Marketplace.findByPk(id);
   },
 
+  /**
+   * Valida que todos los IDs de marketplace dados existan.
+  @param {number[]} marketplaceIds - Array de IDs de marketplaces.
+   * @returns {{
+   *   valid: boolean,
+   *   marketplaces: Marketplace[],
+   *   missingIds: number[]
+   * }}
+   */
+  async findByIds(marketplaceIds) {
+    if (!Array.isArray(marketplaceIds) || marketplaceIds.length === 0) {
+      return {
+        valid: true,
+        marketplaces: [],
+        missingIds: []
+      };
+    }
+
+    const marketplaces = await Marketplace.findAll({
+      where: {
+        id: marketplaceIds
+      },
+    });
+
+    const foundIds = new Set(marketplaces.map(m => m.id));
+    const missingIds = marketplaceIds.filter(id => !foundIds.has(id));
+
+    return {
+      valid: missingIds.length === 0,
+      marketplaces,
+      missingIds
+    };
+  },
+
   async findByContextAndName(name) {
     const where = { name };
     const record = await Marketplace.findOne({ where });

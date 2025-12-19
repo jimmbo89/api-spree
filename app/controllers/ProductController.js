@@ -120,107 +120,6 @@ const ProductController = {
         .json({ error: "ServerError", details: err.message });
     }
   },
-
-  /*async store(req, res) {
-    logger.info(`${req.user?.name || 'Unknown'} - Crea nuevo producto`);
-    logger.info('Datos recibidos del producto:');
-    logger.info(JSON.stringify(req.body));
-    const { company_id, user_id: bodyUserId, warehouses } = req.body;
-    const user_id = bodyUserId || req.user.id;
-    req.body.user_id = user_id;
-
-    if (!company_id) return res.status(400).json({ msg: 'company_id es obligatorio' });
-    const company = await CompanyRepository.findById(company_id);
-    if (!company) return res.status(400).json({ msg: 'companyNotFound' });
-
-    if (req.body.category_id) {
-      const category = await ProductCategoryRepository.findById(req.body.category_id);
-      if (!category) return res.status(400).json({ msg: 'categoryNotFound' });
-    }
-    if (await ProductRepository.existsBySku(req.body.sku)) {
-      return res.status(400).json({ msg: 'skuAlreadyExists' });
-    }
-
-    // Normalizar atributos
-    if (req.body.attributes && typeof req.body.attributes === 'string') {
-      try {
-        req.body.attributes = JSON.parse(req.body.attributes);
-      } catch (e) {
-        return res.status(400).json({ msg: 'attributesInvalidJSON' });
-      }
-    }
-
-    let parsedWarehouses = [];
-    if (warehouses) {
-      try {
-        parsedWarehouses = JSON.parse(warehouses);
-        if (!Array.isArray(parsedWarehouses)) {
-          return res.status(400).json({ msg: 'warehouses debe ser un array' });
-        }
-      } catch (e) {
-        return res.status(400).json({ msg: 'warehousesInvalidJSON' });
-      }
-    }
-
-    const files = (req.files && Array.isArray(req.files.images)) ? req.files.images : [];
-    let transaction;
-
-    try {
-      transaction = await sequelize.transaction();
-      const product = await ProductRepository.create(req.body, files, { transaction });
-
-      // ✅ Crear variante implícita (siempre)
-      await ProductVariantRepository.create({
-        product_id: product.id,
-        sku: product.sku,
-        attributes: {}
-      }, { transaction });
-
-      // ✅ Asociar a almacenes (sin stock/precio en WarehouseProduct)
-      if (parsedWarehouses.length > 0) {
-        const warehouseIds = parsedWarehouses.map(w => w.id);
-        const validation = await WarehouseRepository.validateWarehousesExist(warehouseIds);
-        if (!validation.valid) {
-          await transaction.rollback();
-          return res.status(400).json({
-            msg: validation.message || 'Algunos almacenes no son válidos',
-            missingWarehouses: validation.missing
-          });
-        }
-
-        for (const wh of parsedWarehouses) {
-          const warehouse = await WarehouseRepository.findById(wh.id);
-          const wp = await WarehouseProductRepository.create({
-            product_id: product.id,
-            warehouse_id: warehouse.id,
-            active: true,
-            company_id: warehouse.company_id,
-            branch_id: warehouse.branch_id,
-            user_id
-          }, { transaction });
-
-          // ✅ Crear WarehouseProductVariant con stock/precio
-          await WarehouseProductVariantRepository.create({
-            warehouse_product_id: wp.id,
-            variant_id: (await ProductVariantRepository.findByProductId(product.id))[0].id,
-            active: true,
-            published: wh.published || false,
-            price: wh.price || 0,
-            stock: wh.stock || 0
-          }, { transaction });
-        }
-      }
-
-      await transaction.commit();
-      const products = await ProductRepository.findFiltered({ companyId: company_id, userId: user_id });
-      res.status(201).json({ message: 'Producto creado correctamente', products });
-    } catch (error) {
-      if (transaction) await transaction.rollback();
-      logger.error('ProductController->store: ' + error.message);
-      res.status(500).json({ error: 'ServerError', details: error.message });
-    }
-  },*/
-
   async store(req, res) {
     logger.info(`${req.user?.name || "Unknown"} - Crea nuevo producto`);
     logger.info("Datos recibidos del producto:");
@@ -558,90 +457,7 @@ const ProductController = {
     }
   },
 
-  /*async update(req, res) {
-    logger.info(`${req.user?.name || 'Unknown'} - Actualiza producto ${req.body.id}`);
-    logger.info('Datos recibidos del producto:');
-  logger.info(JSON.stringify(req.body));
-    const { id, images_to_remove } = req.body;
-    const metadata = getRequestMetadata(req);
-
-    try {
-      const product = await ProductRepository.findById(id);
-      if (!product) return res.status(404).json({ msg: 'ProductNotFound' });
-
-      // Parsear atributos e imágenes
-      if (req.body.attributes && typeof req.body.attributes === 'string') {
-        req.body.attributes = JSON.parse(req.body.attributes);
-      }
-      if (req.body.images && typeof req.body.images === 'string') {
-        req.body.images = JSON.parse(req.body.images);
-      }
-
-      // Eliminar imágenes físicas
-      if (images_to_remove) {
-        const indices = typeof images_to_remove === 'string' ? JSON.parse(images_to_remove) : images_to_remove;
-        const currentImages = [...(Array.isArray(product.images) ? product.images : [])];
-        const sorted = [...indices].sort((a, b) => b - a);
-        for (const i of sorted) {
-          if (currentImages[i] && currentImages[i] !== DEFAULT_IMAGE) {
-            await ImageService.deleteFile(currentImages[i]);
-          }
-        }
-        if (req.body.images === undefined) {
-          req.body.images = currentImages.filter((_, idx) => !indices.includes(idx));
-        }
-      }
-
-      // Validar relaciones
-      if (req.body.company_id) {
-        const company = await CompanyRepository.findById(req.body.company_id);
-        if (!company) return res.status(400).json({ msg: 'companyNotFound' });
-      }
-      if (req.body.user_id) {
-        const user = await UserRepository.findById(req.body.user_id);
-        if (!user) return res.status(400).json({ msg: 'userNotFound' });
-      }
-      if (req.body.category_id !== undefined && req.body.category_id !== null) {
-        const category = await ProductCategoryRepository.findById(req.body.category_id);
-        if (!category) return res.status(400).json({ msg: 'categoryNotFound' });
-      }
-      if (req.body.sku && req.body.sku !== product.sku) {
-        if (await ProductRepository.existsBySku(req.body.sku, product.id)) {
-          return res.status(400).json({ msg: 'skuAlreadyExists' });
-        }
-      }
-
-      const originalData = { ...product.get({ plain: true }) };
-      const files = (req.files && Array.isArray(req.files.images)) ? req.files.images : [];
-      const updated = await ProductRepository.update(product, req.body, files);
-
-      const fieldChanges = detectChanges(originalData, updated.get({ plain: true }), PRODUCT_AUDIT_FIELDS);
-      await LogRepository.create({
-        user_id: metadata.user_id,
-        action: 'product.update',
-        description: `Producto actualizado: ${fieldChanges.length} campo(s) modificados`,
-        ip_address: metadata.ip_address,
-        user_agent: metadata.user_agent,
-        status: 'success',
-        meta: { changes: fieldChanges }
-      });
-
-      const products = await ProductRepository.findFiltered({ companyId: updated.company_id });
-      res.status(200).json({ message: 'Producto actualizado correctamente', products });
-    } catch (error) {
-      await LogRepository.create({
-        user_id: metadata?.user_id,
-        action: 'product.update',
-        description: `Error al actualizar producto ID ${req.body?.id}: ${error.message}`,
-        ip_address: metadata?.ip_address,
-        user_agent: metadata?.user_agent,
-        status: 'error'
-      });
-      logger.error('ProductController->update: ' + error.message);
-      res.status(500).json({ error: 'ServerError', details: error.message });
-    }
-  },*/
-  async update(req, res) {
+ async update(req, res) {
     logger.info(
       `${req.user?.name || "Unknown"} - Actualiza producto ${req.body.id}`
     );
@@ -824,7 +640,7 @@ const ProductController = {
         });
         res
           .status(200)
-          .json({ message: "Producto actualizado correctamente", products });
+          .json({ success: true, message: "Producto actualizado correctamente", products });
       } catch (error) {
         if (transaction) await transaction.rollback();
         throw error;
@@ -839,7 +655,7 @@ const ProductController = {
         status: "error",
       });
       logger.error("ProductController->update: " + error.message);
-      res.status(500).json({ error: "ServerError", details: error.message });
+      res.status(500).json({ success: false, error: "ServerError", details: error.message });
     }
   },
   async destroy(req, res) {

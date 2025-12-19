@@ -5,316 +5,6 @@ const WarehouseProductRepository = require('./WarehouseProductRepository');
   const { Op, Sequelize } = require('sequelize');
 
 const WarehouseRepository = {
-  /*async findFiltered({ companyId, branchId, userId, status, type }) {
-    const where = {};
-
-    if (companyId !== undefined) where.company_id = companyId;
-    if (branchId !== undefined) where.branch_id = branchId;
-    if (userId !== undefined) where.user_id = userId;
-    if (status !== undefined) where.status = status;
-    if (type !== undefined) where.type = type;
-
-    const warehouses = await Warehouse.findAll({
-      where,
-      attributes: [
-        'id', 'code', 'user_id', 'company_id', 'branch_id', 
-        'name', 'description', 'type', 'address', 'city',
-        'region', 'country', 'latitude', 'longitude',
-        'capacity_max_units', 'allow_mermas', 'rotation_policy',
-        'status', 'image', 'createdAt', 'updatedAt'
-      ],
-      order: [['name', 'ASC']]
-    });
-
-    return warehouses.map(wh => ({
-      id: wh.id,
-      code: wh.code,
-      user_id: wh.user_id,
-      company_id: wh.company_id,
-      branch_id: wh.branch_id,
-      name: wh.name,
-      description: wh.description,
-      type: wh.type,
-      address: wh.address,
-      city: wh.city,
-      region: wh.region,
-      country: wh.country,
-      latitude: wh.latitude,
-      longitude: wh.longitude,
-      capacity_max_units: wh.capacity_max_units,
-      allow_mermas: wh.allow_mermas,
-      rotation_policy: wh.rotation_policy,
-      status: wh.status,
-      image: wh.image,
-      createdAt: wh.createdAt,
-      updatedAt: wh.updatedAt
-    }));
-  },*/
-  /*async findFiltered({ companyId, branchId, userId, status, type, includeProducts = false }) {
-  const where = {};
-
-  if (companyId !== undefined) where.company_id = companyId;
-  if (branchId !== undefined) where.branch_id = branchId;
-  if (userId !== undefined) where.user_id = userId;
-  if (status !== undefined) where.status = status;
-  if (type !== undefined) where.type = type;
-
-  const warehouses = await Warehouse.findAll({
-    where,
-    attributes: [
-      'id', 'code', 'user_id', 'company_id', 'branch_id', 
-      'name', 'description', 'type', 'address', 'city',
-      'region', 'country', 'latitude', 'longitude',
-      'capacity_max_units', 'allow_mermas', 'rotation_policy',
-      'status', 'image', 'createdAt', 'updatedAt'
-    ],
-    include: [
-      {
-        model: Branch,
-        as: 'branch',
-        attributes: ['id', 'name', 'image']
-      },
-      {
-        model: Company,
-        as: 'company',
-        attributes: ['id', 'name', 'image']
-      }
-    ],
-    order: [['name', 'ASC']]
-  });
-
-  // Obtener IDs de almacenes
-  const warehouseIds = warehouses.map(wh => wh.id);
-  
-  // Obtener conteos de productos
-  let productCounts = {};
-  if (warehouseIds.length > 0) {
-    productCounts = await WarehouseProductRepository.getCountsByWarehouse(warehouseIds);
-  }
-  
-  // Obtener productos detallados (solo si se solicita)
-  let warehouseProductsMap = {};
-  if (includeProducts && warehouseIds.length > 0) {
-    const allWarehouseProducts = await WarehouseProductRepository.findFiltered({
-      warehouseId: warehouseIds
-    });
-    
-    allWarehouseProducts.forEach(wp => {
-      if (!warehouseProductsMap[wp.warehouse_id]) {
-        warehouseProductsMap[wp.warehouse_id] = [];
-      }
-      warehouseProductsMap[wp.warehouse_id].push(wp);
-    });
-  }
-
-  return warehouses.map(wh => {
-    return {
-      id: wh.id,
-      code: wh.code,
-      user_id: wh.user_id,
-      company_id: wh.company_id,
-      companyName: wh.company ? wh.company.name : null,
-      companyImage: wh.company ? wh.company.image : null,
-      branch_id: wh.branch_id,
-      branchName: wh.branch ? wh.branch.name : null,
-      branchImage: wh.branch ? wh.branch.image : null,
-      name: wh.name,
-      description: wh.description,
-      type: wh.type,
-      address: wh.address,
-      city: wh.city,
-      region: wh.region,
-      country: wh.country,
-      latitude: wh.latitude,
-      longitude: wh.longitude,
-      capacity_max_units: wh.capacity_max_units,
-      allow_mermas: wh.allow_mermas,
-      rotation_policy: wh.rotation_policy,
-      status: wh.status,
-      image: wh.image,
-      
-      // Estadísticas
-      productCount: productCounts[wh.id]?.productCount || 0,
-      totalStock: productCounts[wh.id]?.totalStock || 0,
-      publishedProducts: productCounts[wh.id]?.publishedProducts || 0,
-      
-      // Productos detallados (solo si se solicitan)
-      products: includeProducts ? (warehouseProductsMap[wh.id] || []) : []
-    };
-  });
-},*/
-  /*async findFiltered({ 
-    companyId, 
-    branchId, 
-    userId, 
-    status, 
-    type, 
-    includeProducts = true 
-  }) {
-    const where = {};
-    const include = [];
-    
-    // Manejo especial para companyId sin branchId
-    if (companyId !== undefined && branchId === undefined) {
-      // Caso 1: Almacenes que pertenecen directamente a la compañía
-      // Caso 2: Almacenes que pertenecen a sucursales de la compañía
-      
-      include.push(
-        {
-          model: Company,
-          as: 'company',
-          attributes: ['id', 'name', 'image'],
-          required: false // LEFT JOIN
-        },
-        {
-          model: Branch,
-          as: 'branch',
-          attributes: ['id', 'name', 'image'],
-          include: [{
-            model: Company,
-            as: 'company',
-            attributes: [] // No necesitamos los atributos aquí
-          }],
-          required: false // LEFT JOIN
-        }
-      );
-      
-      // Construcción de la condición WHERE compleja
-      where[Op.or] = [
-        // Condición 1: warehouse.company_id = companyId
-        { company_id: companyId },
-        // Condición 2: branch.company_id = companyId (a través del JOIN)
-        Sequelize.where(
-          Sequelize.col('branch.company_id'), 
-          companyId
-        )
-      ];
-      
-    } else {
-      // Casos normales: filtros individuales
-      if (companyId !== undefined) where.company_id = companyId;
-      if (branchId !== undefined) where.branch_id = branchId;
-      
-      // Includes normales para los otros casos
-      include.push(
-        {
-          model: Branch,
-          as: 'branch',
-          attributes: ['id', 'name', 'image'],
-          required: false // LEFT JOIN
-        },
-        {
-          model: Company,
-          as: 'company',
-          attributes: ['id', 'name', 'image'],
-          required: false // LEFT JOIN
-        }
-      );
-    }
-    
-    // Filtros adicionales comunes
-    if (userId !== undefined) where.user_id = userId;
-    if (status !== undefined) where.status = status;
-    if (type !== undefined) where.type = type;
-
-    // Consulta principal
-    const warehouses = await Warehouse.findAll({
-      where,
-      attributes: [
-        'id', 'code', 'user_id', 'company_id', 'branch_id', 
-        'name', 'description', 'type', 'address', 'city',
-        'region', 'country', 'latitude', 'longitude',
-        'capacity_max_units', 'allow_mermas', 'rotation_policy',
-        'status', 'image', 'createdAt', 'updatedAt'
-      ],
-      include,
-      order: [['name', 'ASC']],
-      // Importante: distinct para evitar duplicados por los múltiples JOINs
-      distinct: true,
-      // Para debug, puedes descomentar:
-      // logging: console.log
-    });
-
-    // Obtener IDs de almacenes
-    const warehouseIds = warehouses.map(wh => wh.id);
-    
-    // Obtener conteos de productos
-    let productCounts = {};
-    if (warehouseIds.length > 0) {
-      productCounts = await WarehouseProductRepository.getCountsByWarehouse(warehouseIds);
-    }
-    
-    // Obtener productos detallados (solo si se solicita)
-    let warehouseProductsMap = {};
-    if (includeProducts && warehouseIds.length > 0) {
-      const allWarehouseProducts = await WarehouseProductRepository.findFiltered({
-        warehouseId: warehouseIds
-      });
-      
-      allWarehouseProducts.forEach(wp => {
-        if (!warehouseProductsMap[wp.warehouse_id]) {
-          warehouseProductsMap[wp.warehouse_id] = [];
-        }
-        warehouseProductsMap[wp.warehouse_id].push(wp);
-      });
-    }
-
-    // Transformar los resultados
-    return warehouses.map(wh => {
-      // Determinar la compañía correcta (puede venir de warehouse.company o branch.company)
-      let companyName = null;
-      let companyImage = null;
-      
-      if (wh.company) {
-        // Si el almacén tiene compañía directa
-        companyName = wh.company.name;
-        companyImage = wh.company.image;
-      } else if (wh.branch && wh.branch.company) {
-        // Si el almacén tiene compañía a través de la sucursal
-        companyName = wh.branch.company.name;
-        companyImage = wh.branch.company.image;
-      }
-      
-      return {
-        id: wh.id,
-        code: wh.code,
-        user_id: wh.user_id,
-        company_id: wh.company_id || (wh.branch ? wh.branch.company_id : null),
-        companyName,
-        companyImage,
-        branch_id: wh.branch_id,
-        branchName: wh.branch ? wh.branch.name : null,
-        branchImage: wh.branch ? wh.branch.image : null,
-        name: wh.name,
-        description: wh.description,
-        type: wh.type,
-        address: wh.address,
-        city: wh.city,
-        region: wh.region,
-        country: wh.country,
-        latitude: wh.latitude,
-        longitude: wh.longitude,
-        capacity_max_units: wh.capacity_max_units,
-        allow_mermas: wh.allow_mermas,
-        rotation_policy: wh.rotation_policy,
-        status: wh.status,
-        image: wh.image,
-        createdAt: wh.createdAt,
-        updatedAt: wh.updatedAt,
-        
-        // Estadísticas
-        productCount: productCounts[wh.id]?.productCount || 0,
-        totalStock: productCounts[wh.id]?.totalStock || 0,
-        publishedProducts: productCounts[wh.id]?.publishedProducts || 0,
-        
-        // Productos detallados (solo si se solicitan)
-        products: includeProducts ? (warehouseProductsMap[wh.id] || []) : [],
-        
-        // Información adicional para debug
-        _source: wh.company ? 'direct_company' : (wh.branch ? 'via_branch' : 'unknown')
-      };
-    });
-  },*/
   async findFiltered({ 
   companyId, 
   branchId, 
@@ -325,12 +15,10 @@ const WarehouseRepository = {
 }) {
   const where = {};
   const include = [];
-  
-  // Manejo especial para companyId sin branchId
-  if (companyId !== undefined && branchId === undefined) {
-    // Caso 1: Almacenes que pertenecen directamente a la compañía
-    // Caso 2: Almacenes que pertenecen a sucursales de la compañía
-    
+
+  // Caso especial: se filtra por companyId y NO por branchId específico
+  if (companyId != null && companyId !== 0 && (branchId == null || branchId === 0)) {
+    // Incluimos relaciones para poder filtrar por branch.company_id
     include.push(
       {
         model: Company,
@@ -345,22 +33,23 @@ const WarehouseRepository = {
         include: [{
           model: Company,
           as: 'company',
-          attributes: []
+          attributes: ['id', 'name', 'image'] // necesitas el id al menos para join
         }],
         required: false
       }
     );
-    
+
+    // Filtrar: almacenes propios de la compañía O almacenes de sus sucursales
     where[Op.or] = [
       { company_id: companyId },
-      Sequelize.where(Sequelize.col('branch.company_id'), companyId)
+      { '$branch.company_id$': companyId } // Sequelize usa $...$ para columnas anidadas en where
     ];
-    
+
   } else {
-    // Casos normales: filtros individuales
-    if (companyId !== undefined) where.company_id = companyId;
-    if (branchId !== undefined) where.branch_id = branchId;
-    
+    // Caso normal: filtrado directo
+    if (companyId != null && companyId !== 0) where.company_id = companyId;
+    if (branchId != null && branchId !== 0) where.branch_id = branchId;
+
     include.push(
       {
         model: Branch,
@@ -376,13 +65,13 @@ const WarehouseRepository = {
       }
     );
   }
-  
-  // Filtros adicionales
-  if (userId !== undefined) where.user_id = userId;
-  if (status !== undefined) where.status = status;
-  if (type !== undefined) where.type = type;
 
-  // Consulta principal
+  // Otros filtros
+  if (userId != null && userId !== 0) where.user_id = userId;
+  if (status != null && status !== 0) where.status = status;
+  if (type != null && type !== 0) where.type = type;
+
+  // Consulta
   const warehouses = await Warehouse.findAll({
     where,
     attributes: [
@@ -395,19 +84,15 @@ const WarehouseRepository = {
     include,
     order: [['name', 'ASC']],
     distinct: true,
-    logging: console.log // ← Activar para debug
   });
-
   // Obtener IDs de almacenes
   const warehouseIds = warehouses.map(wh => wh.id);
   
   // Obtener conteos de productos
   let productCounts = {};
-  if (warehouseIds.length > 0) {
+  if (warehouseIds.length > 0 && includeProducts === true) {
     productCounts = await WarehouseProductRepository.getCountsByWarehouse(warehouseIds);
   }
-  logger.info('getCountsByWarehouse');
-  logger.info(JSON.stringify(productCounts));
   // Obtener productos detallados (solo si se solicita)
   let warehouseProductsMap = {};
   if (includeProducts && warehouseIds.length > 0) {

@@ -1,5 +1,5 @@
 const { Op } = require('sequelize');
-const { WarehouseProduct, Product, ProductVariant, WarehouseProductVariant, Sequelize } = require('../models');
+const { WarehouseProduct, Product, ProductVariant, WarehouseProductVariant, ProductCategory, Sequelize } = require('../models');
 const ImageService = require('../services/ImageService');
 const logger = require('../../config/logger');
 const ProductRepository = require('./ProductRepository');
@@ -21,8 +21,6 @@ async findFiltered({ companyId, userId, branchId, warehouseId }) {
     }
   }
 
-  console.log('CONSULTA WarehouseProducts con where:', JSON.stringify(where, null, 2));
-
   const records = await WarehouseProduct.findAll({
     where,
     include: [
@@ -43,7 +41,7 @@ async findFiltered({ companyId, userId, branchId, warehouseId }) {
       },
       {
         model: WarehouseProductVariant,
-        as: 'variants', // Según tus logs, el alias es 'variants'
+        as: 'warehouseVariants', // Según tus logs, el alias es 'variants'
         include: [{
           model: ProductVariant,
           as: 'variant',
@@ -53,14 +51,9 @@ async findFiltered({ companyId, userId, branchId, warehouseId }) {
     ]
   });
 
-  console.log(`RESULTADO: ${records.length} WarehouseProducts encontrados`);
-
   return records.map(wp => {
     const wpJson = wp.toJSON ? wp.toJSON() : wp;
     const product = wpJson.product;
-    
-    console.log(`Procesando WarehouseProduct ID: ${wpJson.id}, Warehouse: ${wpJson.warehouse_id}`);
-    console.log(`- Variantes encontradas: ${wpJson.variants?.length || 0}`);
 
     // Procesar imágenes y atributos del producto
     let productImages = [];
@@ -92,12 +85,9 @@ async findFiltered({ companyId, userId, branchId, warehouseId }) {
 
     // Procesar variantes del almacén
     // IMPORTANTE: Según tus logs, el alias es 'variants' (no 'warehouseVariants')
-    const warehouseVariants = wpJson.variants || [];
-    console.log(`- Número de warehouseVariants: ${warehouseVariants.length}`);
+    const warehouseVariants = wpJson.warehouseVariants || [];
     
-    const variantsWithStock = warehouseVariants.map(wpv => {
-      console.log(`  Variante ID: ${wpv.id}, Variant ID: ${wpv.variant_id}, Stock: ${wpv.stock}`);
-      
+    const variantsWithStock = warehouseVariants.map(wpv => {      
       return {
         id: wpv.id,
         variant_id: wpv.variant_id,
@@ -113,7 +103,6 @@ async findFiltered({ companyId, userId, branchId, warehouseId }) {
 
     // Calcular stock total
     const totalStock = variantsWithStock.reduce((sum, v) => sum + (v.stock || 0), 0);
-    console.log(`- Stock total: ${totalStock}`);
 
     const result = {
       id: wpJson.id,
@@ -150,9 +139,7 @@ async findFiltered({ companyId, userId, branchId, warehouseId }) {
       // Stock total para facilitar acceso
       stock: totalStock
     };
-
-    console.log(`Resultado final - Nombre: ${result.name}, Stock: ${result.stock}, Variantes: ${result.variants.length}`);
-    
+   
     return result;
   });
 },  
@@ -269,6 +256,129 @@ async findProductsNotInWarehouse({ warehouseId, companyId, specificProductId = n
     throw error;
   }
 },
+
+async findProductsByWarehouseIds({ companyId, warehouseIds }) {
+  // Paso 1: Obtener todos los warehouse_products + relaciones
+  const records = await WarehouseProduct.findAll({
+    where: {
+      warehouse_id: { [Op.in]: warehouseIds }
+    },
+    include: [
+      {
+        model: Product,
+        as: 'product',
+        attributes: [
+          'id', 'sku', 'name', 'description', 'brand', 'model', 'condition', 'gtin', 'mpn',
+          'attributes', 'warranty_months', 'warranty_text', 'weight_grams', 'length_cm',
+          'width_cm', 'height_cm', 'images', 'category_id', 'user_id', 'company_id'
+        ],
+        include: [{
+          model: ProductVariant,
+          as: 'variants',
+          attributes: ['id', 'sku', 'attributes']
+        },{
+          model: ProductCategory,
+          as: 'category',
+          attributes: ['id', 'name', 'description']
+        }]
+      },
+      {
+        model: WarehouseProductVariant,
+        as: 'warehouseVariants',
+        include: [{
+          model: ProductVariant,
+          as: 'variant',
+          attributes: ['id', 'sku', 'attributes']
+        }]
+      }
+    ]
+  });
+
+  // Paso 2: Consolidar por product_id
+  const productMap = new Map();
+
+  for (const wp of records) {
+    const productId = wp.product_id;
+    const productData = wp.product;
+
+    if (!productMap.has(productId)) {
+      // Parsear imágenes y atributos una sola vez
+      let images = [];
+      if (productData.images) {
+        try {
+          images = typeof productData.images === 'string'
+            ? JSON.parse(productData.images)
+            : productData.images;
+        } catch (e) {
+          logger.warn(`Error parsing images for product ${productId}:`, e.message);
+        }
+      }
+
+      let attributes = [];
+      if (productData.attributes) {
+        try {
+          attributes = typeof productData.attributes === 'string'
+            ? JSON.parse(productData.attributes)
+            : productData.attributes;
+        } catch (e) {
+          logger.warn(`Error parsing attributes for product ${productId}:`, e.message);
+        }
+      }
+
+      productMap.set(productId, {
+        id: productId,
+        sku: productData.sku || '',
+        name: productData.name || '',
+        description: productData.description || '',
+        brand: productData.brand || '',
+        model: productData.model || '',
+        condition: productData.condition || '',
+        gtin: productData.gtin || '',
+        mpn: productData.mpn || '',
+        category_id: productData.category_id || null,
+        categoryName: productData.category?.name || null,
+        warranty_months: productData.warranty_months,
+        warranty_text: productData.warranty_text,
+        weight_grams: productData.weight_grams,
+        length_cm: productData.length_cm,
+        width_cm: productData.width_cm,
+        height_cm: productData.height_cm,
+        images: images,
+        attributes: attributes,
+        variants: new Map(), // usaremos variant_id como clave
+        totalStock: 0
+      });
+    }
+
+    const consolidated = productMap.get(productId);
+
+    // Agregar variantes del warehouse actual
+    for (const wv of (wp.warehouseVariants || [])) {
+      const variantId = wv.variant_id;
+      const stock = parseInt(wv.stock) || 0;
+
+      if (!consolidated.variants.has(variantId)) {
+        consolidated.variants.set(variantId, {
+          id: variantId,
+          sku: wv.variant?.sku || '',
+          attributes: wv.variant?.attributes || {},
+          price: parseInt(wv.price) || 0,
+          totalStock: 0
+        });
+      }
+
+      consolidated.variants.get(variantId).totalStock += stock;
+      consolidated.totalStock += stock;
+    }
+  }
+
+  // Paso 3: Convertir a array plano
+  return Array.from(productMap.values()).map(p => ({
+    ...p,
+    variants: Array.from(p.variants.values())
+  }));
+},
+
 async getCountsByWarehouse(warehouseIds) {
   if (!warehouseIds || warehouseIds.length === 0) return {};
 
@@ -305,7 +415,7 @@ async getCountsByWarehouse(warehouseIds) {
     return await WarehouseProduct.findByPk(id, {
       include: [
         { model: Product, as: 'product' },
-        { model: WarehouseProductVariant, as: 'variants' }
+        { model: WarehouseProductVariant, as: 'warehouseVariants' }
       ]
     });
   },
@@ -313,7 +423,7 @@ async getCountsByWarehouse(warehouseIds) {
   async findByProductAndWarehouse(productId, warehouseId) {
     return await WarehouseProduct.findOne({
       where: { product_id: productId, warehouse_id: warehouseId },
-      include: [{ model: WarehouseProductVariant, as: 'variants' }]
+      include: [{ model: WarehouseProductVariant, as: 'warehouseVariants' }]
     });
   },
 

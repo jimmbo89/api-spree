@@ -11,7 +11,8 @@ const {
   LogRepository,
   WarehouseProductRepository,
   MarketplaceCredentialRepository,
-  ProductMarketplaceLinkRepository
+  ProductMarketplaceLinkRepository,
+  PoolRepository
 } = require('../repositories');
 const MercadoLibreAdapter = require('../services/adapters/MercadoLibreAdapter');
 const MarketplaceTransformer = require('../services/MarketplaceTransformer');
@@ -139,8 +140,240 @@ const ProductPublishingTaskController = {
       res.status(500).json({ error: 'ServerError' });
     }
   },*/
+  async warehouseMarketplaces(req, res) {
+    logger.info(`${req.user?.name || 'Unknown'} - Lista ruta combinada de almacenes y marketplaces`);
 
+    const { company_id, user_id: bodyUserId, status } = req.body;
+    let user_id = bodyUserId || req.user.id;
+
+    // Parsear IDs
+    const companyId = company_id ? Number(company_id) : undefined;
+    const userId = user_id ? Number(user_id) : undefined;
+
+    if (company_id) {
+      const company = await CompanyRepository.findById(company_id);
+      if (!company) {
+        logger.info(`WarehouseController->list: Compañía no encontrada con ID ${company_id}`);
+        return res.status(400).json({ msg: "companyNotFound" });
+      }
+    }
+
+    try {
+      /*const mappedWarehouses = await WarehouseRepository.findFiltered({
+        companyId,
+        branchId: null,
+        userId: null,
+        status: null,
+        type: null,
+        include_products: false
+      });*/
+
+      const pools = await PoolRepository.findFiltered({
+        companyId: company_id,
+        userId: user_id,
+        isActive: true
+      });
+
+      const credentials = await MarketplaceCredentialRepository.findByContext(
+      company_id, 
+      null, 
+      null
+    );
+     
+      // Transformar resultados
+      const marketplaces = credentials.map(credential => {
+        const mp = credential.marketplace;
+
+        // Opcional: limpiar espacios en domain
+        if (typeof mp.domain === 'string') {
+          mp.domain = mp.domain.trim();
+        }
+
+        return mp;
+      });
+
+      res.status(200).json({ pools: pools, marketplaces: marketplaces });
+    } catch (error) {
+      logger.error('ProductCategoryController->warehouseMarketplaces: ' + error.message);
+      res.status(500).json({ error: 'ServerError', details: error.message });
+    }
+  },
   async store(req, res) {
+  logger.info(`${req.user?.name || 'Unknown'} - Publicación masiva iniciada`);
+  logger.info('Datos recibidos:');
+  logger.info(JSON.stringify(req.body, null, 2));
+
+  const { products, marketplaces, pool, mode } = req.body;
+  const user_id = req.user.id;
+  const company_id = req.user.company_id;
+  const metadata = getRequestMetadata(req);
+
+  // Extraer warehouse_ids y primary
+  const warehouse_ids = pool.warehouses.map(w => w.warehouse_id);
+  const primary_warehouse_id = pool.primary_warehouse.warehouse_id;
+
+  // Validar marketplaces reales
+  const marketplaceIds = marketplaces.map(mp => mp.id);
+  const validation = await MarketplaceRepository.findByIds(marketplaceIds);
+  if (!validation.valid) {
+    return res.status(400).json({ success: false, msg: "someMarketplacesNotFound" });
+  }
+  const validMarketplaces = validation.marketplaces;
+
+  const successResults = [];
+  const errorResults = [];
+
+  for (const mp of validMarketplaces) {
+    const config = marketplaces.find(m => m.id === mp.id)?.publishing_config || {};
+    try {
+      const result = await PublishingService.publishProducts(
+        products,
+        mp,
+        { id: primary_warehouse_id }, // Simulamos warehouse con ID
+        user_id,
+        company_id,
+        mode,
+        config // ✅ Esta es la config por marketplace
+      );
+      if (result.auth_required) {
+        return res.status(401).json({ msg: "auth_required", auth_url: result.auth_url });
+      }
+      successResults.push(...result.success);
+      errorResults.push(...result.errors);
+    } catch (err) {
+      logger.error(`Error en marketplace ${mp.id}:`, err.message);
+      errorResults.push(...products.map(p => ({
+        product_id: p.id,
+        marketplace_id: mp.id,
+        error: err.message || 'Error interno'
+      })));
+    }
+  }
+
+  await LogRepository.create({
+    user_id: metadata.user_id,
+    action: 'publishing_task.create',
+    description: `Publicación: ${successResults.length} éxitos, ${errorResults.length} errores`,
+    ip_address: metadata.ip_address,
+    user_agent: metadata.user_agent,
+    status: errorResults.length === 0 ? 'success' : 'partial_success',
+    meta: { 
+      warehouse_id: primary_warehouse_id,
+      marketplace_ids: marketplaceIds,
+      success_count: successResults.length,
+      error_count: errorResults.length,
+      mode,
+      product_count: products.length
+    }
+  });
+
+  return res.status(200).json({
+  success: successResults.length > 0,
+  has_errors: errorResults.length > 0,
+  message: errorResults.length > 0 
+    ? "Algunos productos no se pudieron publicar"
+    : "Publicación completada",
+  data: { // ✅ usa "data" para evitar colisión
+    success: successResults,
+    errors: errorResults
+  }
+});
+},
+/*async store(req, res) {
+  logger.info(`${req.user?.name || 'Unknown'} - Publicación masiva iniciada`);
+  logger.info('Datos recibidos:', JSON.stringify(req.body, null, 2));
+
+  const { products, marketplaces, warehouses, mode, marketplaceConfig } = req.body;
+  const user_id = req.user.id;
+  const company_id = req.user.company_id;
+  const metadata = getRequestMetadata(req);
+
+  // Validar almacén principal
+  const primaryWarehouse = warehouses.find(w => w.isPrimary);
+  if (!primaryWarehouse) {
+    return res.status(400).json({ msg: "primaryWarehouseRequired" });
+  }
+
+  // Validar marketplaces
+const marketplaceIds = marketplaces.map(mp => mp.id);
+const validation = await MarketplaceRepository.findByIds(marketplaceIds);
+
+if (!validation.valid) {
+  return res.status(400).json({ 
+    success: false,
+    msg: "someMarketplacesNotFound" 
+  });
+}
+
+// Ahora `validMarketplaces` es el array que necesitas para usar después
+const validMarketplaces = validation.marketplaces;
+
+  const successResults = [];
+  const errorResults = [];
+
+  // ✅ Iterar SOLO por marketplace y delegar a PublishingService
+  for (const mp of validMarketplaces) {
+    try {
+      const result = await PublishingService.publishProducts(
+        products,
+        mp,
+        primaryWarehouse,
+        user_id,
+        company_id,
+        mode,
+        marketplaceConfig?.[mp.id] || {}
+      );
+
+      if (result.auth_required) {
+        return res.status(401).json({
+          msg: "auth_required",
+          auth_url: result.auth_url
+        });
+      }
+
+      successResults.push(...result.success);
+      errorResults.push(...result.errors);
+
+    } catch (err) {
+      logger.error(`Error masivo en marketplace ${mp.id}:`, err.message);
+      // Registrar error global para este marketplace
+      errorResults.push(...products.map(p => ({
+        product_id: p.id,
+        marketplace_id: mp.id,
+        error: err.message || 'Error interno'
+      })));
+    }
+  }
+
+  // Registrar log
+  await LogRepository.create({
+    user_id: metadata.user_id,
+    action: 'publishing_task.create',
+    description: `Publicación masiva: ${successResults.length} éxitos, ${errorResults.length} errores`,
+    ip_address: metadata.ip_address,
+    user_agent: metadata.user_agent,
+    status: errorResults.length === 0 ? 'success' : 'partial_success',
+    meta: { 
+      warehouse_id: primaryWarehouse.id,
+      marketplace_ids: marketplaceIds,
+      success_count: successResults.length,
+      error_count: errorResults.length,
+      mode,
+      product_count: products.length
+    }
+  });
+
+  res.status(200).json({
+    success: successResults.length > 0,
+    has_errors: errorResults.length > 0,
+    message: errorResults.length > 0 
+      ? "Algunos productos no se pudieron publicar"
+      : "Publicación completada",
+    success: successResults,
+    errors: errorResults
+  });
+},*/
+  /*async store(req, res) {
     logger.info(`${req.user?.name || 'Unknown'} - Registra publicación de productos`);
     logger.info('Datos recibidos:');
     logger.info(JSON.stringify(req.body));
@@ -242,7 +475,7 @@ const ProductPublishingTaskController = {
         success: successResults,
         errors: errorResults // 👈 aquí están los errores por producto
     });
-  },
+  },*/
   // 2. Actualizar estado (para reintentos, sincronización, etc.)
   async updateStatus(req, res) {
     logger.info(`${req.user?.name || 'Unknown'} - Actualiza estado de tarea de publicación`);

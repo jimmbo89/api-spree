@@ -22,7 +22,7 @@ const { listWarehouseSchema, storeWarehouseSchema, updateWarehouseSchema, idWare
 const { businessTypeSchema, updateBusinessTypeSchema, idBusinessTypeSchema } = require("./middlewares/validations/businessTypeValidations.js");
 const ProductCategoryController = require("./controllers/ProductCategoryController.js");
 const { productCategorySchema, updateProductCategorySchema, idProductCategorySchema } = require("./middlewares/validations/productCategoryValidations.js");
-const { listProductsSchema, storeProductSchema, updateProductSchema, idProductSchema } = require("./middlewares/validations/productValidations.js");
+const { listProductsSchema, storeProductSchema, updateProductSchema, idProductSchema, listByWarehouseIdsSchema } = require("./middlewares/validations/productValidations.js");
 const ProductController = require("./controllers/ProductController.js");
 const { listWarehouseProductSchema, storeWarehouseProductSchema, updateWarehouseProductSchema, idWarehouseProductSchema, transferSchema, bulkUploadSchema } = require("./middlewares/validations/warehouseProductValidations.js");
 const WarehouseProductController = require("./controllers/WarehouseProductController.js");
@@ -38,6 +38,8 @@ const ProductPublishingTaskController = require("./controllers/ProductPublishing
 const { storeMarketplaceCredentialSchema, findByMarketplaceCredentialSchema, updateMarketplaceCredentialSchema } = require("./middlewares/validations/marketplaceCredentialValidations.js");
 const MarketplaceCredentialController = require("./controllers/MarketplaceCredentialController.js");
 const OAuthController = require("./controllers/OAuthController.js");
+const { listPoolsSchema, updatePoolSchema, storePoolSchema, idPoolSchema } = require("./middlewares/validations/poolValidations.js");
+const PoolController = require("./controllers/PoolController.js");
 const router = express.Router();
 
 
@@ -164,6 +166,7 @@ router.post("/warehouse-product", requireRoles(['Admin']), validateSchema(storeW
 router.post("/warehouse-product-update", requireRoles(['Admin']), validateSchema(updateWarehouseProductSchema), WarehouseProductController.update);
 router.post("/warehouse-product-destroy", requireRoles(['Admin']), validateSchema(idWarehouseProductSchema), WarehouseProductController.destroy);
 router.post("/warehouse-product-transfer", requireRoles(['Admin']), validateSchema(transferSchema), WarehouseProductController.transfer );
+router.post("/warehouse-products-by-ids", requireRoles(['Admin']), validateSchema(listByWarehouseIdsSchema), WarehouseProductController.listByWarehouseIds);
 //router.post("/warehouse-product-bulk-preview", requireRoles(['Admin']), multerGeneric('file'), validateSchema(bulkUploadSchema), WarehouseProductController.bulkUploadPreview);
 //router.post("/warehouse-product-bulk-confirm", requireRoles(['Admin']), WarehouseProductController.bulkUploadConfirm);
 
@@ -188,7 +191,13 @@ router.post("/product-field-mapping-destroy", requireRoles(['Admin']), validateS
 router.post("/product-field-mapping-show", requireRoles(['Admin']), validateSchema(idProductFieldMappingSchema), ProductFieldMappingController.show);
 router.post("/product-field-mapping-list", requireRoles(['Admin']), validateSchema(listProductFieldMappingSchema), ProductFieldMappingController.list);
 
+//rutas de pools
+router.post("/pool-list", requireRoles(['Admin']), validateSchema(listPoolsSchema), PoolController.list);
+router.post("/pool", requireRoles(['Admin']), validateSchema(storePoolSchema), PoolController.store);
+router.post("/pool-update", requireRoles(['Admin']), validateSchema(updatePoolSchema), PoolController.update);
+router.post("/pool-destroy", requireRoles(['Admin']), validateSchema(idPoolSchema), PoolController.destroy);
 //Rutas de publicaciones de productos
+router.post("/marketplaces-pools", requireRoles(['Admin']), validateSchema(listProductPublishingTaskSchema), ProductPublishingTaskController.warehouseMarketplaces);
 router.post("/publishing-task", requireRoles(['Admin']), validateSchema(storeProductPublishingTaskSchema), ProductPublishingTaskController.store);
 router.post("/publishing-task-update-status", requireRoles(['Admin']), validateSchema(updateProductPublishingTaskStatusSchema), ProductPublishingTaskController.updateStatus);
 router.post("/publishing-task-list", requireRoles(['Admin']), validateSchema(listProductPublishingTaskSchema), ProductPublishingTaskController.list);

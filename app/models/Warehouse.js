@@ -21,6 +21,9 @@ module.exports = (sequelize, DataTypes) => {
       otherKey: 'product_id',
       as: 'products'
     });
+     Warehouse.hasMany(models.PoolWarehouse, { foreignKey: 'warehouse_id', as: 'poolWarehouses', onDelete: 'CASCADE' });
+    // Relación con Pool a través de PoolWarehouse
+    Warehouse.belongsToMany(models.Pool, { through: models.PoolWarehouse, foreignKey: 'warehouse_id', otherKey: 'pool_id', as: 'pools' });
     }
   }
 

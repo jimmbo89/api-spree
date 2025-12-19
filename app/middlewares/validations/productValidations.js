@@ -68,9 +68,19 @@ const listProductsSchema = Joi.object({
   // ❌ Eliminado: branch_id, status
 });
 
+const listByWarehouseIdsSchema = Joi.object({
+  company_id: Joi.number().integer().required(),
+  warehouse_ids: Joi.array()
+    .items(Joi.number().integer().required())
+    .min(1)
+    .required()
+    .label('warehouse_ids')
+});
+
 module.exports = {
   storeProductSchema,
   updateProductSchema,
   idProductSchema,
-  listProductsSchema
+  listProductsSchema,
+  listByWarehouseIdsSchema
 };
