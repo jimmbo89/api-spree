@@ -123,9 +123,9 @@ class MercadoLibreAdapter extends BaseAdapter {
         })
       ]);
 
-      logger.info(`[MercadoLibreAdapter] Atributos obtenidos para categoría ${categoryId}:`);
-      logger.info(JSON.stringify(attributesRes.data));
-      logger.info(JSON.stringify(categoryRes.data));
+      //logger.info(`[MercadoLibreAdapter] Atributos obtenidos para categoría ${categoryId}:`);
+      //logger.info(JSON.stringify(attributesRes.data));
+      //logger.info(JSON.stringify(categoryRes.data));
 
       const categoryAttributes = Array.isArray(attributesRes.data) ? attributesRes.data : [];
       const categoryInfoData = categoryRes.data || {};
@@ -155,7 +155,7 @@ class MercadoLibreAdapter extends BaseAdapter {
     }
   }
 
-  async publish(transformedProduct) {
+  /*async publish(transformedProduct) {
   try {
     logger.info("[MercadoLibreAdapter] Iniciando publicación...");
     const hasValidCredentials = await this.ensureValidCredentials();
@@ -239,6 +239,93 @@ class MercadoLibreAdapter extends BaseAdapter {
     return {
       success: true,
       data: response.data,
+      external_id: response.data.id,
+    };
+  } catch (error) {
+    logger.error("[MercadoLibreAdapter] Error en publicación:");
+    if (error.response) {
+      logger.error(`Status: ${error.response.status}`);
+      logger.error(`Error: ${JSON.stringify(error.response.data)}`);
+    }
+    return this.handlePublishError(error);
+  }
+}*/
+  
+  async publish(transformedProduct) {
+  try {
+    logger.info("[MercadoLibreAdapter] Iniciando publicación...");
+    const hasValidCredentials = await this.ensureValidCredentials();
+    if (!hasValidCredentials) {
+      return await this.getAuthUrl();
+    }
+
+    const categoryId = (transformedProduct.category_id || '').trim();
+    const categorySettings = transformedProduct.category_settings || {};
+    const catalogDomain = categorySettings?.settings?.catalog_domain;
+    const isUserProduct = !catalogDomain || catalogDomain === "MLC-UNCLASSIFIED_PRODUCTS";
+    const hasVariations = Array.isArray(transformedProduct.variations) && transformedProduct.variations.length > 0;
+
+    const productToPublish = {
+      category_id: categoryId,
+      price: transformedProduct.price,
+      available_quantity: transformedProduct.available_quantity ?? transformedProduct.stock ?? 0,
+      currency_id: "CLP",
+      buying_mode: "buy_it_now",
+      listing_type_id: "bronze",
+      condition: "new",
+      pictures: transformedProduct.pictures || [],
+      site_id: this.getSiteId(),
+    };
+
+    if (Array.isArray(transformedProduct.attributes)) {
+      productToPublish.attributes = transformedProduct.attributes;
+    }
+    if (Array.isArray(transformedProduct.sale_terms)) {
+      productToPublish.sale_terms = transformedProduct.sale_terms;
+    }
+    if (hasVariations) {
+      productToPublish.variations = transformedProduct.variations;
+    }
+
+    // ✅ Regla definitiva: title vs family_name
+    if (isUserProduct) {
+      productToPublish.family_name = (
+        (transformedProduct.family_name || transformedProduct.name || "Producto")
+          .toString()
+          .trim()
+          .substring(0, 60) || "Producto"
+      );
+    } else {
+      const title = (transformedProduct.title || transformedProduct.name || "").trim();
+      if (title.length < 6 || title.length > 60) {
+        return {
+          success: false,
+          error: `Título inválido (${title.length} caracteres). Debe tener entre 6 y 60 caracteres.`,
+        };
+      }
+      productToPublish.title = title;
+    }
+
+    logger.info("[MercadoLibreAdapter] === PAYLOAD FINAL ===");
+    logger.info(JSON.stringify(productToPublish, null, 2));
+
+    const response = await proxyHelper.post(
+      "https://api.mercadolibre.com/items",
+      productToPublish,
+      {
+        headers: {
+          Authorization: `Bearer ${this.credential.access_token}`,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        timeout: 30000,
+      }
+    );
+
+    logger.info(`[MercadoLibreAdapter] ✅ ¡Éxito! ID: ${response.data.id}`);
+    return {
+      success: true,
+       data:response.data,
       external_id: response.data.id,
     };
   } catch (error) {
