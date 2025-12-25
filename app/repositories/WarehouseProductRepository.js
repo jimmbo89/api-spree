@@ -478,20 +478,28 @@ async getCountsByWarehouse(warehouseIds) {
     return record;
   },
 
-async getProductAndWarehouseData(productId, warehouseId) {
-  const [product, warehouseProduct] = await Promise.all([
-    ProductRepository.findById(productId),
-    WarehouseProductRepository.findByProductAndWarehouse(productId, warehouseId)
-  ]);
+  async getProductAndWarehouseData(productId, warehouseId) {
+    const [product, warehouseProduct] = await Promise.all([
+      ProductRepository.findById(productId),
+      WarehouseProductRepository.findByProductAndWarehouse(productId, warehouseId)
+    ]);
 
-  if (!product) {
-    throw new Error('productNotFound');
-  }
-  if (!warehouseProduct) {
-    throw new Error('warehouseProductNotFound');
-  }
+    if (!product) {
+      throw new Error('productNotFound');
+    }
+    if (!warehouseProduct) {
+      throw new Error('warehouseProductNotFound');
+    }
 
-  return { product, warehouseProduct };
+    return { product, warehouseProduct };
+  },
+
+  async findByWarehouseAndProduct(warehouseId, productId) {
+  return await WarehouseProduct.findOne({
+    where: { warehouse_id: warehouseId, product_id: productId }
+    // Si usas soft delete y quieres incluir "eliminados", añade:
+    // paranoid: false
+  });
 }
 };
 

@@ -105,10 +105,18 @@ const listWarehouseProductSchema = Joi.object({
 });
 
 const transferSchema = Joi.object({
+  movement_type: Joi.string().trim().max(500).required(),
+  origin_warehouse_id: Joi.number().integer().positive().required(),
+  destination_warehouse_id: Joi.number().integer().positive().required(),
   product_id: Joi.number().integer().positive().required(),
-  from_warehouse_id: Joi.number().integer().positive().required(),
-  to_warehouse_id: Joi.number().integer().positive().required(),
-  quantity: Joi.number().integer().min(1).required()
+  variants: Joi.array().items(
+    Joi.object({
+      variant_id: Joi.number().integer().positive().required(),
+      quantity: Joi.number().integer().min(1).required()
+    })
+  ).min(1).required(),
+  reason: Joi.string().trim().max(500).required(), // ✅ Obligatorio
+  notes: Joi.string().trim().max(1000).optional().allow(null, '') // ✅ Opcional
 });
 
 const bulkUploadSchema = Joi.object({
@@ -133,11 +141,39 @@ const bulkUploadSchema = Joi.object({
     .required()
 });
 
+const variantSchema = Joi.object({
+  variant_id: Joi.number().integer().positive().required(),
+  quantity: Joi.number().integer().min(1).required(),
+  // Solo para entrada
+  local_sku: Joi.string().optional().allow(null, ''),
+  price: Joi.number().min(0).optional(),
+  promotional_price: Joi.number().min(0).optional().allow(null)
+});
+
+const productSchema = Joi.object({
+  product_id: Joi.number().integer().positive().required(),
+  variants: Joi.array().items(variantSchema).min(1).required()
+});
+
+const bulkTransferSchema = Joi.object({
+  movement_type: Joi.string().valid('entry', 'exit', 'transfer').required(),
+  origin_warehouse_id: Joi.number().integer().positive().required(),
+  destination_warehouse_id: Joi.number().integer().positive().when('movement_type', {
+    is: 'transfer',
+    then: Joi.required(),
+    otherwise: Joi.optional().valid(null)
+  }),
+  products: Joi.array().items(productSchema).min(1).required(),
+  reason: Joi.string().trim().max(500).required(),
+  notes: Joi.string().trim().max(1000).optional().allow(null, '')
+});
+
 module.exports = {
   storeWarehouseProductSchema,
   updateWarehouseProductSchema,
   idWarehouseProductSchema,
   listWarehouseProductSchema,
   transferSchema,
-  bulkUploadSchema
+  bulkUploadSchema,
+  bulkTransferSchema
 };

@@ -11,10 +11,12 @@ const {
   UserRepository,
   BranchRepository,
   LogRepository,
+  InventoryMovementRepository,
 } = require("../repositories");
 const fs = require("fs").promises;
-const { detectChanges } = require("../util/auditUtils");
 const { getRequestMetadata } = require("../util/requestUtil");
+const { getUserId } = require("../../config/context");
+const { v4: uuidv4 } = require('uuid');
 
 const WarehouseProductController = {
   async list(req, res) {
@@ -85,7 +87,7 @@ const WarehouseProductController = {
 
   async getProductsNotInWarehouse(req, res) {
     logger.info(
-      `${req.user?.name || "Unknown"} - Obtiene productos no en almacén`
+      `${req.user?.name || "Unknown"} - Obtiene productos del almacén`
     );
     const { warehouse_id, company_id, product_id } = req.body;
     try {
@@ -316,11 +318,7 @@ const WarehouseProductController = {
   },
 
   async update(req, res) {
-    logger.info(
-      `${req.user?.name || "Unknown"} - Actualiza warehouse_product ${
-        req.body.id
-      }`
-    );
+    logger.info( `${req.user?.name || "Unknown"} - Actualiza warehouse_product ${ req.body.id }` );
     logger.info("Datos recibidos del warehouse_product:");
     logger.info(JSON.stringify(req.body));
 
@@ -538,145 +536,1248 @@ const WarehouseProductController = {
       res.status(500).json({ error: "ServerError", details: error.message });
     }
   },
+  async createMovement(req, res) {
+  logger.info(`${req.user?.name || "Unknown"} - Crea movimiento de inventario`);
+  logger.info("Datos recibidos:", JSON.stringify(req.body));
 
-  async transfer(req, res) {
-    logger.info(
-      `${req.user?.name || "Unknown"} - Transfiere stock entre almacenes`
-    );
-    const { product_id, from_warehouse_id, to_warehouse_id, quantity } =
-      req.body;
-    const user_id = req.user.id;
-    let transaction;
+  const {
+    movement_type,           // 'entry', 'exit', 'transfer'
+    origin_warehouse_id,     // Siempre requerido
+    destination_warehouse_id, // Solo para 'transfer'
+    product_id,
+    variants,                // Array de variantes
+    reason,
+    notes
+  } = req.body;
 
-    try {
-      if (from_warehouse_id === to_warehouse_id) {
-        return res
-          .status(400)
-          .json({ msg: "Los almacenes deben ser distintos" });
+  const currentUserId = req.user.id;
+  const referenceId = uuidv4();
+  let transaction;
+
+  try {
+    transaction = await sequelize.transaction();
+
+    // === Validar movimiento_type ===
+    if (!['entry', 'exit', 'transfer'].includes(movement_type)) {
+      await transaction.rollback();
+      return res.status(400).json({ success: false, message: "Tipo de movimiento inválido" });
+    }
+
+    // === Validar que destino exista solo en transferencia ===
+    if (movement_type === 'transfer' && !destination_warehouse_id) {
+      await transaction.rollback();
+      return res.status(400).json({ success: false, message: "Almacén de destino requerido para transferencia" });
+    }
+    if (movement_type !== 'transfer' && destination_warehouse_id) {
+      await transaction.rollback();
+      return res.status(400).json({ success: false, message: "Almacén de destino no permitido en entrada/salida" });
+    }
+
+    // === Validar almacenes y producto ===
+    const originWarehouse = await WarehouseRepository.findById(origin_warehouse_id);
+    if (!originWarehouse) {
+      await transaction.rollback();
+      return res.status(400).json({ success: false, message: "Almacén de origen no encontrado" });
+    }
+
+    let destWarehouse = null;
+    if (movement_type === 'transfer') {
+      destWarehouse = await WarehouseRepository.findById(destination_warehouse_id);
+      if (!destWarehouse) {
+        await transaction.rollback();
+        return res.status(400).json({ success: false, message: "Almacén de destino no encontrado" });
       }
+      if (origin_warehouse_id === destination_warehouse_id) {
+        await transaction.rollback();
+        return res.status(400).json({ success: false, message: "Origen y destino deben ser distintos" });
+      }
+    }
+
+    const product = await ProductRepository.findById(product_id);
+    if (!product) {
+      await transaction.rollback();
+      return res.status(400).json({ success: false, message: "Producto no encontrado" });
+    }
+
+    // === Asegurar warehouse_product en el almacén de origen ===
+    let originWp = await WarehouseProductRepository.findByWarehouseAndProduct(origin_warehouse_id, product_id);
+    if (!originWp) {
+      originWp = await WarehouseProductRepository.create({
+        product_id,
+        warehouse_id: origin_warehouse_id,
+        active: true,
+        company_id: originWarehouse.company_id,
+        branch_id: originWarehouse.branch_id,
+        user_id: currentUserId
+      }, { transaction });
+    }
+
+    // === Para transferencia: asegurar warehouse_product en destino ===
+    let destWp = null;
+    if (movement_type === 'transfer') {
+      destWp = await WarehouseProductRepository.findByWarehouseAndProduct(destination_warehouse_id, product_id);
+      if (!destWp) {
+        destWp = await WarehouseProductRepository.create({
+          product_id,
+          warehouse_id: destination_warehouse_id,
+          active: true,
+          company_id: destWarehouse.company_id,
+          branch_id: destWarehouse.branch_id,
+          user_id: currentUserId
+        }, { transaction });
+      }
+    }
+
+    // === Cargar variantes actuales del origen (para validar stock en 'exit' y 'transfer') ===
+    const originWpVariants = await WarehouseProductVariantRepository.findByWarehouseProductId(originWp.id);
+    const originVariantMap = new Map(originWpVariants.map(v => [v.variant_id, v]));
+
+    // === Procesar cada variante ===
+    for (const variantData of variants) {
+      const { 
+        variant_id, 
+        quantity,
+        // Campos solo para 'entry'
+        local_sku, 
+        price, 
+        promotional_price 
+      } = variantData;
+
       if (!Number.isInteger(quantity) || quantity <= 0) {
-        return res
-          .status(400)
-          .json({ msg: "quantity debe ser entero positivo" });
+        await transaction.rollback();
+        return res.status(400).json({ success: false, message: `Cantidad inválida para variante ${variant_id}` });
       }
 
-      transaction = await sequelize.transaction();
+      // === VALIDACIONES POR TIPO ===
+      let originVariant = null;
+      let originalStockOrigin = 0;
 
-      const fromWh = await WarehouseRepository.findById(from_warehouse_id);
-      const toWh = await WarehouseRepository.findById(to_warehouse_id);
-      const product = await ProductRepository.findById(product_id);
-      if (!fromWh || !toWh || !product) {
-        await transaction.rollback();
-        return res.status(400).json({ msg: "Datos inválidos" });
-      }
-
-      const fromWp = await WarehouseProductRepository.findByProductAndWarehouse(
-        product_id,
-        from_warehouse_id
-      );
-      if (!fromWp) {
-        await transaction.rollback();
-        return res
-          .status(400)
-          .json({ msg: "Producto no existe en almacén origen" });
-      }
-
-      const fromWpvs =
-        await WarehouseProductVariantRepository.findByWarehouseProductId(
-          fromWp.id
-        );
-      const totalStock = fromWpvs.reduce((sum, v) => sum + v.stock, 0);
-      if (totalStock < quantity) {
-        await transaction.rollback();
-        return res
-          .status(400)
-          .json({
-            msg: "stockInsufficient",
-            available: totalStock,
-            requested: quantity,
+      if (movement_type === 'exit' || movement_type === 'transfer') {
+        originVariant = originVariantMap.get(variant_id);
+        if (!originVariant) {
+          await transaction.rollback();
+          return res.status(400).json({ 
+            success: false, 
+            message: `Variante ${variant_id} no encontrada en el almacén de origen` 
           });
-      }
-
-      // Distribuir reducción de stock
-      let remaining = quantity;
-      for (const wpv of fromWpvs) {
-        if (remaining <= 0) break;
-        const reduce = Math.min(wpv.stock, remaining);
-        await WarehouseProductVariantRepository.update(
-          wpv,
-          { stock: wpv.stock - reduce },
-          { transaction }
-        );
-        remaining -= reduce;
-      }
-
-      // Asegurar destino
-      let toWp = await WarehouseProductRepository.findByProductAndWarehouse(
-        product_id,
-        to_warehouse_id
-      );
-      if (!toWp) {
-        toWp = await WarehouseProductRepository.create(
-          {
-            product_id,
-            warehouse_id: to_warehouse_id,
-            active: true,
-            company_id: toWh.company_id,
-            branch_id: toWh.branch_id,
-            user_id,
-          },
-          { transaction }
-        );
-
-        // Crear variante destino
-        const globalVars = await ProductVariantRepository.findByProductId(
-          product_id
-        );
-        for (const gv of globalVars) {
-          await WarehouseProductVariantRepository.create(
-            {
-              warehouse_product_id: toWp.id,
-              variant_id: gv.id,
-              active: true,
-              published: false,
-              price: 0,
-              stock: 0,
-            },
-            { transaction }
-          );
+        }
+        originalStockOrigin = originVariant.stock;
+        if (originalStockOrigin < quantity) {
+          await transaction.rollback();
+          return res.status(400).json({ 
+            success: false, 
+            message: `Stock insuficiente para variante ${variant_id}` 
+          });
         }
       }
 
-      const toWpvs =
-        await WarehouseProductVariantRepository.findByWarehouseProductId(
-          toWp.id
+      // === PROCESAR SEGÚN EL TIPO ===
+      if (movement_type === 'entry') {
+        // --- ENTRADA: crear o actualizar variante en el MISMO almacén ---
+        let wpVariant = await WarehouseProductVariantRepository.findByVariantAndWarehouseProduct(
+          variant_id,
+          originWp.id
         );
-      let added = 0;
-      for (const wpv of toWpvs) {
-        if (added >= quantity) break;
-        const add = Math.min(quantity - added, 1000); // simple distribución
+
+        let newStock, oldStock = 0;
+        if (wpVariant) {
+          // Ya existe: aumentar stock
+          oldStock = wpVariant.stock;
+          newStock = oldStock + quantity;
+          await WarehouseProductVariantRepository.update(wpVariant, {
+            stock: newStock,
+            // Solo actualizar precio/SKU si se envían (para edición)
+            ...(local_sku !== undefined && { local_sku }),
+            ...(price !== undefined && { price }),
+            ...(promotional_price !== undefined && { promotional_price }),
+            active: true
+          }, { transaction });
+        } else {
+          // No existe: crear nueva
+          newStock = quantity;
+          await WarehouseProductVariantRepository.create({
+            warehouse_product_id: originWp.id,
+            variant_id,
+            stock: newStock,
+            local_sku: local_sku || product.sku,
+            price: price || product.base_price || 0,
+            promotional_price: promotional_price || null,
+            active: true,
+            published: false
+          }, { transaction });
+        }
+
+        // Registrar movimiento de entrada
+        await InventoryMovementRepository.create({
+          warehouse_id: origin_warehouse_id,
+          product_id,
+          variant_id,
+          company_id: originWarehouse.company_id,
+          branch_id: originWarehouse.branch_id,
+          movement_type: 'entry',
+          quantity,
+          stock_before: oldStock,
+          stock_after: newStock,
+          unit_price: price || product.base_price || 0,
+          total_value: (price || product.base_price || 0) * quantity,
+          reference_type: 'manual',
+          reference_id: referenceId,
+          reason: reason.trim(),
+          notes: notes?.trim() || null,
+          user_id: currentUserId
+        }, { transaction });
+
+      } else if (movement_type === 'exit') {
+        // --- SALIDA: reducir stock en el MISMO almacén ---
+        const newStock = originalStockOrigin - quantity;
+        const updateData = { stock: newStock };
+
+        if (newStock === 0) {
+          updateData.price = null;
+          updateData.promotional_price = null;
+          updateData.local_sku = null;
+          updateData.active = false;
+          updateData.published = false;
+        }
+
         await WarehouseProductVariantRepository.update(
-          wpv,
-          { stock: wpv.stock + add },
+          originVariant,
+          updateData,
           { transaction }
         );
-        added += add;
+
+        // Registrar movimiento de salida
+        await InventoryMovementRepository.create({
+          warehouse_id: origin_warehouse_id,
+          product_id,
+          variant_id,
+          company_id: originWarehouse.company_id,
+          branch_id: originWarehouse.branch_id,
+          movement_type: 'exit',
+          quantity,
+          stock_before: originalStockOrigin,
+          stock_after: newStock,
+          unit_price: originVariant.price,
+          total_value: originVariant.price ? originVariant.price * quantity : null,
+          reference_type: 'manual',
+          reference_id: referenceId,
+          reason: reason.trim(),
+          notes: notes?.trim() || null,
+          user_id: currentUserId
+        }, { transaction });
+
+      } else if (movement_type === 'transfer') {
+        // --- TRANSFERENCIA: mover entre almacenes (tu lógica actual) ---
+        const newStockOrigin = originalStockOrigin - quantity;
+        const updateDataOrigin = { stock: newStockOrigin };
+
+        if (newStockOrigin === 0) {
+          updateDataOrigin.price = null;
+          updateDataOrigin.promotional_price = null;
+          updateDataOrigin.local_sku = null;
+          updateDataOrigin.active = false;
+          updateDataOrigin.published = false;
+        }
+
+        await WarehouseProductVariantRepository.update(
+          originVariant,
+          updateDataOrigin,
+          { transaction }
+        );
+
+        // Actualizar/crear en destino
+        let destWpVariant = await WarehouseProductVariantRepository.findByVariantAndWarehouseProduct(
+          variant_id,
+          destWp.id
+        );
+        let oldStockDest = 0, newStockDest = 0;
+
+        if (destWpVariant) {
+          oldStockDest = destWpVariant.stock;
+          newStockDest = oldStockDest + quantity;
+          await WarehouseProductVariantRepository.update(
+            destWpVariant,
+            { stock: newStockDest },
+            { transaction }
+          );
+        } else {
+          oldStockDest = 0;
+          newStockDest = quantity;
+          await WarehouseProductVariantRepository.create({
+            warehouse_product_id: destWp.id,
+            variant_id,
+            active: true,
+            published: false,
+            local_sku: originVariant.local_sku || null,
+            price: originVariant.price || 0,
+            promotional_price: originVariant.promotional_price,
+            stock: newStockDest
+          }, { transaction });
+        }
+
+        // Movimientos de transferencia
+        const baseMovement = {
+          product_id,
+          variant_id,
+          user_id: currentUserId,
+          reason: reason.trim(),
+          notes: notes?.trim() || null,
+          reference_type: 'transfer',
+          reference_id: referenceId,
+          origin_warehouse_id,
+          destination_warehouse_id
+        };
+
+        await InventoryMovementRepository.create({
+          ...baseMovement,
+          warehouse_id: origin_warehouse_id,
+          company_id: originWarehouse.company_id,
+          branch_id: originWarehouse.branch_id,
+          movement_type: 'transfer_exit',
+          quantity,
+          stock_before: originalStockOrigin,
+          stock_after: newStockOrigin,
+          unit_price: originVariant.price,
+          total_value: originVariant.price ? originVariant.price * quantity : null
+        }, { transaction });
+
+        await InventoryMovementRepository.create({
+          ...baseMovement,
+          warehouse_id: destination_warehouse_id,
+          company_id: destWarehouse.company_id,
+          branch_id: destWarehouse.branch_id,
+          movement_type: 'transfer_entry',
+          quantity,
+          stock_before: oldStockDest,
+          stock_after: newStockDest,
+          unit_price: originVariant.price,
+          total_value: originVariant.price ? originVariant.price * quantity : null
+        }, { transaction });
+      }
+    }
+
+    await transaction.commit();
+
+    // === Registrar en log ===
+    const metadata = getRequestMetadata(req);
+    await LogRepository.create({
+      user_id: metadata.user_id,
+      action: "warehouse.movement.create",
+      description: `${movement_type} completado para producto ${product.sku}`,
+      ip_address: metadata.ip_address,
+      user_agent: metadata.user_agent,
+      status: "success",
+      extra: JSON.stringify({ reference_id: referenceId })
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Movimiento registrado exitosamente",
+      reference_id: referenceId
+    });
+
+  } catch (error) {
+    if (transaction) await transaction.rollback();
+    logger.error("Error en createMovement:", error);
+
+    const metadata = getRequestMetadata(req);
+    await LogRepository.create({
+      user_id: metadata?.user_id,
+      action: "warehouse.movement.create",
+      description: `Error: ${error.message}`,
+      ip_address: metadata?.ip_address,
+      user_agent: metadata?.user_agent,
+      status: "error"
+    });
+
+    return res.status(500).json({ success: false, message: "Error interno al registrar movimiento" });
+  }
+},
+
+// controllers/WarehouseProductController.js
+
+async createBulkMovement(req, res) {
+  logger.info(`${req.user?.name || "Unknown"} - Crea movimiento masivo de inventario`);
+  logger.info("Datos recibidos (bulk):", JSON.stringify(req.body));
+  logger.info(JSON.stringify(req.body));
+
+  const {
+    movement_type,
+    origin_warehouse_id,
+    destination_warehouse_id,
+    products, // [{ product_id, variants: [...] }]
+    reason,
+    notes
+  } = req.body;
+
+  const currentUserId = req.user.id;
+  const referenceId = uuidv4();
+  let transaction;
+
+  try {
+    transaction = await sequelize.transaction();
+
+    // === Validaciones básicas ===
+    await _validateMovementType(movement_type);
+    await _validateDestinationConsistency(movement_type, destination_warehouse_id);
+
+    // === Cargar almacenes y validar ===
+    const originWarehouse = await WarehouseRepository.findById(origin_warehouse_id);
+    if (!originWarehouse) {
+      await transaction.rollback();
+      return res.status(400).json({ success: false, message: "Almacén de origen no encontrado" });
+    }
+
+    let destWarehouse = null;
+    if (movement_type === 'transfer') {
+      destWarehouse = await WarehouseRepository.findById(destination_warehouse_id);
+      if (!destWarehouse) {
+        await transaction.rollback();
+        return res.status(400).json({ success: false, message: "Almacén de destino no encontrado" });
+      }
+      if (origin_warehouse_id === destination_warehouse_id) {
+        await transaction.rollback();
+        return res.status(400).json({ success: false, message: "Origen y destino deben ser distintos" });
+      }
+    }
+
+    // === Procesar cada producto ===
+    for (const { product_id, variants } of products) {
+      await _processProductMovement({
+        movement_type,
+        originWarehouse,
+        destWarehouse,
+        product_id,
+        variants,
+        reason,
+        notes,
+        currentUserId,
+        referenceId,
+        transaction
+      });
+    }
+
+    await transaction.commit();
+
+    // === Log ===
+    const metadata = getRequestMetadata(req);
+    await LogRepository.create({
+      user_id: metadata.user_id,
+      action: "warehouse.bulk_movement.create",
+      description: `${movement_type} masivo completado`,
+      ip_address: metadata.ip_address,
+      user_agent: metadata.user_agent,
+      status: "success",
+      extra: JSON.stringify({ reference_id: referenceId })
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Movimiento masivo registrado exitosamente",
+      reference_id: referenceId
+    });
+
+  } catch (error) {
+    if (transaction) await transaction.rollback();
+    logger.error("Error en createBulkMovement:", error);
+
+    const metadata = getRequestMetadata(req);
+    await LogRepository.create({
+      user_id: metadata?.user_id,
+      action: "warehouse.bulk_movement.create",
+      description: `Error: ${error.message}`,
+      ip_address: metadata?.ip_address,
+      user_agent: metadata?.user_agent,
+      status: "error"
+    });
+
+    return res.status(500).json({ success: false, message: "Error interno al registrar movimiento masivo" });
+  }
+},
+  /*async transferStock(req, res) {
+  logger.info(`${req.user?.name || "Unknown"} - Transfiere producto`);
+  logger.info("Datos recibidos al transferir:");
+  logger.info(JSON.stringify(req.body));
+
+  const {
+    origin_warehouse_id,
+    destination_warehouse_id,
+    product_id,
+    variants,
+    reason,
+    notes
+  } = req.body;
+
+  // Validaciones básicas
+  if (!origin_warehouse_id || !destination_warehouse_id || !product_id || !Array.isArray(variants) || variants.length === 0) {
+    return res.status(400).json({ success: false, message: "Datos incompletos" });
+  }
+
+  if (origin_warehouse_id === destination_warehouse_id) {
+    return res.status(400).json({ success: false, message: "Origen y destino deben ser distintos" });
+  }
+
+  if (!reason || !reason.trim()) {
+    return res.status(400).json({ success: false, message: "El motivo es obligatorio" });
+  }
+
+  const currentUserId = req.user.id;
+  const transferReferenceId = uuidv4();
+  let transaction;
+
+  try {
+    transaction = await sequelize.transaction();
+
+    // === Validar almacenes y producto ===
+    const [originWarehouse, destWarehouse, product] = await Promise.all([
+      WarehouseRepository.findById(origin_warehouse_id),
+      WarehouseRepository.findById(destination_warehouse_id),
+      ProductRepository.findById(product_id)
+    ]);
+
+    if (!originWarehouse || !destWarehouse) {
+      await transaction.rollback();
+      return res.status(400).json({ success: false, message: "Almacén no encontrado" });
+    }
+
+    if (!product) {
+      await transaction.rollback();
+      return res.status(400).json({ success: false, message: "Producto no encontrado" });
+    }
+
+    // === Verificar que el producto esté en el almacén de origen ===
+    const originWp = await WarehouseProductRepository.findByWarehouseAndProduct(origin_warehouse_id, product_id);
+    if (!originWp) {
+      await transaction.rollback();
+      return res.status(400).json({ success: false, message: "El producto no está asociado al almacén de origen" });
+    }
+
+    // === Cargar variantes del origen ===
+    const originWpVariants = await WarehouseProductVariantRepository.findByWarehouseProductId(originWp.id);
+    const originVariantMap = new Map(originWpVariants.map(v => [v.variant_id, v]));
+
+    // === ASEGURAR warehouse_product EN DESTINO (¡FUERA DEL BUCLE!) ===
+    let destWp = await WarehouseProductRepository.findByWarehouseAndProduct(destination_warehouse_id, product_id);
+    if (!destWp) {
+      destWp = await WarehouseProductRepository.create({
+        product_id,
+        warehouse_id: destination_warehouse_id,
+        active: true,
+        code: null,
+        company_id: destWarehouse.company_id,
+        branch_id: destWarehouse.branch_id,
+        user_id: currentUserId
+      }, { transaction });
+    }
+
+    // === Procesar cada variante ===
+    for (const { variant_id, quantity } of variants) {
+      if (!Number.isInteger(quantity) || quantity <= 0) {
+        await transaction.rollback();
+        return res.status(400).json({ success: false, message: `Cantidad inválida para variante ${variant_id}` });
       }
 
-      await transaction.commit();
-      res
-        .status(200)
-        .json({
-          message: "Transferencia realizada",
-          from: from_warehouse_id,
-          to: to_warehouse_id,
-        });
-    } catch (error) {
-      if (transaction) await transaction.rollback();
-      logger.error("WarehouseProductController->transfer: " + error.message);
-      res.status(500).json({ error: "ServerError", details: error.message });
+      const originVariant = originVariantMap.get(variant_id);
+      if (!originVariant) {
+        await transaction.rollback();
+        return res.status(400).json({ success: false, message: `Variante ${variant_id} no encontrada en almacén de origen` });
+      }
+
+      const originalStockOrigin = originVariant.stock;
+      if (originalStockOrigin < quantity) {
+        await transaction.rollback();
+        return res.status(400).json({ success: false, message: `Stock insuficiente para variante ${variant_id}` });
+      }
+
+      // === Actualizar stock en origen ===
+      const newStockOrigin = originalStockOrigin - quantity;
+      const updateDataOrigin = { stock: newStockOrigin };
+
+      if (newStockOrigin === 0) {
+        updateDataOrigin.price = null;
+        updateDataOrigin.promotional_price = null;
+        updateDataOrigin.local_sku = null;
+        updateDataOrigin.active = false;
+        updateDataOrigin.published = false;
+      }
+
+      await WarehouseProductVariantRepository.update(
+        originVariant,
+        updateDataOrigin,
+        { transaction }
+      );
+
+      // === Actualizar o crear variante en destino ===
+      let destWpVariant = await WarehouseProductVariantRepository.findByVariantAndWarehouseProduct(variant_id, destWp.id);
+      let oldStockDest, newStockDest;
+
+      if (destWpVariant) {
+        oldStockDest = destWpVariant.stock;
+        newStockDest = oldStockDest + quantity;
+        await WarehouseProductVariantRepository.update(
+          destWpVariant,
+          { stock: newStockDest },
+          { transaction }
+        );
+      } else {
+        oldStockDest = 0;
+        newStockDest = quantity;
+        await WarehouseProductVariantRepository.create({
+          warehouse_product_id: destWp.id,
+          variant_id,
+          active: true,
+          published: false,
+          local_sku: originVariant.local_sku || null,
+          price: originVariant.price || 0,
+          promotional_price: originVariant.promotional_price,
+          stock: newStockDest
+        }, { transaction });
+      }
+
+      // === Registrar movimientos en Kardex ===
+      const baseMovement = {
+        product_id,
+        variant_id,
+        user_id: currentUserId,
+        reason: reason.trim(),
+        notes: notes?.trim() || null,
+        reference_type: 'transfer',
+        reference_id: transferReferenceId,
+        origin_warehouse_id,
+        destination_warehouse_id,
+        company_id: originWarehouse.company_id,
+        branch_id: originWarehouse.branch_id
+      };
+
+      // Movimiento de SALIDA
+      await InventoryMovementRepository.create({
+        ...baseMovement,
+        warehouse_id: origin_warehouse_id,
+        movement_type: 'transfer_exit',
+        quantity,
+        stock_before: originalStockOrigin,
+        stock_after: newStockOrigin,
+        unit_price: originVariant.price,
+        total_value: originVariant.price ? originVariant.price * quantity : null
+      }, { transaction });
+
+      // Movimiento de ENTRADA
+      await InventoryMovementRepository.create({
+        ...baseMovement,
+        warehouse_id: destination_warehouse_id,
+        company_id: destWarehouse.company_id,
+        branch_id: destWarehouse.branch_id,
+        movement_type: 'transfer_entry',
+        quantity,
+        stock_before: oldStockDest,
+        stock_after: newStockDest,
+        unit_price: originVariant.price,
+        total_value: originVariant.price ? originVariant.price * quantity : null
+      }, { transaction });
     }
-  },
+
+    await transaction.commit();
+
+    // === Registrar en log general ===
+    const metadata = getRequestMetadata(req);
+    await LogRepository.create({
+      user_id: metadata.user_id,
+      action: "warehouse.transfer_stock",
+      description: `Transferencia completada: ${variants.length} variantes de ${product.sku}`,
+      ip_address: metadata.ip_address,
+      user_agent: metadata.user_agent,
+      status: "success",
+      extra: JSON.stringify({ reference_id: transferReferenceId })
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Transferencia completada exitosamente",
+      reference_id: transferReferenceId
+    });
+
+  } catch (error) {
+    if (transaction) await transaction.rollback();
+    logger.error("Error en transferStock:", error);
+
+    const metadata = getRequestMetadata(req);
+    await LogRepository.create({
+      user_id: metadata?.user_id,
+      action: "warehouse.transfer_stock",
+      description: `Error: ${error.message}`,
+      ip_address: metadata?.ip_address,
+      user_agent: metadata?.user_agent,
+      status: "error"
+    });
+
+    return res.status(500).json({ success: false, message: "Error interno al transferir stock" });
+  }
+}*/
+  /*async transferStock(req, res) {
+    logger.info( `${req.user?.name || "Unknown"} - Transfiere producto` );
+    logger.info("Datos recibidos al transferir:");
+    logger.info(JSON.stringify(req.body));
+  const {
+    origin_warehouse_id,
+    destination_warehouse_id,
+    product_id,
+    variants // array de { variant_id, quantity }
+  } = req.body;
+  const currentUserId = req.user.id;
+
+  // Validaciones básicas
+  if (!origin_warehouse_id || !destination_warehouse_id || !product_id || !Array.isArray(variants)) {
+    return res.status(400).json({ success: false, message: "Datos incompletos" });
+  }
+
+  if (origin_warehouse_id === destination_warehouse_id) {
+    return res.status(400).json({ success: false, message: "Origen y destino deben ser distintos" });
+  }
+
+  if (variants.length === 0) {
+    return res.status(400).json({ success: false, message: "Debe transferir al menos una variante" });
+  }
+
+  let transaction;
+  try {
+    transaction = await sequelize.transaction();
+
+    // Validar almacenes
+    const originWarehouse = await WarehouseRepository.findById(origin_warehouse_id);
+    const destWarehouse = await WarehouseRepository.findById(destination_warehouse_id);
+    if (!originWarehouse || !destWarehouse) {
+      await transaction.rollback();
+      return res.status(400).json({ success: false, message: "Almacén no encontrado" });
+    }
+
+    // Validar producto
+    const product = await ProductRepository.findById(product_id);
+    if (!product) {
+      await transaction.rollback();
+      return res.status(400).json({ success: false, message: "Producto no encontrado" });
+    }
+
+    // Verificar que el producto esté en el almacén origen
+    const originWp = await WarehouseProductRepository.findByWarehouseAndProduct(
+      origin_warehouse_id,
+      product_id
+    );
+    if (!originWp) {
+      await transaction.rollback();
+      return res.status(400).json({ success: false, message: "El producto no está asociado al almacén de origen" });
+    }
+
+    // Cargar variantes actuales del origen
+    const originWpVariants = await WarehouseProductVariantRepository.findByWarehouseProductId(originWp.id);
+    const originVariantMap = new Map(originWpVariants.map(v => [v.variant_id, v]));
+
+    // Validar cada variante y cantidad
+    for (const { variant_id, quantity } of variants) {
+      if (!Number.isInteger(quantity) || quantity <= 0) {
+        await transaction.rollback();
+        return res.status(400).json({ success: false, message: `Cantidad inválida para variante ${variant_id}` });
+      }
+
+      const originVariant = originVariantMap.get(variant_id);
+      if (!originVariant) {
+        await transaction.rollback();
+        return res.status(400).json({ success: false, message: `Variante ${variant_id} no está en el almacén de origen` });
+      }
+
+      if (originVariant.stock < quantity) {
+        await transaction.rollback();
+        return res.status(400).json({ success: false, message: `Stock insuficiente para variante ${variant_id}` });
+      }
+
+      const newStock = originVariant.stock - quantity;
+      const updateData = { stock: newStock };
+
+      // ✅ Si el stock llega a 0, limpiar campos sensibles
+      if (newStock === 0) {
+        updateData.price = null;
+        updateData.promotional_price = null;
+        updateData.local_sku = null;
+        updateData.active = false;
+        updateData.published = false;
+      }
+
+      await WarehouseProductVariantRepository.update(
+        originVariant,
+        updateData,
+        { transaction }
+      );
+
+      let destWp = await WarehouseProductRepository.findByWarehouseAndProduct(
+        destination_warehouse_id,
+        product_id
+      );
+
+      if (!destWp) {
+        destWp = await WarehouseProductRepository.create(
+          {
+            product_id,
+            warehouse_id: destination_warehouse_id,
+            active: true,
+            code: null,
+            company_id: destWarehouse.company_id,
+            branch_id: destWarehouse.branch_id,
+            user_id: currentUserId
+          },
+          { transaction }
+        );
+      }
+
+      // 🔺 Verificar si la variante ya existe en el destino
+      let destWpVariant = await WarehouseProductVariantRepository.findByVariantAndWarehouseProduct(
+        variant_id,
+        destWp.id
+      );
+
+      if (destWpVariant) {
+        // Actualizar stock existente
+        await WarehouseProductVariantRepository.update(
+          destWpVariant,
+          { stock: destWpVariant.stock + quantity },
+          { transaction }
+        );
+      } else {
+        // Crear nueva variante en destino
+        await WarehouseProductVariantRepository.create(
+          {
+            warehouse_product_id: destWp.id,
+            variant_id,
+            active: true,
+            published: false,
+            local_sku: originVariant.local_sku || null,
+            price: originVariant.price || 0,
+            promotional_price: originVariant.promotional_price,
+            stock: quantity
+          },
+          { transaction }
+        );
+      }
+    }
+
+    await transaction.commit();
+
+    // ✅ Registrar en log
+    const metadata = getRequestMetadata(req);
+    await LogRepository.create({
+      user_id: metadata.user_id,
+      action: "warehouse.transfer_stock",
+      description: `Producto ${product.sku} transferido de '${originWarehouse.name}' (ID:${origin_warehouse_id}) a '${destWarehouse.name}' (ID:${destination_warehouse_id})`,
+      ip_address: metadata.ip_address,
+      user_agent: metadata.user_agent,
+      status: "success",
+      extra: JSON.stringify({
+        origin_warehouse_id,
+        destination_warehouse_id,
+        product_id,
+        variants
+      })
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Transferencia completada exitosamente"
+    });
+
+  } catch (error) {
+    if (transaction) await transaction.rollback();
+    logger.error("Error en transferStock:", { error: error.message, stack: error.stack });
+
+    const metadata = getRequestMetadata(req);
+    await LogRepository.create({
+      user_id: metadata?.user_id,
+      action: "warehouse.transfer_stock",
+      description: `Error: ${error.message}`,
+      ip_address: metadata?.ip_address,
+      user_agent: metadata?.user_agent,
+      status: "error"
+    });
+
+    return res.status(500).json({ success: false, msg: "Error interno al transferir stock" });
+  }
+}*/
 };
+
+// === Submétodos privados ===
+
+async function _validateMovementType(type) {
+  if (!['entry', 'exit', 'transfer'].includes(type)) {
+    throw new Error("Tipo de movimiento inválido");
+  }
+};
+
+async function _validateDestinationConsistency(movement_type, destination_warehouse_id) {
+  if (movement_type === 'transfer' && !destination_warehouse_id) {
+    throw new Error("Almacén de destino requerido para transferencia");
+  }
+  if (movement_type !== 'transfer' && destination_warehouse_id) {
+    throw new Error("Almacén de destino no permitido en entrada/salida");
+  }
+};
+async function _processProductMovement({
+  movement_type,
+  originWarehouse,
+  destWarehouse,
+  product_id,
+  variants,
+  reason,
+  notes,
+  currentUserId,
+  referenceId,
+  transaction
+}) {
+  // === Validar producto ===
+  const product = await ProductRepository.findById(product_id);
+  if (!product) throw new Error(`Producto ${product_id} no encontrado`);
+
+  // === Asegurar warehouse_product en origen ===
+  let originWp = await WarehouseProductRepository.findByWarehouseAndProduct(
+    originWarehouse.id,
+    product_id
+  );
+  if (!originWp) {
+    originWp = await WarehouseProductRepository.create({
+      product_id,
+      warehouse_id: originWarehouse.id,
+      active: true,
+      company_id: originWarehouse.company_id,
+      branch_id: originWarehouse.branch_id,
+      user_id: currentUserId
+    }, { transaction });
+  }
+
+  // === Para transferencia: asegurar en destino ===
+  let destWp = null;
+  if (movement_type === 'transfer') {
+    destWp = await WarehouseProductRepository.findByWarehouseAndProduct(
+      destWarehouse.id,
+      product_id
+    );
+    if (!destWp) {
+      destWp = await WarehouseProductRepository.create({
+        product_id,
+        warehouse_id: destWarehouse.id,
+        active: true,
+        company_id: destWarehouse.company_id,
+        branch_id: destWarehouse.branch_id,
+        user_id: currentUserId
+      }, { transaction });
+    }
+  }
+
+  // === Cargar variantes actuales del origen (para validar stock) ===
+  const originWpVariants = await WarehouseProductVariantRepository.findByWarehouseProductId(originWp.id);
+  const originVariantMap = new Map(originWpVariants.map(v => [v.variant_id, v]));
+
+  // === Procesar cada variante del producto ===
+  for (const variantData of variants) {
+    await _processVariantMovement({
+      movement_type,
+      originWarehouse,
+      destWarehouse,
+      product,
+      originWp,
+      destWp,
+      originVariantMap,
+      variantData,
+      reason,
+      notes,
+      currentUserId,
+      referenceId,
+      transaction
+    });
+  }
+};
+
+async function _processVariantMovement({
+  movement_type,
+  originWarehouse,
+  destWarehouse,
+  product,
+  originWp,
+  destWp,
+  originVariantMap,
+  variantData,
+  reason,
+  notes,
+  currentUserId,
+  referenceId,
+  transaction
+}) {
+  const { variant_id, quantity, local_sku, price, promotional_price } = variantData;
+
+  if (!Number.isInteger(quantity) || quantity <= 0) {
+    throw new Error(`Cantidad inválida para variante ${variant_id}`);
+  }
+
+  let originVariant = null;
+  let originalStockOrigin = 0;
+
+  if (movement_type === 'exit' || movement_type === 'transfer') {
+    originVariant = originVariantMap.get(variant_id);
+    if (!originVariant) {
+      throw new Error(`Variante ${variant_id} no encontrada en almacén de origen`);
+    }
+    originalStockOrigin = originVariant.stock;
+    if (originalStockOrigin < quantity) {
+      throw new Error(`Stock insuficiente para variante ${variant_id}`);
+    }
+  }
+
+  if (movement_type === 'entry') {
+    await _processEntry({
+      originWp,
+      variant_id,
+      quantity,
+      local_sku,
+      price,
+      promotional_price,
+      product,
+      originWarehouse,
+      reason,
+      notes,
+      currentUserId,
+      referenceId,
+      transaction
+    });
+  } else if (movement_type === 'exit') {
+    await _processExit({
+      originVariant,
+      quantity,
+      originalStockOrigin,
+      originWarehouse,
+      product_id: product.id,
+      variant_id,
+      reason,
+      notes,
+      currentUserId,
+      referenceId,
+      transaction
+    });
+  } else if (movement_type === 'transfer') {
+    await _processTransfer({
+      originVariant,
+      destWp,
+      quantity,
+      originalStockOrigin,
+      originWarehouse,
+      destWarehouse,
+      product_id: product.id,
+      variant_id,
+      reason,
+      notes,
+      currentUserId,
+      referenceId,
+      transaction
+    });
+  }
+};
+
+// --- ENTRADA ---
+async function _processEntry({
+  originWp,
+  variant_id,
+  quantity,
+  local_sku,
+  price,
+  promotional_price,
+  product,
+  originWarehouse,
+  reason,
+  notes,
+  currentUserId,
+  referenceId,
+  transaction
+}) {
+  const wpVariant = await WarehouseProductVariantRepository.findByVariantAndWarehouseProduct(
+    variant_id,
+    originWp.id
+  );
+
+  let newStock, oldStock = 0;
+  if (wpVariant) {
+    oldStock = wpVariant.stock;
+    newStock = oldStock + quantity;
+    await WarehouseProductVariantRepository.update(wpVariant, {
+      stock: newStock,
+      ...(local_sku !== undefined && { local_sku }),
+      ...(price !== undefined && { price }),
+      ...(promotional_price !== undefined && { promotional_price }),
+      active: true
+    }, { transaction });
+  } else {
+    newStock = quantity;
+    await WarehouseProductVariantRepository.create({
+      warehouse_product_id: originWp.id,
+      variant_id,
+      stock: newStock,
+      local_sku: local_sku || product.sku,
+      price: price || product.base_price || 0,
+      promotional_price: promotional_price || null,
+      active: true,
+      published: false
+    }, { transaction });
+  }
+
+  await InventoryMovementRepository.create({
+    warehouse_id: originWarehouse.id,
+    product_id: product.id,
+    variant_id,
+    company_id: originWarehouse.company_id,
+    branch_id: originWarehouse.branch_id,
+    movement_type: 'entry',
+    quantity,
+    stock_before: oldStock,
+    stock_after: newStock,
+    unit_price: price || product.base_price || 0,
+    total_value: (price || product.base_price || 0) * quantity,
+    reference_type: 'manual',
+    reference_id: referenceId,
+    reason: reason.trim(),
+    notes: notes?.trim() || null,
+    user_id: currentUserId
+  }, { transaction });
+};
+
+// --- SALIDA ---
+async function _processExit({
+  originVariant,
+  quantity,
+  originalStockOrigin,
+  originWarehouse,
+  product_id,
+  variant_id,
+  reason,
+  notes,
+  currentUserId,
+  referenceId,
+  transaction
+}) {
+  const newStock = originalStockOrigin - quantity;
+  const updateData = { stock: newStock };
+
+  if (newStock === 0) {
+    updateData.price = null;
+    updateData.promotional_price = null;
+    updateData.local_sku = null;
+    updateData.active = false;
+    updateData.published = false;
+  }
+
+  await WarehouseProductVariantRepository.update(originVariant, updateData, { transaction });
+
+  await InventoryMovementRepository.create({
+    warehouse_id: originWarehouse.id,
+    product_id,
+    variant_id,
+    company_id: originWarehouse.company_id,
+    branch_id: originWarehouse.branch_id,
+    movement_type: 'exit',
+    quantity,
+    stock_before: originalStockOrigin,
+    stock_after: newStock,
+    unit_price: originVariant.price,
+    total_value: originVariant.price ? originVariant.price * quantity : null,
+    reference_type: 'manual',
+    reference_id: referenceId,
+    reason: reason.trim(),
+    notes: notes?.trim() || null,
+    user_id: currentUserId
+  }, { transaction });
+};
+
+// --- TRANSFERENCIA ---
+async function _processTransfer({
+  originVariant,
+  destWp,
+  quantity,
+  originalStockOrigin,
+  originWarehouse,
+  destWarehouse,
+  product_id,
+  variant_id,
+  reason,
+  notes,
+  currentUserId,
+  referenceId,
+  transaction
+}) {
+  const newStockOrigin = originalStockOrigin - quantity;
+  const updateDataOrigin = { stock: newStockOrigin };
+  if (newStockOrigin === 0) {
+    updateDataOrigin.price = null;
+    updateDataOrigin.promotional_price = null;
+    updateDataOrigin.local_sku = null;
+    updateDataOrigin.active = false;
+    updateDataOrigin.published = false;
+  }
+  await WarehouseProductVariantRepository.update(originVariant, updateDataOrigin, { transaction });
+
+  let destWpVariant = await WarehouseProductVariantRepository.findByVariantAndWarehouseProduct(
+    variant_id,
+    destWp.id
+  );
+  let oldStockDest = 0, newStockDest = 0;
+
+  if (destWpVariant) {
+    oldStockDest = destWpVariant.stock;
+    newStockDest = oldStockDest + quantity;
+    await WarehouseProductVariantRepository.update(destWpVariant, { stock: newStockDest }, { transaction });
+  } else {
+    oldStockDest = 0;
+    newStockDest = quantity;
+    await WarehouseProductVariantRepository.create({
+      warehouse_product_id: destWp.id,
+      variant_id,
+      active: true,
+      published: false,
+      local_sku: originVariant.local_sku || null,
+      price: originVariant.price || 0,
+      promotional_price: originVariant.promotional_price,
+      stock: newStockDest
+    }, { transaction });
+  }
+
+  const baseMovement = {
+    product_id,
+    variant_id,
+    user_id: currentUserId,
+    reason: reason.trim(),
+    notes: notes?.trim() || null,
+    reference_type: 'transfer',
+    reference_id: referenceId,
+    origin_warehouse_id: originWarehouse.id,
+    destination_warehouse_id: destWarehouse.id
+  };
+
+  await InventoryMovementRepository.create({
+    ...baseMovement,
+    warehouse_id: originWarehouse.id,
+    company_id: originWarehouse.company_id,
+    branch_id: originWarehouse.branch_id,
+    movement_type: 'transfer_exit',
+    quantity,
+    stock_before: originalStockOrigin,
+    stock_after: newStockOrigin,
+    unit_price: originVariant.price,
+    total_value: originVariant.price ? originVariant.price * quantity : null
+  }, { transaction });
+
+  await InventoryMovementRepository.create({
+    ...baseMovement,
+    warehouse_id: destWarehouse.id,
+    company_id: destWarehouse.company_id,
+    branch_id: destWarehouse.branch_id,
+    movement_type: 'transfer_entry',
+    quantity,
+    stock_before: oldStockDest,
+    stock_after: newStockDest,
+    unit_price: originVariant.price,
+    total_value: originVariant.price ? originVariant.price * quantity : null
+  }, { transaction });
+}
 
 module.exports = WarehouseProductController;
