@@ -70,7 +70,7 @@ const BusinessTypeController = {
 
       await BusinessTypeRepository.delete(businessType);
       const businessTypes = await BusinessTypeRepository.findAll();
-      return res.status(200).json({ msg: "Tipo de negocio eliminado correctamente", businessTypes: businessTypes });
+      return res.status(200).json({ success: true, message: "Tipo de negocio eliminado correctamente", businessTypes: businessTypes });
     } catch (err) {
       logger.error("BusinessTypeController->destroy: " + err.message);
       return res.status(500).json({ error: "ServerError", details: err.message });
