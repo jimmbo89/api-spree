@@ -110,7 +110,28 @@ async update(permission, body) {
       logger.error(`Error en PermissionRepository->delete (ID: ${permissionInstance.id}):`, error);
       throw new Error(`Error al eliminar permiso: ${error.message}`);
     }
+  },
+
+  async validatePermissionsExist(permissionIds) {
+  if (!Array.isArray(permissionIds) || permissionIds.length === 0) {
+    throw new Error('La lista de IDs de permisos no puede estar vacía');
   }
+
+  // Obtener todos los permisos que existen con los IDs dados
+  const found = await Permission.findAll({
+    where: { id: permissionIds },
+    attributes: ['id']
+  });
+
+  const foundIds = new Set(found.map(p => p.id));
+  const missingIds = permissionIds.filter(id => !foundIds.has(id));
+
+  if (missingIds.length > 0) {
+    throw new Error(`Los siguientes permisos no existen: ${missingIds.join(', ')}`);
+  }
+
+  return true;
+}
 };
 
 module.exports = PermissionRepository;

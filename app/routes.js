@@ -47,6 +47,8 @@ const PlanController = require("./controllers/PlanController.js");
 const { planSchema, updatePlanSchema, idPlanSchema } = require("./middlewares/validations/planValidation.js");
 const PermissionController = require("./controllers/PermissionController.js");
 const { permissionSchema, updatePermissionSchema, idPermissionSchema } = require("./middlewares/validations/permissionValidation.js");
+const { roleIdSchema, assignPermissionToRoleSchema, assignMultiplePermissionsToRoleSchema, updateRolePermissionSchema, idRolePermissionSchema, availablePermissionsForRoleSchema } = require("./middlewares/validations/rolePermissionValidation.js");
+const RolePermissionController = require("./controllers/RolePermissionController.js");
 const router = express.Router();
 
 
@@ -129,6 +131,14 @@ router.get("/permissions", requireRoles(['Admin']), PermissionController.index);
 router.post("/permission", requireRoles(['Admin']), validateSchema(permissionSchema), PermissionController.store);
 router.post("/permission-update", requireRoles(['Admin']), validateSchema(updatePermissionSchema), PermissionController.update);
 router.post("/permission-destroy", requireRoles(['Admin']), validateSchema(idPermissionSchema), PermissionController.destroy);
+
+// Role Permissions
+router.post('/role-permissions', requireRoles(['Admin']), validateSchema(roleIdSchema), RolePermissionController.index);
+router.post('/role-permission', requireRoles(['Admin']), validateSchema(assignPermissionToRoleSchema), RolePermissionController.assign);
+router.post('/role-permission-bulk', requireRoles(['Admin']), validateSchema(assignMultiplePermissionsToRoleSchema), RolePermissionController.assignMultiple);
+router.post('/role-permission-update', requireRoles(['Admin']), validateSchema(updateRolePermissionSchema), RolePermissionController.updateStatus);
+router.post('/role-permission-destroy', requireRoles(['Admin']), validateSchema(idRolePermissionSchema), RolePermissionController.destroy);
+router.post('/role-permissions-available', requireRoles(['Admin']), validateSchema(availablePermissionsForRoleSchema), RolePermissionController.available);
 
 // Endpoints BusinessTypes
 router.get("/business-type", requireRoles(['Admin']), BusinessTypeController.index);
