@@ -29,7 +29,16 @@ const WarehouseProductVariantRepository = {
 
   async delete(record, options = {}) {
     return await record.destroy(options);
-  }
+  },
+
+  async findByWarehouseProductIdAndVariantId(wpId, variantId) {
+  return await WarehouseProductVariant.findOne({
+    where: {
+      warehouse_product_id: wpId,
+      variant_id: variantId
+    }
+  });
+}
 };
 
 module.exports = WarehouseProductVariantRepository;

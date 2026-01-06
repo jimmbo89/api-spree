@@ -194,6 +194,19 @@ const ProductRepository = {
     }
   },
 
+  async updateAttributes(product, attributes, options = {}) {
+
+    try {
+
+      // Actualizar solo el campo attributes
+      await product.update({ attributes }, options);
+
+      return product;
+    } catch (error) {
+      logger.error("Error in ProductRepository.updateAttributes:", error);
+      throw error;
+    }
+  },
   async delete(product) {
     if (Array.isArray(product.images)) {
       for (const imagePath of product.images) {

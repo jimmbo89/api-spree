@@ -5,7 +5,7 @@ const { getRequestMetadata } = require('../util/requestUtil');
 const { detectChanges } = require('../util/auditUtils');
 
 // Campos que queremos auditar en Company
-const COMPANY_AUDIT_FIELDS = ['name', 'description', 'rut', 'address', 'city', 'country', 'phone', 'user_id'];
+const COMPANY_AUDIT_FIELDS = ['name', 'description', 'rut', 'address', 'city', 'country', 'phone', 'user_id', 'email'];
 
 const CompanyController = {
   async index(req, res) {
@@ -29,7 +29,8 @@ const CompanyController = {
         phone: company.phone,
         image: company.image,
         business_type_id: company.business_type_id,
-        businessTypeName: company.businessType.name // ← añadido
+        businessTypeName: company.businessType.name,
+        email: company.email,
       }));
 
       res.status(200).json({ companies: mappedCompanies });
@@ -44,12 +45,17 @@ const CompanyController = {
     logger.info('Datos recibidos:');
     logger.info(JSON.stringify(req.body));
 
-    const { rut, business_type_id, warehouse } = req.body;
+    const { rut, business_type_id, warehouse, email } = req.body;
     if (req.user) req.body.user_id = req.user.id;
-      const existingCompany = await CompanyRepository.existsByRut(rut);
-      if (existingCompany) {
-        logger.error('El RUT ya está registrado: ' + rut);
-        return res.status(400).json({ error: 'DuplicateRut', msg: 'El RUT ya está registrado en otra empresa.' });
+      const uniqueCheck = await CompanyRepository.checkUniqueFields({ rut, email });
+      if (uniqueCheck.exists) {
+        const field = uniqueCheck.field;
+        const fieldName = field === 'rut' ? 'RUT' : 'email';
+        logger.error(`El ${fieldName} ya está registrado: ${field === 'rut' ? rut : email}`);
+        return res.status(400).json({
+          error: `Duplicate${field.charAt(0).toUpperCase() + field.slice(1)}`,
+          msg: `El ${fieldName} ya está registrado en otra empresa.`
+        });
       }
 
        if (business_type_id) {
@@ -158,7 +164,8 @@ const CompanyController = {
         phone: company.phone,
         image: company.image,
         business_type_id: company.business_type_id,
-        businessTypeName: company.businessType.name // ← añadido
+        businessTypeName: company.businessType.name,
+        email: company.email,
       };
 
       res.status(200).json({ company: mappedCompany });
@@ -176,7 +183,7 @@ const CompanyController = {
     logger.info('Datos recibidos:');
     logger.info(JSON.stringify(req.body));
 
-    const { id, rut, business_type_id } = req.body;
+    const { id, rut, email, business_type_id } = req.body;
     const metadata = getRequestMetadata(req);
 
   if (business_type_id) {
@@ -198,13 +205,19 @@ const CompanyController = {
       // Guardar valores originales para auditoría
       const originalData = { ...company.get({ plain: true }) };
 
-      if (rut) {
-        const existingCompany = await CompanyRepository.existsByRut(rut, id);
-        if (existingCompany) {
-          logger.error('El RUT ya está registrado: ' + rut);
-          return res.status(400).json({ error: 'DuplicateRut', msg: 'El RUT ya está registrado en otra empresa.' });
-        }
+     if (rut || email) {
+      const uniqueCheck = await CompanyRepository.checkUniqueFields({ rut, email }, id);
+      if (uniqueCheck.exists) {
+        const field = uniqueCheck.field;
+        const fieldName = field === 'rut' ? 'RUT' : 'email';
+        const value = field === 'rut' ? rut : email;
+        logger.error(`El ${fieldName} ya está registrado: ${value}`);
+        return res.status(400).json({
+          error: `Duplicate${field.charAt(0).toUpperCase() + field.slice(1)}`,
+          msg: `El ${fieldName} ya está registrado en otra empresa.`
+        });
       }
+    }
 
       // ✅ Realizar la actualización
       const updatedCompany = await CompanyRepository.update(company, req.body, req.file);

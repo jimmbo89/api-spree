@@ -49,6 +49,26 @@ const storeProductSchema = Joi.object({
   ).optional().default([])
 });
 
+const assignWarehouseSchema = Joi.object({
+  product_id: Joi.number().integer().positive().required(),
+  company_id: Joi.number().integer().positive().required(),
+  warehouse_config: Joi.array().items(
+    Joi.object({
+      warehouse_id: Joi.number().integer().positive().required(),
+      active: Joi.boolean().optional().default(true),
+      code: Joi.string().max(100).optional().allow(null, ''),
+      variants: Joi.array().items(
+        Joi.object({
+          active: Joi.boolean().optional().default(true),
+          local_sku: Joi.string().max(100).optional().allow(null, ''),
+          price: Joi.number().precision(2).min(0).required(),
+          stock: Joi.number().integer().min(0).required()
+        })
+      ).required()
+    })
+  ).min(1).required()
+});
+
 const updateProductSchema = Joi.object({
   id: Joi.number().required(),
   ...Object.fromEntries(
@@ -82,5 +102,6 @@ module.exports = {
   updateProductSchema,
   idProductSchema,
   listProductsSchema,
-  listByWarehouseIdsSchema
+  listByWarehouseIdsSchema,
+  assignWarehouseSchema
 };

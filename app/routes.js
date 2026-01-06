@@ -22,7 +22,7 @@ const { listWarehouseSchema, storeWarehouseSchema, updateWarehouseSchema, idWare
 const { businessTypeSchema, updateBusinessTypeSchema, idBusinessTypeSchema } = require("./middlewares/validations/businessTypeValidations.js");
 const ProductCategoryController = require("./controllers/ProductCategoryController.js");
 const { productCategorySchema, updateProductCategorySchema, idProductCategorySchema } = require("./middlewares/validations/productCategoryValidations.js");
-const { listProductsSchema, storeProductSchema, updateProductSchema, idProductSchema, listByWarehouseIdsSchema } = require("./middlewares/validations/productValidations.js");
+const { listProductsSchema, storeProductSchema, updateProductSchema, idProductSchema, listByWarehouseIdsSchema, assignWarehouseSchema } = require("./middlewares/validations/productValidations.js");
 const ProductController = require("./controllers/ProductController.js");
 const { listWarehouseProductSchema, storeWarehouseProductSchema, updateWarehouseProductSchema, idWarehouseProductSchema, transferSchema, bulkUploadSchema, bulkTransferSchema } = require("./middlewares/validations/warehouseProductValidations.js");
 const WarehouseProductController = require("./controllers/WarehouseProductController.js");
@@ -42,6 +42,7 @@ const { listPoolsSchema, updatePoolSchema, storePoolSchema, idPoolSchema } = req
 const PoolController = require("./controllers/PoolController.js");
 const { getMovementsSchema } = require("./middlewares/validations/inventoryMovementValidation.js");
 const InventoryMovementController = require("./controllers/InventoryMovementController.js");
+const ProductVariantController = require("./controllers/ProductVariantController.js");
 const router = express.Router();
 
 
@@ -108,7 +109,7 @@ router.get("/get-users", requireRoles(['Admin']), AuthController.index);
 router.post("/send-invitation", requireRoles(['Admin']), validateSchema(updateSchema), InvitationController.sendInvitation);
 
 //Rutas Roles
-router.get("/role", requireRoles(['Admin']),RoleController.index);
+router.get("/roles", requireRoles(['Admin']),RoleController.index);
 router.post("/role", requireRoles(['Admin']), validateSchema(roleSchema), RoleController.store);
 router.post("/role-update", requireRoles(['Admin']), validateSchema(updateRoleSchema), RoleController.update);
 router.post("/role-destroy", requireRoles(['Admin']), validateSchema(idRoleSchema), RoleController.destroy);
@@ -160,6 +161,13 @@ router.post("/product-update", requireRoles(['Admin']), multerFieldFolders(produ
 router.post("/product-destroy", requireRoles(['Admin']), validateSchema(idProductSchema), ProductController.destroy);
 router.post("/products-transform", requireRoles(['Admin']), ProductController.transformForMarketplace);
 router.post("/product-category-status", requireRoles(['Admin']), ProductController.getProductMetadata);
+router.post("/product-update-attributes", ProductController.updateAttributes);
+router.post('/product-assign-warehouse', requireRoles(['Admin']), validateSchema(assignWarehouseSchema), ProductController.assignWarehouse);
+
+//Product Varinants
+router.post("/variant-create", ProductVariantController.create);
+router.post("/product-variant-update", requireRoles(['Admin']), ProductVariantController.update);
+router.post("/variant-delete", requireRoles(['Admin']), ProductVariantController.delete);
 
 // Mismo patrón que branches y products
 router.post("/warehouse-product-user-company", requireRoles(['Admin']), validateSchema(listWarehouseProductSchema), WarehouseProductController.list);

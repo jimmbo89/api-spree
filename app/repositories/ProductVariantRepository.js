@@ -11,6 +11,10 @@ const ProductVariantRepository = {
     });
   },
 
+  async findById(id) {
+    return await ProductVariant.findByPk(id);
+  },
+
   async create(variantData, options = {}) {
     logger.info('Creando variante:', JSON.stringify(variantData));
     
@@ -41,8 +45,35 @@ const ProductVariantRepository = {
     }
 },
 
-  async update(variant, data, options = {}) {
+  /*async update(variant, data, options = {}) {
     return await variant.update(data, options);
+  },*/
+
+  async update(variant, data, options = {}) {
+    logger.info('Actualizando variante ID:', variant.id, 'con datos:', JSON.stringify(data));
+
+    try {
+      const processedData = { ...data };
+
+      // Procesar attributes igual que en create
+      if (processedData.attributes !== undefined) {
+        if (Array.isArray(processedData.attributes)) {
+          const obj = {};
+          processedData.attributes.forEach(item => {
+            if (item.key && item.value !== undefined) {
+              obj[item.key] = item.value;
+            }
+          });
+          processedData.attributes = obj;
+        }
+        // Si ya es objeto, se mantiene
+      }
+
+      return await variant.update(processedData, options);
+    } catch (err) {
+      logger.error('Error al actualizar variante:', err);
+      throw err;
+    }
   },
 
   async delete(variant, options = {}) {

@@ -73,7 +73,16 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.STRING,
       allowNull: true,
       defaultValue: 'companies/default.jpg'
+    },
+    email: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    validate: {
+      isEmail: {
+        msg: 'El campo email debe ser una dirección de correo válida'
+      }
     }
+  }
   }, {
     sequelize,
     modelName: 'Company',

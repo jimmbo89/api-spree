@@ -658,6 +658,151 @@ const ProductController = {
       res.status(500).json({ success: false, error: "ServerError", details: error.message });
     }
   },
+
+  async assignWarehouse(req, res) {
+  logger.info(`${req.user?.name || "Unknown"} - Asignando producto a almacenes`);
+  logger.info("Datos recibidos:");
+  logger.info(JSON.stringify(req.body));
+
+  const { product_id, company_id, warehouse_config } = req.body;
+
+  
+  // ✅ Parsear warehouse_config si es una cadena
+  if (typeof warehouse_config === 'string') {
+    try {
+      warehouse_config = JSON.parse(warehouse_config);
+    } catch (e) {
+      return res.status(400).json({
+        success: false,
+        msg: "warehouse_config no es un JSON válido"
+      });
+    }
+  }
+
+  if (!Array.isArray(warehouse_config)) {
+    return res.status(400).json({
+      success: false,
+      msg: "warehouse_config debe ser un array"
+    });
+  }
+
+  // Validar producto
+  const product = await ProductRepository.findById(product_id);
+  if (!product) {
+    return res.status(404).json({ success: false, msg: "productNotFound" });
+  }
+
+  // Obtener variantes reales del producto
+  const productVariants = await ProductVariantRepository.findByProductId(product_id);
+  if (!productVariants || productVariants.length === 0) {
+    return res.status(400).json({ success: false, msg: "El producto no tiene variantes definidas" });
+  }
+
+  let transaction;
+  try {
+    transaction = await sequelize.transaction();
+
+    for (const whConfig of warehouse_config) {
+      const warehouse = await WarehouseRepository.findById(whConfig.warehouse_id);
+      // Buscar o crear WarehouseProduct
+      let wp = await WarehouseProductRepository.findByProductAndWarehouse(product_id, whConfig.warehouse_id);
+      if (!wp) {
+        wp = await WarehouseProductRepository.create(
+          {
+            product_id,
+            warehouse_id: warehouse.id,
+            active: whConfig.active !== false,
+            code: whConfig.code || null,
+            company_id: warehouse.company_id,
+            branch_id: warehouse.branch_id,
+            user_id: req.user.id,
+          },
+          { transaction }
+        );
+      } else {
+        await WarehouseProductRepository.update(
+          wp,
+          {
+            active: whConfig.active !== false,
+            code: whConfig.code || wp.code,
+          },
+          { transaction }
+        );
+      }
+      // Procesar variantes (sin eliminar las existentes)
+      if (whConfig.variants && Array.isArray(whConfig.variants)) {
+        for (let i = 0; i < whConfig.variants.length; i++) {
+          const variantConfig = whConfig.variants[i];
+          const productVariant = productVariants[i];
+
+          // Buscar si ya existe la variante en este almacén
+          let wpv = await WarehouseProductVariantRepository.findByWarehouseProductIdAndVariantId(
+            wp.id,
+            productVariant.id
+          );
+
+          const variantData = {
+            warehouse_product_id: wp.id,
+            variant_id: productVariant.id,
+            active: variantConfig.active !== false,
+            local_sku: variantConfig.local_sku || null,
+            price: parseFloat(variantConfig.price) || 0,
+            stock: parseInt(variantConfig.stock) || 0,
+          };
+
+          if (wpv) {
+            // 🔄 Actualizar
+            await WarehouseProductVariantRepository.update(wpv, variantData, { transaction });
+          } else {
+            // ➕ Crear
+            await WarehouseProductVariantRepository.create(variantData, { transaction });
+          }
+        }
+      }
+    }
+
+    await transaction.commit();
+
+    res.status(200).json({
+      success: true,
+      message: "Producto asignado a almacenes correctamente"
+    });
+  } catch (error) {
+    if (transaction) await transaction.rollback();
+    logger.error("ProductController->assignWarehouse - Error:", error);
+    res.status(500).json({
+      success: false,
+      error: "ServerError",
+      details: error.message
+    });
+  }
+},
+  async updateAttributes(req, res) {
+  const { id, attributes } = req.body;
+
+  const product = await ProductRepository.findById(id);
+    if (!product) {
+      return res.status(404).json({ success: false, message: "Producto no encontrado" });
+    }
+  if (!Array.isArray(attributes)) {
+    return res.status(400).json({ success: false, message: "attributes debe ser un array" });
+  }
+
+  try {
+
+    const updatedProduct = await ProductRepository.updateAttributes(product, attributes);
+
+    return res.status(200).json({
+      success: true,
+      message: "Atributos actualizados",
+       data: { id: product.id, attributes: product.attributes }
+    });
+
+  } catch (error) {
+    logger.error("Error al actualizar atributos:", error);
+    return res.status(500).json({ success: false, message: "Error interno" });
+  }
+},
   async destroy(req, res) {
     logger.info(
       `${req.user?.name || "Unknown"} - Elimina producto con ID ${req.body.id}`

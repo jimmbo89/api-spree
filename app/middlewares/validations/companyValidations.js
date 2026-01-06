@@ -9,6 +9,7 @@ const storeCompanySchema = Joi.object({
   city: Joi.string().max(100).allow(null, '').optional(),
   country: Joi.string().max(100).allow(null, '').optional(),
   phone: Joi.string().max(20).allow(null, '').optional(),
+  email: Joi.string().email().max(255).optional().allow(null, ''),
   warehouse: Joi.string()
     .custom((value, helpers) => {
       try {
@@ -50,6 +51,7 @@ const updateCompanySchema = Joi.object({
   city: Joi.string().max(100).allow(null, '').optional(),
   country: Joi.string().max(100).allow(null, '').optional(),
   phone: Joi.string().max(20).allow(null, '').optional(),
+  email: Joi.string().email().max(255).optional().allow(null, ''),
   image: Joi.any()
     .custom((value, helpers) => {
       if (value) {
