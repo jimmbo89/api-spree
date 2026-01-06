@@ -43,6 +43,10 @@ const PoolController = require("./controllers/PoolController.js");
 const { getMovementsSchema } = require("./middlewares/validations/inventoryMovementValidation.js");
 const InventoryMovementController = require("./controllers/InventoryMovementController.js");
 const ProductVariantController = require("./controllers/ProductVariantController.js");
+const PlanController = require("./controllers/PlanController.js");
+const { planSchema, updatePlanSchema, idPlanSchema } = require("./middlewares/validations/planValidation.js");
+const PermissionController = require("./controllers/PermissionController.js");
+const { permissionSchema, updatePermissionSchema, idPermissionSchema } = require("./middlewares/validations/permissionValidation.js");
 const router = express.Router();
 
 
@@ -113,6 +117,18 @@ router.get("/roles", requireRoles(['Admin']),RoleController.index);
 router.post("/role", requireRoles(['Admin']), validateSchema(roleSchema), RoleController.store);
 router.post("/role-update", requireRoles(['Admin']), validateSchema(updateRoleSchema), RoleController.update);
 router.post("/role-destroy", requireRoles(['Admin']), validateSchema(idRoleSchema), RoleController.destroy);
+
+// PLANES
+router.get("/plans", requireRoles(['Admin']), PlanController.index);
+router.post("/plan", requireRoles(['Admin']), validateSchema(planSchema), PlanController.store);
+router.post("/plan-update", requireRoles(['Admin']), validateSchema(updatePlanSchema), PlanController.update);
+router.post("/plan-destroy", requireRoles(['Admin']), validateSchema(idPlanSchema), PlanController.destroy);
+
+// PERMISOS
+router.get("/permissions", requireRoles(['Admin']), PermissionController.index);
+router.post("/permission", requireRoles(['Admin']), validateSchema(permissionSchema), PermissionController.store);
+router.post("/permission-update", requireRoles(['Admin']), validateSchema(updatePermissionSchema), PermissionController.update);
+router.post("/permission-destroy", requireRoles(['Admin']), validateSchema(idPermissionSchema), PermissionController.destroy);
 
 // Endpoints BusinessTypes
 router.get("/business-type", requireRoles(['Admin']), BusinessTypeController.index);

@@ -6,6 +6,8 @@ const InvitationRepository = require("./InvitationRepository");
 const LogRepository = require("./LogRepository");
 const MarketplaceCredentialRepository = require("./MarketplaceCredentialRepository");
 const MarketplaceRepository = require("./MarketplaceRepository");
+const PermissionRepository = require("./PermissionRepository");
+const PlanRepository = require("./PlanRepository");
 const PoolRepository = require("./PoolRepository");
 const PoolWarehouseRepository = require("./PoolWarehouseRepository");
 const ProductCategoryRepository = require("./ProductCategoryRepository");
@@ -43,5 +45,7 @@ module.exports = {
     WarehouseProductVariantRepository,
     PoolRepository,
     PoolWarehouseRepository,
-    InventoryMovementRepository
+    InventoryMovementRepository,
+    PlanRepository,
+    PermissionRepository
 };
