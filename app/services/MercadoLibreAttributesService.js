@@ -10,7 +10,7 @@ class MercadoLibreAttributesService {
     try {
       const url = `https://api.mercadolibre.com/categories/${categoryId}/attributes`;
     
-    const response = await proxyHelper.get(url, {
+    const response = await axios.get(url, {
       headers: { 
         'Authorization': `Bearer ${accessToken}`,
         'Accept': 'application/json'
@@ -71,7 +71,7 @@ class MercadoLibreAttributesService {
     try {
       const url = `https://api.mercadolibre.com/attributes/${attributeId}`;
       
-      const response = await proxyHelper.get(url, {
+      const response = await axios.get(url, {
         headers: { 
           'Authorization': `Bearer ${accessToken}`,
           'Accept': 'application/json'
@@ -114,7 +114,7 @@ class MercadoLibreAttributesService {
     try {
       const url = `https://api.mercadolibre.com/sites/${siteId}/search`;
       
-      const response = await proxyHelper.get(url, {
+      const response = await axios.get(url, {
         headers: { 
           'Authorization': `Bearer ${accessToken}`,
           'Accept': 'application/json'

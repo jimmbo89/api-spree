@@ -25,7 +25,7 @@ class MercadoLibreAdapter extends BaseAdapter {
       return false;
     }
     try {
-      const tokenCheck = await proxyHelper.get("https://api.mercadolibre.com/users/me", {
+      const tokenCheck = await axios.get("https://api.mercadolibre.com/users/me", {
         headers: { Authorization: `Bearer ${this.credential.access_token}` },
         timeout: 3000,
       });
@@ -62,7 +62,7 @@ class MercadoLibreAdapter extends BaseAdapter {
     params.append("refresh_token", this.credential.refresh_token);
 
     try {
-      const response = await proxyHelper.post(oauthTokenUrl, params, {
+      const response = await axios.post(oauthTokenUrl, params, {
         headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
         timeout: 10000,
       });
@@ -102,7 +102,7 @@ class MercadoLibreAdapter extends BaseAdapter {
     const siteId = this.getSiteId().trim();
     try {
       const domainDiscoveryUrl = `https://api.mercadolibre.com/sites/${siteId}/domain_discovery/search`;
-      const response = await proxyHelper.get(domainDiscoveryUrl, {
+      const response = await axios.get(domainDiscoveryUrl, {
         params: { q: title.trim(), limit: 8 },
         headers: { Authorization: `Bearer ${this.credential.access_token}` }
       });
@@ -115,10 +115,10 @@ class MercadoLibreAdapter extends BaseAdapter {
       const categoryId = prediction.category_id.trim();
 
       const [attributesRes, categoryRes] = await Promise.all([
-        proxyHelper.get(`https://api.mercadolibre.com/categories/${categoryId}/attributes`, {
+        axios.get(`https://api.mercadolibre.com/categories/${categoryId}/attributes`, {
           headers: { Authorization: `Bearer ${this.credential.access_token}` }
         }),
-        proxyHelper.get(`https://api.mercadolibre.com/categories/${categoryId}`, {
+        axios.get(`https://api.mercadolibre.com/categories/${categoryId}`, {
           headers: { Authorization: `Bearer ${this.credential.access_token}` }
         })
       ]);
@@ -222,7 +222,7 @@ class MercadoLibreAdapter extends BaseAdapter {
     logger.info("[MercadoLibreAdapter] === PAYLOAD FINAL ===");
     logger.info(JSON.stringify(productToPublish, null, 2));
 
-    const response = await proxyHelper.post(
+    const response = await axios.post(
       "https://api.mercadolibre.com/items",
       productToPublish,
       {
@@ -309,7 +309,7 @@ class MercadoLibreAdapter extends BaseAdapter {
     logger.info("[MercadoLibreAdapter] === PAYLOAD FINAL ===");
     logger.info(JSON.stringify(productToPublish, null, 2));
 
-    const response = await proxyHelper.post(
+    const response = await axios.post(
       "https://api.mercadolibre.com/items",
       productToPublish,
       {

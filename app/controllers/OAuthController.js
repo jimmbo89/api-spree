@@ -55,7 +55,7 @@ const OAuthController = {
           redirect_uri: credential.redirect_uri.trim() // ✅ elimina espacios
         })));
       // ✅ Petición exactamente como en tu ejemplo que funciona
-      const tokenRes = await proxyHelper.post(
+      const tokenRes = await axios.post(
         oauthTokenUrl,
         qs.stringify({
           grant_type: 'authorization_code',

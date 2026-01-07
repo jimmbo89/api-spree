@@ -49,6 +49,10 @@ const PermissionController = require("./controllers/PermissionController.js");
 const { permissionSchema, updatePermissionSchema, idPermissionSchema } = require("./middlewares/validations/permissionValidation.js");
 const { roleIdSchema, assignPermissionToRoleSchema, assignMultiplePermissionsToRoleSchema, updateRolePermissionSchema, idRolePermissionSchema, availablePermissionsForRoleSchema } = require("./middlewares/validations/rolePermissionValidation.js");
 const RolePermissionController = require("./controllers/RolePermissionController.js");
+const UserCompanyController = require("./controllers/UserCompanyController.js");
+const { createUserCompanySchema, updateUserCompanyStatusSchema, userCompanyIdSchema, userCompanyByUserAndCompanySchema, userCompanyByTokenSchema, listUserCompanySchema } = require("./middlewares/validations/userCompanyValidation.js");
+const UserAclScopeController = require("./controllers/UserAclScopeController.js");
+const { createUserAclScopeSchema, userAclScopeIdSchema, userAclScopesByUserAndCompanySchema } = require("./middlewares/validations/userAclScopeValidation.js");
 const router = express.Router();
 
 
@@ -151,6 +155,20 @@ router.post("/company-by-user", requireRoles(['Admin']), validateSchema(byUserId
 router.post("/company", requireRoles(['Admin']), multerImage("image", "companies"), validateSchema(storeCompanySchema), CompanyController.store);
 router.post("/company-update", requireRoles(['Admin']), multerImage("image", "companies"), validateSchema(updateCompanySchema), CompanyController.update);
 router.post("/company-destroy", requireRoles(['Admin']), validateSchema(idCompanySchema), CompanyController.destroy);
+
+//UserCompany
+router.post('/user-company', requireRoles(['Admin']), validateSchema(createUserCompanySchema), UserCompanyController.create);
+router.post('/user-company-status', requireRoles(['Admin']), validateSchema(updateUserCompanyStatusSchema), UserCompanyController.updateStatus);
+router.post('/user-company-destroy', requireRoles(['Admin']), validateSchema(userCompanyIdSchema), UserCompanyController.destroy);
+router.post('/user-company-find', requireRoles(['Admin']), validateSchema(userCompanyByUserAndCompanySchema), UserCompanyController.findByUserAndCompany);
+router.post('/user-company-token', validateSchema(userCompanyByTokenSchema), UserCompanyController.findByToken); // Sin requireRoles: aceptación pública de invitación
+router.post('/user-company-list', requireRoles(['Admin']), validateSchema(listUserCompanySchema), UserCompanyController.list);
+
+//UserAclScope
+router.post('/user-acl-scope', requireRoles(['Admin']), validateSchema(createUserAclScopeSchema), UserAclScopeController.create);
+router.post('/user-acl-scope-destroy', requireRoles(['Admin']), validateSchema(userAclScopeIdSchema), UserAclScopeController.destroy);
+router.post('/user-acl-scopes', requireRoles(['Admin']), validateSchema(userAclScopesByUserAndCompanySchema), UserAclScopeController.listByUserAndCompany);
+router.post('/user-acl-scopes-clear', requireRoles(['Admin']), validateSchema(userAclScopesByUserAndCompanySchema), UserAclScopeController.clearByUserAndCompany);
 
 //Rutas de Sucursales
 router.post("/branch-user-company", requireRoles(['Admin']), validateSchema(listBranchesSchema), BranchController.list);

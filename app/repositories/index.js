@@ -18,6 +18,8 @@ const ProductRepository = require("./ProductRepository");
 const ProductVariantRepository = require("./ProductVariantRepository");
 const RolePermissionRepository = require("./RolePermissionRepository");
 const RoleRepository = require("./RoleRepository");
+const UserAclScopeRepository = require("./UserAclScopeRepository");
+const UserCompanyRepository = require("./UserCompanyRepository");
 const UserRepository = require("./UserRepository");
 const UserTokenRepository = require("./UserTokenRepository");
 const WarehouseProductRepository = require("./WarehouseProductRepository");
@@ -49,5 +51,7 @@ module.exports = {
     InventoryMovementRepository,
     PlanRepository,
     PermissionRepository,
-    RolePermissionRepository
+    RolePermissionRepository,
+    UserCompanyRepository,
+    UserAclScopeRepository
 };
