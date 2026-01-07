@@ -1,30 +1,39 @@
 // app/repositories/UserRepository.js
 const { Op } = require('sequelize');
-const { User, Role, Company } = require('../models'); // 👈 Añadido Role
+const { User, Role, Company, UserCompany } = require('../models'); // 👈 Añadido Role
 const logger = require('../../config/logger');
 
 const UserRepository = {
   async findAll() {
   try {
-    // Realizamos la consulta con JOIN implícito mediante include
     const users = await User.findAll({
-      attributes: ['id', 'name', 'email', 'status', 'role_id', 'image', 'user'], // Solo los campos que necesitamos del usuario
+      attributes: ['id', 'name', 'email', 'status', 'image', 'user'],
+      // Incluir membresías para mostrar roles por empresa
       include: [{
-        model: Role,
-        as: 'role',
-        attributes: ['name'] // Solo el nombre del rol
+        model: UserCompany,
+        as: 'memberships',
+        attributes: ['id', 'company_id', 'role_id', 'status'],
+        include: [
+          { model: Company, as: 'company', attributes: ['id', 'name'] },
+          { model: Role, as: 'role', attributes: ['id', 'name'] }
+        ]
       }]
     });
 
-    // Mapeamos a un objeto plano
     const plainUsers = users.map(user => ({
       id: user.id,
-      role_id: user.role_id,
       name: user.name,
       email: user.email,
       user: user.user,
       image: user.image,
-      role: user.role ? user.role.name : 'Invited'
+      status: user.status,
+      memberships: user.memberships.map(m => ({
+        company_id: m.company_id,
+        company_name: m.company?.name || '—',
+        role_id: m.role_id,
+        role_name: m.role?.name || '—',
+        membership_status: m.status
+      }))
     }));
 
     return plainUsers;
@@ -35,22 +44,28 @@ const UserRepository = {
 },
 
   async findById(id) {
-    try {
-      const user = await User.findByPk(id, {
-        attributes: [
-          'id', 'name', 'email', 'status', 'role_id', 'image',
-          'email_verified_at', 'remember_token', 'external_id', 'external_auth', 'registration_date', 'user'
-        ],
+  try {
+    const user = await User.findByPk(id, {
+      attributes: [
+        'id', 'name', 'email', 'status', 'image',
+        'email_verified_at', 'remember_token', 'external_id', 'external_auth', 'registration_date', 'user'
+      ],
+      include: [{
+        model: UserCompany,
+        as: 'memberships',
+        attributes: ['id', 'company_id', 'role_id', 'status', 'joined_at'],
         include: [
+          { model: Company, as: 'company', attributes: ['id', 'name'] },
           { model: Role, as: 'role', attributes: ['id', 'name', 'status', 'description'] }
         ]
-      });
-      return user;
-    } catch (error) {
-      logger.error(`Error al buscar usuario por ID ${id}:`, error);
-      throw new Error(`Error al obtener usuario: ${error.message}`);
-    }
-  },
+      }]
+    });
+    return user;
+  } catch (error) {
+    logger.error(`Error al buscar usuario por ID ${id}:`, error);
+    throw new Error(`Error al obtener usuario: ${error.message}`);
+  }
+},
 
   async existsByEmail(email, excludeId = null) {
     try {
@@ -64,25 +79,30 @@ const UserRepository = {
   },
 
   async findByEmailOrName(identifier) {
-    try {
-      const user = await User.findOne({
-        where: {
-          [Op.or]: [{ email: identifier }, { user: identifier }]
-        },
-        attributes: [
-          'id', 'name', 'email', 'status', 'role_id', 'image', 'password', 'remember_token', 'registration_date', 'user'
-        ],
+  try {
+    const user = await User.findOne({
+      where: {
+        [Op.or]: [{ email: identifier }, { user: identifier }]
+      },
+      attributes: [
+        'id', 'name', 'email', 'status', 'image', 'password', 'remember_token', 'registration_date', 'user'
+      ],
+      include: [{
+        model: UserCompany,
+        as: 'memberships',
+        attributes: ['id', 'company_id', 'role_id', 'status'],
         include: [
-          { model: Role, as: 'role', attributes: ['id', 'name', 'status', 'description'] },
-          { model: Company, as: 'companies', attributes: ['id', 'name'] },
+          { model: Company, as: 'company', attributes: ['id', 'name'] },
+          { model: Role, as: 'role', attributes: ['id', 'name'] }
         ]
-      });
-      return user;
-    } catch (error) {
-      logger.error(`Error al buscar usuario por email o nombre (${identifier}):`, error);
-      throw new Error(`Error al buscar usuario: ${error.message}`);
-    }
-  },
+      }]
+    });
+    return user;
+  } catch (error) {
+    logger.error(`Error al buscar usuario por email o nombre (${identifier}):`, error);
+    throw new Error(`Error al buscar usuario: ${error.message}`);
+  }
+},
 
   async create(userData) {
     try {
@@ -92,7 +112,6 @@ const UserRepository = {
         email: userData.email,
         password: userData.password,
         status: userData.status !== undefined ? userData.status : true,
-        role_id: userData.role_id,
         email_verified_at: userData.email_verified_at,
         remember_token: userData.remember_token,
         external_id: userData.external_id,
@@ -111,7 +130,7 @@ const UserRepository = {
   async update(user, updateData) {
     try {
       const allowedFields = [
-        'name', 'email', 'status', 'role_id', 'image',
+        'name', 'email', 'status', 'image',
         'email_verified_at', 'password', 'remember_token',
         'external_id', 'external_auth', 'registration_date', 'user'
       ];
@@ -133,59 +152,65 @@ const UserRepository = {
   },
 
   async delete(user) {
-    try {
-      // Asegurarnos de que el usuario tiene su rol cargado
-      if (!user.role) {
-        await user.reload({ include: [{ association: 'role' }] });
-      }
+  try {
+    // Recargar membresías
+    await user.reload({
+      include: [{
+        model: UserCompany,
+        as: 'memberships',
+        include: [{ model: Role, as: 'role' }]
+      }]
+    });
 
-      // Verificar si el usuario es Admin
-      if (user.role && user.role.name === 'Admin') {
-        // Contar cuántos usuarios tienen rol "Admin"
-        const adminCount = await User.count({
-          include: [{
-            model: Role,
-            as: 'role', // debe coincidir con tu asociación `as: 'role'`
-            where: { name: 'Admin' }
-          }]
+    // Verificar si es el último Admin en ALGUNA empresa
+    for (const membership of user.memberships) {
+      if (membership.role && membership.role.name === 'Admin') {
+        const otherAdmins = await UserCompany.count({
+          where: {
+            company_id: membership.company_id,
+            role_id: membership.role_id,
+            status: 1 // activo
+          },
+          include: [{ model: User, as: 'user', where: { status: true } }]
         });
 
-        if (adminCount <= 1) {
-          throw new Error('No se puede eliminar el último usuario administrador');
+        if (otherAdmins <= 1) {
+          throw new Error(`No se puede eliminar el último administrador de la empresa ${membership.company_id}`);
         }
       }
-
-      // Si pasa las validaciones, eliminar
-      await user.destroy();
-      return { success: true, message: 'Usuario eliminado' };
-
-    } catch (error) {
-      logger.error(`Error al eliminar usuario (ID: ${user.id}):`, error);
-      throw new Error(`Error al eliminar usuario: ${error.message}`);
     }
-  },
+
+    // Si pasa, eliminar
+    await user.destroy();
+    return { success: true, message: 'Usuario eliminado' };
+  } catch (error) {
+    logger.error(`Error al eliminar usuario (ID: ${user.id}):`, error);
+    throw new Error(`Error al eliminar usuario: ${error.message}`);
+  }
+},
 
     // Método para buscar usuario por email con transacción
   async findByEmailWithTransaction(email, transaction = null) {
-    try {
-      const options = { 
-        where: { email },
-        include: [
-          { model: Role, as: 'role', attributes: ['id', 'name', 'status', 'description'] }
-        ]
-      };
-      
-      if (transaction) {
-        options.transaction = transaction;
-      }
-      
-      const user = await User.findOne(options);
-      return user;
-    } catch (error) {
-      logger.error(`Error al buscar usuario por email (${email}):`, error);
-      throw new Error(`Error al buscar usuario: ${error.message}`);
+  try {
+    const options = { 
+      where: { email },
+      attributes: [
+        'id', 'name', 'email', 'status', 'image',
+        'email_verified_at', 'remember_token', 'external_id', 'external_auth', 'registration_date', 'user'
+      ]
+    };
+    
+    if (transaction) {
+      options.transaction = transaction;
     }
-  },
+    
+    const user = await User.findOne(options);
+    return user;
+  } catch (error) {
+    logger.error(`Error al buscar usuario por email (${email}):`, error);
+    throw new Error(`Error al buscar usuario: ${error.message}`);
+  }
+},
 
   // Método para actualizar token de recuperación con transacción
   async updateResetTokenWithTransaction(id, resetData, transaction = null) {

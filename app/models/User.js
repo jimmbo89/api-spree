@@ -6,7 +6,6 @@ module.exports = (sequelize, DataTypes) => {
     static associate(models) {
       User.hasMany(models.UserToken, { foreignKey: 'user_id', as: 'tokens', onDelete: 'CASCADE' });
       // Relación con Role
-      User.belongsTo(models.Role, { foreignKey: 'role_id', as: 'role', onDelete: 'SET NULL' });
       User.hasMany(models.Invitation, { foreignKey: 'user_id', as: 'invitations', onDelete: 'SET NULL' });
       User.hasMany(models.Invitation, { foreignKey: 'invited_by', as: 'inviteds', onDelete: 'SET NULL' });
       User.hasMany(models.Company, { foreignKey: 'user_id', as: 'companies', onDelete: 'SET NULL' });
@@ -75,15 +74,6 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: true,
       defaultValue: false,
       comment: 'Estado del usuario: true = activo, false = inactivo'
-    },
-    role_id: {
-      type: DataTypes.BIGINT,
-      allowNull: true, // o false si es obligatorio
-      references: {
-        model: 'roles',
-        key: 'id'
-      },
-      comment: 'ID del rol asignado al usuario'
     },
     image: {
       type: DataTypes.STRING,

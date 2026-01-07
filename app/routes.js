@@ -113,81 +113,81 @@ router.get("/images-protect/:foldername/:filename", (req, res) => {
 });
 
 router.get("/logout", AuthController.logout);
-router.post("/user-update", requireRoles(['Admin']), validateSchema(updateSchema), AuthController.update);
-router.post("/user-destroy", requireRoles(['Admin']), validateSchema(idRoleSchema), AuthController.destroy);
-router.get("/get-users", requireRoles(['Admin']), AuthController.index);
-router.post("/send-invitation", requireRoles(['Admin']), validateSchema(updateSchema), InvitationController.sendInvitation);
+router.post("/user-update", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateSchema), AuthController.update);
+router.post("/user-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idRoleSchema), AuthController.destroy);
+router.get("/get-users", requireRoles(['Admin', 'Seller Manager']), AuthController.index);
+router.post("/send-invitation", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateSchema), InvitationController.sendInvitation);
 
 //Rutas Roles
-router.get("/roles", requireRoles(['Admin']),RoleController.index);
-router.post("/role", requireRoles(['Admin']), validateSchema(roleSchema), RoleController.store);
-router.post("/role-update", requireRoles(['Admin']), validateSchema(updateRoleSchema), RoleController.update);
-router.post("/role-destroy", requireRoles(['Admin']), validateSchema(idRoleSchema), RoleController.destroy);
+router.get("/roles", requireRoles(['Admin', 'Seller Manager']),RoleController.index);
+router.post("/role", requireRoles(['Admin', 'Seller Manager']), validateSchema(roleSchema), RoleController.store);
+router.post("/role-update", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateRoleSchema), RoleController.update);
+router.post("/role-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idRoleSchema), RoleController.destroy);
 
 // PLANES
-router.get("/plans", requireRoles(['Admin']), PlanController.index);
-router.post("/plan", requireRoles(['Admin']), validateSchema(planSchema), PlanController.store);
-router.post("/plan-update", requireRoles(['Admin']), validateSchema(updatePlanSchema), PlanController.update);
-router.post("/plan-destroy", requireRoles(['Admin']), validateSchema(idPlanSchema), PlanController.destroy);
+router.get("/plans", requireRoles(['Admin', 'Seller Manager']), PlanController.index);
+router.post("/plan", requireRoles(['Admin', 'Seller Manager']), validateSchema(planSchema), PlanController.store);
+router.post("/plan-update", requireRoles(['Admin', 'Seller Manager']), validateSchema(updatePlanSchema), PlanController.update);
+router.post("/plan-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idPlanSchema), PlanController.destroy);
 
 // PERMISOS
-router.get("/permissions", requireRoles(['Admin']), PermissionController.index);
-router.post("/permission", requireRoles(['Admin']), validateSchema(permissionSchema), PermissionController.store);
-router.post("/permission-update", requireRoles(['Admin']), validateSchema(updatePermissionSchema), PermissionController.update);
-router.post("/permission-destroy", requireRoles(['Admin']), validateSchema(idPermissionSchema), PermissionController.destroy);
+router.get("/permissions", requireRoles(['Admin', 'Seller Manager']), PermissionController.index);
+router.post("/permission", requireRoles(['Admin', 'Seller Manager']), validateSchema(permissionSchema), PermissionController.store);
+router.post("/permission-update", requireRoles(['Admin', 'Seller Manager']), validateSchema(updatePermissionSchema), PermissionController.update);
+router.post("/permission-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idPermissionSchema), PermissionController.destroy);
 
 // Role Permissions
-router.post('/role-permissions', requireRoles(['Admin']), validateSchema(roleIdSchema), RolePermissionController.index);
-router.post('/role-permission', requireRoles(['Admin']), validateSchema(assignPermissionToRoleSchema), RolePermissionController.assign);
-router.post('/role-permission-bulk', requireRoles(['Admin']), validateSchema(assignMultiplePermissionsToRoleSchema), RolePermissionController.assignMultiple);
-router.post('/role-permission-update', requireRoles(['Admin']), validateSchema(updateRolePermissionSchema), RolePermissionController.updateStatus);
-router.post('/role-permission-destroy', requireRoles(['Admin']), validateSchema(idRolePermissionSchema), RolePermissionController.destroy);
-router.post('/role-permissions-available', requireRoles(['Admin']), validateSchema(availablePermissionsForRoleSchema), RolePermissionController.available);
+router.post('/role-permissions', requireRoles(['Admin', 'Seller Manager']), validateSchema(roleIdSchema), RolePermissionController.index);
+router.post('/role-permission', requireRoles(['Admin', 'Seller Manager']), validateSchema(assignPermissionToRoleSchema), RolePermissionController.assign);
+router.post('/role-permission-bulk', requireRoles(['Admin', 'Seller Manager']), validateSchema(assignMultiplePermissionsToRoleSchema), RolePermissionController.assignMultiple);
+router.post('/role-permission-update', requireRoles(['Admin', 'Seller Manager']), validateSchema(updateRolePermissionSchema), RolePermissionController.updateStatus);
+router.post('/role-permission-destroy', requireRoles(['Admin', 'Seller Manager']), validateSchema(idRolePermissionSchema), RolePermissionController.destroy);
+router.post('/role-permissions-available', requireRoles(['Admin', 'Seller Manager']), validateSchema(availablePermissionsForRoleSchema), RolePermissionController.available);
 
 // Endpoints BusinessTypes
-router.get("/business-type", requireRoles(['Admin']), BusinessTypeController.index);
-router.post("/business-type", requireRoles(['Admin']), validateSchema(businessTypeSchema), BusinessTypeController.store);
-router.post("/business-type-update", requireRoles(['Admin']), validateSchema(updateBusinessTypeSchema), BusinessTypeController.update);
-router.post("/business-type-destroy", requireRoles(['Admin']), validateSchema(idBusinessTypeSchema), BusinessTypeController.destroy);
+router.get("/business-type", requireRoles(['Admin', 'Seller Manager']), BusinessTypeController.index);
+router.post("/business-type", requireRoles(['Admin', 'Seller Manager']), validateSchema(businessTypeSchema), BusinessTypeController.store);
+router.post("/business-type-update", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateBusinessTypeSchema), BusinessTypeController.update);
+router.post("/business-type-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idBusinessTypeSchema), BusinessTypeController.destroy);
 
 //Rutas de Companies
-router.post("/company-by-user", requireRoles(['Admin']), validateSchema(byUserIdSchema), CompanyController.getCompaniesByUser);
-router.post("/company", requireRoles(['Admin']), multerImage("image", "companies"), validateSchema(storeCompanySchema), CompanyController.store);
-router.post("/company-update", requireRoles(['Admin']), multerImage("image", "companies"), validateSchema(updateCompanySchema), CompanyController.update);
-router.post("/company-destroy", requireRoles(['Admin']), validateSchema(idCompanySchema), CompanyController.destroy);
+router.post("/company-by-user", requireRoles(['Admin', 'Seller Manager']), validateSchema(byUserIdSchema), CompanyController.getCompaniesByUser);
+router.post("/company", requireRoles(['Admin', 'Seller Manager']), multerImage("image", "companies"), validateSchema(storeCompanySchema), CompanyController.store);
+router.post("/company-update", requireRoles(['Admin', 'Seller Manager']), multerImage("image", "companies"), validateSchema(updateCompanySchema), CompanyController.update);
+router.post("/company-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idCompanySchema), CompanyController.destroy);
 
 //UserCompany
-router.post('/user-company', requireRoles(['Admin']), validateSchema(createUserCompanySchema), UserCompanyController.create);
-router.post('/user-company-status', requireRoles(['Admin']), validateSchema(updateUserCompanyStatusSchema), UserCompanyController.updateStatus);
-router.post('/user-company-destroy', requireRoles(['Admin']), validateSchema(userCompanyIdSchema), UserCompanyController.destroy);
-router.post('/user-company-find', requireRoles(['Admin']), validateSchema(userCompanyByUserAndCompanySchema), UserCompanyController.findByUserAndCompany);
+router.post('/user-company', requireRoles(['Admin', 'Seller Manager']), validateSchema(createUserCompanySchema), UserCompanyController.create);
+router.post('/user-company-status', requireRoles(['Admin', 'Seller Manager']), validateSchema(updateUserCompanyStatusSchema), UserCompanyController.updateStatus);
+router.post('/user-company-destroy', requireRoles(['Admin', 'Seller Manager']), validateSchema(userCompanyIdSchema), UserCompanyController.destroy);
+router.post('/user-company-find', requireRoles(['Admin', 'Seller Manager']), validateSchema(userCompanyByUserAndCompanySchema), UserCompanyController.findByUserAndCompany);
 router.post('/user-company-token', validateSchema(userCompanyByTokenSchema), UserCompanyController.findByToken); // Sin requireRoles: aceptación pública de invitación
-router.post('/user-company-list', requireRoles(['Admin']), validateSchema(listUserCompanySchema), UserCompanyController.list);
+router.post('/user-company-list', requireRoles(['Admin', 'Seller Manager']), validateSchema(listUserCompanySchema), UserCompanyController.list);
 
 //UserAclScope
-router.post('/user-acl-scope', requireRoles(['Admin']), validateSchema(createUserAclScopeSchema), UserAclScopeController.create);
-router.post('/user-acl-scope-destroy', requireRoles(['Admin']), validateSchema(userAclScopeIdSchema), UserAclScopeController.destroy);
-router.post('/user-acl-scopes', requireRoles(['Admin']), validateSchema(userAclScopesByUserAndCompanySchema), UserAclScopeController.listByUserAndCompany);
-router.post('/user-acl-scopes-clear', requireRoles(['Admin']), validateSchema(userAclScopesByUserAndCompanySchema), UserAclScopeController.clearByUserAndCompany);
+router.post('/user-acl-scope', requireRoles(['Admin', 'Seller Manager']), validateSchema(createUserAclScopeSchema), UserAclScopeController.create);
+router.post('/user-acl-scope-destroy', requireRoles(['Admin', 'Seller Manager']), validateSchema(userAclScopeIdSchema), UserAclScopeController.destroy);
+router.post('/user-acl-scopes', requireRoles(['Admin', 'Seller Manager']), validateSchema(userAclScopesByUserAndCompanySchema), UserAclScopeController.listByUserAndCompany);
+router.post('/user-acl-scopes-clear', requireRoles(['Admin', 'Seller Manager']), validateSchema(userAclScopesByUserAndCompanySchema), UserAclScopeController.clearByUserAndCompany);
 
 //Rutas de Sucursales
-router.post("/branch-user-company", requireRoles(['Admin']), validateSchema(listBranchesSchema), BranchController.list);
-router.post("/branch", requireRoles(['Admin']), multerImage("image", "branches"), validateSchema(storeBranchSchema), BranchController.store);
-router.post("/branch-update", requireRoles(['Admin']), multerImage("image", "branches"), validateSchema(updateBranchSchema), BranchController.update);
-router.post("/branch-destroy", requireRoles(['Admin']), validateSchema(idBranchSchema), BranchController.destroy);
+router.post("/branch-user-company", requireRoles(['Admin', 'Seller Manager']), validateSchema(listBranchesSchema), BranchController.list);
+router.post("/branch", requireRoles(['Admin', 'Seller Manager']), multerImage("image", "branches"), validateSchema(storeBranchSchema), BranchController.store);
+router.post("/branch-update", requireRoles(['Admin', 'Seller Manager']), multerImage("image", "branches"), validateSchema(updateBranchSchema), BranchController.update);
+router.post("/branch-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idBranchSchema), BranchController.destroy);
 
 //Rutas de Almacénes
-router.post("/warehouse-branch-company", requireRoles(['Admin']), validateSchema(listWarehouseSchema), WarehouseController.list);
-router.post("/warehouse", requireRoles(['Admin']), multerImage("image", "warehouses"), validateSchema(storeWarehouseSchema), WarehouseController.store);
-router.post("/warehouse-update", requireRoles(['Admin']), multerImage("image", "warehouses"), validateSchema(updateWarehouseSchema), WarehouseController.update);
-router.post("/warehouse-destroy", requireRoles(['Admin']), validateSchema(idWarehouseSchema), WarehouseController.destroy);
-router.post("/warehouse-metadata", requireRoles(['Admin']), WarehouseController.getWarehouseMetadata);
+router.post("/warehouse-branch-company", requireRoles(['Admin', 'Seller Manager']), validateSchema(listWarehouseSchema), WarehouseController.list);
+router.post("/warehouse", requireRoles(['Admin', 'Seller Manager']), multerImage("image", "warehouses"), validateSchema(storeWarehouseSchema), WarehouseController.store);
+router.post("/warehouse-update", requireRoles(['Admin', 'Seller Manager']), multerImage("image", "warehouses"), validateSchema(updateWarehouseSchema), WarehouseController.update);
+router.post("/warehouse-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idWarehouseSchema), WarehouseController.destroy);
+router.post("/warehouse-metadata", requireRoles(['Admin', 'Seller Manager']), WarehouseController.getWarehouseMetadata);
 
 //Rutas de categoria de productos
-router.get("/product-category", requireRoles(['Admin']), ProductCategoryController.index);
-router.post("/product-category", requireRoles(['Admin']), validateSchema(productCategorySchema), ProductCategoryController.store);
-router.post("/product-category-update", requireRoles(['Admin']), validateSchema(updateProductCategorySchema), ProductCategoryController.update);
-router.post("/product-category-destroy", requireRoles(['Admin']), validateSchema(idProductCategorySchema), ProductCategoryController.destroy);
+router.get("/product-category", requireRoles(['Admin', 'Seller Manager']), ProductCategoryController.index);
+router.post("/product-category", requireRoles(['Admin', 'Seller Manager']), validateSchema(productCategorySchema), ProductCategoryController.store);
+router.post("/product-category-update", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateProductCategorySchema), ProductCategoryController.update);
+router.post("/product-category-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idProductCategorySchema), ProductCategoryController.destroy);
 
 
 const productImageFields = {
@@ -199,66 +199,66 @@ const productImageFields = {
 };
 
 // Rutas de Productos
-router.post("/product-user-company", requireRoles(['Admin']), validateSchema(listProductsSchema), ProductController.list);
-router.post("/product", requireRoles(['Admin']), multerFieldFolders(productImageFields), validateSchema(storeProductSchema), ProductController.store);
-router.post("/product-update", requireRoles(['Admin']), multerFieldFolders(productImageFields), validateSchema(updateProductSchema), ProductController.update);
-router.post("/product-destroy", requireRoles(['Admin']), validateSchema(idProductSchema), ProductController.destroy);
-router.post("/products-transform", requireRoles(['Admin']), ProductController.transformForMarketplace);
-router.post("/product-category-status", requireRoles(['Admin']), ProductController.getProductMetadata);
+router.post("/product-user-company", requireRoles(['Admin', 'Seller Manager']), validateSchema(listProductsSchema), ProductController.list);
+router.post("/product", requireRoles(['Admin', 'Seller Manager']), multerFieldFolders(productImageFields), validateSchema(storeProductSchema), ProductController.store);
+router.post("/product-update", requireRoles(['Admin', 'Seller Manager']), multerFieldFolders(productImageFields), validateSchema(updateProductSchema), ProductController.update);
+router.post("/product-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idProductSchema), ProductController.destroy);
+router.post("/products-transform", requireRoles(['Admin', 'Seller Manager']), ProductController.transformForMarketplace);
+router.post("/product-category-status", requireRoles(['Admin', 'Seller Manager']), ProductController.getProductMetadata);
 router.post("/product-update-attributes", ProductController.updateAttributes);
-router.post('/product-assign-warehouse', requireRoles(['Admin']), validateSchema(assignWarehouseSchema), ProductController.assignWarehouse);
+router.post('/product-assign-warehouse', requireRoles(['Admin', 'Seller Manager']), validateSchema(assignWarehouseSchema), ProductController.assignWarehouse);
 
 //Product Varinants
 router.post("/variant-create", ProductVariantController.create);
-router.post("/product-variant-update", requireRoles(['Admin']), ProductVariantController.update);
-router.post("/variant-delete", requireRoles(['Admin']), ProductVariantController.delete);
+router.post("/product-variant-update", requireRoles(['Admin', 'Seller Manager']), ProductVariantController.update);
+router.post("/variant-delete", requireRoles(['Admin', 'Seller Manager']), ProductVariantController.delete);
 
 // Mismo patrón que branches y products
-router.post("/warehouse-product-user-company", requireRoles(['Admin']), validateSchema(listWarehouseProductSchema), WarehouseProductController.list);
-router.post('/warehouse-products-not-in-warehouse', requireRoles(['Admin']), validateSchema(listWarehouseProductSchema), WarehouseProductController.getProductsNotInWarehouse);
-router.post("/warehouse-product", requireRoles(['Admin']), validateSchema(storeWarehouseProductSchema), WarehouseProductController.store);
-router.post("/warehouse-product-update", requireRoles(['Admin']), validateSchema(updateWarehouseProductSchema), WarehouseProductController.update);
-router.post("/warehouse-product-destroy", requireRoles(['Admin']), validateSchema(idWarehouseProductSchema), WarehouseProductController.destroy);
-router.post("/warehouse-movement-stock", requireRoles(['Admin']), validateSchema(transferSchema), WarehouseProductController.createMovement );
-router.post("/warehouse-bulk-movement", requireRoles(['Admin']), validateSchema(bulkTransferSchema), WarehouseProductController.createBulkMovement );
-router.post("/warehouse-products-by-ids", requireRoles(['Admin']), validateSchema(listByWarehouseIdsSchema), WarehouseProductController.listByWarehouseIds);
-router.post("/movements", requireRoles(['Admin']), validateSchema(getMovementsSchema), InventoryMovementController.getMovements);
-//router.post("/warehouse-product-bulk-preview", requireRoles(['Admin']), multerGeneric('file'), validateSchema(bulkUploadSchema), WarehouseProductController.bulkUploadPreview);
-//router.post("/warehouse-product-bulk-confirm", requireRoles(['Admin']), WarehouseProductController.bulkUploadConfirm);
+router.post("/warehouse-product-user-company", requireRoles(['Admin', 'Seller Manager']), validateSchema(listWarehouseProductSchema), WarehouseProductController.list);
+router.post('/warehouse-products-not-in-warehouse', requireRoles(['Admin', 'Seller Manager']), validateSchema(listWarehouseProductSchema), WarehouseProductController.getProductsNotInWarehouse);
+router.post("/warehouse-product", requireRoles(['Admin', 'Seller Manager']), validateSchema(storeWarehouseProductSchema), WarehouseProductController.store);
+router.post("/warehouse-product-update", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateWarehouseProductSchema), WarehouseProductController.update);
+router.post("/warehouse-product-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idWarehouseProductSchema), WarehouseProductController.destroy);
+router.post("/warehouse-movement-stock", requireRoles(['Admin', 'Seller Manager']), validateSchema(transferSchema), WarehouseProductController.createMovement );
+router.post("/warehouse-bulk-movement", requireRoles(['Admin', 'Seller Manager']), validateSchema(bulkTransferSchema), WarehouseProductController.createBulkMovement );
+router.post("/warehouse-products-by-ids", requireRoles(['Admin', 'Seller Manager']), validateSchema(listByWarehouseIdsSchema), WarehouseProductController.listByWarehouseIds);
+router.post("/movements", requireRoles(['Admin', 'Seller Manager']), validateSchema(getMovementsSchema), InventoryMovementController.getMovements);
+//router.post("/warehouse-product-bulk-preview", requireRoles(['Admin', 'Seller Manager']), multerGeneric('file'), validateSchema(bulkUploadSchema), WarehouseProductController.bulkUploadPreview);
+//router.post("/warehouse-product-bulk-confirm", requireRoles(['Admin', 'Seller Manager']), WarehouseProductController.bulkUploadConfirm);
 
 // Marketplaces
-router.post("/marketplace", requireRoles(['Admin']), validateSchema(storeMarketplaceSchema), MarketplaceController.store);
-router.post("/marketplace-update", requireRoles(['Admin']), validateSchema(updateMarketplaceSchema), MarketplaceController.update);
-router.post("/marketplace-destroy", requireRoles(['Admin']), validateSchema(idMarketplaceSchema), MarketplaceController.destroy);
-router.post("/marketplace-show", requireRoles(['Admin']), validateSchema(idMarketplaceSchema), MarketplaceController.show);
-router.post("/marketplace-list", requireRoles(['Admin']), MarketplaceController.list); // list no necesita schema (validación manual de company_id)
+router.post("/marketplace", requireRoles(['Admin', 'Seller Manager']), validateSchema(storeMarketplaceSchema), MarketplaceController.store);
+router.post("/marketplace-update", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateMarketplaceSchema), MarketplaceController.update);
+router.post("/marketplace-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idMarketplaceSchema), MarketplaceController.destroy);
+router.post("/marketplace-show", requireRoles(['Admin', 'Seller Manager']), validateSchema(idMarketplaceSchema), MarketplaceController.show);
+router.post("/marketplace-list", requireRoles(['Admin', 'Seller Manager']), MarketplaceController.list); // list no necesita schema (validación manual de company_id)
 
 //Marketplace Credentiales
 router.post('/marketplace-credentials-by-context', validateSchema(findByMarketplaceCredentialSchema), MarketplaceCredentialController.index);
-router.post("/marketplace-credential", requireRoles(['Admin']), validateSchema(storeMarketplaceCredentialSchema), MarketplaceCredentialController.store);
-router.post("/marketplace-credential-update", requireRoles(['Admin']), validateSchema(updateMarketplaceCredentialSchema), MarketplaceCredentialController.update);
-router.post("/marketplace-credential-show", requireRoles(['Admin']), validateSchema(findByMarketplaceCredentialSchema), MarketplaceCredentialController.show);
+router.post("/marketplace-credential", requireRoles(['Admin', 'Seller Manager']), validateSchema(storeMarketplaceCredentialSchema), MarketplaceCredentialController.store);
+router.post("/marketplace-credential-update", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateMarketplaceCredentialSchema), MarketplaceCredentialController.update);
+router.post("/marketplace-credential-show", requireRoles(['Admin', 'Seller Manager']), validateSchema(findByMarketplaceCredentialSchema), MarketplaceCredentialController.show);
 
 // Metadatos de los marketplaces
-router.post("/product-field-mapping", requireRoles(['Admin']), validateSchema(createProductFieldMappingSchema), ProductFieldMappingController.store);
-router.post("/product-field-mapping-bulk", requireRoles(['Admin']), validateSchema(bulkCreateProductFieldMappingSchema), ProductFieldMappingController.storeBulk);
-router.post("/product-field-mapping-update", requireRoles(['Admin']), validateSchema(updateProductFieldMappingSchema), ProductFieldMappingController.update);
-router.post("/product-field-mapping-destroy", requireRoles(['Admin']), validateSchema(idProductFieldMappingSchema), ProductFieldMappingController.destroy);
-router.post("/product-field-mapping-show", requireRoles(['Admin']), validateSchema(idProductFieldMappingSchema), ProductFieldMappingController.show);
-router.post("/product-field-mapping-list", requireRoles(['Admin']), validateSchema(listProductFieldMappingSchema), ProductFieldMappingController.list);
+router.post("/product-field-mapping", requireRoles(['Admin', 'Seller Manager']), validateSchema(createProductFieldMappingSchema), ProductFieldMappingController.store);
+router.post("/product-field-mapping-bulk", requireRoles(['Admin', 'Seller Manager']), validateSchema(bulkCreateProductFieldMappingSchema), ProductFieldMappingController.storeBulk);
+router.post("/product-field-mapping-update", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateProductFieldMappingSchema), ProductFieldMappingController.update);
+router.post("/product-field-mapping-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idProductFieldMappingSchema), ProductFieldMappingController.destroy);
+router.post("/product-field-mapping-show", requireRoles(['Admin', 'Seller Manager']), validateSchema(idProductFieldMappingSchema), ProductFieldMappingController.show);
+router.post("/product-field-mapping-list", requireRoles(['Admin', 'Seller Manager']), validateSchema(listProductFieldMappingSchema), ProductFieldMappingController.list);
 
 //rutas de pools
-router.post("/pool-list", requireRoles(['Admin']), validateSchema(listPoolsSchema), PoolController.list);
-router.post("/pool", requireRoles(['Admin']), validateSchema(storePoolSchema), PoolController.store);
-router.post("/pool-update", requireRoles(['Admin']), validateSchema(updatePoolSchema), PoolController.update);
-router.post("/pool-destroy", requireRoles(['Admin']), validateSchema(idPoolSchema), PoolController.destroy);
+router.post("/pool-list", requireRoles(['Admin', 'Seller Manager']), validateSchema(listPoolsSchema), PoolController.list);
+router.post("/pool", requireRoles(['Admin', 'Seller Manager']), validateSchema(storePoolSchema), PoolController.store);
+router.post("/pool-update", requireRoles(['Admin', 'Seller Manager']), validateSchema(updatePoolSchema), PoolController.update);
+router.post("/pool-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idPoolSchema), PoolController.destroy);
 //Rutas de publicaciones de productos
-router.post("/marketplaces-pools", requireRoles(['Admin']), validateSchema(listProductPublishingTaskSchema), ProductPublishingTaskController.warehouseMarketplaces);
-router.post("/publishing-task", requireRoles(['Admin']), validateSchema(storeProductPublishingTaskSchema), ProductPublishingTaskController.store);
-router.post("/publishing-task-update-status", requireRoles(['Admin']), validateSchema(updateProductPublishingTaskStatusSchema), ProductPublishingTaskController.updateStatus);
-router.post("/publishing-task-list", requireRoles(['Admin']), validateSchema(listProductPublishingTaskSchema), ProductPublishingTaskController.list);
-router.post("/publishing-task-retry", requireRoles(['Admin']), validateSchema(retryProductPublishingTaskSchema), ProductPublishingTaskController.retry);
+router.post("/marketplaces-pools", requireRoles(['Admin', 'Seller Manager']), validateSchema(listProductPublishingTaskSchema), ProductPublishingTaskController.warehouseMarketplaces);
+router.post("/publishing-task", requireRoles(['Admin', 'Seller Manager']), validateSchema(storeProductPublishingTaskSchema), ProductPublishingTaskController.store);
+router.post("/publishing-task-update-status", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateProductPublishingTaskStatusSchema), ProductPublishingTaskController.updateStatus);
+router.post("/publishing-task-list", requireRoles(['Admin', 'Seller Manager']), validateSchema(listProductPublishingTaskSchema), ProductPublishingTaskController.list);
+router.post("/publishing-task-retry", requireRoles(['Admin', 'Seller Manager']), validateSchema(retryProductPublishingTaskSchema), ProductPublishingTaskController.retry);
 
 //Rutas de los logs
-router.post("/get-logs", requireRoles(['Admin']), LogController.getLogs);
+router.post("/get-logs", requireRoles(['Admin', 'Seller Manager']), LogController.getLogs);
 module.exports = router;

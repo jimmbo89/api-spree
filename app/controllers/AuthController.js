@@ -149,9 +149,19 @@ const AuthController = {
           });
         return res.status(400).json({ msg: "Credenciales inválidas" });
         }
-        // ✅ Rol desde la relación con tabla roles
-        const roleName = user.role?.name || 'invited'; // fallback seguro
-        const company_id = user.companies?.[0].id || null; // fallback seguro
+        // ✅ Rol desde la PRIMERA MEMBRESÍA ACTIVA del usuario
+        let role = null;
+        let role_id = null;
+        let company_id = null;
+        if (user.memberships && user.memberships.length > 0) {
+          // Opcional: filtrar solo membresías activas (status = 1)
+          const activeMemberships = user.memberships.filter(m => m.status === 1);
+          const firstMembership = activeMemberships[0] || user.memberships[0];
+          
+          role = firstMembership.role || null;
+          role_id = firstMembership.role_id || null;
+          company_id = firstMembership.company_id;
+        }
 
         const userNew = {
         id: user.id,
@@ -159,8 +169,8 @@ const AuthController = {
         name: user.name,
         user: user.user,
         image: user.image,
-        role: roleName,
-        role_id: user.role_id,
+        role: role,
+        role_id: role_id,
         company_id: company_id
         };
 
