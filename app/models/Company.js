@@ -8,6 +8,7 @@ module.exports = (sequelize, DataTypes) => {
       Company.hasMany(models.Branch, { foreignKey: 'company_id', as: 'branches', onDelete: 'CASCADE' });
       Company.belongsTo(models.User, { foreignKey: 'user_id', as: 'user', onDelete: 'SET NULL' });
       Company.belongsTo(models.BusinessType, { foreignKey: 'business_type_id', as: 'businessType', });
+      Company.belongsTo(models.Plan, { foreignKey: 'plan_id', as: 'plan' });      
       Company.hasMany(models.Product, { foreignKey: 'company_id', as: 'products', onDelete: 'SET NULL' });
       Company.hasMany(models.Warehouse, { foreignKey: 'company_id', as: 'warehouses', onDelete: 'SET NULL' });
       Company.hasMany(models.MarketplaceCredential, { foreignKey: 'company_id', as: 'marketplacecredentials', onDelete: 'SET NULL' });
@@ -38,6 +39,15 @@ module.exports = (sequelize, DataTypes) => {
       validate: {
         isInt: {
           msg: 'El campo business_type_id debe ser un número entero'
+        }
+      }
+    },
+    plan_id: { // 👈 NUEVO
+      type: DataTypes.BIGINT,
+      allowNull: true,
+      validate: {
+        isInt: {
+          msg: 'El campo plan_id debe ser un número entero'
         }
       }
     },

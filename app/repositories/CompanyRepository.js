@@ -1,5 +1,5 @@
 const { Op } = require('sequelize');
-const { Company, BusinessType } = require('../models');
+const { Company, BusinessType, Plan } = require('../models');
 const ImageService = require('../services/ImageService');
 const logger = require('../../config/logger');
 
@@ -7,43 +7,39 @@ const CompanyRepository = {
   async findAll() {
     return await Company.findAll({
       attributes: ['id', 'name', 'address', 'city', 'country', 'image', 'rut', 'phone', 'business_type_id', 'email'],
-      include: [{
-        model: BusinessType,
-        as: 'businessType',
-        attributes: ['id', 'name'], // No queremos los atributos del modelo, solo el name como alias
-        required: false // LEFT JOIN (puede ser null)
-      }]
+      include: [
+      { model: BusinessType, as: 'businessType', attributes: ['id', 'name'], required: false },
+      { model: Plan, as: 'plan', attributes: ['id', 'name'], required: false } // 👈 NUEVO
+    ]
     });
   },
 
   async findById(id) {
     return await Company.findByPk(id, {
       attributes: ['id', 'name', 'description', 'address', 'city', 'country', 'image', 'rut', 'phone', 'business_type_id', 'email'],
-      include: [{
-        model: BusinessType,
-        as: 'businessType',
-        attributes: ['id', 'name'], // No queremos los atributos del modelo, solo el name como alias
-        required: false // LEFT JOIN (puede ser null)
-      }]
+      include: [
+      { model: BusinessType, as: 'businessType', attributes: ['id', 'name'], required: false },
+      { model: Plan, as: 'plan', attributes: ['id', 'name'], required: false } // 👈 NUEVO
+    ]
     });
   },
 
  async getMappedCompaniesByUserId(userId) {
     const companies = await Company.findAll({
       where: { user_id: userId },
-      attributes: ['id', 'name', 'description', 'address', 'city', 'country', 'image', 'rut', 'phone', 'business_type_id', 'email'],
-      include: [{
-        model: BusinessType,
-        as: 'businessType',
-        attributes: ['id', 'name'], // No queremos los atributos del modelo, solo el name como alias
-        required: false // LEFT JOIN (puede ser null)
-      }]
+      attributes: ['id', 'name', 'description', 'address', 'city', 'country', 'image', 'rut', 'phone', 'business_type_id', 'email', 'plan_id'],
+      include: [
+      { model: BusinessType, as: 'businessType', attributes: ['id', 'name'], required: false },
+      { model: Plan, as: 'plan', attributes: ['id', 'name'], required: false } // 👈 NUEVO
+    ]
     });
 
     return companies.map(company => ({
       id: company.id,
       business_type_id: company.business_type_id,
       businessbusinessTypeName: company.businessType.name,
+      plan_id: company.plan_id,
+      planName: company.plan?.name || null, // 👈 NUEVO
       name: company.name,
       description: company.description,
       address: company.address,
@@ -110,7 +106,7 @@ const CompanyRepository = {
 },
 
   async create(body, file, transaction = null) {
-    const { name, description, rut, address, city, country, phone, user_id, business_type_id, email } = body;
+    const { name, description, rut, address, city, country, phone, user_id, business_type_id, email, plan_id } = body;
 
     const company = await Company.create({
       name,
@@ -121,7 +117,8 @@ const CompanyRepository = {
       country,
       phone,
       user_id,
-      business_type_id,
+      business_type_id, 
+      plan_id,
       image: 'companies/default.jpg',
       email
     }, { transaction });
@@ -136,7 +133,7 @@ const CompanyRepository = {
   },
 
   async update(company, body, file) {
-    const fieldsToUpdate = ['name', 'description', 'rut', 'address', 'city', 'country', 'phone', 'business_type_id', 'email'];
+    const fieldsToUpdate = ['name', 'description', 'rut', 'address', 'city', 'country', 'phone', 'business_type_id', 'email', 'plan_id'];
 
     const updatedData = Object.keys(body)
       .filter(key => fieldsToUpdate.includes(key) && body[key] !== undefined)

@@ -2,6 +2,7 @@ const Joi = require('joi');
 
 const storeCompanySchema = Joi.object({
   business_type_id: Joi.number().integer().positive().required(),
+  plan_id: Joi.number().integer().positive().optional(), // 👈 NUEVO
   name: Joi.string().max(255).required(),
   description: Joi.string().allow(null, '').optional(),
   rut: Joi.string().max(50).required(),
@@ -44,6 +45,7 @@ const storeCompanySchema = Joi.object({
 const updateCompanySchema = Joi.object({
   id: Joi.number().required(),
   business_type_id: Joi.number().integer().positive().optional().allow(null),
+  plan_id: Joi.number().integer().positive().optional(), // 👈 NUEVO
   name: Joi.string().max(255).allow(null, '').optional(),
   description: Joi.string().allow(null, '').optional(),
   rut: Joi.string().max(50).allow(null, '').optional(),

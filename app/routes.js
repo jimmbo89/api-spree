@@ -145,7 +145,7 @@ router.post('/role-permission-destroy', requireRoles(['Admin', 'Seller Manager']
 router.post('/role-permissions-available', requireRoles(['Admin', 'Seller Manager']), validateSchema(availablePermissionsForRoleSchema), RolePermissionController.available);
 
 // Endpoints BusinessTypes
-router.get("/business-type", requireRoles(['Admin', 'Seller Manager']), BusinessTypeController.index);
+router.post("/business-types", requireRoles(['Admin', 'Seller Manager']), BusinessTypeController.index);
 router.post("/business-type", requireRoles(['Admin', 'Seller Manager']), validateSchema(businessTypeSchema), BusinessTypeController.store);
 router.post("/business-type-update", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateBusinessTypeSchema), BusinessTypeController.update);
 router.post("/business-type-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idBusinessTypeSchema), BusinessTypeController.destroy);

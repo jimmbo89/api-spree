@@ -1,22 +1,35 @@
 // src/controllers/BusinessTypeController.js
 const logger = require("../../config/logger");
-const { BusinessTypeRepository } = require("../repositories");
+const { BusinessTypeRepository, PlanRepository } = require("../repositories");
 
 const BusinessTypeController = {
-  async index(req, res) {
-    const userName = req.user?.name || 'Anonymous';
-    logger.info(`${userName} - Solicita listado de tipos de negocio`);
+async index(req, res) {
+  const userName = req.user?.name || 'Anonymous';
+  logger.info(`${userName} - Solicita listado de tipos de negocio`);
 
-    try {
-      const businessTypes = await BusinessTypeRepository.findAll();
-      return businessTypes.length === 0
-        ? res.status(204).json({ msg: "NoBusinessTypesFound", businessTypes: [] })
-        : res.status(200).json({ businessTypes: businessTypes });
-    } catch (err) {
-      logger.error("BusinessTypeController->index: " + err.message);
-      return res.status(500).json({ error: "ServerError", details: err.message });
+  try {
+    const { includePlans } = req.body; // 👈 Leer el flag del body
+
+    const businessTypes = await BusinessTypeRepository.findAll();
+
+    // ✅ Si se pide, incluir planes
+    let response = { businessTypes: businessTypes };
+
+    if (includePlans) {
+      // Asumimos que tienes un PlanRepository
+      const plans = await PlanRepository.findAll();
+      response.plans = plans;
     }
-  },
+
+    return businessTypes.length === 0 && !includePlans
+      ? res.status(204).json({ msg: "NoBusinessTypesFound", ...response })
+      : res.status(200).json(response);
+
+  } catch (err) {
+    logger.error("BusinessTypeController->index: " + err.message);
+    return res.status(500).json({ error: "ServerError", details: err.message });
+  }
+},
 
   async store(req, res) {
     const userName = req.user?.name || 'Anonymous';
