@@ -1,7 +1,7 @@
 const BaseAdapter = require("./BaseAdapter");
 const logger = require("../../../config/logger");
 const { MarketplaceCredentialRepository } = require("../../repositories");
-const proxyHelper = require("../../util/proxyHelper");
+const axios = require('axios');
 const MarketplaceTransformerMercadoLibre = require("../MarketplaceTransformerMercadoLibre");
 
 class MercadoLibreAdapter extends BaseAdapter {

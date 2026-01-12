@@ -56,12 +56,9 @@ const server = app.listen(process.env.PORT || 8081, '0.0.0.0', async () => {
 
     // ✅ Intentar conectar a la base de datos
     await sequelize.authenticate();
-    logger.info('✅ Conexión a la base de datos exitosa');
-
     // ✅ Log opcional con tu logger (si existe)
     if (logger && typeof logger.info === 'function') {
-      logger.info(`🚀 Servidor escuchando en http://0.0.0.0:${PORT}/api`);
-      logger.info('✅ Conexión a la base de datos exitosa');
+      logger.info('✅ Conexión a la base de datos exitosa'); 
     }
   } catch (error) {
     logger.error('❌ Error al conectar a la base de datos:', error);

@@ -1,15 +1,13 @@
-const { Product, ProductVariant, sequelize } = require("../models");
+const { Product, ProductVariant, ProductAttribute, Attribute, sequelize } = require("../models");
 const { Op } = require("sequelize");
 const logger = require("../../config/logger");
 const ImageService = require("../services/ImageService");
+const WarehouseProductRepository = require("./WarehouseProductRepository");
 const DEFAULT_IMAGE = "products/default.jpg";
 
 const ProductRepository = {
   async findFiltered({ companyId, userId, branchId, categoryId, brand, status, hasGtin }) {
     const where = { };
-    if (companyId !== undefined) where.company_id = companyId;
-    if (userId !== undefined) where.user_id = userId;
-    if (branchId !== undefined) where.branch_id = branchId;
     if (categoryId !== undefined) where.category_id = categoryId;
     if (brand !== undefined && brand !== '') where.brand = brand;
     if (status !== undefined) where.status = status;
@@ -31,7 +29,17 @@ const ProductRepository = {
           model: ProductVariant,
           as: 'variants',
           attributes: ['id', 'sku', 'attributes', 'image']
-        }
+        },
+      {
+        model: ProductAttribute,
+        as: 'productAttributes',
+        attributes: ['id', 'attribute_id', 'value'],
+        include: [{
+          model: Attribute,
+          as: 'attribute',
+          attributes: ['id', 'name'] // Solo necesitamos el nombre del atributo
+        }]
+      }
       ]
     });
 
@@ -49,13 +57,62 @@ const ProductRepository = {
       { id: "not_specified", name: "No especificado" }
     ];
 
+    const productIds = products.map(p => p.id);
+    const commonCompanyId = companyId;
+
+    let productToWarehousesMap = {};
+
+  if (productIds.length > 0) {
+  try {
+    const warehouseMap = await WarehouseProductRepository.getProductWarehousesWithStock({
+      productIds,
+      companyId: companyId,   // ← usa el parámetro original
+      branchId: branchId      // ← no uses commonCompanyId=1 fijo
+    });
+    productToWarehousesMap = warehouseMap;
+  } catch (error) {
+    logger.error('Error al cargar almacenes de productos:', error);
+  }
+}
+    logger.info('almacenes asociados');
+    logger.info(JSON.stringify(productToWarehousesMap));
     return products.map(product => {
       // Buscar el status correspondiente
       const statusMatch = productStatus.find(s => s.id === product.status);
       
       // Buscar la condición correspondiente
       const conditionMatch = conditions.find(c => c.id === product.condition);
-      
+
+      const processedVariants = (Array.isArray(product.variants) ? product.variants : []).map(variant => {
+    let attributesObj = {};
+    try {
+      // Intentar parsear la cadena JSON
+      attributesObj = typeof variant.attributes === 'string' ? JSON.parse(variant.attributes) : variant.attributes;
+    } catch (error) {
+      console.error('Error parsing variant attributes:', error);
+      // Si falla, dejarlo como objeto vacío o manejarlo según tu lógica
+      attributesObj = {};
+    }
+    return {
+      ...variant,
+      attributes: attributesObj // Reemplazar la cadena por el objeto
+    };
+  });
+
+    const realAttributes = [];
+    if (Array.isArray(product.productAttributes)) {
+      for (const pa of product.productAttributes) {
+        if (pa.attribute) {
+          realAttributes.push({
+            id: pa.id,                     // ID de la relación product_attributes
+            attribute_id: pa.attribute.id, // ID del atributo (tabla attributes)
+            name: pa.attribute.name,       // Nombre del atributo
+            value: pa.value                // Valor asignado
+          });
+        }
+      }
+    }
+    
       return {
         id: product.id,
         sku: product.sku,
@@ -70,7 +127,7 @@ const ProductRepository = {
         conditionValue: conditionMatch ? conditionMatch.name : product.condition,
         gtin: product.gtin,
         mpn: product.mpn,
-        attributes: Array.isArray(product.attributes) ? product.attributes : [],
+        attributes: realAttributes,
         warranty_months: product.warranty_months,
         warranty_text: product.warranty_text,
         weight_grams: product.weight_grams,
@@ -79,7 +136,8 @@ const ProductRepository = {
         height_cm: product.height_cm,
         images: Array.isArray(product.images) ? product.images : JSON.parse(product.images || "[]"),
         sync_meta: product.sync_meta || {},
-        variants: product.variants || []
+        variants: processedVariants,
+        warehouses: productToWarehousesMap[product.id] || []
       };
     });
   },
@@ -107,7 +165,6 @@ const ProductRepository = {
         condition: body.condition || 'new',
         gtin: body.gtin || null,
         mpn: body.mpn || null,
-        attributes: Array.isArray(body.attributes) ? body.attributes : [],
         warranty_months: body.warranty_months || null,
         warranty_text: body.warranty_text || null,
         weight_grams: body.weight_grams || null,
@@ -173,8 +230,7 @@ const ProductRepository = {
       const fieldsToUpdate = [
         "sku", "name", "description", "category_id",
         "user_id", "company_id",
-        "brand", "model", "condition", "gtin", "mpn",
-        "attributes", "warranty_months", "warranty_text",
+        "brand", "model", "condition", "gtin", "mpn", "warranty_months", "warranty_text",
         "weight_grams", "length_cm", "width_cm", "height_cm",
         "sync_meta"
       ];

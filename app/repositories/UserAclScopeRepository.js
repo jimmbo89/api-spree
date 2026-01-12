@@ -35,28 +35,32 @@ const UserAclScopeRepository = {
         ],
         order: [['id', 'ASC']]
       });
-      return records.map(mapScope);
+      return records.map(records);
     } catch (error) {
       logger.error(`Error al obtener scopes para usuario ${user_id} y empresa ${company_id}:`, error);
       throw new Error(`Error al obtener scopes: ${error.message}`);
     }
   },
 
-  async create(data) {
-    try {
-      const record = await UserAclScope.create(data);
-      const populated = await UserAclScope.findByPk(record.id, {
-        include: [
-          { model: Warehouse, as: 'warehouse' },
-          { model: Pool, as: 'pool' }
-        ]
-      });
-      return mapScope(populated);
-    } catch (error) {
-      logger.error('Error al crear scope ACL:', error);
-      throw new Error(`Error al crear scope ACL: ${error.message}`);
-    }
-  },
+async create(data, transaction = null) {
+  try {
+    const record = await UserAclScope.create(data, { transaction });
+    return record;
+  } catch (error) {
+    logger.error('Error al crear scope ACL:', error);
+    throw new Error(`Error al crear scope ACL: ${error.message}`);
+  }
+},
+
+// Nuevo: bulkCreate para múltiples scopes
+async bulkCreate(scopes, transaction = null) {
+  try {
+    return await UserAclScope.bulkCreate(scopes, { transaction });
+  } catch (error) {
+    logger.error('Error al crear múltiples scopes ACL:', error);
+    throw new Error(`Error al crear scopes ACL: ${error.message}`);
+  }
+},
 
   async delete(record) {
     try {
@@ -67,9 +71,10 @@ const UserAclScopeRepository = {
     }
   },
 
-  async deleteAllByUserAndCompany(user_id, company_id) {
+  async deleteAllByUserAndCompany(user_id, company_id, transaction = null) {
     try {
-      await UserAclScope.destroy({ where: { user_id, company_id } });
+      await UserAclScope.destroy({ where: { user_id, company_id },
+    transaction });
     } catch (error) {
       logger.error(`Error al eliminar scopes para usuario ${user_id} y empresa ${company_id}:`, error);
       throw new Error(`Error al limpiar scopes: ${error.message}`);

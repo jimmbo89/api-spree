@@ -36,6 +36,23 @@ const RolePermissionRepository = {
     }
   },
 
+  async getAll(status = null) {
+    const where = { };
+    if (status !== null) where.status = status;
+
+    try {
+      const records = await RolePermission.findAll({
+        where,
+        include: [{ model: Permission, as: 'permission' }],
+        order: [['id', 'ASC']]
+      });
+      return records.map(mapRolePermission);
+    } catch (error) {
+      logger.error(`Error al obtener permisos del rol ${role_id}:`, error);
+      throw new Error(`Error al obtener permisos del rol: ${error.message}`);
+    }
+  },
+
   async findById(id) {
     try {
       return await RolePermission.findByPk(id);

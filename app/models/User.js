@@ -14,6 +14,7 @@ module.exports = (sequelize, DataTypes) => {
       User.hasMany(models.ProductPublishingTask, { foreignKey: 'user_id', as: 'publishingTasks', onDelete: 'SET NULL' });
       User.hasMany(models.Pool, { foreignKey: 'user_id', as: 'pools', onDelete: 'CASCADE' });
       User.hasMany(models.UserCompany, { foreignKey: 'user_id', as: 'memberships', onDelete: 'CASCADE' });
+      User.hasMany(models.UserAclScope, { foreignKey: 'user_id', as: 'aclScopes', onDelete: 'CASCADE' });
     }
   }
 
@@ -102,51 +103,6 @@ module.exports = (sequelize, DataTypes) => {
     tableName: 'users',
     timestamps: true,
   });
-
-  function normalizeRoles(roles) {
-    if (!roles) return [];
-
-    // Si es un string, devolver array con ese string
-    if (typeof roles === 'string') {
-      return [roles];
-    }
-
-    // Si es un array
-    if (Array.isArray(roles)) {
-      return roles.map(role => {
-        if (typeof role === 'string') return role;
-        if (role && typeof role === 'object' && typeof role.name === 'string') return role.name;
-        return null; // o lanzar error si prefieres
-      }).filter(Boolean); // elimina nulos/undefined
-    }
-
-    // Si es un objeto con propiedad 'name' (ej: rol individual como { name: 'admin' })
-    if (roles && typeof roles === 'object' && typeof roles.name === 'string') {
-      return [roles.name];
-    }
-
-    // Si no coincide con nada, devolver vacío
-    return [];
-  }
-
-  User.hasRole = function(roles, targetRoles) {
-    const normalizedInput = normalizeRoles(roles);
-    const targets = Array.isArray(targetRoles) ? targetRoles : [targetRoles];
-    return normalizedInput.some(role => targets.includes(role));
-  };
-
-  // Métodos específicos (opcionales, para retrocompatibilidad o conveniencia)
-  User.isAdmin = function(roles) {
-    return User.hasRole(roles, ['Admin']);
-  };
-
-  User.isEditer = function(roles) {
-    return User.hasRole(roles, ['Editor', 'Admin']);
-  };
-
-   User.isViewer = function(roles) {
-    return User.hasRole(roles, ['Viewer', 'Editor', 'Admin']);
-  };
 
   return User;
 };

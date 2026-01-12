@@ -1,6 +1,5 @@
 const axios = require('axios');
 const logger = require('../../config/logger');
-const proxyHelper = require('../util/proxyHelper');
 
 class MercadoLibreAttributesService {
   /**

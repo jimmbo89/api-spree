@@ -325,6 +325,34 @@ const WarehouseRepository = {
     });
   },
 
+  async findWarehousesByCompanyOrBranch(company_id, branch_id) {
+ 
+  const where = {};
+  
+  if (branch_id) {
+    where.branch_id = branch_id;
+  } else if (company_id) {
+    // Obtener las branches de esta company primero
+    const branches = await Branch.findAll({
+      where: { company_id },
+      attributes: ['id']
+    });
+    
+    const branchIds = branches.map(b => b.id);
+    
+    // Buscar warehouses de la company directa O de sus branches
+    where[Op.or] = [
+      { company_id },
+      { branch_id: { [Op.in]: branchIds } }
+    ];
+  }
+  
+  return Warehouse.findAll({
+    where,
+    attributes: ['id', 'code', 'name', 'type', 'status', 'company_id', 'branch_id']
+  });
+},
+
   async getActiveWarehouses(companyId = null, branchId = null) {
     const where = { status: 'activo' };
     
@@ -336,7 +364,20 @@ const WarehouseRepository = {
       attributes: ['id', 'code', 'name', 'type', 'capacity_max_units'],
       order: [['name', 'ASC']]
     });
+  },
+
+  async validateWarehouseIdsExist(warehouseIds) {
+  if (!Array.isArray(warehouseIds) || warehouseIds.length === 0) {
+    return { valid: true, invalidIds: [] };
   }
+  const existing = await Warehouse.findAll({
+    where: { id: warehouseIds },
+    attributes: ['id']
+  });
+  const existingIds = new Set(existing.map(w => w.id));
+  const invalidIds = warehouseIds.filter(id => !existingIds.has(id));
+  return { valid: invalidIds.length === 0, invalidIds };
+}
 };
 
 module.exports = WarehouseRepository;

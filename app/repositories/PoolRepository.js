@@ -174,6 +174,20 @@ const PoolRepository = {
     });
   },
 
+  async getPoolsWithWarehousesByCompanyOrBranch(company_id, branch_id) {
+ 
+  return await Pool.findAll({
+    where: { company_id },
+    attributes: ['id', 'name', 'description', 'company_id', 'is_active'],
+    include: [{
+      association: 'warehouses',
+      attributes: ['id', 'code', 'name', 'type', 'status', 'company_id'],
+      //where: branch_id ? { branch_id } : undefined
+    }],
+    order: [['name', 'ASC']]
+  });
+},
+
   async getAvailableWarehouses(poolId, companyId) {
     // Obtener almacenes ya asociados al pool
     const poolWarehouses = await PoolWarehouse.findAll({
@@ -193,7 +207,36 @@ const PoolRepository = {
       attributes: ['id', 'name', 'code', 'type'],
       order: [['name', 'ASC']]
     });
+  },
+
+  // Valida que todos los IDs existan y pertenezcan a la empresa
+  async validatePoolsInCompany(poolIds, company_id) {
+    if (!poolIds || poolIds.length === 0) return;
+
+    const pools = await Pool.findAll({
+      where: { id: poolIds, company_id }
+    });
+
+    const foundIds = pools.map(p => p.id);
+    const invalidIds = poolIds.filter(id => !foundIds.includes(id));
+
+    if (invalidIds.length > 0) {
+      throw new Error(`Pools inválidos o no pertenecen a la empresa: ${invalidIds.join(', ')}`);
+    }
+  },
+
+  async validatePoolIdsExist(poolIds) {
+  if (!Array.isArray(poolIds) || poolIds.length === 0) {
+    return { valid: true, invalidIds: [] };
   }
+  const existing = await Pool.findAll({
+    where: { id: poolIds },
+    attributes: ['id']
+  });
+  const existingIds = new Set(existing.map(p => p.id));
+  const invalidIds = poolIds.filter(id => !existingIds.has(id));
+  return { valid: invalidIds.length === 0, invalidIds };
+}
 };
 
 module.exports = PoolRepository;

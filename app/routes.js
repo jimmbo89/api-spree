@@ -15,8 +15,8 @@ const BranchController = require("./controllers/BranchController.js");
 const WarehouseController = require("./controllers/WarehouseController.js");
 const BusinessTypeController = require("./controllers/BusinessTypeController.js");
 const { roleSchema, idRoleSchema, updateRoleSchema } = require("./middlewares/validations/roleValidations");
-const { registerSchema, loginSchema, updateSchema } = require("./middlewares/validations/authValidations");
-const { updateCompanySchema, byUserIdSchema, storeCompanySchema, idCompanySchema } = require("./middlewares/validations/companyValidations.js");
+const { registerSchema, loginSchema, updateSchema, createUserSchema, updateUserSchema } = require("./middlewares/validations/authValidations");
+const { updateCompanySchema, byUserIdSchema, storeCompanySchema, idCompanySchema, companyIdSchema } = require("./middlewares/validations/companyValidations.js");
 const { listBranchesSchema, storeBranchSchema, updateBranchSchema, idBranchSchema } = require("./middlewares/validations/branchValidations.js");
 const { listWarehouseSchema, storeWarehouseSchema, updateWarehouseSchema, idWarehouseSchema } = require("./middlewares/validations/warehouseValidations.js");
 const { businessTypeSchema, updateBusinessTypeSchema, idBusinessTypeSchema } = require("./middlewares/validations/businessTypeValidations.js");
@@ -53,6 +53,8 @@ const UserCompanyController = require("./controllers/UserCompanyController.js");
 const { createUserCompanySchema, updateUserCompanyStatusSchema, userCompanyIdSchema, userCompanyByUserAndCompanySchema, userCompanyByTokenSchema, listUserCompanySchema } = require("./middlewares/validations/userCompanyValidation.js");
 const UserAclScopeController = require("./controllers/UserAclScopeController.js");
 const { createUserAclScopeSchema, userAclScopeIdSchema, userAclScopesByUserAndCompanySchema } = require("./middlewares/validations/userAclScopeValidation.js");
+const AttributeController = require("./controllers/AttributeController.js");
+const { attributeSchema, updateAttributeSchema, idAttributeSchema } = require("./middlewares/validations/attributeValidation.js");
 const router = express.Router();
 
 
@@ -113,9 +115,11 @@ router.get("/images-protect/:foldername/:filename", (req, res) => {
 });
 
 router.get("/logout", AuthController.logout);
-router.post("/user-update", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateSchema), AuthController.update);
+router.post('/user-register', requireRoles(['Admin', 'Seller Manager']), multerImage("image", "users"), validateSchema(createUserSchema), AuthController.associateUserToCompany);
+router.post("/user-update", requireRoles(['Admin', 'Seller Manager']), multerImage("image", "users"), validateSchema(updateUserSchema), AuthController.updateUserInCompany);
 router.post("/user-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idRoleSchema), AuthController.destroy);
-router.get("/get-users", requireRoles(['Admin', 'Seller Manager']), AuthController.index);
+router.post("/get-users", requireRoles(['Admin', 'Seller Manager']), AuthController.index);
+router.post("/get-pool-warehouse-roles", requireRoles(['Admin', 'Seller Manager']), AuthController.getPoolWarehouseRole);
 router.post("/send-invitation", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateSchema), InvitationController.sendInvitation);
 
 //Rutas Roles
@@ -155,6 +159,7 @@ router.post("/company-by-user", requireRoles(['Admin', 'Seller Manager']), valid
 router.post("/company", requireRoles(['Admin', 'Seller Manager']), multerImage("image", "companies"), validateSchema(storeCompanySchema), CompanyController.store);
 router.post("/company-update", requireRoles(['Admin', 'Seller Manager']), multerImage("image", "companies"), validateSchema(updateCompanySchema), CompanyController.update);
 router.post("/company-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idCompanySchema), CompanyController.destroy);
+router.post('/company-users', requireRoles(['Admin', 'Seller Manager']), validateSchema(companyIdSchema), AuthController.getUsers);
 
 //UserCompany
 router.post('/user-company', requireRoles(['Admin', 'Seller Manager']), validateSchema(createUserCompanySchema), UserCompanyController.create);
@@ -189,6 +194,11 @@ router.post("/product-category", requireRoles(['Admin', 'Seller Manager']), vali
 router.post("/product-category-update", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateProductCategorySchema), ProductCategoryController.update);
 router.post("/product-category-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idProductCategorySchema), ProductCategoryController.destroy);
 
+// Rutas de atributos de productos
+router.post("/attributes", requireRoles(['Admin', 'Seller Manager']), AttributeController.index);
+router.post("/attribute", requireRoles(['Admin', 'Seller Manager']), validateSchema(attributeSchema), AttributeController.store);
+router.post("/attribute-update", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateAttributeSchema), AttributeController.update);
+router.post("/attribute-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idAttributeSchema), AttributeController.destroy);
 
 const productImageFields = {
   images: {

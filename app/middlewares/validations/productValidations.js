@@ -82,6 +82,7 @@ const idProductSchema = Joi.object({
 
 const listProductsSchema = Joi.object({
   company_id: Joi.number().allow(null).empty('').optional(),
+  branch_id: Joi.number().allow(null).empty('').optional(),
   user_id: Joi.number().allow(null).empty('').optional(),
   brand: Joi.string().optional().allow(''),
   has_gtin: Joi.boolean().optional()

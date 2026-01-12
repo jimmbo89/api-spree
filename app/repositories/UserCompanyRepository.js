@@ -1,5 +1,5 @@
 // app/repositories/UserCompanyRepository.js
-const { UserCompany, User, Company, Role } = require('../models');
+const { UserCompany, User, Company, Role, UserAclScope, Warehouse, Pool } = require('../models');
 const logger = require('../../config/logger');
 
 function mapUserCompany(record) {
@@ -48,34 +48,30 @@ const UserCompanyRepository = {
     }
   },
 
-  async create(data) {
-    try {
-      const record = await UserCompany.create(data);
-      const populated = await UserCompany.findByPk(record.id, {
-        include: [
-          { model: User, as: 'user' },
-          { model: Company, as: 'company' },
-          { model: Role, as: 'role' }
-        ]
-      });
-      return mapUserCompany(populated);
-    } catch (error) {
-      logger.error('Error al crear membresía usuario-empresa:', error);
-      throw new Error(`Error al crear membresía: ${error.message}`);
-    }
-  },
+  async create(data, transaction = null) {
+  try {
+    const record = await UserCompany.create(data, { transaction });
+    return record;
+  } catch (error) {
+    logger.error('Error al crear membresía:', error);
+    throw new Error(`Error al crear membresía: ${error.message}`);
+  }
+},
 
   async updateStatus(record, status) {
     try {
-      const updated = await record.update({ status });
-      const populated = await UserCompany.findByPk(updated.id, {
-        include: [
-          { model: User, as: 'user' },
-          { model: Company, as: 'company' },
-          { model: Role, as: 'role' }
-        ]
-      });
-      return mapUserCompany(populated);
+      return await record.update({ status });
+      
+    } catch (error) {
+      logger.error(`Error al actualizar estado de membresía ID ${record.id}:`, error);
+      throw new Error(`Error al actualizar membresía: ${error.message}`);
+    }
+  },
+
+  async updateRole(record, role_id, transaction = null) {
+    try {
+      return await record.update({ role_id }, { transaction});
+      
     } catch (error) {
       logger.error(`Error al actualizar estado de membresía ID ${record.id}:`, error);
       throw new Error(`Error al actualizar membresía: ${error.message}`);
@@ -111,6 +107,82 @@ const UserCompanyRepository = {
   } catch (error) {
     logger.error(`Error al obtener membresías con filtros: user=${user_id}, company=${company_id}`, error);
     throw new Error(`Error al obtener membresías: ${error.message}`);
+  }
+},
+
+  async getUsersByCompanyId(company_id) {
+  try {
+    const memberships = await UserCompany.findAll({
+      where: { company_id, status: 1 },
+      include: [
+        {
+          model: User,
+          as: 'user',
+          attributes: ['id', 'name', 'email', 'status', 'image', 'user'],
+          // 👇 Incluir aclScopes DENTRO del User
+          include: [
+            {
+              model: UserAclScope,
+              as: 'aclScopes',
+              attributes: [], // solo usamos para joins
+              where: { company_id }, // ⚠️ muy importante: filtrar por empresa
+              required: false,
+              include: [
+                {
+                  model: Warehouse,
+                  as: 'warehouse',
+                  attributes: ['id', 'name', 'code', 'address', 'city', 'country', 'status'],
+                  required: false
+                },
+                {
+                  model: Pool,
+                  as: 'pool',
+                  attributes: ['id', 'name', 'description', 'is_active'],
+                  required: false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          model: Role,
+          as: 'role',
+          attributes: ['id', 'name']
+        }
+      ],
+      order: [['id', 'ASC']]
+    });
+
+    return memberships.map(m => {
+      const user = m.user;
+      const warehouses = user.aclScopes
+        .map(s => s.warehouse)
+        .filter(w => w !== null);
+
+      const pools = user.aclScopes
+        .map(s => s.pool)
+        .filter(p => p !== null);
+
+      return {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        user: user.user,
+        image: user.image,
+        user_status: user.status,
+        membership_id: m.id,
+        membership_status: m.status,
+        role_id: m.role.id,
+        role_name: m.role.name,
+        company_id: m.company_id,
+        warehouses,
+        pools,
+        has_full_access: warehouses.length === 0 && pools.length === 0
+      };
+    });
+  } catch (error) {
+    logger.error(`Error al obtener usuarios de la empresa ${company_id}:`, error);
+    throw new Error(`Error al obtener usuarios: ${error.message}`);
   }
 }
 };

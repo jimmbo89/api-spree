@@ -65,8 +65,70 @@ const loginSchema = Joi.object({
   })
 });
 
+const createUserSchema = Joi.object({
+ // Datos del usuario
+  name: Joi.string().min(2).max(255).required(),
+  email: Joi.string().email().max(255).required(),
+  user: Joi.string().max(100).required(), // username es obligatorio
+
+  // Contraseña: obligatoria solo si no es invitación por email
+  password: Joi.when('invitation_method', {
+    is: 'direct',
+    then: Joi.string().min(6).max(255).required(),
+    otherwise: Joi.string().min(6).max(255).optional()
+  }),
+
+  // Método de invitación
+  invitation_method: Joi.string().valid('email', 'direct').default('email'),
+
+  // Contexto
+  company_id: Joi.number().integer().positive().required(),
+  role_id: Joi.number().integer().positive().required(),
+
+  // Alcance operativo
+  warehouses: Joi.array().items(Joi.number().integer().positive()).optional(),
+  pools: Joi.array().items(Joi.number().integer().positive()).optional(),
+
+});
+
+// Actualizar usuario
+const updateUserSchema = Joi.object({
+  id: Joi.number().integer().positive().required(),
+  company_id: Joi.number().integer().positive().required(),
+
+  // Campos actualizables
+  name: Joi.string().min(2).max(255).optional(),
+  email: Joi.string().email().max(255).optional(),
+  user: Joi.string().max(100).optional(),
+  password: Joi.string().min(6).max(255).optional(),
+  invitation_method: Joi.string().valid('email', 'direct').optional(),
+
+  // Rol
+  role_id: Joi.number().integer().positive().optional(),
+
+  // ACL
+  warehouses: Joi.array().items(Joi.number().integer().positive()).optional(),
+  pools: Joi.array().items(Joi.number().integer().positive()).optional(),
+
+  // Imagen: si se envía como string (ej: "users/default.jpg"), se permite
+  image: Joi.string().optional() // solo para resetear a default
+})
+  .custom((value, helpers) => {
+    const updatableFields = [
+      'name', 'email', 'user', 'password', 'invitation_method',
+      'role_id', 'warehouses', 'pools', 'image'
+    ];
+    const hasUpdate = updatableFields.some(field => value[field] !== undefined);
+    if (!hasUpdate) {
+      return helpers.message('Debe proporcionar al menos un campo para actualizar');
+    }
+    return value;
+  });
+
 module.exports = {
   registerSchema,
   loginSchema,
-  updateSchema
+  updateSchema,
+  createUserSchema,
+  updateUserSchema
 };

@@ -1,5 +1,5 @@
 // app/repositories/RoleRepository.js
-const { Role } = require("../models");
+const { Role, Permission } = require("../models");
 const logger = require("../../config/logger");
 
 const RoleRepository = {
@@ -15,6 +15,44 @@ const RoleRepository = {
       throw new Error(`Error al obtener roles: ${error.message}`);
     }
   },
+
+  async findAllManteiner(permissions = false) {
+  try {
+    const includeOptions = permissions
+      ? [
+          {
+            model: Permission,
+            as: 'permissions',
+            attributes: ['id', 'name', 'description'],
+            through: { attributes: [] }, // evita incluir campos de la tabla intermedia
+          },
+        ]
+      : [];
+
+    const roles = await Role.findAll({
+      attributes: ['id', 'name', 'status', 'description'],
+      include: includeOptions,
+      order: [['id', 'ASC']],
+    });
+
+    // Si no se piden permisos, devolvemos tal cual
+    if (!permissions) {
+      return roles;
+    }
+
+    // Formateamos para que cada rol tenga un campo `permissions` con solo los datos deseados
+    return roles.map(role => {
+      const rolePlain = role.get({ plain: true });
+      return {
+        ...rolePlain,
+        permissions: rolePlain.permissions || [],
+      };
+    });
+  } catch (error) {
+    logger.error('Error en RoleRepository->findAll:', error);
+    throw new Error(`Error al obtener roles: ${error.message}`);
+  }
+},
 
   async findById(id) {
     try {

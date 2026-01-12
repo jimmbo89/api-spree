@@ -1,3 +1,4 @@
+const AttributeRepository = require("./AttributeRepository");
 const BranchRepository = require("./BranchRepository");
 const BusinessTypeRepository = require("./BusinessTypeRepository");
 const CompanyRepository = require("./CompanyRepository");
@@ -10,6 +11,7 @@ const PermissionRepository = require("./PermissionRepository");
 const PlanRepository = require("./PlanRepository");
 const PoolRepository = require("./PoolRepository");
 const PoolWarehouseRepository = require("./PoolWarehouseRepository");
+const ProductAttributeRepository = require("./ProductAttributeRepository");
 const ProductCategoryRepository = require("./ProductCategoryRepository");
 const ProductFieldMappingRepository = require("./ProductFieldMappingRepository");
 const ProductMarketplaceLinkRepository = require("./ProductMarketplaceLinkRepository");
@@ -53,5 +55,7 @@ module.exports = {
     PermissionRepository,
     RolePermissionRepository,
     UserCompanyRepository,
-    UserAclScopeRepository
+    UserAclScopeRepository,
+    AttributeRepository,
+    ProductAttributeRepository
 };

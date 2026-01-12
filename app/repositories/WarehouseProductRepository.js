@@ -1,5 +1,5 @@
-const { Op } = require('sequelize');
-const { WarehouseProduct, Product, ProductVariant, WarehouseProductVariant, ProductCategory, Sequelize } = require('../models');
+const { Op, fn, col, where, and, or, literal } = require('sequelize');
+const { WarehouseProduct, Product, ProductVariant, WarehouseProductVariant, ProductCategory, ProductAttribute, Attribute, Branch, Company, Warehouse, Sequelize } = require('../models');
 const ImageService = require('../services/ImageService');
 const logger = require('../../config/logger');
 const ProductRepository = require('./ProductRepository');
@@ -37,7 +37,16 @@ async findFiltered({ companyId, userId, branchId, warehouseId }) {
           model: ProductVariant, 
           as: 'variants',
           attributes: ['id', 'sku', 'attributes']
+        },{
+        model: ProductAttribute,
+        as: 'productAttributes',
+        attributes: ['id', 'attribute_id', 'value'],
+        include: [{
+          model: Attribute,
+          as: 'attribute',
+          attributes: ['id', 'name']
         }]
+      }]
       },
       {
         model: WarehouseProductVariant,
@@ -71,13 +80,18 @@ async findFiltered({ companyId, userId, branchId, warehouseId }) {
         }
         
         // Atributos
-        if (product.attributes) {
-          if (typeof product.attributes === 'string') {
-            productAttributes = JSON.parse(product.attributes);
-          } else if (Array.isArray(product.attributes)) {
-            productAttributes = product.attributes;
+      if (Array.isArray(product.productAttributes)) {
+        for (const pa of product.productAttributes) {
+          if (pa.attribute) {
+            productAttributes.push({
+              id: pa.id,
+              attribute_id: pa.attribute.id,
+              name: pa.attribute.name,
+              value: pa.value
+            });
           }
         }
+      }
       } catch (e) {
         logger.error('Error parsing product data:', JSON.stringify(e));
       }
@@ -143,6 +157,107 @@ async findFiltered({ companyId, userId, branchId, warehouseId }) {
     return result;
   });
 },  
+
+async getProductWarehousesWithStock({ productIds, companyId, branchId }) {
+  if (!productIds || productIds.length === 0) {
+    return {};
+  }
+
+  let warehouseIds = [];
+
+  if (branchId != null && branchId !== 0) {
+    // Solo almacenes de esa sucursal
+    const warehouses = await Warehouse.findAll({
+      where: { branch_id: branchId },
+      attributes: ['id']
+    });
+    warehouseIds = warehouses.map(w => w.id);
+  } else if (companyId != null && companyId !== 0) {
+    // Almacenes directos de la empresa
+    const directWarehouses = await Warehouse.findAll({
+      where: { company_id: companyId },
+      attributes: ['id']
+    });
+
+    // Almacenes de sucursales de la empresa
+    const branchWarehouses = await Warehouse.findAll({
+      where: {
+        branch_id: {
+          [Op.in]: literal(`(SELECT id FROM branches WHERE company_id = ${companyId})`)
+        }
+      },
+      attributes: ['id']
+    });
+
+    warehouseIds = [
+      ...directWarehouses.map(w => w.id),
+      ...branchWarehouses.map(w => w.id)
+    ];
+  } else {
+    // Sin filtro: todos los almacenes posibles
+    const allWarehouses = await Warehouse.findAll({ attributes: ['id'] });
+    warehouseIds = allWarehouses.map(w => w.id);
+  }
+
+  if (warehouseIds.length === 0) {
+    return {};
+  }
+
+  // Ahora obtenemos los WarehouseProducts con stock agrupado
+  const results = await WarehouseProduct.findAll({
+    where: {
+      product_id: { [Op.in]: productIds },
+      warehouse_id: { [Op.in]: warehouseIds }
+    },
+    attributes: [
+      'product_id',
+      [col('warehouse.id'), 'warehouse_id'],
+      [col('warehouse.name'), 'warehouse_name'],
+      [col('warehouse.image'), 'warehouse_image'],
+      [
+        fn('COALESCE', fn('SUM', col('warehouseVariants.stock')), 0),
+        'total_stock'
+      ]
+    ],
+    include: [
+      {
+        model: Warehouse,
+        as: 'warehouse',
+        attributes: [],
+        required: true
+      },
+      {
+        model: WarehouseProductVariant,
+        as: 'warehouseVariants',
+        attributes: [],
+        required: false
+      }
+    ],
+    group: [
+      'product_id',
+      'warehouse.id',
+      'warehouse.name',
+      'warehouse.image'
+    ],
+    raw: true
+  });
+
+  const resultMap = {};
+  results.forEach(row => {
+    const productId = row.product_id;
+    if (!resultMap[productId]) resultMap[productId] = [];
+
+    resultMap[productId].push({
+      id: row.warehouse_id,
+      name: row.warehouse_name,
+      image: row.warehouse_image || null,
+      stock: parseInt(row.total_stock, 10) || 0
+    });
+  });
+
+  return resultMap;
+},
+
 async findProductsNotInWarehouse({ warehouseId, companyId, specificProductId = null }) {
   try {
     // 1. Obtener IDs de productos que YA están en el almacén

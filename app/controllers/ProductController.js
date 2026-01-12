@@ -11,6 +11,8 @@ const {
   WarehouseRepository,
   WarehouseProductRepository,
   WarehouseProductVariantRepository,
+  AttributeRepository,
+  ProductAttributeRepository,
 } = require("../repositories");
 const { sequelize } = require("../models");
 const ImageService = require("../services/ImageService");
@@ -45,7 +47,7 @@ const PRODUCT_AUDIT_FIELDS = [
 const ProductController = {
   async list(req, res) {
     logger.info(`${req.user?.name || "Unknown"} - Lista productos`);
-    const { company_id, user_id, branch_id, category_id, brand, has_gtin } =
+    const { company_id, user_id, branch_id, category_id, brand, status, has_gtin } =
       req.body;
 
     if (company_id) {
@@ -69,8 +71,10 @@ const ProductController = {
       const products = await ProductRepository.findFiltered({
         companyId: company_id,
         userId: user_id,
+        branchId: branch_id,
         categoryId: category_id,
         brand,
+        status: status,
         hasGtin: has_gtin,
       });
       res
@@ -108,10 +112,13 @@ const ProductController = {
         type,
       });
 
+      const attributes = await AttributeRepository.findAll();
+
       return res.status(200).json({
         productcategories: categories,
         conditions,
         warehouses,
+        attributes
       });
     } catch (err) {
       logger.error("ProductController->getProductMetadata: " + err.message);
@@ -179,7 +186,7 @@ const ProductController = {
     }
 
     // Normalizar atributos técnicos
-    let attributes = [];
+    /*let attributes = [];
     if (req.body.attributes) {
       if (typeof req.body.attributes === "string") {
         try {
@@ -194,8 +201,22 @@ const ProductController = {
         attributes = req.body.attributes;
       }
     }
-    req.body.attributes = attributes;
-
+    req.body.attributes = attributes;*/
+    let productAttributes = [];
+    if (req.body.attributes) {
+      if (typeof req.body.attributes === "string") {
+        try {
+          productAttributes = JSON.parse(req.body.attributes);
+        } catch (e) {
+          return res.status(400).json({
+            success: false,
+            msg: "attributesInvalidJSON",
+          });
+        }
+      } else if (Array.isArray(req.body.attributes)) {
+        productAttributes = req.body.attributes;
+      }
+    }
     // Normalizar variantes de producto
     let parsedProductVariants = [];
     if (product_variants) {
@@ -246,6 +267,16 @@ const ProductController = {
         transaction,
       });
 
+      // Guardar en product_attributes
+      if (productAttributes.length > 0) {
+        for (const attr of productAttributes) {
+          await ProductAttributeRepository.create({
+            product_id: product.id,
+            attribute_id: attr.attribute_id,
+            value: String(attr.value)
+          }, { transaction });
+        }
+      }
       // Crear variantes de producto y guardar sus referencias
       const createdVariants = [];
 
@@ -425,7 +456,8 @@ const ProductController = {
       // Obtener productos actualizados
       const products = await ProductRepository.findFiltered({
         companyId: company_id,
-        userId: user_id,
+        userId: null,
+        branch_id: product.branch_id
       });
 
       res.status(201).json({
@@ -472,8 +504,30 @@ const ProductController = {
       if (!product) return res.status(404).json({ msg: "ProductNotFound" });
 
       // Parsear atributos e imágenes
-      if (req.body.attributes && typeof req.body.attributes === "string") {
-        req.body.attributes = JSON.parse(req.body.attributes);
+      let productAttributes = null;
+      if (req.body.attributes !== undefined) {
+        if (typeof req.body.attributes === "string") {
+          try {
+            productAttributes = JSON.parse(req.body.attributes);
+          } catch (e) {
+            return res.status(400).json({
+              success: false,
+              msg: "attributesInvalidJSON",
+            });
+          }
+        } else if (Array.isArray(req.body.attributes)) {
+          productAttributes = req.body.attributes;
+        }
+
+        // Validar estructura
+        for (const attr of productAttributes) {
+          if (!attr.attribute_id || attr.value === undefined) {
+            return res.status(400).json({
+              success: false,
+              msg: "Cada atributo debe tener attribute_id y value",
+            });
+          }
+        }
       }
       if (req.body.images && typeof req.body.images === "string") {
         req.body.images = JSON.parse(req.body.images);
@@ -535,6 +589,33 @@ const ProductController = {
           { transaction }
         );
 
+        if (productAttributes !== null) {
+        const existingAttrs = await ProductAttributeRepository.findByProductId(product.id);
+        const existingMap = new Map(existingAttrs.map(a => [a.id, a]));
+
+        // Actualizar/crear
+        for (const attr of productAttributes) {
+          if (attr.id && existingMap.has(attr.id)) {
+            const existing = existingMap.get(attr.id);
+            await existing.update({
+              attribute_id: attr.attribute_id,
+              value: String(attr.value)
+            }, { transaction });
+            existingMap.delete(attr.id);
+          } else {
+            await ProductAttributeRepository.create({
+              product_id: product.id,
+              attribute_id: attr.attribute_id,
+              value: String(attr.value)
+            }, { transaction });
+          }
+        }
+
+        // Eliminar sobrantes
+        for (const attr of existingMap.values()) {
+          await attr.destroy({ transaction });
+        }
+      }
         // 2. Sincronizar variantes globales (si se envían)
         if (product_variants) {
           const parsedVariants = JSON.parse(product_variants);

@@ -3,7 +3,7 @@ const jwt = require("jsonwebtoken");
 const authConfig = require("../../config/auth");
 const { sequelize } = require("../models")
 const logger = require("../../config/logger");
-const { UserRepository, UserTokenRepository, RoleRepository, LogRepository } = require("../repositories");
+const { UserRepository, UserTokenRepository, RoleRepository, LogRepository, CompanyRepository, UserCompanyRepository, WarehouseRepository, PoolRepository, UserAclScopeRepository, BranchRepository, RolePermissionRepository } = require("../repositories");
 const { sendEmail } = require("../services/EmailService");
 
 const AuthController = {
@@ -256,14 +256,41 @@ const AuthController = {
     }
   },
 
+  async getUsers(req, res) {
+  const { company_id } = req.body;
+  const requester = req.user?.name || 'Anonymous';
+
+  logger.info(`${requester} - Solicita usuarios de la empresa ID ${company_id}`);
+
+  try {
+    // Validar que la empresa exista (opcional, pero buena práctica)
+    const company = await CompanyRepository.findById(company_id);
+    if (!company) {
+      return res.status(404).json({ success: false, message: 'Empresa no encontrada' });
+    }
+
+    // Obtener usuarios
+    const users = await UserCompanyRepository.getUsersByCompanyId(company_id);
+
+    return res.status(200).json({
+      success: true,
+      users: users,
+      count: users.length
+    });
+  } catch (error) {
+    logger.error(`CompanyController->getUsers: ${error.message}`);
+    return res.status(500).json({ success: false, error: 'Error interno', details: error.message });
+  }
+},
+
   async destroy(req, res) {
     const requesterId = req.user?.id || null;
     const requesterName = req.user?.name || 'Anonymous';
-    const userIdToDelete = req.params.id || req.body.id;
+    const userIdToDelete = req.body.user_id;
 
     logger.info(`${requesterName} - Intenta eliminar usuario con ID: ${userIdToDelete}`);
-    logger.info("Datos recibidos (params):");
-    logger.info(JSON.stringify({ params: req.params, query: req.query, body: req.body }));
+    logger.info("Datos recibidos (body):");
+    logger.info(JSON.stringify(req.body ));
 
     const ip = req.ip || 'unknown';
     const userAgent = req.get('User-Agent') || null;
@@ -271,9 +298,7 @@ const AuthController = {
     try {
 
       // 2. Buscar al usuario a eliminar (con su rol cargado)
-      const userToDelete = await UserRepository.findById(userIdToDelete, {
-        include: [{ association: 'role' }]
-      });
+      const userToDelete = await UserRepository.findById(userIdToDelete);
 
       if (!userToDelete) {
         await LogRepository.create({
@@ -346,18 +371,35 @@ const AuthController = {
   async index(req, res) {
     const requesterName = req.user?.name || 'Anonymous';
     logger.info(`${requesterName} - Solicita lista de usuarios (plana)`);
+    logger.info("Datos recibidos (body):");
+    logger.info(JSON.stringify(req.body));
+     const { company_id, role_id, status } = req.body;
+    
+    // Validar que el usuario autenticado pertenezca a la compañía
+    const authUserCompany = await UserCompanyRepository.findByPk(company_id);
+
+    if (!authUserCompany) {
+      return res.status(204).json({
+        success: false,
+        message: 'No usuarios asociados a esta compañía',
+        users: []
+      });
+    }
+
+    const filters = {};
+    if (company_id) filters.company_id = company_id;
+    if (role_id) filters.role_id = role_id;
+    if (status !== undefined) filters.status = status;
 
     try {
-      const users = await UserRepository.findAll();
-
+      const users = await UserRepository.findAll(filters);
       return res.status(200).json({
         success: true,
-        count: users.length,
         users: users // ya están en formato plano
       });
     } catch (error) {
       logger.error(`UserController->index: ${error.message}`);
-      return res.status(500).json({ error: "ServerError", details: error.message });
+      return res.status(500).json({ success: false, message: "Error Interno del Servidor", details: error.message });
     }
   },
 
@@ -571,6 +613,8 @@ const AuthController = {
     }
   },
   async resetPassword(req, res) {
+    logger.info("Datos recibidos al cambiar la contraseña:");
+    logger.info(JSON.stringify(req.body));
     try {
       const { user_id, newPassword } = req.body;
 
@@ -579,9 +623,12 @@ const AuthController = {
         return res.json({ success: false, message: "Usuario no encontrado" });
       }
 
+      const saltRounds = parseInt(authConfig.rounds, 10);
+      logger.info('saltRounds');
+      logger.info(saltRounds);
       const hashedPassword = bcrypt.hashSync(
           newPassword,
-          Number.parseInt(authConfig.rounds)
+          saltRounds
         );
 
       await UserRepository.update(user, { password: hashedPassword, reset_expire: null, reset_token: null }, null);
@@ -591,7 +638,374 @@ const AuthController = {
       logger.error("Error en resetPassword:", error);
       res.status(500).json({ success: false, message: "Error interno" });
     }
+  },
+
+  async associateUserToCompany(req, res) {
+      // ✅ LOG al inicio: quién y qué datos
+      logger.info(`${req.user?.name || 'Unknown'} - Asocia usuario a empresa`);
+      logger.info('Datos recibidos:');
+      logger.info(JSON.stringify(req.body));
+
+      const { 
+        name, 
+        email, 
+        password, 
+        user, 
+        company_id: rawCompanyId, 
+        role_id: rawRoleId,
+        invitation_method, 
+       warehouses: rawWarehouses = [], 
+        pools: rawPools = [] 
+      } = req.body;
+
+      // Parsear si son strings
+      const company_id = Number(rawCompanyId);
+      const role_id = Number(rawRoleId);
+
+      // Parsear warehouses y pools
+      let warehouses = [];
+      let pools = [];
+
+      if (typeof rawWarehouses === 'string' && rawWarehouses.trim()) {
+        warehouses = JSON.parse(rawWarehouses);
+      }
+      if (typeof rawPools === 'string' && rawPools.trim()) {
+        pools = JSON.parse(rawPools);
+      }
+      // Asegurar que son arrays de números
+      warehouses = (Array.isArray(warehouses) ? warehouses : []).map(Number);
+      pools = (Array.isArray(pools) ? pools : []).map(Number);
+      
+      // 1. Validar entidades maestras
+      try {
+        const company = await CompanyRepository.findById(company_id);
+        if (!company) return res.status(400).json({ success: false, message: 'Empresa no encontrada' });
+
+        const role = await RoleRepository.findById(role_id);
+        if (!role) return res.status(400).json({ success: false, message: 'Rol no encontrado' });
+        
+        if (pools?.length) {
+        const poolCheck = await PoolRepository.validatePoolIdsExist(pools);
+        if (!poolCheck.valid) {
+          return res.status(400).json({
+            success: false,
+            message: 'Algunos pool IDs no existen',
+            invalid_pools: poolCheck.invalidIds
+          });
+        }
+      }
+
+      // Validar almacenes
+      if (warehouses?.length) {
+        const whCheck = await WarehouseRepository.validateWarehouseIdsExist(warehouses);
+        if (!whCheck.valid) {
+          return res.status(400).json({
+            success: false,
+            message: 'Algunos warehouse IDs no existen',
+            invalid_warehouses: whCheck.invalidIds
+          });
+        }
+      }
+      } catch (error) {
+        logger.error('Error en validación:', error.message);
+        return res.status(400).json({ success: false, message: error.message });
+      }
+      const transaction = await sequelize.transaction();
+      let userBd, membership;
+      try {
+        // 2. Verificar si el usuario ya existe
+        userBd = await UserRepository.existsByEmail(email);
+        if (userBd) {
+          const existingMembership = await UserCompanyRepository.findByUserIdAndCompanyId(userBd.id, company_id);
+          if (existingMembership) {
+            await transaction.rollback();
+            return res.status(400).json({ success: false, message: 'El usuario ya pertenece a esta empresa' });
+          }
+          membership = await UserCompanyRepository.create({
+            user_id: userBd.id,
+            company_id,
+            role_id,
+            status: 1,
+            joined_at: new Date(),
+            invited_by: req.user?.id || null
+          }, transaction);
+        } else {
+          userBd = await UserRepository.create({
+            name,
+            email,
+            password,
+            user,
+            status: true,
+            registration_date: new Date()
+          }, req.file, transaction);
+          membership = await UserCompanyRepository.create({
+            user_id: userBd.id,
+            company_id,
+            role_id,
+            status: 1,
+            joined_at: new Date(),
+            invited_by: req.user?.id || null
+          }, transaction);
+        }
+        // 3. Crear scopes
+        const scopes = [];
+        warehouses.forEach(wid => scopes.push({ user_id: userBd.id, company_id, warehouse_id: wid }));
+        pools.forEach(pid => scopes.push({ user_id: userBd.id, company_id, pool_id: pid }));
+        
+        if (scopes.length > 0) {
+          await UserAclScopeRepository.bulkCreate(scopes, transaction);
+        }
+
+        await transaction.commit();
+      } catch (error) {
+        await transaction.rollback();
+        logger.error('Error en transacción:', { error: error?.stack || error });
+        return res.status(500).json({ success: false, message: 'Error al procesar solicitud' });
+      }
+
+     const filters = {};
+    filters.company_id = company_id;
+      try {
+        const users = await UserRepository.findAll(filters);
+        return res.status(200).json({
+          success: true,
+          message: userBd.id ? 'Usuario asociado correctamente' : 'Usuario creado y asociado',
+          users: users,
+          count: users.length
+        });
+      } catch (error) {
+        logger.error('Error al listar usuarios:', error.message);
+        return res.status(500).json({ success: false, message: 'Proceso exitoso, error al listar' });
+      }
+    },
+
+  async updateUserInCompany(req, res) {
+  // ✅ LOG al inicio: quién y qué datos
+  logger.info(`${req.user?.name || 'Unknown'} - Actualiza usuario en empresa`);
+  logger.info('Datos recibidos:');
+  logger.info(JSON.stringify(req.body));
+
+  const {
+    id: userId,
+    company_id: rawCompanyId,
+    name,
+    email,
+    user: username,
+    role_id: rawRoleId,
+    warehouses: rawWarehouses,
+    pools: rawPools
+  } = req.body;
+
+  // Parsear company_id y role_id solo si están presentes
+  const company_id = Number(rawCompanyId);
+  if (isNaN(company_id)) {
+    return res.status(400).json({ success: false, message: 'company_id debe ser número' });
   }
+
+  // Validar existencia del usuario y membresía
+  const membership = await UserCompanyRepository.findByUserIdAndCompanyId(userId, company_id);
+  if (!membership) {
+    return res.status(400).json({ success: false, message: 'Usuario no pertenece a esta empresa' });
+  }
+logger.info('despues de cosultar si pertenece a la company');
+  const userBd = await UserRepository.findById(userId);
+  if (!userBd) {
+    return res.status(400).json({ success: false, message: 'Usuario no encontrado' });
+  }
+
+  // Parsear warehouses y pools solo si vienen
+  let warehouses = [];
+  let pools = [];
+
+  if ('warehouses' in req.body) {
+    if (typeof rawWarehouses === 'string' && rawWarehouses.trim()) {
+      warehouses = JSON.parse(rawWarehouses);
+    } else if (Array.isArray(rawWarehouses)) {
+      warehouses = rawWarehouses;
+    }
+    warehouses = warehouses.map(Number);
+  }
+
+  if ('pools' in req.body) {
+    if (typeof rawPools === 'string' && rawPools.trim()) {
+      pools = JSON.parse(rawPools);
+    } else if (Array.isArray(rawPools)) {
+      pools = rawPools;
+    }
+    pools = pools.map(Number);
+  }
+
+  logger.info('antes de validar');
+
+  // 1. Validar entidades maestras (solo si hay cambios relevantes)
+  try {
+    // Validar rol si se envió
+    let role = null;
+    if ('role_id' in req.body) {
+      const role_id = Number(rawRoleId);
+      if (isNaN(role_id)) {
+        return res.status(400).json({ success: false, message: 'role_id debe ser número' });
+      }
+      role = await RoleRepository.findById(role_id);
+      if (!role) return res.status(400).json({ success: false, message: 'Rol no encontrado' });
+    }
+
+    // Validar pools si se enviaron
+    if ('pools' in req.body && pools.length > 0) {
+      const poolCheck = await PoolRepository.validatePoolIdsExist(pools);
+      if (!poolCheck.valid) {
+        return res.status(400).json({
+          success: false,
+          message: 'Algunos pool IDs no existen',
+          invalid_pools: poolCheck.invalidIds
+        });
+      }
+    }
+
+    // Validar almacenes si se enviaron
+    if ('warehouses' in req.body && warehouses.length > 0) {
+      const whCheck = await WarehouseRepository.validateWarehouseIdsExist(warehouses);
+      if (!whCheck.valid) {
+        return res.status(400).json({
+          success: false,
+          message: 'Algunos warehouse IDs no existen',
+          invalid_warehouses: whCheck.invalidIds
+        });
+      }
+    }
+  } catch (error) {
+    logger.error('Error en validación:', error.message);
+    return res.status(400).json({ success: false, message: error.message });
+  }
+
+  logger.info('después de validar');
+
+  const transaction = await sequelize.transaction();
+  try {
+    // 2. Actualizar datos del usuario (solo campos presentes)
+    const userUpdateData = {};
+    if ('name' in req.body) userUpdateData.name = name;
+    if ('email' in req.body) userUpdateData.email = email;
+    if ('user' in req.body) userUpdateData.user = username;
+
+    if (Object.keys(userUpdateData).length > 0 || req.file) {
+      await UserRepository.update(userBd, userUpdateData, req.file, transaction);
+    }
+
+    // 3. Actualizar rol si cambió
+    let finalRoleId = membership.role_id;
+    if ('role_id' in req.body) {
+      const newRoleId = Number(rawRoleId);
+      if (newRoleId !== membership.role_id) {
+        await UserCompanyRepository.updateRole(membership, newRoleId, transaction);
+        finalRoleId = newRoleId;
+      }
+    }
+
+    // 4. Determinar si el rol final es admin
+    const finalRole = await RoleRepository.findById(finalRoleId);
+    const isAdminRole = finalRole?.name?.toLowerCase() === 'admin';
+
+    // 5. Gestionar scopes ACL
+    // → Siempre eliminar scopes actuales de esta empresa
+    await UserAclScopeRepository.deleteAllByUserAndCompany(userId, company_id, transaction);
+
+    // → Si NO es admin y se enviaron scopes (o se permiten scopes vacíos), crear nuevos
+    if (!isAdminRole) {
+      // Si no se enviaron `warehouses`/`pools`, mantener los anteriores NO es posible
+      // porque el front envía solo lo que cambió → asumimos que si no vienen, no hay cambio intencional
+      // PERO: en tu flujo, cuando se edita, el front SIEMPRE envía `selectedWarehouses` y `selectedPools`
+      // así que podemos confiar en que si están ausentes, no se modificó el alcance
+
+      // Sin embargo, para alinearse con el flujo de creación y evitar inconsistencias,
+      // solo insertamos scopes si al menos uno de los dos campos fue enviado
+      const shouldApplyScopes =
+        'warehouses' in req.body ||
+        'pools' in req.body ||
+        // Caso especial: si el rol cambió de admin → editor, el front sí envía scopes
+        (finalRoleId !== membership.role_id && !isAdminRole);
+
+      if (shouldApplyScopes) {
+        const newScopes = [];
+        warehouses.forEach(wid => {
+          newScopes.push({ user_id: userId, company_id, warehouse_id: wid });
+        });
+        pools.forEach(pid => {
+          newScopes.push({ user_id: userId, company_id, pool_id: pid });
+        });
+
+        if (newScopes.length > 0) {
+          await UserAclScopeRepository.bulkCreate(newScopes, transaction);
+        }
+      }
+    }
+
+    await transaction.commit();
+
+   const filters = {};
+    filters.company_id = company_id;
+        const users = await UserRepository.findAll(filters);
+    return res.status(200).json({
+      success: true,
+      message: 'Usuario actualizado correctamente',
+      users: users,
+      count: users.length
+    });
+
+  } catch (error) {
+    // Solo hacemos rollback si la transacción NO ha sido commiteada
+  if (!transaction.finished) {
+    await transaction.rollback();
+  }
+    logger.error('Error en transacción:', { error: error?.stack || error });
+    return res.status(500).json({ success: false, message: 'Error al procesar actualización' });
+  }
+},
+
+  async getPoolWarehouseRole(req, res) {
+    const requesterName = req.user?.name || 'Anonymous';
+    logger.info(`${requesterName} - Ruta combinada para agregar usuarios`);
+    logger.info("Datos recibidos (body):");
+    logger.info(JSON.stringify(req.body));
+     const { company_id, branch_id, status } = req.body;
+    
+     if (company_id) {      
+    // Validar que el usuario autenticado pertenezca a la compañía
+    const authCompany = await CompanyRepository.findById(company_id);
+      if (!authCompany) {
+        return res.status(204).json({
+          success: false,
+          message: 'Compañía no encontrada'
+        });
+      }
+     }
+
+     if (branch_id) {      
+    // Validar que el usuario autenticado pertenezca a la compañía
+    const authBranch = await BranchRepository.findById(branch_id);
+      if (!authBranch) {
+        return res.status(204).json({
+          success: false,
+          message: 'Sucursal no encontrada'
+        });
+      }
+     }
+     const roles = await RoleRepository.findAllManteiner({permissions: true});
+     const warehouses = await WarehouseRepository.findWarehousesByCompanyOrBranch(company_id, branch_id);
+     const pools = await PoolRepository.getPoolsWithWarehousesByCompanyOrBranch(company_id, branch_id);
+    try {
+      return res.status(200).json({
+        success: true,
+        roles: roles, // ya están en formato plano
+        warehouses: warehouses,
+        pools: pools
+      });
+    } catch (error) {
+      logger.error(`UserController->index: ${error.message}`);
+      return res.status(500).json({ success: false, message: "Error Interno del Servidor", details: error.message });
+    }
+  },
+
 };
 
 module.exports = AuthController;

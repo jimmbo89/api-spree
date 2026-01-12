@@ -79,9 +79,17 @@ const byUserIdSchema = Joi.object({
   user_id: Joi.number().allow(null).empty('').optional(),
 });
 
+const companyIdSchema = Joi.object({
+  company_id: Joi.number().integer().positive().required().messages({
+    'number.base': 'El company_id debe ser un número entero',
+    'any.required': 'El campo "company_id" es obligatorio'
+  })
+});
+
 module.exports = {
   storeCompanySchema,
   updateCompanySchema,
   idCompanySchema,
-  byUserIdSchema
+  byUserIdSchema,
+  companyIdSchema
 };
