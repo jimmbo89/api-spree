@@ -940,23 +940,26 @@ const AuthController = {
           transaction
         );
       } else {
-        const extractedUser = user || email.split("@")[0];
-        const hashedPassword = bcrypt.hashSync(
-          req.body.password || extractedUser,
-          parseInt(authConfig.rounds)
-        );
-        userBd = await UserRepository.create(
-          {
-            name,
-            email,
-            hashedPassword,
-            extractedUser,
-            status: true,
-            registration_date: new Date(),
-          },
-          req.file,
-          transaction
-        );
+        const userValue = user || email.split("@")[0]; // evita usar "user" como nombre de variable
+          const passwordValue = password || userValue;
+
+          const hashedPassword = bcrypt.hashSync(
+            passwordValue,
+            parseInt(authConfig.rounds)
+          );
+
+          userBd = await UserRepository.create(
+            {
+              name,
+              email,
+              password: hashedPassword, // ✅ clave correcta
+              user: userValue,          // ✅ clave correcta
+              status: true,
+              registration_date: new Date(),
+            },
+            req.file,
+            transaction
+          );
         invitationToken = crypto.randomBytes(32).toString("hex");
         logger.info('token a verificar');
         logger.info(invitationToken);
@@ -1031,7 +1034,7 @@ const AuthController = {
         try {
           const inviterName = req.user?.name || "un miembro del equipo";
           const inviteLink = `${
-            process.env.FRONTEND_URL
+            process.env.API_URL
           }?token=${encodeURIComponent(
             invitationToken
           )}&company_id=${company_id}`;
