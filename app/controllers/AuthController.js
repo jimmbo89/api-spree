@@ -817,11 +817,7 @@ const AuthController = {
     await transaction.commit();
 
     logger.info(`Invitación aceptada: usuario ${user.email} en empresa ${company_id}`);
-    const redirectUrl = new URL('/login', process.env.FRONTEND_URL);
-    redirectUrl.searchParams.append('invitation', 'success');
-    redirectUrl.searchParams.append('email', user.email);
-
-    return res.redirect(302, redirectUrl.toString());
+    return res.redirect(302, `${process.env.FRONTEND_URL}/login`);
 
   } catch (error) {
      if (!transaction.finished) {
