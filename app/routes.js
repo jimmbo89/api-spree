@@ -62,7 +62,7 @@ router.get("/", (req, res) => res.json({ hello: "World" }));
 
 router.post("/sign-up", validateSchema(registerSchema), AuthController.signUp);
 router.post("/sign-in", validateSchema(loginSchema), AuthController.signIn);
-router.get("/verific-invitation", InvitationController.verificInvitation);
+router.get("/verific-invitation", AuthController.verifyInvitation);
 router.post('/forgot-password', AuthController.forgotPassword);
 router.post('/verify-code-password', AuthController.verifyCode);
 router.post('/reset-password', AuthController.resetPassword);

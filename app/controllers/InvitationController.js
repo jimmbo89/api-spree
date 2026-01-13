@@ -9,7 +9,7 @@ const { sendEmail } = require('../services/EmailService');
 
 const InvitationController = {
 async sendInvitation(req, res) {
-const { email } = req.body;
+const { email, company_id } = req.body;
   const invitedBy = req.user.id;
   const inviterName = req.user.name;
 
@@ -60,7 +60,7 @@ const { email } = req.body;
     }, { transaction });
 
     // 5. Enviar email con enlace seguro
-    const inviteLink = `${process.env.FRONTEND_URL}/join?token=${encodeURIComponent(token)}`;
+    const inviteLink = `${process.env.FRONTEND_URL}/join?token=${encodeURIComponent(token)}&company_id=${company_id}`;
 
     const emailHtml = `
       <p>👋 ¡Hola!</p>
@@ -81,7 +81,7 @@ const { email } = req.body;
 
    await sendEmail({
       to: email,
-      subject: "📬 Únete a Spre – Invitación de equipo",
+      subject: "📬 Únete a Spree Invitación de equipo",
       text: `Invitación de ${inviterName}. Enlace: ${inviteLink}`,
       html: emailHtml
     });
@@ -118,7 +118,7 @@ const { email } = req.body;
 },
 
 async verificInvitation(req, res){
-const { token } = req.query;
+const { token, company_id } = req.query;
     logger.info(`Aceptando invitación:`);
     logger.info("Token recibido:");
     logger.info(JSON.stringify(token ));

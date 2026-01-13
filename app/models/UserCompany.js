@@ -49,7 +49,7 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: true
     },
     invitation_token: {
-      type: DataTypes.STRING(255),
+      type: DataTypes.STRING,
       allowNull: true
     },
     expires_at: {

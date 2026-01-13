@@ -1,6 +1,8 @@
 // app/repositories/UserCompanyRepository.js
 const { UserCompany, User, Company, Role, UserAclScope, Warehouse, Pool } = require('../models');
 const logger = require('../../config/logger');
+const { Op } = require('sequelize');
+const bcrypt = require("bcrypt");
 
 function mapUserCompany(record) {
   if (!record) return null;
@@ -38,6 +40,60 @@ const UserCompanyRepository = {
       throw new Error(`Error al buscar membresía: ${error.message}`);
     }
   },
+
+  async findPendingByUserId(userId, transaction = null) {
+  return UserCompany.findOne({
+    where: {
+      user_id: userId,
+      status: -1,
+      invitation_token: { [Op.not]: null },
+      expires_at: { [Op.gt]: new Date() }, // opcional: pre-filtrar vigentes
+    },
+    transaction,
+  });
+},
+
+async findPendingByTokenAndCompany(plainToken, companyId, transaction = null) {
+  // Primero, obtenemos todas las membresías pendientes de esa empresa
+  // (no podemos filtrar por token hasheado directamente en SQL con bcrypt)
+  const candidates = await UserCompany.findAll({
+    where: {
+      company_id: companyId,
+      status: -1,
+      invitation_token: { [Op.not]: null },
+    },
+    transaction,
+  });
+
+  // Luego comparamos cada token hasheado con el token plano recibido
+  for (const membership of candidates) {
+    const isMatch = await bcrypt.compare(plainToken, membership.invitation_token);
+    if (isMatch) {
+      return membership;
+    }
+  }
+
+  return null; // No se encontró coincidencia
+},
+
+async activateMembership({ user_id, company_id }, transaction = null) {
+  return UserCompany.update(
+    {
+      status: 1,
+      joined_at: new Date(),
+      invitation_token: null,     // ✅ buena práctica: limpiar token tras uso
+      expires_at: null,
+    },
+    {
+      where: {
+        user_id,
+        company_id,
+        status: -1, // asegura que solo actualice si aún está pendiente
+      },
+      transaction,
+    }
+  );
+},
 
   async findByInvitationToken(token) {
     try {

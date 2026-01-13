@@ -1,41 +1,46 @@
 const { Op } = require('sequelize');
-const { Branch } = require('../models');
+const { Branch, Warehouse } = require('../models');
 const ImageService = require('../services/ImageService');
 const logger = require('../../config/logger');
 
 const BranchRepository = {
   // ✅ Método flexible: por company_id, user_id o ambos
   async findFiltered({ companyId, userId }) {
-    const where = {};
+  const where = {};
 
-    if (companyId !== undefined) {
-      where.company_id = companyId;
-    }
+  if (companyId !== undefined) {
+    where.company_id = companyId;
+  }
 
-    if (userId !== undefined) {
-      where.user_id = userId;
-    }
+  if (userId !== undefined) {
+    where.user_id = userId;
+  }
 
-    // Si se dan ambos, ya están en where → no necesita lógica extra
+  const branches = await Branch.findAll({
+    where,
+    attributes: ['id', 'company_id', 'user_id', 'name', 'address', 'city', 'phone', 'status', 'image'],
+    include: [{
+      model: Warehouse,
+      as: 'warehouses',
+      attributes: ['id', 'name', 'status'], // o lo que necesites
+    }]
+  });
 
-    const branches = await Branch.findAll({
-      where,
-      attributes: ['id', 'company_id', 'user_id', 'name', 'address', 'city', 'phone', 'status', 'image'],
-    });
-
-    return branches.map(branch => ({
-      id: branch.id,
-      company_id: branch.company_id,
-      user_id: branch.user_id,
-      name: branch.name,
-      address: branch.address,
-      city: branch.city,
-      phone: branch.phone,
-      status: branch.status === 1 ? 'activa' : 'inactiva', // Opcional: human-readable
-      status_code: branch.status, // Si prefieres el número
-      image: branch.image,
-    }));
-  },
+  return branches.map(branch => ({
+    id: branch.id,
+    company_id: branch.company_id,
+    user_id: branch.user_id,
+    name: branch.name,
+    address: branch.address,
+    city: branch.city,
+    phone: branch.phone,
+    status: branch.status === 1 ? 'activa' : 'inactiva',
+    status_code: branch.status,
+    image: branch.image,
+    warehouses: branch.warehouses || [], // ← aquí tienes el array
+    has_warehouses: (branch.warehouses?.length || 0) > 0 // ← boolean útil
+  }));
+},
 
   async findById(id) {
     return await Branch.findByPk(id, {

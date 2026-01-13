@@ -1,6 +1,6 @@
 // app/repositories/UserRepository.js
 const { Op } = require('sequelize');
-const { User, Role, Company, UserCompany, UserAclScope, Warehouse, Pool } = require('../models'); // 👈 Añadido Role
+const { User, Role, Company, UserCompany, UserAclScope, Warehouse, Pool, Plan } = require('../models'); // 👈 Añadido Role
 const logger = require('../../config/logger');
 const ImageService = require('../services/ImageService');
 
@@ -259,8 +259,22 @@ const UserRepository = {
         as: 'memberships',
         attributes: ['id', 'company_id', 'role_id', 'status'],
         include: [
-          { model: Company, as: 'company', attributes: ['id', 'name'] },
-          { model: Role, as: 'role', attributes: ['id', 'name'] }
+          {
+            model: Company,
+            as: 'company',
+            attributes: ['id', 'name', 'plan_id'],
+            include: [
+              {
+                model: Plan,
+                as: 'plan'
+              }
+            ]
+          },
+          {
+            model: Role,
+            as: 'role',
+            attributes: ['id', 'name']
+          }
         ]
       }]
     });
@@ -332,9 +346,9 @@ async create(userData, file, transaction = null) {
     }
   },
 
-  async delete(user) {
+  // UserRepository.js
+async delete(user) {
   try {
-    // Recargar membresías
     await user.reload({
       include: [{
         model: UserCompany,
@@ -343,30 +357,43 @@ async create(userData, file, transaction = null) {
       }]
     });
 
-    // Verificar si es el último Admin en ALGUNA empresa
+    // Verificar si es el último Admin en alguna empresa
     for (const membership of user.memberships) {
       if (membership.role && membership.role.name === 'Admin') {
         const otherAdmins = await UserCompany.count({
           where: {
             company_id: membership.company_id,
             role_id: membership.role_id,
-            status: 1 // activo
+            status: 1
           },
-          include: [{ model: User, as: 'user', where: { status: true } }]
+          include: [{ 
+            model: User, 
+            as: 'user', 
+            where: { status: true } 
+          }]
         });
 
         if (otherAdmins <= 1) {
-          throw new Error(`No se puede eliminar el último administrador de la empresa ${membership.company_id}`);
+          // 👇 NO lanzar error → devolver resultado estructurado
+          return {
+            success: false,
+            message: `No se puede eliminar el último administrador de la empresa`,
+            code: 'LAST_ADMIN'
+          };
         }
       }
     }
 
-    // Si pasa, eliminar
     await user.destroy();
     return { success: true, message: 'Usuario eliminado' };
+
   } catch (error) {
     logger.error(`Error al eliminar usuario (ID: ${user.id}):`, error);
-    throw new Error(`Error al eliminar usuario: ${error.message}`);
+    return {
+      success: false,
+      message: 'Error interno al eliminar usuario',
+      code: 'INTERNAL_ERROR'
+    };
   }
 },
 
