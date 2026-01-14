@@ -26,10 +26,10 @@ const AttributeController = {
 
     const { name, type, cant } = req.body;
     const attributeData = { name, type, cant };
-
+    let  withUsageCount = true;
     try {
       await AttributeRepository.create(attributeData);
-      const attributes = await AttributeRepository.findAll();
+      const attributes = await AttributeRepository.findAll({ withUsageCount });
       return res.status(201).json({ attributes: attributes, msg: "Atributo creado correctamente" });
     } catch (err) {
       logger.error("AttributeController->store: " + err.message);
@@ -45,13 +45,13 @@ const AttributeController = {
     logger.info(JSON.stringify({ params: req.params, body: req.body }));
 
     const { name, type, cant } = req.body;
-
+    let  withUsageCount = true;
     try {
       const attribute = await AttributeRepository.findById(attributeId);
       if (!attribute) return res.status(404).json({ msg: "AttributeNotFound" });
 
       const updatedAttribute = await AttributeRepository.update(attribute, { name, type, cant });
-      const attributes = await AttributeRepository.findAll();
+      const attributes = await AttributeRepository.findAll({ withUsageCount });
       return res.status(200).json({ attributes: attributes, msg: "Atributo editado correctamente" });
     } catch (err) {
       logger.error("AttributeController->update: " + err.message);
@@ -65,13 +65,13 @@ const AttributeController = {
     logger.info(`${userName} - Elimina atributo ID ${attributeId}`);
     logger.info("Datos recibidos (params):");
     logger.info(JSON.stringify({ params: req.params, body: req.body }));
-
+    let  withUsageCount = true;
     try {
       const attribute = await AttributeRepository.findById(attributeId);
       if (!attribute) return res.status(404).json({ msg: "AttributeNotFound" });
 
       await AttributeRepository.delete(attribute);
-      const attributes = await AttributeRepository.findAll();
+      const attributes = await AttributeRepository.findAll({ withUsageCount });
       return res.status(200).json({ msg: "Atributo eliminado correctamente", attributes: attributes });
     } catch (err) {
       logger.error("AttributeController->destroy: " + err.message);

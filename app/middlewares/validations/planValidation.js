@@ -20,7 +20,11 @@ const planSchema = Joi.object({
   has_headless_api: Joi.boolean().optional(),
   ia_level: Joi.string().max(20).allow(null, '').optional(),
   global_commission_rate: Joi.number().precision(2).min(0).max(100).allow(null).optional(),
-  sort_order: Joi.number().integer().allow(null).optional()
+  sort_order: Joi.number().integer().allow(null).optional(),
+  monthly_price: Joi.number().precision(2).min(0).allow(null).optional(),
+  annual_price: Joi.number().precision(2).min(0).allow(null).optional(),
+  monthly_discount: Joi.number().precision(2).min(0).max(100).allow(null).optional(),
+  annual_discount: Joi.number().precision(2).min(0).max(100).allow(null).optional()
 });
 
 const updatePlanSchema = Joi.object({
@@ -45,7 +49,11 @@ const updatePlanSchema = Joi.object({
   has_headless_api: Joi.boolean().optional(),
   ia_level: Joi.string().max(20).allow(null, '').optional(),
   global_commission_rate: Joi.number().precision(2).min(0).max(100).allow(null).optional(),
-  sort_order: Joi.number().integer().allow(null).optional()
+  sort_order: Joi.number().integer().allow(null).optional(),
+  monthly_price: Joi.number().precision(2).min(0).allow(null).optional(),
+  annual_price: Joi.number().precision(2).min(0).allow(null).optional(),
+  monthly_discount: Joi.number().precision(2).min(0).max(100).allow(null).optional(),
+  annual_discount: Joi.number().precision(2).min(0).max(100).allow(null).optional()
 });
 
 const idPlanSchema = Joi.object({

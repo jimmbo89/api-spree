@@ -1,6 +1,6 @@
 const logger = require('../../config/logger');
 const { sequelize } = require('../models');
-const { CompanyRepository, WarehouseRepository, LogRepository, BusinessTypeRepository } = require('../repositories');
+const { CompanyRepository, WarehouseRepository, LogRepository, BusinessTypeRepository, PlanRepository } = require('../repositories');
 const { getRequestMetadata } = require('../util/requestUtil');
 const { detectChanges } = require('../util/auditUtils');
 
@@ -45,7 +45,7 @@ const CompanyController = {
     logger.info('Datos recibidos:');
     logger.info(JSON.stringify(req.body));
 
-    const { rut, business_type_id, warehouse, email } = req.body;
+    const { rut, business_type_id, warehouse, email, plan_id, name, description, phone, country, address } = req.body;
     if (req.user) req.body.user_id = req.user.id;
       const uniqueCheck = await CompanyRepository.checkUniqueFields({ rut, email });
       if (uniqueCheck.exists) {
@@ -66,6 +66,14 @@ const CompanyController = {
             );
             return res.status(400).json({ msg: "BusinessTypeNotFound" });
             }
+        }
+
+        if(!plan_id)
+        {
+          let plan = await PlanRepository.findByName('FREE');
+          if (plan) {
+            req.body.plan_id = plan.id;
+          }
         }
 
       const transaction = await sequelize.transaction();

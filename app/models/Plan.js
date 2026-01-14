@@ -106,6 +106,26 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.INTEGER,
       allowNull: true,
       comment: 'Orden para mostrar en UI'
+    },
+    monthly_price: {
+      type: DataTypes.DECIMAL(10,2),
+      allowNull: true,
+      comment: 'Precio mensual del plan'
+    },
+    annual_price: {
+      type: DataTypes.DECIMAL(10,2),
+      allowNull: true,
+      comment: 'Precio anual del plan'
+    },
+    monthly_discount: {
+      type: DataTypes.DECIMAL(5,2),
+      allowNull: true,
+      comment: 'Descuento mensual en porcentaje (ej: 10.00)'
+    },
+    annual_discount: {
+      type: DataTypes.DECIMAL(5,2),
+      allowNull: true,
+      comment: 'Descuento anual en porcentaje (ej: 20.00)'
     }
   }, {
     sequelize,

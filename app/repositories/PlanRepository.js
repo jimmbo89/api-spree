@@ -22,7 +22,11 @@ function mapPlan(plan) {
     has_headless_api: plan.has_headless_api,
     ia_level: plan.ia_level,
     global_commission_rate: plan.global_commission_rate,
-    sort_order: plan.sort_order
+    sort_order: plan.sort_order,
+    monthly_price: plan.monthly_price,
+    annual_price: plan.annual_price,
+    monthly_discount: plan.monthly_discount,
+    annual_discount: plan.annual_discount
   };
 }
 
@@ -90,7 +94,11 @@ const PlanRepository = {
       'has_headless_api',
       'ia_level',
       'global_commission_rate',
-      'sort_order'
+      'sort_order',
+      'monthly_price',
+      'annual_price',
+      'monthly_discount',
+      'annual_discount'
     ];
 
     const updatedData = {};

@@ -42,7 +42,11 @@ const PlanController = {
       has_headless_api,
       ia_level,
       global_commission_rate,
-      sort_order
+      sort_order,
+      monthly_price,
+      annual_price,
+      monthly_discount,
+      annual_discount
     } = req.body;
 
     const planData = {
@@ -61,7 +65,11 @@ const PlanController = {
       has_headless_api,
       ia_level,
       global_commission_rate,
-      sort_order
+      sort_order,
+      monthly_price,
+      annual_price,
+      monthly_discount,
+      annual_discount
     };
 
     try {
@@ -98,7 +106,11 @@ const PlanController = {
       has_headless_api,
       ia_level,
       global_commission_rate,
-      sort_order
+      sort_order,
+      monthly_price,
+      annual_price,
+      monthly_discount,
+      annual_discount
     } = req.body;
 
     const bodyData = {
@@ -117,7 +129,11 @@ const PlanController = {
       has_headless_api,
       ia_level,
       global_commission_rate,
-      sort_order
+      sort_order,
+      monthly_price,
+      annual_price,
+      monthly_discount,
+      annual_discount
     };
 
     try {

@@ -1,19 +1,37 @@
-const { ProductCategory } = require("../models");
+const { ProductCategory, Product } = require("../models");
 const logger = require("../../config/logger");
+const { fn, col } = require("sequelize");
 
 const ProductCategoryRepository = {
-  async findAll() {
-    try {
-      const categories = await ProductCategory.findAll({
-        attributes: ["id", "name", "status", "description"],
-        order: [["id", "ASC"]]
-      });
-      return categories;
-    } catch (error) {
-      logger.error("Error en ProductCategoryRepository->findAll:", error);
-      throw new Error(`Error al obtener categorías de productos: ${error.message}`);
-    }
-  },
+async findAll() {
+  try {
+    const categories = await ProductCategory.findAll({
+      attributes: [
+        "id",
+        "name",
+        "status",
+        "description",
+        [
+          fn('COUNT', col('products.id')),
+          'productCount'
+        ]
+      ],
+      include: [{
+        model: Product,
+        as: 'products',
+        attributes: [], // No necesitamos traer los campos del producto, solo contarlos
+        required: false // LEFT JOIN (incluye categorías sin productos)
+      }],
+      group: ['ProductCategory.id'],
+      order: [['id', 'ASC']]
+    });
+
+    return categories;
+  } catch (error) {
+    logger.error("Error en ProductCategoryRepository->findAll:", error);
+    throw new Error(`Error al obtener categorías de productos: ${error.message}`);
+  }
+},
 
   // En ProductCategoryRepository.js
 async findActive() {
