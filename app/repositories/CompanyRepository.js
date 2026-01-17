@@ -6,7 +6,7 @@ const logger = require('../../config/logger');
 const CompanyRepository = {
   async findAll() {
     return await Company.findAll({
-      attributes: ['id', 'name', 'address', 'city', 'country', 'image', 'rut', 'phone', 'business_type_id', 'email'],
+      attributes: ['id', 'name', 'address', 'city', 'country', 'image', 'rut', 'phone', 'business_type_id', 'email', 'currency'],
       include: [
       { model: BusinessType, as: 'businessType', attributes: ['id', 'name'], required: false },
       { model: Plan, as: 'plan', attributes: ['id', 'name'], required: false } // 👈 NUEVO
@@ -16,10 +16,10 @@ const CompanyRepository = {
 
   async findById(id) {
     return await Company.findByPk(id, {
-      attributes: ['id', 'name', 'description', 'address', 'city', 'country', 'image', 'rut', 'phone', 'business_type_id', 'email'],
+      attributes: ['id', 'name', 'description', 'address', 'city', 'country', 'image', 'rut', 'phone', 'business_type_id', 'email', 'currency'],
       include: [
       { model: BusinessType, as: 'businessType', attributes: ['id', 'name'], required: false },
-      { model: Plan, as: 'plan', attributes: ['id', 'name'], required: false } // 👈 NUEVO
+      { model: Plan, as: 'plan', required: false } // 👈 NUEVO
     ]
     });
   },
@@ -27,7 +27,7 @@ const CompanyRepository = {
  async getMappedCompaniesByUserId(userId) {
     const companies = await Company.findAll({
       where: { user_id: userId },
-      attributes: ['id', 'name', 'description', 'address', 'city', 'country', 'image', 'rut', 'phone', 'business_type_id', 'email', 'plan_id'],
+      attributes: ['id', 'name', 'description', 'address', 'city', 'country', 'image', 'rut', 'phone', 'business_type_id', 'email', 'plan_id', 'currency'],
       include: [
       { model: BusinessType, as: 'businessType', attributes: ['id', 'name'], required: false },
       { model: Plan, as: 'plan', attributes: ['id', 'name'], required: false } // 👈 NUEVO
@@ -48,7 +48,8 @@ const CompanyRepository = {
       rut: company.rut,
       phone: company.phone,
       image: company.image,
-      email: company.email
+      email: company.email,
+      currency: company.currency
     }));
   },
 
@@ -106,7 +107,7 @@ const CompanyRepository = {
 },
 
   async create(body, file, transaction = null) {
-    const { name, description, rut, address, city, country, phone, user_id, business_type_id, email, plan_id } = body;
+    const { name, description, rut, address, city, country, phone, user_id, business_type_id, email, plan_id, currency } = body;
 
     const company = await Company.create({
       name,
@@ -120,7 +121,8 @@ const CompanyRepository = {
       business_type_id, 
       plan_id,
       image: 'companies/default.jpg',
-      email
+      email,
+      currency
     }, { transaction });
 
     if (file) {
@@ -133,7 +135,7 @@ const CompanyRepository = {
   },
 
   async update(company, body, file) {
-    const fieldsToUpdate = ['name', 'description', 'rut', 'address', 'city', 'country', 'phone', 'business_type_id', 'email', 'plan_id'];
+    const fieldsToUpdate = ['name', 'description', 'rut', 'address', 'city', 'country', 'phone', 'business_type_id', 'email', 'plan_id', 'currency'];
 
     const updatedData = Object.keys(body)
       .filter(key => fieldsToUpdate.includes(key) && body[key] !== undefined)

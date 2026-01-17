@@ -1,5 +1,5 @@
 // app/repositories/UserCompanyRepository.js
-const { UserCompany, User, Company, Role, UserAclScope, Warehouse, Pool } = require('../models');
+const { UserCompany, User, Company, Role, UserAclScope, Warehouse, Pool, Plan } = require('../models');
 const logger = require('../../config/logger');
 const { Op } = require('sequelize');
 const bcrypt = require("bcrypt");
@@ -53,15 +53,33 @@ const UserCompanyRepository = {
   });
 },
 
-async findPendingByTokenAndCompany(plainToken, companyId, transaction = null) {
-  // Primero, obtenemos todas las membresías pendientes de esa empresa
-  // (no podemos filtrar por token hasheado directamente en SQL con bcrypt)
+async findPendingByTokenAndCompany(plainToken, companyId, transaction = null, userId) {
+  // Construir condición where
+ const whereCondition = {
+    status: -1,
+    invitation_token: { [Op.not]: null },
+    ...(companyId != null && { company_id: companyId }),
+    ...(userId != null && { user_id: userId })
+  };
+
+  // Obtener todas las membresías pendientes con las relaciones necesarias
   const candidates = await UserCompany.findAll({
-    where: {
-      company_id: companyId,
-      status: -1,
-      invitation_token: { [Op.not]: null },
-    },
+    where: whereCondition,
+    include: [
+      {
+        model: Company,
+        as: 'company',
+        include: [{
+          model: Plan,
+          as: 'plan'
+        }]
+      },
+      {
+        model: Role,
+        as: 'role'
+      }
+      // Nota: No incluimos 'user' ni 'inviter' si no los necesitas para este caso específico
+    ],
     transaction,
   });
 

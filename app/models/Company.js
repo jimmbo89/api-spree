@@ -93,7 +93,11 @@ module.exports = (sequelize, DataTypes) => {
         msg: 'El campo email debe ser una dirección de correo válida'
       }
     }
-  }
+  },
+  currency: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
   }, {
     sequelize,
     modelName: 'Company',

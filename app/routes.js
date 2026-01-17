@@ -60,7 +60,7 @@ const router = express.Router();
 
 router.get("/", (req, res) => res.json({ hello: "World" }));
 
-router.post("/sign-up", validateSchema(registerSchema), AuthController.signUp);
+router.post("/user-register", validateSchema(registerSchema), AuthController.register);
 router.post("/sign-in", validateSchema(loginSchema), AuthController.signIn);
 router.get("/verific-invitation", AuthController.verifyInvitation);
 router.post('/forgot-password', AuthController.forgotPassword);
@@ -121,6 +121,7 @@ router.post("/user-destroy", requireRoles(['Admin', 'Seller Manager']), validate
 router.post("/get-users", requireRoles(['Admin', 'Seller Manager']), AuthController.index);
 router.post("/get-pool-warehouse-roles", requireRoles(['Admin', 'Seller Manager']), AuthController.getPoolWarehouseRole);
 router.post("/send-invitation", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateSchema), InvitationController.sendInvitation);
+router.post('/change-password', AuthController.changePassword);
 
 //Rutas Roles
 router.get("/roles", requireRoles(['Admin', 'Seller Manager']),RoleController.index);
@@ -129,7 +130,7 @@ router.post("/role-update", requireRoles(['Admin', 'Seller Manager']), validateS
 router.post("/role-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idRoleSchema), RoleController.destroy);
 
 // PLANES
-router.get("/plans", requireRoles(['Admin', 'Seller Manager']), PlanController.index);
+router.post("/plans", requireRoles(['Admin', 'Seller Manager']), PlanController.index);
 router.post("/plan", requireRoles(['Admin', 'Seller Manager']), validateSchema(planSchema), PlanController.store);
 router.post("/plan-update", requireRoles(['Admin', 'Seller Manager']), validateSchema(updatePlanSchema), PlanController.update);
 router.post("/plan-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idPlanSchema), PlanController.destroy);
@@ -149,7 +150,7 @@ router.post('/role-permission-destroy', requireRoles(['Admin', 'Seller Manager']
 router.post('/role-permissions-available', requireRoles(['Admin', 'Seller Manager']), validateSchema(availablePermissionsForRoleSchema), RolePermissionController.available);
 
 // Endpoints BusinessTypes
-router.post("/business-types", requireRoles(['Admin', 'Seller Manager']), BusinessTypeController.index);
+router.post("/business-types", BusinessTypeController.index);
 router.post("/business-type", requireRoles(['Admin', 'Seller Manager']), validateSchema(businessTypeSchema), BusinessTypeController.store);
 router.post("/business-type-update", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateBusinessTypeSchema), BusinessTypeController.update);
 router.post("/business-type-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idBusinessTypeSchema), BusinessTypeController.destroy);
@@ -160,6 +161,8 @@ router.post("/company", requireRoles(['Admin', 'Seller Manager']), multerImage("
 router.post("/company-update", requireRoles(['Admin', 'Seller Manager']), multerImage("image", "companies"), validateSchema(updateCompanySchema), CompanyController.update);
 router.post("/company-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idCompanySchema), CompanyController.destroy);
 router.post('/company-users', requireRoles(['Admin', 'Seller Manager']), validateSchema(companyIdSchema), AuthController.getUsers);
+router.post("/company-login", validateSchema(storeCompanySchema), CompanyController.storeLogin);
+router.post("/joint-invitation-token", CompanyController.joinInvitation);
 
 //UserCompany
 router.post('/user-company', requireRoles(['Admin', 'Seller Manager']), validateSchema(createUserCompanySchema), UserCompanyController.create);
@@ -213,6 +216,7 @@ router.post("/product-user-company", requireRoles(['Admin', 'Seller Manager']), 
 router.post("/product", requireRoles(['Admin', 'Seller Manager']), multerFieldFolders(productImageFields), validateSchema(storeProductSchema), ProductController.store);
 router.post("/product-update", requireRoles(['Admin', 'Seller Manager']), multerFieldFolders(productImageFields), validateSchema(updateProductSchema), ProductController.update);
 router.post("/product-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idProductSchema), ProductController.destroy);
+router.post("/product-state", requireRoles(['Admin', 'Seller Manager']), validateSchema(idProductSchema), ProductController.updateState);
 router.post("/products-transform", requireRoles(['Admin', 'Seller Manager']), ProductController.transformForMarketplace);
 router.post("/product-category-status", requireRoles(['Admin', 'Seller Manager']), ProductController.getProductMetadata);
 router.post("/product-update-attributes", ProductController.updateAttributes);

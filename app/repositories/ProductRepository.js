@@ -6,11 +6,11 @@ const WarehouseProductRepository = require("./WarehouseProductRepository");
 const DEFAULT_IMAGE = "products/default.jpg";
 
 const ProductRepository = {
-  async findFiltered({ companyId, userId, branchId, categoryId, brand, status, hasGtin }) {
+  async findFiltered({ companyId, userId, branchId, categoryId, brand, state, hasGtin }) {
     const where = { };
     if (categoryId !== undefined) where.category_id = categoryId;
     if (brand !== undefined && brand !== '') where.brand = brand;
-    if (status !== undefined) where.status = status;
+    if (state !== undefined) where.state = state;
     if (hasGtin === true) where.gtin = { [Op.not]: null };
     if (hasGtin === false) where.gtin = null;
 
@@ -22,7 +22,7 @@ const ProductRepository = {
         "brand", "model", "condition", "gtin", "mpn",
         "attributes", "warranty_months", "warranty_text",
         "weight_grams", "length_cm", "width_cm", "height_cm",
-        "images", "sync_meta"
+        "images", "sync_meta", "state"
       ],
       include: [
         {
@@ -123,6 +123,7 @@ const ProductRepository = {
         company_id: product.company_id,
         brand: product.brand,
         model: product.model,
+        state: product.state,
         condition: product.condition,
         conditionValue: conditionMatch ? conditionMatch.name : product.condition,
         gtin: product.gtin,
@@ -162,6 +163,7 @@ const ProductRepository = {
         description: body.description || null,
         brand: body.brand || 'Generico',
         model: body.model || null,
+        state: body.state || 1,
         condition: body.condition || 'new',
         gtin: body.gtin || null,
         mpn: body.mpn || null,
@@ -232,7 +234,7 @@ const ProductRepository = {
         "user_id", "company_id",
         "brand", "model", "condition", "gtin", "mpn", "warranty_months", "warranty_text",
         "weight_grams", "length_cm", "width_cm", "height_cm",
-        "sync_meta"
+        "sync_meta", "state"
       ];
 
       const updatedData = {};
@@ -272,6 +274,10 @@ const ProductRepository = {
       }
     }
     return await product.destroy();
+  },
+
+  async changeState(product, state){
+    await product.update({state: state});
   },
 
 async existsBySku(sku, excludeId = null) {

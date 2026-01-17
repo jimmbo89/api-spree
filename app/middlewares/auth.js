@@ -3,37 +3,74 @@ const authConfig = require('../../config/auth');
 const { runWithUser } = require('../../config/context');
 const { User, UserToken } = require('../models');
 const logger = require('../../config/logger');
-const { UserTokenRepository } = require('../repositories');
+const { UserTokenRepository, UserRepository } = require('../repositories');
 
 module.exports = async (req, res, next) => {
-    // Verificar si el token existe en los encabezados de la solicitud
-    const token = req.headers.authorization?.split(" ")[1];
+  // Verificar si el token existe en los encabezados de la solicitud
+  const token = req.headers.authorization?.split(" ")[1];
+  
+  if (!token) {
+    return res.status(401).json({ msg: "Acceso no autorizado: token no proporcionado" });
+  }
 
-    if (!token) {
-        return res.status(401).json({ msg: "Acceso no autorizado: token no proporcionado" });
+  try {
+    // Verificar si el token está revocado o expirado
+    const userToken = await UserTokenRepository.findByToken(token);
+    if (!userToken) {
+      return res.status(401).json({ msg: 'Acceso no autorizado: token inválido, revocado o expirado' });
     }
 
-    try {
-        const userToken = await UserTokenRepository.findByToken(token);
-        if (!userToken) {
-        return res.status(401).json({ msg: 'Acceso no autorizado: token inválido, revocado o expirado' });
-        }
-        // Verificar la validez del token usando jwt.verify
-        jwt.verify(token, authConfig.secret, async (err, decoded) => {
-            if (err) {
-                return res.status(500).json({ msg: "Error al verificar el token", err });
+    // Verificar la validez del token JWT
+    jwt.verify(token, authConfig.secret, async (err, decoded) => {
+      if (err) {
+        return res.status(401).json({ msg: "Token inválido o expirado" });
+      }
+
+      // Obtener el companyId del header (si existe)
+      const companyId = req.headers['x-company-id'];
+
+      // Almacenar el ID del usuario en el contexto
+      runWithUser(decoded.user.id, async () => {
+        let userWithContext = decoded.user;
+
+        // Si se proporciona companyId, obtener el contexto específico de la empresa
+        if (companyId) {
+          try {
+            // Buscar el usuario con el contexto de la empresa específica
+            const userWithCompanyContext = await UserRepository.findByEmailWithCompanyContext(
+              decoded.user.email,
+              companyId
+            );
+
+            if (!userWithCompanyContext) {
+              return res.status(403).json({
+                msg: "No tienes acceso a esta empresa o tu membresía no es válida."
+              });
             }
 
-            // Almacenar el ID del usuario en el contexto
-            runWithUser(decoded.user.id, async () => {
-                req.user = decoded.user; // Puedes mantenerlo si necesitas acceder a otros datos del usuario
-                req.profile = decoded.user.profile;
-                next();
+            userWithContext = userWithCompanyContext;
+          } catch (error) {
+            if (error.message.includes('does not belong')) {
+              return res.status(403).json({
+                msg: "Acceso denegado a esta empresa."
+              });
+            }
+            logger.error(`Error al establecer contexto de empresa: ${error.message}`);
+            return res.status(500).json({
+              msg: "Error al establecer el contexto de empresa."
             });
+          }
+        }
 
-        });
-    } catch (error) {
-        logger.error(`Error al verificar el token: ${error.message}`);
-        return res.status(500).json({ msg: "Error en el servidor", error });
-    }
+        // Adjuntar el usuario (con o sin contexto de empresa) a la solicitud
+        req.user = userWithContext;
+        req.profile = userWithContext.profile;
+        
+        next();
+      });
+    });
+  } catch (error) {
+    logger.error(`Error en middleware de autenticación: ${error.message}`);
+    return res.status(500).json({ msg: "Error en el servidor", error: error.message });
+  }
 };

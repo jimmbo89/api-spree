@@ -1,11 +1,11 @@
 const logger = require('../../config/logger');
 const { sequelize } = require('../models');
-const { CompanyRepository, WarehouseRepository, LogRepository, BusinessTypeRepository, PlanRepository } = require('../repositories');
+const { CompanyRepository, WarehouseRepository, LogRepository, BusinessTypeRepository, PlanRepository, UserCompanyRepository, RoleRepository, UserRepository } = require('../repositories');
 const { getRequestMetadata } = require('../util/requestUtil');
 const { detectChanges } = require('../util/auditUtils');
 
 // Campos que queremos auditar en Company
-const COMPANY_AUDIT_FIELDS = ['name', 'description', 'rut', 'address', 'city', 'country', 'phone', 'user_id', 'email'];
+const COMPANY_AUDIT_FIELDS = ['name', 'description', 'rut', 'address', 'city', 'country', 'phone', 'user_id', 'email', 'currency'];
 
 const CompanyController = {
   async index(req, res) {
@@ -31,6 +31,7 @@ const CompanyController = {
         business_type_id: company.business_type_id,
         businessTypeName: company.businessType.name,
         email: company.email,
+        currency: company.currency,
       }));
 
       res.status(200).json({ companies: mappedCompanies });
@@ -45,7 +46,7 @@ const CompanyController = {
     logger.info('Datos recibidos:');
     logger.info(JSON.stringify(req.body));
 
-    const { rut, business_type_id, warehouse, email, plan_id, name, description, phone, country, address } = req.body;
+    const { rut, business_type_id, warehouse, email, plan_id, name, description, phone, country, address, currency } = req.body;
     if (req.user) req.body.user_id = req.user.id;
       const uniqueCheck = await CompanyRepository.checkUniqueFields({ rut, email });
       if (uniqueCheck.exists) {
@@ -133,6 +134,112 @@ const CompanyController = {
     }
   },
 
+  async storeLogin(req, res) {
+    logger.info(`${req.user?.name || 'Unknown'} - Crea una nueva compañía desde el login`);
+    logger.info('Datos recibidos:');
+    logger.info(JSON.stringify(req.body));
+
+    const { rut, business_type_id, name, country, address, email, currency } = req.body;
+    let user_id = req.user.id;
+    req.body.user_id = user_id;
+      const existingCompany = await CompanyRepository.checkUniqueFields({ rut, email });
+      logger.info('JSON.stringify(existingCompany)');
+      logger.info(JSON.stringify(existingCompany));
+      if (existingCompany.exists) {
+          // 2. Verificar si el usuario YA es miembro
+          const existingMembership = await UserCompanyRepository.findByUserIdAndCompanyId(
+            user_id, 
+            existingCompany.id
+          );
+
+          if (existingMembership && [0, 1].includes(existingMembership.status)) {
+            // Ya es miembro → error ALREADY_MEMBER
+            return res.status(409).json({
+              success: false,
+              code: 'ALREADY_MEMBER',
+              message: 'Ya perteneces a esta empresa.',
+              companyId: existingCompany.id
+            });
+          } else {
+            // Empresa existe, pero NO es miembro → COMPANY_EXISTS_NOT_MEMBER
+            return res.status(409).json({
+              success: false,
+              code: 'COMPANY_EXISTS_NOT_MEMBER',
+              message: 'Esta empresa ya existe en Spree. Para ingresar, necesitas invitación de un administrador.',
+              companyId: existingCompany.id,
+              companyName: existingCompany.name
+            });
+          }
+        }
+
+       if (business_type_id) {
+        const businessType = await BusinessTypeRepository.findById(business_type_id);
+            if (!businessType) {
+            logger.error(
+                `CompanyController->store: Tipo de negocio no encontrado con ID ${business_type_id}`
+            );
+            return res.status(400).json({ status: false, message: "Tipo de negocio no encontrado" });
+            }
+        }
+        let role_id = null;
+        let membership = {};
+        const adminRole = await RoleRepository.findByName("Admin");
+        if (adminRole) {
+          role_id = adminRole.id;
+        }
+         let plan = await PlanRepository.findByName('FREE');
+          if (plan) {
+            req.body.plan_id = plan.id;
+          }
+      const transaction = await sequelize.transaction();
+    try {
+
+      const company = await CompanyRepository.create(req.body, req.file, transaction);
+
+      membership = await UserCompanyRepository.create(
+          {
+            user_id,
+            company_id: company.id,
+            role_id,
+            status: 1,
+            joined_at: new Date(),
+            invited_by: null,
+          },
+          transaction
+        );
+       // ✅ Usar el nuevo método del repositorio
+      //const hasPrincipal = await WarehouseRepository.existsPrincipalByEntity({ companyId: company.id }, transaction);
+      await transaction.commit();
+      res.status(201).json({success: true,
+      message: "Compañía creada correctamente",
+        company: {
+          id: company.id,
+          name: company.name,
+          plan: plan
+        },
+        membership: {
+          id: membership.id,
+          company_id: membership.company_id,
+          role_id: membership.role_id,
+          status: membership.status,
+          company: {
+            id: company.id,
+            name: company.name,
+            plan: plan
+          },
+          role: adminRole
+        }
+   });
+    } catch (error) {
+      await transaction.rollback();
+      const errorMsg = error.details
+        ? error.details.map(detail => detail.message).join(', ')
+        : error.message || 'Error desconocido';
+      logger.error('CompanyController->store: ' + errorMsg);
+      res.status(500).json({ status: false, message: 'Error interno del servidor', details: errorMsg });
+    }
+  },
+
   async getCompaniesByUser(req, res) {
     logger.info(`${req.user?.name || 'Unknown'} - Visualiza las compañías`);
     const user_id = req.body.user_id || req.user?.id;
@@ -174,6 +281,7 @@ const CompanyController = {
         business_type_id: company.business_type_id,
         businessTypeName: company.businessType.name,
         email: company.email,
+        currency: company.currency
       };
 
       res.status(200).json({ company: mappedCompany });
@@ -332,6 +440,84 @@ const CompanyController = {
       res.status(500).json({ error: 'ServerError', details: errorMsg });
     }
   },
+
+    async joinInvitation(req, res) {
+  const { token } = req.body;
+  logger.info('Verificando invitación con token desde login:');
+  logger.info(JSON.stringify(req.body));
+      const user_id = req.user.id;
+  const transaction = await sequelize.transaction();
+  try {
+    // 🔑 1. Buscar membresía PENDIENTE usando token + company_id
+    const pendingMembership = await UserCompanyRepository.findPendingByTokenAndCompany(
+      token,
+      null,
+      transaction,
+      user_id
+    );
+
+    if (!pendingMembership) {
+      await transaction.rollback();
+      logger.info("No se encontró invitación pendiente con ese token y empresa");
+      return res.status(400).json({ success: false, message: "Token inválido, expirado o ya utilizado", code:'INVITATION_ALREADY_USED' });
+    }
+
+    // 📅 2. Verificar expiración (usando getTime() para evitar problemas de timezone)
+    if (new Date(pendingMembership.expires_at).getTime() < Date.now()) {
+      await transaction.rollback();
+      logger.info("Token de invitación expirado");
+      return res.status(400).json({ success: false, message: "El enlace de invitación ha expirado", code:'INVITATION_EXPIRED' });
+    }
+
+    // 👤 3. Cargar datos del usuario (para la respuesta)
+    const user = await UserRepository.findById(pendingMembership.user_id, transaction);
+    if (!user) {
+      await transaction.rollback();
+      logger.error("Usuario asociado a la membresía no encontrado");
+      return res.status(500).json({ success: false, message: "Inconsistencia de datos" });
+    }
+
+    // ✅ 4. Activar la membresía
+    const membership = await UserCompanyRepository.activateMembership(
+      {
+        user_id: pendingMembership.user_id,
+        company_id: pendingMembership.company_id,
+      },
+      transaction
+    );
+
+    await transaction.commit();
+
+    logger.info(`Invitación aceptada: usuario ${user.email}`);
+    res.status(201).json({success: true,
+      message: "Compañía creada correctamente",
+        company: {
+          id: pendingMembership.company_id,
+          name: pendingMembership.company.name,
+          plan: pendingMembership.company.plan
+        },
+        membership: {
+          id: membership.id,
+          company_id: membership.company_id,
+          role_id: membership.role_id,
+          status: membership.status,
+          company: {
+            id: pendingMembership.company_id,
+            name: pendingMembership.company.name,
+            plan: pendingMembership.company.plan
+          },
+          role: pendingMembership.role
+        }
+   });
+
+  } catch (error) {
+     if (!transaction.finished) {
+      await transaction.rollback();
+    }
+    logger.error("Error en joinInvitation:", error);
+    return res.status(500).json({ success: false, message: "Error interno al procesar la invitación" });
+  }
+},
 };
 
 module.exports = CompanyController;

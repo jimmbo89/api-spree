@@ -32,6 +32,7 @@ app.use(cors({
     return callback(new Error('Origen no permitido'), false);
   },
   allowedHeaders: [
+    'X-Company-ID',
     'Content-Type',
     'Authorization',
     'Cache-Control',

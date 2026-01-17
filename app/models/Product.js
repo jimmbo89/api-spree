@@ -48,7 +48,8 @@ module.exports = (sequelize, DataTypes) => {
     user_id: { type: DataTypes.BIGINT, allowNull: true },
     company_id: { type: DataTypes.BIGINT, allowNull: true },
     images: { type: DataTypes.JSON, allowNull: true, defaultValue: [] },
-    sync_meta: { type: DataTypes.JSON, allowNull: true, defaultValue: {} }
+    sync_meta: { type: DataTypes.JSON, allowNull: true, defaultValue: {} },
+    state: { type: DataTypes.TINYINT, allowNull: true, defaultValue: 1 },
   }, {
     sequelize,
     modelName: 'Product',

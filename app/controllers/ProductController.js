@@ -47,7 +47,7 @@ const PRODUCT_AUDIT_FIELDS = [
 const ProductController = {
   async list(req, res) {
     logger.info(`${req.user?.name || "Unknown"} - Lista productos`);
-    const { company_id, user_id, branch_id, category_id, brand, status, has_gtin } =
+    const { company_id, user_id, branch_id, category_id, brand, state, has_gtin } =
       req.body;
 
     if (company_id) {
@@ -74,7 +74,7 @@ const ProductController = {
         branchId: branch_id,
         categoryId: category_id,
         brand,
-        status: status,
+        state: state,
         hasGtin: has_gtin,
       });
       res
@@ -94,7 +94,7 @@ const ProductController = {
   async getProductMetadata(req, res) {
     const userName = req.user?.name || "Anonymous";
     logger.info(`${userName} - Solicita metadata de productos`);
-    const { company_id, branch_id, user_id, status, type } = req.body;
+    const { company_id, branch_id, user_id, state, type } = req.body;
 
     try {
       const categories = await ProductCategoryRepository.findActive();
@@ -108,7 +108,7 @@ const ProductController = {
         company_id,
         branch_id,
         user_id,
-        status,
+        state,
         type,
       });
 
@@ -907,6 +907,48 @@ const ProductController = {
       const products = await ProductRepository.findFiltered({
         companyId: product.company_id,
         userId: product.user_id,
+      });
+      res
+        .status(200)
+        .json({ message: "Producto eliminado correctamente", products });
+    } catch (error) {
+      await LogRepository.create({
+        user_id: metadata?.user_id,
+        action: "product.delete",
+        description: `Error al eliminar producto ID ${req.body?.id}: ${error.message}`,
+        ip_address: metadata?.ip_address,
+        user_agent: metadata?.user_agent,
+        status: "error",
+      });
+      logger.error("ProductController->destroy: " + error.message);
+      res.status(500).json({ error: "ServerError", details: error.message });
+    }
+  },
+
+  async updateState(req, res) {
+    logger.info(
+      `${req.user?.name || "Unknown"} - Actualiza estado del producto con ID ${req.body.id}`
+    );
+    const metadata = getRequestMetadata(req);
+
+    try {
+      const product = await ProductRepository.findById(req.body.id);
+      if (!product) return res.status(404).json({ msg: "ProductNotFound" });
+
+      await ProductRepository.changeState(product, 0);
+      await LogRepository.create({
+        user_id: metadata.user_id,
+        action: "product.state",
+        description: `Producto Actualizado: ID ${product.id}, nombre: "${product.name}", SKU: "${product.sku}"`,
+        ip_address: metadata.ip_address,
+        user_agent: metadata.user_agent,
+        status: "success",
+      });
+
+      const products = await ProductRepository.findFiltered({
+        companyId: product.company_id,
+        userId: product.user_id,
+        state: 1,
       });
       res
         .status(200)

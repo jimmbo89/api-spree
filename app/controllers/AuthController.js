@@ -81,7 +81,7 @@ async function sendInvitationEmail({
   });
 }
 const AuthController = {
-  async signUp(req, res) {
+  /*async signUp(req, res) {
     logger.info("Registrando Usuario.");
     logger.info("Datos recibidos al registrarse:");
     logger.info(JSON.stringify(req.body));
@@ -171,8 +171,87 @@ const AuthController = {
       logger.error("Error al registrar usuario: " + errorMsg);
       return res.status(500).json({ error: "ServerError", details: errorMsg });
     }
-  },
+  },*/
 
+  async register(req, res) {
+    logger.info("Registrando Usuario.");
+    logger.info("Datos recibidos al registrarse:");
+    logger.info(JSON.stringify(req.body));
+
+    const { name, user, password, email } = req.body;
+
+    const t = await sequelize.transaction();
+    try {
+      // 1. Buscar rol por nombre (si se envía)
+      let role_id = null;
+          const role = await RoleRepository.findByName("Viewer");
+        if (role) {
+          role_id = role.id;
+        }
+
+      const hashedPassword = bcrypt.hashSync(
+        password,
+        parseInt(authConfig.rounds)
+      );
+      const extractedUser = req.body.user || req.body.email.split("@")[0];
+
+      const userData = {
+        name: req.body.name,
+        email: req.body.email,
+        password: hashedPassword,
+        status: true, // ✅ nuevo usuario activo
+        image: "users/default.jpg", // o procesa avatar si lo subes
+        email_verified_at: null,
+        remember_token: null,
+        registration_date: null,
+        user: extractedUser,
+      };
+
+      const user = await UserRepository.create(userData, null, null);
+
+      const userNew = {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        user: user.user,
+        image: user.image
+      };
+
+      const token = jwt.sign({ user: userNew }, authConfig.secret, {
+        expiresIn: authConfig.expires,
+      });
+      const decoded = jwt.decode(token);
+      const expiresAt = new Date(decoded.exp * 1000);
+
+      await UserTokenRepository.create(
+        {
+          user_id: user.id,
+          token,
+          expires_at: expiresAt,
+        },
+        t
+      );
+
+      await t.commit();
+
+      return res.status(201).json({
+        id: userNew.id,
+        name: userNew.name,
+        email: userNew.email,
+        user: userNew.user,
+        image: userNew.image,
+        token,
+        memberships: user.memberships || [],
+      });
+    } catch (error) {
+      await t.rollback();
+      const errorMsg = error.details
+        ? error.details.map((d) => d.message).join(", ")
+        : error.message;
+      logger.error("Error al registrar usuario: " + errorMsg);
+      return res.status(500).json({ error: "ServerError", details: errorMsg });
+    }
+  },
   async signIn(req, res) {
     logger.info("Entrando a loguearse");
     logger.info("Datos recibidos al loguearse:");
@@ -231,34 +310,12 @@ const AuthController = {
         });
         return res.status(400).json({ msg: "Credenciales inválidas" });
       }
-      // ✅ Rol desde la PRIMERA MEMBRESÍA ACTIVA del usuario
-      let role = null;
-      let role_id = null;
-      let company_id = null;
-      let plan = null;
-      if (user.memberships && user.memberships.length > 0) {
-        // Opcional: filtrar solo membresías activas (status = 1)
-        const activeMemberships = user.memberships.filter(
-          (m) => m.status === 1
-        );
-        const firstMembership = activeMemberships[0] || user.memberships[0];
-
-        role = firstMembership.role || null;
-        role_id = firstMembership.role_id || null;
-        company_id = firstMembership.company_id;
-        plan = firstMembership.company.plan || null;
-      }
-
       const userNew = {
         id: user.id,
         email: user.email,
         name: user.name,
         user: user.user,
         image: user.image,
-        role: role,
-        role_id: role_id,
-        company_id: company_id,
-        plan: plan
       };
 
       const token = jwt.sign({ user: userNew }, authConfig.secret, {
@@ -290,10 +347,7 @@ const AuthController = {
         email: userNew.email,
         image: userNew.image,
         token,
-        role: userNew.role,
-        plan: userNew.plan,
-        role_id: userNew.role_id,
-        company_id: userNew.company_id,
+        memberships: user.memberships || [],
       });
     } catch (error) {
       const errorMsg = error.details
@@ -730,6 +784,51 @@ const AuthController = {
       res.status(500).json({ success: false, message: "Error interno" });
     }
   },
+
+  async changePassword(req, res) {
+    logger.info("Datos recibidos al actualizar la contraseña:");
+    logger.info(JSON.stringify(req.body));
+    try {
+      const { user_id: bodyUserId, newPassword, currentPassword } = req.body;
+      const user_id = bodyUserId || req.user.id;
+      const user = await UserRepository.findById(user_id);
+      if (!user) {
+        return res.json({ success: false, message: "Usuario no encontrado" });
+      }
+      logger.info('user')
+      logger.info(JSON.stringify(user))
+      const isMatch = await bcrypt.compare(currentPassword, user.password);
+    if (!isMatch) {
+      return res.status(404).json({
+        success: false,
+        message: "La contraseña actual es incorrecta"
+      });
+    }
+
+    // Evitar que la nueva contraseña sea igual a la actual
+    if (await bcrypt.compare(newPassword, user.password)) {
+      return res.status(404).json({
+        success: false,
+        message: "La nueva contraseña no puede ser igual a la actual"
+      });
+    }
+      const saltRounds = parseInt(authConfig.rounds, 10);
+      logger.info("saltRounds");
+      logger.info(saltRounds);
+      const hashedPassword = bcrypt.hashSync(newPassword, saltRounds);
+
+      await UserRepository.update(
+        user,
+        { password: hashedPassword, reset_expire: null, reset_token: null },
+        null
+      );
+
+      res.json({ success: true, message: "Contraseña actualizada" });
+    } catch (error) {
+      logger.error("Error en changePassword:", error);
+      res.status(500).json({ success: false, message: "Error interno" });
+    }
+  },
   async verifyCode(req, res) {
     try {
       const { email } = req.body;
@@ -1071,6 +1170,17 @@ const AuthController = {
     );
     logger.info("Datos recibidos:");
     logger.info(JSON.stringify(req.body));
+
+    /*invitationToken = crypto.randomBytes(32).toString("hex");
+        logger.info('token a verificar editando');
+        logger.info(invitationToken);
+        const hashedInvitationToken = bcrypt.hashSync(
+          invitationToken,
+          parseInt(authConfig.rounds) // o usa un valor fijo, ej: 10
+        );
+
+        logger.info('token a verificar editando codificado');
+        logger.info(hashedInvitationToken);*/
 
     const {
       id: userId,

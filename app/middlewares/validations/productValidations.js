@@ -34,7 +34,7 @@ const productBaseSchema = {
     .optional()
     .default([]),
   sync_meta: Joi.object().optional().default({}),
-  // ❌ Eliminado: base_price, status, branch_id
+  state: Joi.number().integer().optional(),
 };
 
 const storeProductSchema = Joi.object({
@@ -85,8 +85,8 @@ const listProductsSchema = Joi.object({
   branch_id: Joi.number().allow(null).empty('').optional(),
   user_id: Joi.number().allow(null).empty('').optional(),
   brand: Joi.string().optional().allow(''),
-  has_gtin: Joi.boolean().optional()
-  // ❌ Eliminado: branch_id, status
+  has_gtin: Joi.boolean().optional(),
+  state: Joi.number().allow(null).empty('').optional(),
 });
 
 const listByWarehouseIdsSchema = Joi.object({

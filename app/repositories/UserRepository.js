@@ -213,10 +213,6 @@ const UserRepository = {
   async findById(id) {
   try {
     const user = await User.findByPk(id, {
-      attributes: [
-        'id', 'name', 'email', 'status', 'image',
-        'email_verified_at', 'remember_token', 'external_id', 'external_auth', 'registration_date', 'user'
-      ],
       include: [{
         model: UserCompany,
         as: 'memberships',
@@ -262,7 +258,7 @@ const UserRepository = {
           {
             model: Company,
             as: 'company',
-            attributes: ['id', 'name', 'plan_id'],
+            attributes: ['id', 'name', 'plan_id', 'image'],
             include: [
               {
                 model: Plan,
@@ -281,6 +277,73 @@ const UserRepository = {
     return user;
   } catch (error) {
     logger.error(`Error al buscar usuario por email o nombre (${identifier}):`, error);
+    throw new Error(`Error al buscar usuario: ${error.message}`);
+  }
+},
+
+// app/repositories/UserRepository.js
+async findByEmailWithCompanyContext(identifier, companyId = null) {
+  try {
+    const user = await User.findOne({
+      where: {
+        [Op.or]: [{ email: identifier }, { user: identifier }]
+      },
+      attributes: [
+        'id', 'name', 'email', 'status', 'image', 'password', 'remember_token', 'registration_date', 'user'
+      ],
+      include: [{
+        model: UserCompany,
+        as: 'memberships',
+        attributes: ['id', 'company_id', 'role_id', 'status'],
+        include: [
+          {
+            model: Company,
+            as: 'company',
+            attributes: ['id', 'name', 'plan_id', 'image'],
+            include: [
+              {
+                model: Plan,
+                as: 'plan'
+              }
+            ]
+          },
+          {
+            model: Role,
+            as: 'role',
+            attributes: ['id', 'name']
+          }
+        ]
+      }]
+    });
+
+    if (!user) return null;
+
+    // Si no se proporciona companyId, devolver el usuario tal cual (con todas las membresías)
+    if (!companyId) {
+      return user;
+    }
+
+    // Si se proporciona companyId, verificar que el usuario pertenezca a esa empresa
+    const membership = user.memberships.find(m => 
+      m.company_id === parseInt(companyId) && m.status === 1
+    );
+
+    if (!membership) {
+      throw new Error('User does not belong to the specified company or membership is not active');
+    }
+
+    // Construir el objeto user con el contexto específico de la empresa
+    const userWithContext = {
+      ...user.get({ plain: true }),
+      role: membership.role,
+      role_id: membership.role_id,
+      company_id: membership.company_id,
+      plan: membership.company.plan
+    };
+
+    return userWithContext;
+  } catch (error) {
+    logger.error(`Error al buscar usuario con contexto de empresa (${identifier}, ${companyId}):`, error);
     throw new Error(`Error al buscar usuario: ${error.message}`);
   }
 },
