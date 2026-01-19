@@ -440,6 +440,7 @@ const AuthController = {
     const requesterId = req.user?.id || null;
     const requesterName = req.user?.name || "Anonymous";
     const userIdToDelete = req.body.user_id;
+    const company_id = req.body.company_id;
 
     logger.info(
       `${requesterName} - Intenta eliminar usuario con ID: ${userIdToDelete}`
@@ -466,6 +467,12 @@ const AuthController = {
         return res.status(404).json({ msg: "Usuario no encontrado" });
       }
 
+      company = await CompanyRepository.findById(company_id);
+      if (!company)
+        return res
+          .status(400)
+          .json({ success: false, message: "Empresa no encontrada" });
+
       // 3. Evitar que un usuario se elimine a sí mismo (opcional, pero recomendado)
       if (
         req.user?.id &&
@@ -483,7 +490,7 @@ const AuthController = {
       }
 
       // 4. Ejecutar la eliminación segura (incluye la validación del último Admin)
-      const result = await UserRepository.delete(userToDelete);
+      const result = await UserRepository.delete(userToDelete, company_id);
 
       if (result.success) {
         // 📝 Log: eliminación exitosa
@@ -1009,6 +1016,10 @@ const AuthController = {
     const transaction = await sequelize.transaction();
     let userBd, membership;
     let invitationToken = null;
+    let typeStatus = -1;
+    if(invitation_method !== 'email'){
+      typeStatus = 1;
+    }
     try {
       // 2. Verificar si el usuario ya existe
       userBd = await UserRepository.existsByEmail(email);
@@ -1053,7 +1064,7 @@ const AuthController = {
               email,
               password: hashedPassword, // ✅ clave correcta
               user: userValue,          // ✅ clave correcta
-              status: true,
+              status: 1,
               registration_date: new Date(),
             },
             req.file,
@@ -1072,7 +1083,7 @@ const AuthController = {
             user_id: userBd.id,
             company_id,
             role_id,
-            status: -1, // pending
+            status: typeStatus, // pending
             joined_at: null,
             invited_by: req.user?.id || null,
             invitation_token: hashedInvitationToken,

@@ -10,7 +10,7 @@ const UserAclScopeController = {
     // 🔑 Validación crítica: verificar que la membresía existe y es válida
     const membership = await UserCompanyRepository.findByUserIdAndCompanyId(user_id, company_id);
     if (!membership || ![0, 1].includes(membership.status)) { // -1 = pendiente, no debe tener ACL
-      return res.status(400).json({ success: false, message: 'El usuario no pertenece a esta empresa o la membresía no es válida' });
+      return res.status(400).json({ success: false, message: 'El usuario no pertenece a esta empresa' });
     }
 
     // Validar recursos

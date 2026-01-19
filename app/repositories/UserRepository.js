@@ -1,6 +1,6 @@
 // app/repositories/UserRepository.js
 const { Op } = require('sequelize');
-const { User, Role, Company, UserCompany, UserAclScope, Warehouse, Pool, Plan } = require('../models'); // 👈 Añadido Role
+const { User, Role, Company, UserCompany, UserAclScope, Warehouse, Pool, Plan, Permission } = require('../models'); // 👈 Añadido Role
 const logger = require('../../config/logger');
 const ImageService = require('../services/ImageService');
 
@@ -269,7 +269,15 @@ const UserRepository = {
           {
             model: Role,
             as: 'role',
-            attributes: ['id', 'name']
+            attributes: ['id', 'name'],
+            include: [
+          {
+            model: Permission,
+            as: 'permissions',
+            attributes: ['id', 'name', 'description'],
+            through: { attributes: [] }, // evita incluir campos de la tabla intermedia
+          },
+        ]
           }
         ]
       }]
@@ -410,7 +418,7 @@ async create(userData, file, transaction = null) {
   },
 
   // UserRepository.js
-async delete(user) {
+/*async delete(user, company_id) {
   try {
     await user.reload({
       include: [{
@@ -458,8 +466,73 @@ async delete(user) {
       code: 'INTERNAL_ERROR'
     };
   }
-},
+},*/
+  async delete(user, company_id) {
+  try {
+    // Recargar los memberships del usuario con relaciones
+    await user.reload({
+      include: [{
+        model: UserCompany,
+        as: 'memberships',
+        where: { company_id }, // 👈 Solo para la empresa específica
+        include: [{ model: Role, as: 'role' }]
+      }]
+    });
 
+    // Si no tiene membresía en esta empresa
+    if (!user.memberships || user.memberships.length === 0) {
+      return {
+        success: false,
+        message: 'El usuario no pertenece a esta empresa',
+        code: 'NOT_MEMBER'
+      };
+    }
+
+    const membership = user.memberships[0];
+
+    // Verificar solo si es Admin
+    if (membership.role && membership.role.name === 'Admin') {
+      // Contar otros Admins ACTIVOS (status = 1) en la misma empresa
+      const otherAdmins = await UserCompany.count({
+        where: {
+          company_id: membership.company_id,
+          role_id: membership.role_id,
+          status: 1 // 👈 Solo activos
+        },
+        include: [{
+          model: User,
+          as: 'user',
+          where: { status: 1 } // Usuario activo
+        }]
+      });
+
+      // Si es el único Admin activo (incluyéndolo a él)
+      if (otherAdmins <= 1) {
+        return {
+          success: false,
+          message: 'No se puede desactivar al último administrador de la empresa',
+          code: 'LAST_ADMIN'
+        };
+      }
+    }
+
+    // 👇 Desactivar la membresía (NO eliminar al usuario)
+    await membership.update({ status: -1 });
+
+    return {
+      success: true,
+      message: 'Usuario desactivado correctamente en la empresa'
+    };
+
+  } catch (error) {
+    logger.error(`Error al desactivar usuario (ID: ${user.id}) en empresa (ID: ${company_id}):`, error);
+    return {
+      success: false,
+      message: 'Error interno al desactivar usuario',
+      code: 'INTERNAL_ERROR'
+    };
+  }
+},
     // Método para buscar usuario por email con transacción
   async findByEmailWithTransaction(email, transaction = null) {
   try {

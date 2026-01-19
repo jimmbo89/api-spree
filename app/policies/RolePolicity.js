@@ -27,7 +27,7 @@ function requireRoles(allowedRoles) {
 
       if (!membership || ![1, 0].includes(membership.status)) {
         return res.status(403).json({
-          message: 'No perteneces a esta empresa o tu membresía no es válida.'
+          message: 'No perteneces a esta empresa.'
         });
       }
 

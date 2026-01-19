@@ -18,6 +18,11 @@ const updateUserCompanyStatusSchema = Joi.object({
   status: Joi.number().integer().valid(...VALID_STATUSES).required()
 });
 
+const updateUserCompanyRoleSchema = Joi.object({
+  id: Joi.number().integer().positive().required(),
+  role_id: Joi.number().integer().positive().required(),
+});
+
 const userCompanyIdSchema = Joi.object({
   id: Joi.number().integer().positive().required()
 });
@@ -47,5 +52,6 @@ module.exports = {
   userCompanyIdSchema,
   userCompanyByUserAndCompanySchema,
   userCompanyByTokenSchema,
-  listUserCompanySchema
+  listUserCompanySchema,
+  updateUserCompanyRoleSchema
 };

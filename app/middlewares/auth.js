@@ -44,7 +44,7 @@ module.exports = async (req, res, next) => {
 
             if (!userWithCompanyContext) {
               return res.status(403).json({
-                msg: "No tienes acceso a esta empresa o tu membresía no es válida."
+                msg: "No tienes acceso a esta empresa."
               });
             }
 

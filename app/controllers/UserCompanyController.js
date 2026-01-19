@@ -48,6 +48,28 @@ const UserCompanyController = {
     }
   },
 
+    async updateRole(req, res) {
+        logger.info(
+      `${req.user?.name || "Unknown"} - Actualiza rol del usuario en la company ${req.body.id}`
+    );
+    logger.info("Datos recibidos:");
+    logger.info(JSON.stringify(req.body));
+    const { id, role_id } = req.body;
+    const record = await UserCompanyRepository.findByPk(id);
+    if (!record) return res.status(400).json({ success: false, message: 'Membresía no encontrada' });
+    
+    const role = await RoleRepository.findById(role_id);
+    if (!role) return res.status(400).json({ success: false, message: 'Rol no encontrado' });
+
+    try {
+      const updated = await UserCompanyRepository.updateRole(record, role_id);
+      return res.status(200).json({ success: true, membership: updated, message: "Rol del usario actualizado correctamente" });
+    } catch (error) {
+      logger.error("UserCompanyController->updateStatus:", error.message);
+      return res.status(500).json({ success: false, error: "Error interno del servidor", details: error.message });
+    }
+  },
+
   async destroy(req, res) {
     const { id } = req.body;
     const record = await UserCompanyRepository.findByPk(id);

@@ -952,7 +952,7 @@ const ProductController = {
       });
       res
         .status(200)
-        .json({ message: "Producto eliminado correctamente", products });
+        .json({ status: "success", message: "“Producto archivado correctamente. Su historial se conserva.”", products });
     } catch (error) {
       await LogRepository.create({
         user_id: metadata?.user_id,

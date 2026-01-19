@@ -144,8 +144,19 @@ async activateMembership({ user_id, company_id }, transaction = null) {
 
   async updateRole(record, role_id, transaction = null) {
     try {
-      return await record.update({ role_id }, { transaction});
-      
+      await record.update({ role_id }, { transaction});
+       const updated = await record.reload({
+      include: [
+        {
+          model: Role,
+          as: 'role',
+          attributes: ['id', 'name']
+        }
+      ],
+      transaction
+    });
+
+    return updated;
     } catch (error) {
       logger.error(`Error al actualizar estado de membresía ID ${record.id}:`, error);
       throw new Error(`Error al actualizar membresía: ${error.message}`);

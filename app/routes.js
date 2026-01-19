@@ -50,7 +50,7 @@ const { permissionSchema, updatePermissionSchema, idPermissionSchema } = require
 const { roleIdSchema, assignPermissionToRoleSchema, assignMultiplePermissionsToRoleSchema, updateRolePermissionSchema, idRolePermissionSchema, availablePermissionsForRoleSchema } = require("./middlewares/validations/rolePermissionValidation.js");
 const RolePermissionController = require("./controllers/RolePermissionController.js");
 const UserCompanyController = require("./controllers/UserCompanyController.js");
-const { createUserCompanySchema, updateUserCompanyStatusSchema, userCompanyIdSchema, userCompanyByUserAndCompanySchema, userCompanyByTokenSchema, listUserCompanySchema } = require("./middlewares/validations/userCompanyValidation.js");
+const { createUserCompanySchema, updateUserCompanyStatusSchema, userCompanyIdSchema, userCompanyByUserAndCompanySchema, userCompanyByTokenSchema, listUserCompanySchema, updateUserCompanyRoleSchema } = require("./middlewares/validations/userCompanyValidation.js");
 const UserAclScopeController = require("./controllers/UserAclScopeController.js");
 const { createUserAclScopeSchema, userAclScopeIdSchema, userAclScopesByUserAndCompanySchema } = require("./middlewares/validations/userAclScopeValidation.js");
 const AttributeController = require("./controllers/AttributeController.js");
@@ -115,7 +115,7 @@ router.get("/images-protect/:foldername/:filename", (req, res) => {
 });
 
 router.get("/logout", AuthController.logout);
-router.post('/user-register', requireRoles(['Admin', 'Seller Manager']), multerImage("image", "users"), validateSchema(createUserSchema), AuthController.associateUserToCompany);
+router.post('/user-create', requireRoles(['Admin', 'Seller Manager']), multerImage("image", "users"), validateSchema(createUserSchema), AuthController.associateUserToCompany);
 router.post("/user-update", requireRoles(['Admin', 'Seller Manager']), multerImage("image", "users"), validateSchema(updateUserSchema), AuthController.updateUserInCompany);
 router.post("/user-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idRoleSchema), AuthController.destroy);
 router.post("/get-users", requireRoles(['Admin', 'Seller Manager']), AuthController.index);
@@ -167,6 +167,7 @@ router.post("/joint-invitation-token", CompanyController.joinInvitation);
 //UserCompany
 router.post('/user-company', requireRoles(['Admin', 'Seller Manager']), validateSchema(createUserCompanySchema), UserCompanyController.create);
 router.post('/user-company-status', requireRoles(['Admin', 'Seller Manager']), validateSchema(updateUserCompanyStatusSchema), UserCompanyController.updateStatus);
+router.post('/user-company-role', requireRoles(['Admin', 'Seller Manager']), validateSchema(updateUserCompanyRoleSchema), UserCompanyController.updateRole);
 router.post('/user-company-destroy', requireRoles(['Admin', 'Seller Manager']), validateSchema(userCompanyIdSchema), UserCompanyController.destroy);
 router.post('/user-company-find', requireRoles(['Admin', 'Seller Manager']), validateSchema(userCompanyByUserAndCompanySchema), UserCompanyController.findByUserAndCompany);
 router.post('/user-company-token', validateSchema(userCompanyByTokenSchema), UserCompanyController.findByToken); // Sin requireRoles: aceptación pública de invitación

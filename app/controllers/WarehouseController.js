@@ -142,7 +142,7 @@ const WarehouseController = {
     logger.info('Datos recibidos:');
     logger.info(JSON.stringify(req.body));
     
-    const { company_id, user_id: bodyUserId, branch_id } = req.body;
+    const { company_id, user_id: bodyUserId, branch_id, name } = req.body;
     let user_id = bodyUserId || req.user.id;
     req.body.user_id = user_id;
 
@@ -150,7 +150,7 @@ const WarehouseController = {
       const company = await CompanyRepository.findById(company_id);
       if (!company) {
         logger.info(`WarehouseController->store: Compañía no encontrada con ID ${company_id}`);
-        return res.status(400).json({ msg: "companyNotFound" });
+        return res.status(404).json({ success: false, message: "Compañía encontrada" });
       }
     }
     
@@ -158,7 +158,7 @@ const WarehouseController = {
       const user = await UserRepository.findById(user_id);
       if (!user) {
         logger.info(`WarehouseController->store: Usuario no encontrado con ID ${user_id}`);
-        return res.status(400).json({ msg: "userNotFound" });
+        return res.status(404).json({ success: false, message: "Usuario no encontrado" });
       }
     }
 
@@ -166,9 +166,22 @@ const WarehouseController = {
       const branch = await BranchRepository.findById(branch_id);
       if (!branch) {
         logger.info(`WarehouseController->store: Sucursal no encontrado con ID ${branch_id}`);
-        return res.status(400).json({ msg: "BranchNotFound" });
+        return res.status(404).json({ success: false, message: "Sucursal no encontrada" });
       }
     }
+    const validation = await WarehouseRepository.checkUniqueName({
+        name: name,
+        company_id: company_id,
+        branch_id: branch_id
+      });
+
+      if (validation) {
+          return res.status(409).json({
+                    success: false,
+                    message: 'Ya existe un almacén con ese nombre.',
+                    code: "EXIT_COMPANY"
+                  });  
+      }
 
     try {
       const warehouse = await WarehouseRepository.create(req.body, req.file);
@@ -221,18 +234,18 @@ const WarehouseController = {
     logger.info('Datos recibidos:');
     logger.info(JSON.stringify(req.body));
     
-    const { company_id, user_id, branch_id } = req.body;
+    const { id, company_id, user_id, branch_id, name } = req.body;
     const metadata = getRequestMetadata(req);
     
     try {
-      const warehouse = await WarehouseRepository.findById(req.body.id);
-      if (!warehouse) return res.status(404).json({ msg: 'WarehouseNotFound' });
+      const warehouse = await WarehouseRepository.findById(id);
+      if (!warehouse) return res.status(404).json({ success: false, message: 'Alamcén no encontrado' });
       
       if (company_id) {
         const company = await CompanyRepository.findById(company_id);
         if (!company) {
           logger.info(`WarehouseController->update: Compañía no encontrada con ID ${company_id}`);
-          return res.status(400).json({ msg: "companyNotFound" });
+          return res.status(404).json({ success: false, message: "Compañía encontrada" });
         }
       }
       
@@ -240,7 +253,7 @@ const WarehouseController = {
         const user = await UserRepository.findById(user_id);
         if (!user) {
           logger.info(`WarehouseController->update: Usuario no encontrado con ID ${user_id}`);
-          return res.status(400).json({ msg: "userNotFound" });
+          return res.status(404).json({ success: false, message: "Usuario no encontrado" });
         }
       }
 
@@ -248,7 +261,23 @@ const WarehouseController = {
         const branch = await BranchRepository.findById(branch_id);
         if (!branch) {
           logger.info(`WarehouseController->update: Sucursal no encontrado con ID ${branch_id}`);
-          return res.status(400).json({ msg: "BranchNotFound" });
+          return res.status(404).json({ success: false, message: "Sucursal no encontrada" });
+        }
+      }
+
+      if(name){
+            const validation = await WarehouseRepository.checkUniqueName({
+          name: name,
+          company_id: warehouse.company_id,
+          branch_id: warehouse.branch_id
+        }, id);
+
+        if (validation) {
+            return res.status(409).json({
+                      success: false,
+                      message: 'Ya existe un almacén con ese nombre.',
+                      code: 'EXIT_COMPANY'
+                    });  
         }
       }
 
