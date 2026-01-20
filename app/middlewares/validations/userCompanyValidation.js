@@ -46,6 +46,11 @@ const listUserCompanySchema = Joi.object({
   return value;
 });
 
+const createMembershipRequestSchema = Joi.object({
+  user_id: Joi.number().integer().positive().required(),
+  company_id: Joi.number().integer().positive().required() // 👈 Ahora es un solo ID
+});
+
 module.exports = {
   createUserCompanySchema,
   updateUserCompanyStatusSchema,
@@ -53,5 +58,6 @@ module.exports = {
   userCompanyByUserAndCompanySchema,
   userCompanyByTokenSchema,
   listUserCompanySchema,
-  updateUserCompanyRoleSchema
+  updateUserCompanyRoleSchema,
+  createMembershipRequestSchema
 };

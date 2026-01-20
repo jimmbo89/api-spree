@@ -22,16 +22,10 @@ const CompanyController = {
         id: company.id,
         name: company.name,
         description: company.description,
-        address: company.address,
-        city: company.city,
         country: company.country,
         rut: company.rut,
-        phone: company.phone,
         image: company.image,
-        business_type_id: company.business_type_id,
-        businessTypeName: company.businessType.name,
         email: company.email,
-        currency: company.currency,
       }));
 
       res.status(200).json({ companies: mappedCompanies });
@@ -144,33 +138,52 @@ const CompanyController = {
     req.body.user_id = user_id;
       const existingCompany = await CompanyRepository.checkUniqueFields({ rut, email });
       logger.info('JSON.stringify(existingCompany)');
-      logger.info(JSON.stringify(existingCompany));
-      if (existingCompany.exists) {
-          // 2. Verificar si el usuario YA es miembro
-          const existingMembership = await UserCompanyRepository.findByUserIdAndCompanyId(
-            user_id, 
-            existingCompany.id
-          );
+      logger.info(JSON.stringify(existingCompany.existing));
+      if (existingCompany.existing) {
+  // 1. Obtener todas las membresías activas del usuario
+  const activeMemberships = await UserCompanyRepository.findActiveMembershipsByUserId(user_id);
 
-          if (existingMembership && [0, 1].includes(existingMembership.status)) {
-            // Ya es miembro → error ALREADY_MEMBER
-            return res.status(409).json({
-              success: false,
-              code: 'ALREADY_MEMBER',
-              message: 'Ya perteneces a esta empresa.',
-              companyId: existingCompany.id
-            });
-          } else {
-            // Empresa existe, pero NO es miembro → COMPANY_EXISTS_NOT_MEMBER
-            return res.status(409).json({
-              success: false,
-              code: 'COMPANY_EXISTS_NOT_MEMBER',
-              message: 'Esta empresa ya existe en Spree. Para ingresar, necesitas invitación de un administrador.',
-              companyId: existingCompany.id,
-              companyName: existingCompany.name
-            });
-          }
-        }
+  // 2. Buscar si alguna pertenece a la empresa existente
+  const existingMembership = activeMemberships.find(
+    membership => membership.company_id === existingCompany.existing.id
+  );
+
+  if (existingMembership) {
+  // Ya es miembro activo → error ALREADY_MEMBER
+  return res.status(409).json({
+    success: false,
+    code: 'ALREADY_MEMBER',
+    message: 'Ya perteneces a esta empresa.',
+    company_id: existingCompany.existing.id,
+    memberships: activeMemberships.map(m => ({
+      id: m.id,
+      company_id: m.company_id,
+      role_id: m.role_id,
+      status: m.status,
+      company: {
+        id: m.company.id,
+        name: m.company.name,
+        image: m.company.image,
+        plan: m.company.plan
+      },
+      role: {
+        id: m.role.id,
+        name: m.role.name,
+        permissions: m.role.permissions
+      }
+    }))
+  });
+} else {
+    // Empresa existe, pero NO es miembro activo → COMPANY_EXISTS_NOT_MEMBER
+    return res.status(409).json({
+      success: false,
+      code: 'COMPANY_EXISTS_NOT_MEMBER',
+      message: 'Esta empresa ya existe en Spree. Para ingresar, necesitas invitación de un administrador.',
+      companyId: existingCompany.existing.id,
+      companyName: existingCompany.existing.name
+    });
+  }
+}
 
        if (business_type_id) {
         const businessType = await BusinessTypeRepository.findById(business_type_id);

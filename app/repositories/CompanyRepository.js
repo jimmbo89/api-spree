@@ -96,14 +96,14 @@ const CompanyRepository = {
 
   if (existing) {
     if (rut && existing.rut === rut) {
-      return { exists: true, field: 'rut' };
+      return { exists: true, field: 'rut', existing };
     }
     if (email && existing.email === email) {
-      return { exists: true, field: 'email' };
+      return { exists: true, field: 'email', existing };
     }
   }
 
-  return { exists: false, field: null };
+  return { exists: false, field: null, existing: null };
 },
 
   async create(body, file, transaction = null) {

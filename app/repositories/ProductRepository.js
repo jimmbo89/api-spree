@@ -281,9 +281,7 @@ const ProductRepository = {
   },
 
 async existsBySku(sku, excludeId = null) {
-  try {
-    console.log('Verificando SKU:', sku);
-    
+  try {    
     if (!sku || typeof sku !== 'string' || sku.trim() === '') {
       console.log('SKU inválido o vacío');
       return false;
@@ -293,7 +291,6 @@ async existsBySku(sku, excludeId = null) {
     
     // Usar el método estático del modelo
     const exists = await Product.skuExists(cleanSku, excludeId);
-    console.log('SKU existe?', exists);
     
     return exists;
     

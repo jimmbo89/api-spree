@@ -50,7 +50,7 @@ const { permissionSchema, updatePermissionSchema, idPermissionSchema } = require
 const { roleIdSchema, assignPermissionToRoleSchema, assignMultiplePermissionsToRoleSchema, updateRolePermissionSchema, idRolePermissionSchema, availablePermissionsForRoleSchema } = require("./middlewares/validations/rolePermissionValidation.js");
 const RolePermissionController = require("./controllers/RolePermissionController.js");
 const UserCompanyController = require("./controllers/UserCompanyController.js");
-const { createUserCompanySchema, updateUserCompanyStatusSchema, userCompanyIdSchema, userCompanyByUserAndCompanySchema, userCompanyByTokenSchema, listUserCompanySchema, updateUserCompanyRoleSchema } = require("./middlewares/validations/userCompanyValidation.js");
+const { createUserCompanySchema, updateUserCompanyStatusSchema, userCompanyIdSchema, userCompanyByUserAndCompanySchema, userCompanyByTokenSchema, listUserCompanySchema, updateUserCompanyRoleSchema, createMembershipRequestSchema } = require("./middlewares/validations/userCompanyValidation.js");
 const UserAclScopeController = require("./controllers/UserAclScopeController.js");
 const { createUserAclScopeSchema, userAclScopeIdSchema, userAclScopesByUserAndCompanySchema } = require("./middlewares/validations/userAclScopeValidation.js");
 const AttributeController = require("./controllers/AttributeController.js");
@@ -66,6 +66,8 @@ router.get("/verific-invitation", AuthController.verifyInvitation);
 router.post('/forgot-password', AuthController.forgotPassword);
 router.post('/verify-code-password', AuthController.verifyCode);
 router.post('/reset-password', AuthController.resetPassword);
+router.get('/validate-requests/:id/approve', UserCompanyController.handleMembershipRequest);
+router.get('/validate-requests/:id/reject', UserCompanyController.handleMembershipRequest);
 
 router.get('/ml-callback', OAuthController.mercadoLibreCallback);
 router.get("/images/:foldername/:filename", (req, res) => {
@@ -156,6 +158,7 @@ router.post("/business-type-update", requireRoles(['Admin', 'Seller Manager']), 
 router.post("/business-type-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idBusinessTypeSchema), BusinessTypeController.destroy);
 
 //Rutas de Companies
+router.post("/companies", CompanyController.index);
 router.post("/company-by-user", requireRoles(['Admin', 'Seller Manager']), validateSchema(byUserIdSchema), CompanyController.getCompaniesByUser);
 router.post("/company", requireRoles(['Admin', 'Seller Manager']), multerImage("image", "companies"), validateSchema(storeCompanySchema), CompanyController.store);
 router.post("/company-update", requireRoles(['Admin', 'Seller Manager']), multerImage("image", "companies"), validateSchema(updateCompanySchema), CompanyController.update);
@@ -172,6 +175,8 @@ router.post('/user-company-destroy', requireRoles(['Admin', 'Seller Manager']), 
 router.post('/user-company-find', requireRoles(['Admin', 'Seller Manager']), validateSchema(userCompanyByUserAndCompanySchema), UserCompanyController.findByUserAndCompany);
 router.post('/user-company-token', validateSchema(userCompanyByTokenSchema), UserCompanyController.findByToken); // Sin requireRoles: aceptación pública de invitación
 router.post('/user-company-list', requireRoles(['Admin', 'Seller Manager']), validateSchema(listUserCompanySchema), UserCompanyController.list);
+router.post('/available-for-request', UserCompanyController.listAvailableCompanies);
+router.post('/membership-requests', validateSchema(createMembershipRequestSchema), UserCompanyController.createMembershipRequest);
 
 //UserAclScope
 router.post('/user-acl-scope', requireRoles(['Admin', 'Seller Manager']), validateSchema(createUserAclScopeSchema), UserAclScopeController.create);

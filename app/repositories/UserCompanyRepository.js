@@ -1,5 +1,5 @@
 // app/repositories/UserCompanyRepository.js
-const { UserCompany, User, Company, Role, UserAclScope, Warehouse, Pool, Plan } = require('../models');
+const { UserCompany, User, Company, Role, UserAclScope, Warehouse, Pool, Plan, Permission } = require('../models');
 const logger = require('../../config/logger');
 const { Op } = require('sequelize');
 const bcrypt = require("bcrypt");
@@ -268,6 +268,107 @@ async activateMembership({ user_id, company_id }, transaction = null) {
   } catch (error) {
     logger.error(`Error al obtener usuarios de la empresa ${company_id}:`, error);
     throw new Error(`Error al obtener usuarios: ${error.message}`);
+  }
+},
+
+async getAvailableCompaniesForUser(user_id) {
+  try {
+    // Paso 1: Obtener IDs de empresas ya asociadas al usuario (con cualquier status)
+    const associatedCompanyIds = (
+      await UserCompany.findAll({
+        where: { user_id: parseInt(user_id, 10) },
+        attributes: ['company_id'],
+        raw: true
+      })
+    ).map(record => record.company_id);
+
+    // Paso 2: Consultar empresas activas (status = 1) que NO estén en esa lista
+    const where = { }; // Solo empresas activas
+    if (associatedCompanyIds.length > 0) {
+      where.id = { [Op.notIn]: associatedCompanyIds };
+    }
+
+    const companies = await Company.findAll({
+      where,
+      attributes: ['id', 'name', 'description', 'image'], // Solo los campos que necesitas en el frontend
+      order: [['name', 'ASC']]
+    });
+
+    return companies.map(company => company.toJSON());
+  } catch (error) {
+    logger.error(`Error al obtener empresas disponibles para user_id=${user_id}`, error);
+    throw new Error(`Error al obtener empresas disponibles: ${error.message}`);
+  }
+},
+async findActiveByCompanyIdAndRoleName(company_id, roleName) {
+ try {
+    return await UserCompany.findAll({
+      where: {
+        company_id: company_id,
+        status: 1 // solo membresías activas
+      },
+      include: [
+        {
+          model: User,
+          as: 'user',
+          attributes: ['id', 'name', 'email']
+        },
+        {
+          model: Role,
+          as: 'role',
+          where: {
+            name: roleName.toLowerCase() // normalizar a minúsculas por seguridad
+          },
+          attributes: ['id', 'name']
+        }
+      ]
+    });
+  } catch (error) {
+    logger.error('UserCompanyRepository->findActiveByCompanyIdAndRoleName:', error.message);
+    throw error;
+  }
+},
+
+async findActiveMembershipsByUserId(userId) {
+  try {
+    const memberships = await UserCompany.findAll({
+      where: {
+        user_id: userId,
+        status: 1 // solo membresías activas
+      },
+      include: [
+        {
+          model: Company,
+          as: 'company',
+          attributes: ['id', 'name', 'plan_id', 'image'],
+          include: [
+            {
+              model: Plan,
+              as: 'plan',
+            }
+          ]
+        },
+        {
+          model: Role,
+          as: 'role',
+          attributes: ['id', 'name'],
+          include: [
+            {
+              model: Permission,
+              as: 'permissions',
+              attributes: ['id', 'name', 'description'],
+              through: { attributes: [] }
+            }
+          ]
+        }
+      ],
+      attributes: ['id', 'company_id', 'role_id', 'status']
+    });
+
+    return memberships;
+  } catch (error) {
+    logger.error(`Error al obtener membresías activas del usuario ${userId}:`, error);
+    throw new Error(`Error al cargar membresías: ${error.message}`);
   }
 }
 };

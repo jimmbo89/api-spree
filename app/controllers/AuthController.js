@@ -180,6 +180,16 @@ const AuthController = {
 
     const { name, user, password, email } = req.body;
 
+    const userBd = await UserRepository.existsByEmail(email);
+    if (userBd) {
+      return res
+            .status(409)
+            .json({
+              success: false,
+              message: "Correo existente",
+              code: "EMAIL_EXISTS"
+            });
+    }
     const t = await sequelize.transaction();
     try {
       // 1. Buscar rol por nombre (si se envía)
