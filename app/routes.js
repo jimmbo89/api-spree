@@ -35,7 +35,7 @@ const { createProductFieldMappingSchema, updateProductFieldMappingSchema, idProd
 const ProductFieldMappingController = require("./controllers/ProductFieldMappingController.js");
 const { storeProductPublishingTaskSchema, updateProductPublishingTaskStatusSchema, listProductPublishingTaskSchema, retryProductPublishingTaskSchema } = require("./middlewares/validations/productPublishingTaskValidations.js");
 const ProductPublishingTaskController = require("./controllers/ProductPublishingTaskController.js");
-const { storeMarketplaceCredentialSchema, findByMarketplaceCredentialSchema, updateMarketplaceCredentialSchema } = require("./middlewares/validations/marketplaceCredentialValidations.js");
+const { storeMarketplaceCredentialSchema, findByMarketplaceCredentialSchema, updateMarketplaceCredentialSchema, idMarketplaceCredentialSchema } = require("./middlewares/validations/marketplaceCredentialValidations.js");
 const MarketplaceCredentialController = require("./controllers/MarketplaceCredentialController.js");
 const OAuthController = require("./controllers/OAuthController.js");
 const { listPoolsSchema, updatePoolSchema, storePoolSchema, idPoolSchema } = require("./middlewares/validations/poolValidations.js");
@@ -257,8 +257,8 @@ router.post("/marketplace-list", requireRoles(['Admin', 'Seller Manager']), Mark
 //router.post('/marketplace-credentials-by-context', validateSchema(findByMarketplaceCredentialSchema), MarketplaceCredentialController.index);
 router.post("/marketplace-credential", requireRoles(['Admin', 'Seller Manager']), validateSchema(storeMarketplaceCredentialSchema), MarketplaceCredentialController.store);
 router.post("/marketplace-credential-update", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateMarketplaceCredentialSchema), MarketplaceCredentialController.update);
-router.post("/marketplace-credential-show", requireRoles(['Admin', 'Seller Manager']), validateSchema(findByMarketplaceCredentialSchema), MarketplaceCredentialController.show);
 router.post('/marketplace-credentials-by-user', MarketplaceCredentialController.getByUser);
+router.post('/marketplace-refresh-token', validateSchema(idMarketplaceCredentialSchema), MarketplaceCredentialController.refreskToken);
 
 // Metadatos de los marketplaces
 router.post("/product-field-mapping", requireRoles(['Admin', 'Seller Manager']), validateSchema(createProductFieldMappingSchema), ProductFieldMappingController.store);

@@ -1,4 +1,5 @@
 // controllers/MarketplaceCredentialController.js
+const { getUserId } = require('../../config/context');
 const logger = require('../../config/logger');
 const {
   MarketplaceCredentialRepository,
@@ -74,6 +75,9 @@ const MarketplaceCredentialController = {
   // controllers/MarketplaceCredentialController.js
 
 async store(req, res) {
+  logger.info(`${req.user?.name || 'Unknown'} - crea credenciales de marketplace`);
+  logger.info('Datos recibidos:');
+  logger.info(JSON.stringify(req.body));
   const userId = req.user.id;
   const { marketplace_id } = req.body;
 
@@ -82,19 +86,6 @@ async store(req, res) {
     if (!marketplace) {
       return res.status(400).json({ success: false, message: "Marketplace no encontrado" });
     }
-
-    // Verificar límites del plan (opcional, pero recomendado)
-    /*const integrationCount = await MarketplaceCredentialRepository.countActiveByUser(userId);
-    const planLimit = req.user.plan?.max_integrations || 1; // ajusta según tu modelo
-    if (integrationCount >= planLimit) {
-      return res.status(403).json({
-        success: false,
-        code: 'PLAN_LIMIT_REACHED',
-        limit: planLimit,
-        current: integrationCount,
-        message: "Límite de integraciones alcanzado"
-      });
-    }*/
 
     const adapter = PublishingAdapterFactory.getAdapter(marketplace, null, null, userId);
     if (!adapter) {
@@ -123,6 +114,50 @@ async store(req, res) {
 
   } catch (error) {
     logger.error('MarketplaceCredentialController->store:', error.message);
+    return res.status(500).json({ success: false, message: 'Error interno del servidor', details: error.message });
+  }
+},
+
+async refreskToken(req, res) {
+  logger.info(`${req.user?.name || 'Unknown'} - refresca credenciales de marketplace`);
+  logger.info('Datos recibidos:');
+  logger.info(JSON.stringify(req.body));
+  const userId = getUserId();
+  const { id } = req.body;
+
+  try {
+    const marketplace = await MarketplaceRepository.findById(id);
+    if (!marketplace) {
+      return res.status(400).json({ success: false, message: "Marketplace no encontrado" });
+    }
+
+    const adapter = PublishingAdapterFactory.getAdapter(marketplace, null, null, userId);
+    if (!adapter) {
+      return res.status(400).json({ success: false, message: "Adaptador no disponible" });
+    }
+
+    const status = await adapter.ensureValidCredentials();
+
+    if (status.valid) {
+      // Ya está conectado
+      return res.status(201).json({ success: true, message: "Token refrescado correctamente" });
+    } else if (status.auth_required) {
+      // Devolver URL para redirección
+      return res.status(409).json({
+        success: false,
+        auth_required: true,
+        auth_url: status.auth_url,
+        message: status.message
+      });
+    } else {
+      return res.status(400).json({
+        success: false,
+        error: status.error || "Error al validar credenciales"
+      });
+    }
+
+  } catch (error) {
+    logger.error('MarketplaceCredentialController->refreshToken:', error.message);
     return res.status(500).json({ success: false, message: 'Error interno del servidor', details: error.message });
   }
 },

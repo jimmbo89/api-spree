@@ -11,7 +11,8 @@ const proxyHelper = require('../util/proxyHelper');
 const OAuthController = {
   async mercadoLibreCallback(req, res) {
     const { code, state } = req.body;
-    logger.info('Datos recibidos al crear las credenciales de mercado libre:', req.body);
+    logger.info('Datos recibidos actualizar las credenciales de mercado libre:');
+    logger.info(JSON.stringify(req.body));
     const metadata = getRequestMetadata(req);
 
     if (!code || !state) {
@@ -21,13 +22,15 @@ const OAuthController = {
 
     try {
       const [marketplaceId, userId] = state.split('_');
-
+      logger.info('Marketplace');
+      logger.info(marketplaceId);
       const credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
         marketplaceId,
         userId
       );
 
-      logger.info('Credenciales básicas obtenidas para OAuth Mercado Libre', { credential });
+      logger.info('Credenciales básicas obtenidas para OAuth Mercado Libre');
+      logger.info(JSON.stringify(credential));
 
       if (!credential || !credential.client_id || !credential.client_secret) {
         throw new Error('Credenciales OAuth incompletas en la base de datos');
@@ -86,7 +89,7 @@ const OAuthController = {
       await MarketplaceCredentialRepository.createOrUpdate({
         id: credential.id,
         marketplace_id: marketplaceId,
-        //client_id: credential.client_id,
+        user_id: userId,
         //client_secret: credential.client_secret,
         redirect_uri: credential.redirect_uri.trim(), // 🔑 ¡clave!
         access_token: tokenRes.data.access_token,
@@ -96,7 +99,7 @@ const OAuthController = {
       });
 
       await LogRepository.create({
-        user_id: metadata.user_id,
+        user_id: userId,
         action: 'oauth.mercadolibre.success',
         description: 'Tokens de Mercado Libre guardados exitosamente',
         ip_address: metadata.ip_address,
@@ -125,7 +128,7 @@ const OAuthController = {
       });
 
       await LogRepository.create({
-        user_id: metadata.user_id,
+        user_id: userId,
         action: 'oauth.mercadolibre.error',
         description: `Error en OAuth: ${error.message}`,
         ip_address: metadata.ip_address,
