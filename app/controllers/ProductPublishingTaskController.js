@@ -1,4 +1,5 @@
 // src/controllers/ProductPublishingTaskController.js
+const { getUserId } = require('../../config/context');
 const logger = require('../../config/logger');
 const { sequelize } = require('../models');
 const {
@@ -144,7 +145,7 @@ const ProductPublishingTaskController = {
     logger.info(`${req.user?.name || 'Unknown'} - Lista ruta combinada de almacenes y marketplaces`);
 
     const { company_id, user_id: bodyUserId, status } = req.body;
-    let user_id = bodyUserId || req.user.id;
+    let user_id = bodyUserId || getUserId;
 
     // Parsear IDs
     const companyId = company_id ? Number(company_id) : undefined;
@@ -174,11 +175,7 @@ const ProductPublishingTaskController = {
         isActive: true
       });
 
-      const credentials = await MarketplaceCredentialRepository.findByContext(
-      company_id, 
-      null, 
-      null
-    );
+      const credentials = await MarketplaceCredentialRepository.findByUser(user_id);
      
       // Transformar resultados
       const marketplaces = credentials.map(credential => {

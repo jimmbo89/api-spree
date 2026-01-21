@@ -1,16 +1,35 @@
-// src/repositories/MarketplaceRepository.js
+// repositories/MarketplaceRepository.js
 const { Marketplace, ProductFieldMapping } = require('../models');
+const EncryptionService = require('../services/EncryptionService');
 const logger = require('../../config/logger');
 
-const formatMarketplace = (record) => ({
-  id: record.id,
-  name: record.name,
-  description: record.description,
-  type: record.type,
-  domain: record.domain,
-  config: record.config,
-  active: record.active
-});
+const formatMarketplace = (record) => {
+  const plain = record.get ? record.get({ plain: true }) : record;
+
+  // Descifrar client_secret solo si se va a exponer (¡cuidado en producción!)
+  let client_secret = plain.client_secret;
+  if (client_secret) {
+    try {
+      client_secret = EncryptionService.decrypt(client_secret);
+    } catch (e) {
+      logger.warn(`[REPO] No se pudo descifrar client_secret para marketplace ${plain.id}`);
+    }
+  }
+
+  return {
+    id: plain.id,
+    name: plain.name,
+    description: plain.description,
+    type: plain.type,
+    domain: plain.domain,
+    // Campos OAuth explícitos
+    client_id: plain.client_id,
+    client_secret: client_secret, // ¡solo en contextos seguros!
+    redirect_uri: plain.redirect_uri,
+    scopes: plain.scopes,
+    active: plain.active
+  };
+};
 
 const formatMapping = (record) => ({
   id: record.id,
@@ -25,31 +44,17 @@ const formatMapping = (record) => ({
 
 const MarketplaceRepository = {
   async findById(id) {
-    return await Marketplace.findByPk(id);
+    const record = await Marketplace.findByPk(id);
+    return record;
   },
 
-  /**
-   * Valida que todos los IDs de marketplace dados existan.
-  @param {number[]} marketplaceIds - Array de IDs de marketplaces.
-   * @returns {{
-   *   valid: boolean,
-   *   marketplaces: Marketplace[],
-   *   missingIds: number[]
-   * }}
-   */
   async findByIds(marketplaceIds) {
     if (!Array.isArray(marketplaceIds) || marketplaceIds.length === 0) {
-      return {
-        valid: true,
-        marketplaces: [],
-        missingIds: []
-      };
+      return { valid: true, marketplaces: [], missingIds: [] };
     }
 
     const marketplaces = await Marketplace.findAll({
-      where: {
-        id: marketplaceIds
-      },
+      where: { id: marketplaceIds }
     });
 
     const foundIds = new Set(marketplaces.map(m => m.id));
@@ -57,35 +62,25 @@ const MarketplaceRepository = {
 
     return {
       valid: missingIds.length === 0,
-      marketplaces,
+      marketplaces: marketplaces.map(formatMarketplace),
       missingIds
     };
   },
 
-  async findByContextAndName(name) {
-    const where = { name };
-    const record = await Marketplace.findOne({ where });
-    return record ? formatMarketplace(record) : null;
-  },
-
-  async findAllByContext() {
+  async findAll() {
     const records = await Marketplace.findAll();
-    return records.map(record => {
-      // Parsear `config` solo si es string; si ya es objeto, dejarlo como está
-      const config = typeof record.config === 'string' && record.config.trim()
-        ? JSON.parse(record.config)
-        : record.config || {};
-
-      return {
-        ...record.get ? record.get({ plain: true }) : record, // soporta instancias Sequelize y objetos planos
-        config // sobrescribe el campo con la versión parseada
-      };
-    });
+    return records.map(formatMarketplace);
   },
 
   async create(marketplaceData, options = {}) {
+    // Cifrar client_secret antes de guardar
+    const data = { ...marketplaceData };
+    if (data.client_secret) {
+      data.client_secret = EncryptionService.encrypt(data.client_secret);
+    }
     try {
-      return await Marketplace.create(marketplaceData, options);
+      const record = await Marketplace.create(data, options);
+      return formatMarketplace(record);
     } catch (error) {
       logger.error(`[REPO] ERROR al crear marketplace:`, error.message);
       throw error;
@@ -93,18 +88,31 @@ const MarketplaceRepository = {
   },
 
   async update(record, updateData) {
-    const allowed = ['name', 'description', 'type', 'domain', 'config', 'active'];
-    const clean = Object.keys(updateData)
-      .filter(k => allowed.includes(k) && updateData[k] !== undefined)
-      .reduce((a, k) => ({ ...a, [k]: updateData[k] }), {});
+    const allowed = [
+      'name', 'description', 'type', 'domain',
+      'client_id', 'client_secret', 'redirect_uri', 'scopes', 'active'
+    ];
+
+    const clean = {};
+    for (const key of allowed) {
+      if (updateData[key] !== undefined) {
+        if (key === 'client_secret' && updateData[key]) {
+          clean[key] = EncryptionService.encrypt(updateData[key]);
+        } else {
+          clean[key] = updateData[key];
+        }
+      }
+    }
+
     await record.update(clean);
-    return record;
+    return formatMarketplace(record);
   },
 
   async delete(record) {
     return await record.destroy();
   },
 
+  // --- Mapeos (sin cambios) ---
   async findMappingsByMarketplace(marketplaceId) {
     const records = await ProductFieldMapping.findAll({ where: { marketplace_id: marketplaceId } });
     return records.map(formatMapping);

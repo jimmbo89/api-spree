@@ -14,10 +14,9 @@ static getTransformer() {
     return MarketplaceTransformer; // genérico
   }
   async ensureValidCredentials() {
-    this.credential = await MarketplaceCredentialRepository.findByMarketplaceAndContext(
+    this.credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
       this.marketplaceId,
-      this.companyId,
-      this.branchId
+      this.userId
     );
     logger.info('[FalabellaAdapter] Credenciales obtenidas:', JSON.stringify(this.credential));
 

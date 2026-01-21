@@ -11,18 +11,30 @@ class MercadoLibreAdapter extends BaseAdapter {
   static getTransformer() {
     return MarketplaceTransformerMercadoLibre;
   }
-  async ensureValidCredentials() {
-    this.credential = await MarketplaceCredentialRepository.findByMarketplaceAndContext(
+  /*async ensureValidCredentials() {
+    this.credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
       this.marketplaceId,
-      this.companyId,
-      this.branchId
+      this.userId
     );
+      if (!this.credential) {
+    logger.info(`[MercadoLibreAdapter] No existe credencial para marketplace ${this.marketplaceId} y user ${this.userId}`);
+    const authResponse = await this.getAuthUrl();
+    if (authResponse.auth_required) {
+      throw new Error(JSON.stringify({
+        code: "oauth_required",
+        message: authResponse.message,
+        auth_url: authResponse.auth_url
+      }));
+    } else {
+      throw new Error("marketplace_credentials_incomplete");
+    }
+  }
     if (!this.credential) {
       throw new Error("marketplace_credentials_not_found");
     }
     if (!this.credential.access_token) {
       logger.info("[MercadoLibreAdapter] No hay access_token disponible");
-      return false;
+      return await this.getAuthUrl();
     }
     try {
       const tokenCheck = await axios.get("https://api.mercadolibre.com/users/me", {
@@ -48,8 +60,87 @@ class MercadoLibreAdapter extends BaseAdapter {
       }
       return false;
     }
+  }*/
+  async ensureValidCredentials() {
+  this.credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
+    this.marketplaceId,
+    this.userId
+  );
+
+  // Caso 1: No existe credencial → pedir auth
+  if (!this.credential) {
+    logger.info(`[MercadoLibreAdapter] No existe credencial para marketplace ${this.marketplaceId} y user ${this.userId}`);
+    const authResponse = await this.getAuthUrl();
+    if (authResponse.auth_required) {
+      return {
+        valid: false,
+        auth_required: true,
+        auth_url: authResponse.auth_url,
+        message: authResponse.message
+      };
+    } else {
+      return {
+        valid: false,
+        error: "marketplace_credentials_incomplete"
+      };
+    }
   }
 
+  // Caso 2: No hay access_token → pedir auth
+  if (!this.credential.access_token) {
+    logger.info("[MercadoLibreAdapter] No hay access_token disponible");
+    const authResponse = await this.getAuthUrl();
+    return {
+      valid: false,
+      auth_required: true,
+      auth_url: authResponse.auth_url,
+      message: authResponse.message
+    };
+  }
+
+  // Caso 3: Verificar validez del token
+  try {
+    const tokenCheck = await axios.get("https://api.mercadolibre.com/users/me", {
+      headers: { Authorization: `Bearer ${this.credential.access_token}` },
+      timeout: 3000,
+    });
+    logger.info(`[MercadoLibreAdapter] ✅ Token válido para: ${tokenCheck.data.nickname}`);
+    return { valid: true };
+  } catch (error) {
+    logger.info(`[MercadoLibreAdapter] Token inválido: ${error.message}`);
+
+    // Si es 403 (modo desarrollo), no intentar refresh
+    if (error.response?.status === 403) {
+      logger.error("[MercadoLibreAdapter] Error 403 - App en modo Development. NO intentar refresh.");
+      const authResponse = await this.getAuthUrl();
+      return {
+        valid: false,
+        auth_required: true,
+        auth_url: authResponse.auth_url,
+        message: "App en modo desarrollo. Requiere nueva autorización."
+      };
+    }
+
+    // Intentar refresh si hay refresh_token
+    if (this.credential.refresh_token) {
+      try {
+        await this.refreshAccessToken();
+        return { valid: true };
+      } catch (refreshError) {
+        logger.error("[MercadoLibreAdapter] Refresh falló:", refreshError.message);
+      }
+    }
+
+    // Si todo falla, pedir nueva autorización
+    const authResponse = await this.getAuthUrl();
+    return {
+      valid: false,
+      auth_required: true,
+      auth_url: authResponse.auth_url,
+      message: "Token expirado o inválido. Requiere reautorización."
+    };
+  }
+}
   async refreshAccessToken() {
     if (!this.credential.refresh_token) throw new Error("refresh_token_not_available");
     if (!this.credential.client_id || !this.credential.client_secret) throw new Error("client_credentials_missing");
@@ -74,9 +165,10 @@ class MercadoLibreAdapter extends BaseAdapter {
         refresh_token: response.data.refresh_token || this.credential.refresh_token,
         expires_at: expiresAt,
         marketplace_id: this.marketplaceId,
-        company_id: this.companyId,
-        branch_id: this.branchId,
-        scopes: response.data.scope || this.credential.scopes,
+        user_id: this.userId
+        //company_id: this.companyId,
+        //branch_id: this.branchId,
+        //scopes: response.data.scope || this.credential.scopes,
       };
 
       await MarketplaceCredentialRepository.createOrUpdate(newTokenData);
@@ -154,103 +246,6 @@ class MercadoLibreAdapter extends BaseAdapter {
       throw error;
     }
   }
-
-  /*async publish(transformedProduct) {
-  try {
-    logger.info("[MercadoLibreAdapter] Iniciando publicación...");
-    const hasValidCredentials = await this.ensureValidCredentials();
-    if (!hasValidCredentials) {
-      return await this.getAuthUrl();
-    }
-
-    const categoryId = transformedProduct.category_id?.trim();
-    const categorySettings = transformedProduct.category_settings;
-    let isUserProduct = false;
-
-    if (categorySettings?.settings?.catalog_domain) {
-      const catalogDomain = categorySettings.settings.catalog_domain;
-      isUserProduct = !catalogDomain || catalogDomain === "MLC-UNCLASSIFIED_PRODUCTS";
-    } else {
-      isUserProduct = !!transformedProduct.is_user_product;
-    }
-
-    const supportsVariations = categorySettings?.attribute_types === "variations";
-
-    // ✅ Siempre incluir price y available_quantity en raíz (ML lo exige)
-    const productToPublish = {
-      category_id: categoryId,
-      price: transformedProduct.price, // ✅ SIEMPRE
-      available_quantity: transformedProduct.available_quantity || transformedProduct.stock || 1, // ✅ SIEMPRE
-      currency_id: "CLP",
-      buying_mode: "buy_it_now",
-      listing_type_id: "bronze",
-      condition: "new",
-      pictures: transformedProduct.pictures || [],
-      site_id: this.getSiteId(),
-    };
-
-    // ✅ Solo agregar variations si existen
-    if (Array.isArray(transformedProduct.variations) && transformedProduct.variations.length > 0) {
-      productToPublish.variations = transformedProduct.variations;
-    }
-
-    // ✅ family_name solo si NO hay variaciones
-    if (!transformedProduct.variations || transformedProduct.variations.length === 0) {
-      if (isUserProduct) {
-        let familyName = transformedProduct.family_name || (transformedProduct.title || transformedProduct.name || "Producto").substring(0, 60);
-        productToPublish.family_name = familyName.trim().substring(0, 60);
-      } else {
-        const cleanTitle = (transformedProduct.title || transformedProduct.name || "").trim();
-        if (cleanTitle.length >= 6 && cleanTitle.length <= 60) {
-          productToPublish.title = cleanTitle;
-        } else {
-          return { success: false, error: "Título inválido. Debe tener entre 6 y 60 caracteres." };
-        }
-      }
-    }
-
-    // atributos
-    if (Array.isArray(transformedProduct.attributes)) {
-      productToPublish.attributes = transformedProduct.attributes;
-    }
-
-    // warranty
-    if (Array.isArray(transformedProduct.sale_terms)) {
-      productToPublish.sale_terms = transformedProduct.sale_terms;
-    }
-
-    logger.info("[MercadoLibreAdapter] === PAYLOAD FINAL ===");
-    logger.info(JSON.stringify(productToPublish, null, 2));
-
-    const response = await axios.post(
-      "https://api.mercadolibre.com/items",
-      productToPublish,
-      {
-        headers: {
-          Authorization: `Bearer ${this.credential.access_token}`,
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        timeout: 30000,
-      }
-    );
-
-    logger.info(`[MercadoLibreAdapter] ✅ ¡Éxito! ID: ${response.data.id}`);
-    return {
-      success: true,
-      data: response.data,
-      external_id: response.data.id,
-    };
-  } catch (error) {
-    logger.error("[MercadoLibreAdapter] Error en publicación:");
-    if (error.response) {
-      logger.error(`Status: ${error.response.status}`);
-      logger.error(`Error: ${JSON.stringify(error.response.data)}`);
-    }
-    return this.handlePublishError(error);
-  }
-}*/
-  
   async publish(transformedProduct) {
   try {
     logger.info("[MercadoLibreAdapter] Iniciando publicación...");
@@ -354,17 +349,18 @@ class MercadoLibreAdapter extends BaseAdapter {
   }
 
   async getAuthUrl() {
-    const basicCred = await MarketplaceCredentialRepository.findByMarketplaceAndContext(
+    let basicCred = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
       this.marketplaceId,
-      this.companyId,
-      this.branchId
+      this.userId
     );
+    logger.info('basicCred');
+    logger.info(JSON.stringify(basicCred));
     if (!basicCred || !basicCred.client_id || !basicCred.redirect_uri) {
       return { success: false, error: "Credenciales incompletas para autenticación" };
     }
 
     const requiredScopes = "write offline_access urn:ml:mktp:publish-sync:/read-write";
-    const state = `${this.marketplaceId}_${this.companyId}_${this.branchId || "null"}`;
+    const state = `${this.marketplaceId}_${this.userId}`;
     const authUrl = `https://auth.mercadolibre.cl/authorization?response_type=code&client_id=${encodeURIComponent(basicCred.client_id)}&redirect_uri=${encodeURIComponent(basicCred.redirect_uri)}&state=${encodeURIComponent(state)}&scope=${encodeURIComponent(requiredScopes)}`;
 
     return { auth_required: true, auth_url: authUrl, message: "Se requiere autorización en Mercado Libre" };

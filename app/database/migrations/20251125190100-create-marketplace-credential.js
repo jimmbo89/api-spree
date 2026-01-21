@@ -24,26 +24,6 @@ module.exports = {
         onUpdate: 'CASCADE',
         onDelete: 'CASCADE'
       },
-      branch_id: {
-        type: Sequelize.BIGINT,
-        allowNull: true,
-        references: { model: 'branches', key: 'id' },
-        onUpdate: 'CASCADE',
-        onDelete: 'CASCADE'
-      },
-      // 🔑 Nuevos campos OAuth
-      client_id: {
-        type: Sequelize.STRING,
-        allowNull: true
-      },
-      client_secret: {
-        type: Sequelize.TEXT,
-        allowNull: true
-      },
-      redirect_uri: {
-        type: Sequelize.STRING,
-        allowNull: true
-      },
       access_token: {
         type: Sequelize.TEXT,
         allowNull: true
@@ -54,10 +34,6 @@ module.exports = {
       },
       expires_at: {
         type: Sequelize.DATE,
-        allowNull: true
-      },
-      scopes: {
-        type: Sequelize.STRING,
         allowNull: true
       },
       active: {
@@ -76,9 +52,9 @@ module.exports = {
     });
 
     // Índice único: contexto de credencial
-    await queryInterface.addIndex('marketplace_credentials', ['marketplace_id', 'company_id', 'branch_id'], {
+    await queryInterface.addIndex('marketplace_credentials', ['marketplace_id', 'user_id'], {
       unique: true,
-      name: 'mc_marketplace_company_branch_unique'
+      name: 'mc_marketplace_user_unique'
     });
   },
 

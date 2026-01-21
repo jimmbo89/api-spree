@@ -4,14 +4,14 @@ const MercadoLibreAdapter = require('./MercadoLibreAdapter');
 // Importa otros adapters aquí cuando los crees
 
 class PublishingAdapterFactory {
-  static getAdapter(marketplace, companyId, branchId = null) {
+  static getAdapter(marketplace, companyId, branchId = null, userId) {
     // Detectar por dominio o tipo
     if (MercadoLibreAdapter.supports(marketplace)) {
-      return new MercadoLibreAdapter(marketplace.id, companyId, branchId);
+      return new MercadoLibreAdapter(marketplace.id, companyId, branchId, userId);
     }
 
     if (FalabellaAdapter.supports(marketplace)) {
-      return new FalabellaAdapter(marketplace.id, companyId, branchId);
+      return new FalabellaAdapter(marketplace.id, companyId, branchId, userId);
     }
 
     // Ejemplo futuro:

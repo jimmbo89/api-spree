@@ -7,7 +7,7 @@ module.exports = (sequelize, DataTypes) => {
       Marketplace.hasMany(models.ProductFieldMapping, { foreignKey: 'marketplace_id', as: 'fieldMappings', onDelete: 'CASCADE' });
       Marketplace.hasMany(models.ProductPublishingTask, { foreignKey: 'marketplace_id', as: 'publishingTasks', onDelete: 'SET NULL' });
       Marketplace.hasMany(models.ProductMarketplaceLink, { foreignKey: 'marketplace_id', as: 'productLinks', onDelete: 'CASCADE' });
-      Marketplace.hasOne(models.MarketplaceCredential, { foreignKey: 'marketplace_id', as: 'credential' });
+      Marketplace.hasMany(models.MarketplaceCredential, { foreignKey: 'marketplace_id', as: 'credentials' });
     }
   }
 
@@ -41,7 +41,23 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.BOOLEAN,
       allowNull: false,
       defaultValue: true
-    }
+    },
+     client_id: {
+      type: DataTypes.STRING,
+      allowNull: true
+    },
+    client_secret: {
+      type: DataTypes.TEXT,
+      allowNull: true
+    },
+    redirect_uri: {
+      type: DataTypes.STRING,
+      allowNull: true
+    },
+    scopes: {
+      type: DataTypes.TEXT,
+      allowNull: true
+    },
   }, {
     sequelize,
     modelName: 'Marketplace',

@@ -142,7 +142,7 @@ const WarehouseController = {
     logger.info('Datos recibidos:');
     logger.info(JSON.stringify(req.body));
     
-    const { company_id, user_id: bodyUserId, branch_id, name } = req.body;
+    const { company_id, user_id: bodyUserId, branch_id, name, code } = req.body;
     let user_id = bodyUserId || req.user.id;
     req.body.user_id = user_id;
 
@@ -172,14 +172,16 @@ const WarehouseController = {
     const validation = await WarehouseRepository.checkUniqueName({
         name: name,
         company_id: company_id,
-        branch_id: branch_id
+        branch_id: branch_id,
+        code: code
       });
-
-      if (validation) {
+      logger.info('JSON.stringify(validation)');
+      logger.info(JSON.stringify(validation.existing));
+      if (validation.existing) {
           return res.status(409).json({
                     success: false,
                     message: 'Ya existe un almacén con ese nombre.',
-                    code: "EXIT_COMPANY"
+                    code: "EXIT_WAREHOUSE"
                   });  
       }
 
@@ -234,7 +236,7 @@ const WarehouseController = {
     logger.info('Datos recibidos:');
     logger.info(JSON.stringify(req.body));
     
-    const { id, company_id, user_id, branch_id, name } = req.body;
+    const { id, company_id, user_id, branch_id, name, code } = req.body;
     const metadata = getRequestMetadata(req);
     
     try {
@@ -265,18 +267,19 @@ const WarehouseController = {
         }
       }
 
-      if(name){
+      if(name || code){
             const validation = await WarehouseRepository.checkUniqueName({
           name: name,
           company_id: warehouse.company_id,
-          branch_id: warehouse.branch_id
+          branch_id: warehouse.branch_id,
+          code: code
         }, id);
 
         if (validation) {
             return res.status(409).json({
                       success: false,
                       message: 'Ya existe un almacén con ese nombre.',
-                      code: 'EXIT_COMPANY'
+                      code: 'EXIT_WAREHOUSE'
                     });  
         }
       }

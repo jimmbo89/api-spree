@@ -10,8 +10,8 @@ const proxyHelper = require('../util/proxyHelper');
 
 const OAuthController = {
   async mercadoLibreCallback(req, res) {
-    const { code, state } = req.query;
-    logger.info('Datos recibidos:', req.query);
+    const { code, state } = req.body;
+    logger.info('Datos recibidos al crear las credenciales de mercado libre:', req.body);
     const metadata = getRequestMetadata(req);
 
     if (!code || !state) {
@@ -20,13 +20,11 @@ const OAuthController = {
     }
 
     try {
-      const [marketplaceId, companyId, branchIdStr] = state.split('_');
-      const branchId = branchIdStr === 'null' ? null : branchIdStr;
+      const [marketplaceId, userId] = state.split('_');
 
-      const credential = await MarketplaceCredentialRepository.findByMarketplaceAndContext(
+      const credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
         marketplaceId,
-        companyId,
-        branchId
+        userId
       );
 
       logger.info('Credenciales básicas obtenidas para OAuth Mercado Libre', { credential });
@@ -88,15 +86,13 @@ const OAuthController = {
       await MarketplaceCredentialRepository.createOrUpdate({
         id: credential.id,
         marketplace_id: marketplaceId,
-        company_id: companyId,
-        branch_id: branchId,
-        client_id: credential.client_id,
-        client_secret: credential.client_secret,
+        //client_id: credential.client_id,
+        //client_secret: credential.client_secret,
         redirect_uri: credential.redirect_uri.trim(), // 🔑 ¡clave!
         access_token: tokenRes.data.access_token,
         refresh_token: tokenRes.data.refresh_token,
         expires_at: new Date(Date.now() + tokenRes.data.expires_in * 1000),
-        scopes: tokenRes.data.scope
+        //scopes: tokenRes.data.scope
       });
 
       await LogRepository.create({
@@ -114,8 +110,6 @@ const OAuthController = {
         message: 'Tokens de Mercado Libre guardados correctamente',
         data: {
           marketplace_id: marketplaceId,
-          company_id: companyId,
-          branch_id: branchId,
           access_token: '[REDACTADO]',
           refresh_token: '[REDACTADO]',
           expires_in: tokenRes.data.expires_in

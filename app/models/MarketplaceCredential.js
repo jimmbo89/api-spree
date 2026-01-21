@@ -6,8 +6,7 @@ module.exports = (sequelize, DataTypes) => {
   class MarketplaceCredential extends Model {
     static associate(models) {
       MarketplaceCredential.belongsTo(models.Marketplace, { foreignKey: 'marketplace_id', as: 'marketplace' });
-      MarketplaceCredential.belongsTo(models.Company, { foreignKey: 'company_id', as: 'company', onDelete: 'CASCADE' });
-      MarketplaceCredential.belongsTo(models.Branch, { foreignKey: 'branch_id', as: 'branch', onDelete: 'CASCADE' });
+      MarketplaceCredential.belongsTo(models.User, { foreignKey: 'user_id', as: 'user', onDelete: 'CASCADE' });
     }
   }
 
@@ -21,26 +20,10 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.BIGINT,
       allowNull: false
     },
-    company_id: {
+    user_id: {
       type: DataTypes.BIGINT,
-      allowNull: true
-    },
-    branch_id: {
-      type: DataTypes.BIGINT,
-      allowNull: true
-    },
-    // 🔑 Campos OAuth
-    client_id: {
-      type: DataTypes.STRING,
-      allowNull: true
-    },
-    client_secret: {
-      type: DataTypes.TEXT,
-      allowNull: true
-    },
-    redirect_uri: {
-      type: DataTypes.STRING,
-      allowNull: true
+      allowNull: false,
+      references: { model: 'users', key: 'id' }
     },
     access_token: {
       type: DataTypes.TEXT,
@@ -54,10 +37,6 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.DATE,
       allowNull: true
     },
-    scopes: {
-      type: DataTypes.STRING,
-      allowNull: true
-    },
     active: {
       type: DataTypes.BOOLEAN,
       allowNull: false,
@@ -67,7 +46,14 @@ module.exports = (sequelize, DataTypes) => {
     sequelize,
     modelName: 'MarketplaceCredential',
     tableName: 'marketplace_credentials',
-    timestamps: true
+    timestamps: true,
+     indexes: [
+      {
+        unique: true,
+        fields: ['marketplace_id', 'user_id'],
+        name: 'mc_marketplace_user_unique'
+      }
+    ]
   });
 
   return MarketplaceCredential;

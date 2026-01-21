@@ -1,9 +1,10 @@
 // src/services/adapters/BaseAdapter.js
 class BaseAdapter {
-  constructor(marketplaceId, companyId, branchId = null) {
+  constructor(marketplaceId, companyId, branchId = null, userId) {
     this.marketplaceId = marketplaceId;
     this.companyId = companyId;
     this.branchId = branchId;
+    this.userId = userId
   }
 
   async publish(transformedProduct) {

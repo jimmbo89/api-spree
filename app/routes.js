@@ -69,7 +69,7 @@ router.post('/reset-password', AuthController.resetPassword);
 router.get('/validate-requests/:id/approve', UserCompanyController.handleMembershipRequest);
 router.get('/validate-requests/:id/reject', UserCompanyController.handleMembershipRequest);
 
-router.get('/ml-callback', OAuthController.mercadoLibreCallback);
+router.post('/ml-callback', OAuthController.mercadoLibreCallback);
 router.get("/images/:foldername/:filename", (req, res) => {
   const { foldername, filename } = req.params;
   const imagePath = path.join(__dirname, "../public", foldername, filename);
@@ -254,10 +254,11 @@ router.post("/marketplace-show", requireRoles(['Admin', 'Seller Manager']), vali
 router.post("/marketplace-list", requireRoles(['Admin', 'Seller Manager']), MarketplaceController.list); // list no necesita schema (validación manual de company_id)
 
 //Marketplace Credentiales
-router.post('/marketplace-credentials-by-context', validateSchema(findByMarketplaceCredentialSchema), MarketplaceCredentialController.index);
+//router.post('/marketplace-credentials-by-context', validateSchema(findByMarketplaceCredentialSchema), MarketplaceCredentialController.index);
 router.post("/marketplace-credential", requireRoles(['Admin', 'Seller Manager']), validateSchema(storeMarketplaceCredentialSchema), MarketplaceCredentialController.store);
 router.post("/marketplace-credential-update", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateMarketplaceCredentialSchema), MarketplaceCredentialController.update);
 router.post("/marketplace-credential-show", requireRoles(['Admin', 'Seller Manager']), validateSchema(findByMarketplaceCredentialSchema), MarketplaceCredentialController.show);
+router.post('/marketplace-credentials-by-user', MarketplaceCredentialController.getByUser);
 
 // Metadatos de los marketplaces
 router.post("/product-field-mapping", requireRoles(['Admin', 'Seller Manager']), validateSchema(createProductFieldMappingSchema), ProductFieldMappingController.store);

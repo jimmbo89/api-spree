@@ -15,6 +15,7 @@ module.exports = (sequelize, DataTypes) => {
       User.hasMany(models.Pool, { foreignKey: 'user_id', as: 'pools', onDelete: 'CASCADE' });
       User.hasMany(models.UserCompany, { foreignKey: 'user_id', as: 'memberships', onDelete: 'CASCADE' });
       User.hasMany(models.UserAclScope, { foreignKey: 'user_id', as: 'aclScopes', onDelete: 'CASCADE' });
+      User.hasMany(models.MarketplaceCredential, { foreignKey: 'user_id', as: 'credentials', onDelete: 'CASCADE' });
     }
   }
 

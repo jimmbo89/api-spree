@@ -179,16 +179,25 @@ const WarehouseRepository = {
  * @returns {Promise<{ exists: boolean, field: string | null }>}
  */
 async checkUniqueName(data, excludeId = null) {
-  const { name, company_id, branch_id } = data;
+  const { code, name, company_id, branch_id } = data;
 
   // Validación básica: si no hay nombre, no hay nada que verificar
   if (!name || name.trim() === '') {
     return { exists: false, field: null };
   }
 
+  if (!code || code.trim() === '') {
+    return { exists: false, field: null };
+  }
+
+
   // Construir condiciones de búsqueda
   let whereCondition = {
     name: name.trim()
+  };
+
+   whereCondition = {
+    code: code.trim()
   };
 
   // Filtrar por empresa o sucursal según corresponda
@@ -213,10 +222,10 @@ async checkUniqueName(data, excludeId = null) {
   });
 
   if (existing) {
-    return { exists: true, field: 'name' };
+    return { exists: true, field: 'name', existing: existing };
   }
 
-  return { exists: false, field: null };
+  return { exists: false, field: null, existing: null };
 },
   async findById(id) {
     return await Warehouse.findByPk(id, {

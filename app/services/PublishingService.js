@@ -247,7 +247,7 @@ static async buildProductAttributes(productData, categoryAttributes = []) {
       warranty: productData.warranty || (product.warranty_months ? `${product.warranty_months} ${product.warranty_text}` : null)
     };
 
-    const adapter = PublishingAdapterFactory.getAdapter(marketplace, warehouse.company_id, warehouse.branch_id);
+    const adapter = PublishingAdapterFactory.getAdapter(marketplace, warehouse.company_id, warehouse.branch_id, userId);
     if (!adapter) {
       return { success: false, error: 'adapter_not_found', product_id: product.id };
     }
