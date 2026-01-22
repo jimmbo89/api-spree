@@ -6,13 +6,20 @@ const WarehouseProductRepository = require("./WarehouseProductRepository");
 const DEFAULT_IMAGE = "products/default.jpg";
 
 const ProductRepository = {
-  async findFiltered({ companyId, userId, branchId, categoryId, brand, state, hasGtin }) {
+  async findFiltered({ companyId, userId, branchId, categoryId, brand, state, hasGtin, productId }) {
     const where = { };
     if (categoryId !== undefined) where.category_id = categoryId;
     if (brand !== undefined && brand !== '') where.brand = brand;
     if (state !== undefined) where.state = state;
     if (hasGtin === true) where.gtin = { [Op.not]: null };
     if (hasGtin === false) where.gtin = null;
+    if (productId) {
+    if (Array.isArray(productId)) {
+      where.id = { [Op.in]: productId };
+    } else {
+      where.id = productId;
+    }
+  }
 
     const products = await Product.findAll({
       where,

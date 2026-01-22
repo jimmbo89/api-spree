@@ -340,27 +340,24 @@ async createMembershipRequest(req, res) {
 },
 async handleMembershipRequest(req, res) {
   const { id } = req.params;
- const isApprove = req.originalUrl.endsWith('/approve');
+  const isApprove = req.originalUrl.endsWith('/approve');
   const action = isApprove ? 'approve' : 'reject';
 
   try {
     // 1. Obtener membresía
     const membership = await UserCompanyRepository.findByPk(id);
     if (!membership) {
-      return res.status(404).json({ success: false, message: 'Solicitud no encontrada' });
+      return await sendHtmlResponse(res, false, 'Solicitud no encontrada', '❌');
     }
 
     // 2. Validar estado pendiente
     if (membership.status !== -1) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'La solicitud ya fue procesada' 
-      });
+      return await sendHtmlResponse(res, false, 'La solicitud ya fue procesada', '⚠️');
     }
 
-    // 4. Ejecutar acción
+    // 3. Ejecutar acción
     let resultMessage, emailSubject, emailHtml;
-    
+
     if (isApprove) {
       // Aprobar: actualizar a status 1
       await UserCompanyRepository.updateStatus(membership, 1);
@@ -373,7 +370,7 @@ async handleMembershipRequest(req, res) {
       emailSubject = `❌ Solicitud rechazada: `;
     }
 
-    // 5. Notificar al solicitante
+    // 4. Notificar al solicitante
     const user = await UserRepository.findById(membership.user_id);
     const company = await CompanyRepository.findById(membership.company_id);
 
@@ -381,7 +378,7 @@ async handleMembershipRequest(req, res) {
       const actionText = isApprove ? 'aprobada' : 'rechazada';
       const actionEmoji = isApprove ? '🎉' : '👋';
       const actionColor = isApprove ? '#10b981' : '#ef4444';
-      
+
       emailHtml = `
         <p>${actionEmoji} Hola ${user.name},</p>
         <p>Tu solicitud para unirte a <strong>${company.name}</strong> ha sido <strong>${actionText}</strong>.</p>
@@ -397,16 +394,19 @@ async handleMembershipRequest(req, res) {
       }).catch(err => logger.warn('Error al enviar notificación:', err.message));
     }
 
-    // 6. Responder con HTML amigable
+    // 5. Responder con HTML amigable (éxito)
     const successColor = isApprove ? '#10b981' : '#ef4444';
     const icon = isApprove ? '✅' : '❌';
-    
+    const buttonColor = '#3b82f6'; // Azul del botón "Volver al panel"
+
     return res.status(200).send(`
       <div style="font-family: Arial, sans-serif; text-align: center; padding: 40px;">
-        <h2 style="color: ${successColor};">${icon} ${resultMessage}</h2>
-        <p>El usuario ha sido notificado por correo.</p>
+        <h2 style="color: ${successColor}; font-size: 24px; margin-bottom: 10px;">
+          ${icon} ${resultMessage}
+        </h2>
+        <p style="margin-top: 10px; font-size: 16px;">El usuario ha sido notificado por correo.</p>
         <a href="${process.env.FRONTEND_URL}" 
-           style="display: inline-block; margin-top: 20px; padding: 10px 20px; background-color: #3b82f6; color: white; text-decoration: none; border-radius: 6px;">
+           style="display: inline-block; margin-top: 20px; padding: 10px 20px; background-color: ${buttonColor}; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;">
           Volver al panel
         </a>
       </div>
@@ -414,18 +414,15 @@ async handleMembershipRequest(req, res) {
 
   } catch (error) {
     logger.error(`UserCompanyController->handleMembershipRequest (${action}) falló: ${error.message}`, {
-  stack: error.stack,
-  userId: req.user?.id,
-  requestId: id
-});
-    return res.status(500).send(`
-      <div style="font-family: Arial, sans-serif; text-align: center; padding: 40px; color: #ef4444;">
-        <h2>❌ Error al procesar la solicitud</h2>
-        <p>Por favor, inténtalo nuevamente.</p>
-      </div>
-    `);
+      stack: error.stack,
+      userId: req.user?.id,
+      requestId: id
+    });
+
+    // 6. Responder con HTML amigable (error genérico)
+    return await sendHtmlResponse(res, false, 'Error al procesar la solicitud', '❌');
   }
-}
+},
 };
 // Reutilizamos la función de mapeo del repositorio
 function mapUserCompany(record) {
@@ -446,6 +443,24 @@ function mapUserCompany(record) {
   };
 }
 
+// Función auxiliar para respuestas HTML estilizadas (errores y casos especiales)
+async function sendHtmlResponse(res, isSuccess, message, icon) {
+  const bgColor = isSuccess ? '#f0fdf4' : '#fef2f2'; // Fondo verde claro / rojo claro
+  const textColor = isSuccess ? '#10b981' : '#ef4444';
+  const buttonColor = '#3b82f6';
+
+  res.status(isSuccess ? 200 : 400).send(`
+    <div style="font-family: Arial, sans-serif; text-align: center; padding: 40px; background-color: ${bgColor};">
+      <h2 style="color: ${textColor}; font-size: 24px; margin-bottom: 10px;">
+        ${icon} ${message}
+      </h2>
+      <a href="${process.env.FRONTEND_URL}" 
+         style="display: inline-block; margin-top: 20px; padding: 10px 20px; background-color: ${buttonColor}; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;">
+        Volver al panel
+      </a>
+    </div>
+  `);
+}
 async function notifyAdminsAboutMembershipRequest({ requester, company, membershipId }) {
   try {
     // 1. Obtener administradores

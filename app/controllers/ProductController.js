@@ -534,7 +534,7 @@ const ProductController = {
       }
 
       // Eliminar imágenes físicas
-      if (images_to_remove) {
+      /*if (images_to_remove) {
         const indices =
           typeof images_to_remove === "string"
             ? JSON.parse(images_to_remove)
@@ -553,8 +553,39 @@ const ProductController = {
             (_, idx) => !indices.includes(idx)
           );
         }
-      }
+      }*/
+      if (images_to_remove) {
+        const namesToRemove = 
+          typeof images_to_remove === 'string' 
+            ? JSON.parse(images_to_remove) 
+            : images_to_remove;
 
+        // Validar que sean strings
+        if (!Array.isArray(namesToRemove) || !namesToRemove.every(name => typeof name === 'string')) {
+          return res.status(400).json({ 
+            success: false, 
+            error: "InvalidImagesRemove", 
+            message: "images_to_remove debe ser un array de nombres de archivos" 
+          });
+        }
+
+        const currentImages = Array.isArray(product.images) ? [...product.images] : [];
+
+        // Eliminar archivos físicos
+        for (const filename of namesToRemove) {
+          if (currentImages.includes(filename) && filename !== DEFAULT_IMAGE) {
+            await ImageService.deleteFile(filename);
+          }
+        }
+
+        // Actualizar el array de imágenes (quitar los nombres especificados)
+        req.body.images = currentImages.filter(img => !namesToRemove.includes(img));
+
+        // Si no se envió req.body.images, usar el filtrado
+        if (req.body.images === undefined) {
+          req.body.images = currentImages.filter(img => !namesToRemove.includes(img));
+        }
+      }
       // Validar relaciones
       if (req.body.company_id) {
         const company = await CompanyRepository.findById(req.body.company_id);
@@ -929,13 +960,16 @@ const ProductController = {
     logger.info(
       `${req.user?.name || "Unknown"} - Actualiza estado del producto con ID ${req.body.id}`
     );
+      logger.info("Datos recibidos:");
+  logger.info(JSON.stringify(req.body));
+    const { id, state } = req.body;
     const metadata = getRequestMetadata(req);
 
     try {
       const product = await ProductRepository.findById(req.body.id);
       if (!product) return res.status(404).json({ msg: "ProductNotFound" });
 
-      await ProductRepository.changeState(product, 0);
+      await ProductRepository.changeState(product, state);
       await LogRepository.create({
         user_id: metadata.user_id,
         action: "product.state",
@@ -946,9 +980,7 @@ const ProductController = {
       });
 
       const products = await ProductRepository.findFiltered({
-        companyId: product.company_id,
-        userId: product.user_id,
-        state: 1,
+        companyId: product.company_id
       });
       res
         .status(200)

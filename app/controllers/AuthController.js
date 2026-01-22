@@ -448,103 +448,113 @@ const AuthController = {
 
   async destroy(req, res) {
     const requesterId = req.user?.id || null;
-    const requesterName = req.user?.name || "Anonymous";
-    const userIdToDelete = req.body.user_id;
-    const company_id = req.body.company_id;
+  const requesterName = req.user?.name || "Anonymous";
+  const { user_id: userId, company_id, status } = req.body;
 
-    logger.info(
-      `${requesterName} - Intenta eliminar usuario con ID: ${userIdToDelete}`
-    );
-    logger.info("Datos recibidos (body):");
-    logger.info(JSON.stringify(req.body));
+  // Validación básica
+  if (!userId || !company_id) {
+    return res.status(400).json({
+      success: false,
+      message: "Faltan parámetros: user_id y company_id son requeridos"
+    });
+  }
 
-    const ip = req.ip || "unknown";
-    const userAgent = req.get("User-Agent") || null;
+  // Validar estado permitido
+  if (status !== 1 && status !== 2) {
+    return res.status(400).json({
+      success: false,
+      message: "El estado debe ser 1 (activo) o 2 (desactivado)"
+    });
+  }
 
-    try {
-      // 2. Buscar al usuario a eliminar (con su rol cargado)
-      const userToDelete = await UserRepository.findById(userIdToDelete);
+  logger.info(`${requesterName} - Actualiza membresía: user=${userId}, company=${company_id}, status=${status}`);
+  logger.info("Datos recibidos (body):", req.body);
 
-      if (!userToDelete) {
-        await LogRepository.create({
-          user_id: requesterId,
-          action: "user.delete",
-          description: `Intentó eliminar usuario inexistente (ID: ${userIdToDelete})`,
-          ip_address: ip,
-          user_agent: userAgent,
-          status: "error",
-        });
-        return res.status(404).json({ msg: "Usuario no encontrado" });
-      }
+  const ip = req.ip || "unknown";
+  const userAgent = req.get("User-Agent") || null;
 
-      company = await CompanyRepository.findById(company_id);
-      if (!company)
-        return res
-          .status(400)
-          .json({ success: false, message: "Empresa no encontrada" });
-
-      // 3. Evitar que un usuario se elimine a sí mismo (opcional, pero recomendado)
-      if (
-        req.user?.id &&
-        req.user.id.toString() === userIdToDelete.toString()
-      ) {
-        await LogRepository.create({
-          user_id: requesterId,
-          action: "user.delete",
-          description: `(Intentó eliminarse a sí mismo)`,
-          ip_address: ip,
-          user_agent: userAgent,
-          status: "error",
-        });
-        return res.status(400).json({ msg: "No puedes eliminarte a ti mismo" });
-      }
-
-      // 4. Ejecutar la eliminación segura (incluye la validación del último Admin)
-      const result = await UserRepository.delete(userToDelete, company_id);
-
-      if (result.success) {
-        // 📝 Log: eliminación exitosa
-        await LogRepository.create({
-          user_id: requesterId, // el usuario que fue eliminado
-          action: "user.delete",
-          description: `Elimina al usuario (${userToDelete.name} con rol: ${
-            userToDelete.role?.name || "sin rol"
-          })`,
-          ip_address: ip,
-          user_agent: userAgent,
-          status: "success",
-        });
-      } else {
-        // 📝 Log: eliminación fallida (ej: último admin)
-        await LogRepository.create({
-          user_id: requesterId,
-          action: "user.delete",
-          description: `Error al eliminar a (${userToDelete.name} con rol: ${
-            userToDelete.role?.name || "sin rol"
-          }: ${result.message})`,
-          ip_address: ip,
-          user_agent: userAgent,
-          status: "error",
-        });
-      }
-      if (result.code === "LAST_ADMIN") {
-        return res.status(403).json({
-          success: false,
-          message: result.message,
-        });
-      } else return res.status(200).json(result);
-    } catch (error) {
-      // Solo para errores reales (DB caída, etc.)
-      logger.error(`Error inesperado en destroy:`, error);
+  try {
+    // 1. Verificar que la membresía exista
+    const membership = await UserCompanyRepository.findByUserIdAndCompanyId(userId, company_id);
+    if (!membership) {
       await LogRepository.create({
-        /* log de error crítico */
+        user_id: requesterId,
+        action: "membership.update",
+        description: `Membresía no encontrada para user=${userId}, company=${company_id}`,
+        ip_address: ip,
+        user_agent: userAgent,
+        status: "error",
       });
-      return res.status(500).json({
-        success: false,
-        message: "Error interno del servidor",
-        details: error.message,
-      });
+      return res.status(404).json({ success: false, message: "Membresía no encontrada" });
     }
+
+    // 2. Evitar auto-modificación
+    if (requesterId && requesterId.toString() === userId.toString()) {
+      await LogRepository.create({
+        user_id: requesterId,
+        action: "membership.update",
+        description: "Intentó modificar su propia membresía",
+        ip_address: ip,
+        user_agent: userAgent,
+        status: "error",
+      });
+      return res.status(400).json({ success: false, message: "No puedes modificar tu propia membresía" });
+    }
+
+    // 3. Verificar si es el último admin (solo si se va a desactivar)
+    if (status === 2) {
+      const userRole = await RoleRepository.findById(membership.role_id);
+      if (userRole && userRole.name === 'Admin') {
+        const otherAdmins = await UserCompanyRepository.countActiveAdminsInCompany(company_id, userId);
+        if (otherAdmins === 0) {
+          return res.status(403).json({
+            success: false,
+            message: "No puedes desactivar al último administrador de la empresa"
+          });
+        }
+      }
+    }
+
+    // 4. Actualizar el estado
+    await UserCompanyRepository.updateStatus(membership, status);
+
+    // 5. Registrar log
+    const actionText = status === 1 ? "activada" : "desactivada";
+    await LogRepository.create({
+      user_id: requesterId,
+      action: "membership.update",
+      description: `Membresía ${actionText} para user=${userId}, company=${company_id}`,
+      ip_address: ip,
+      user_agent: userAgent,
+      status: "success",
+    });
+
+    // 6. Responder
+    return res.status(200).json({
+      success: true,
+      message: `Membresía ${status === 1 ? 'activada' : 'desactivada'} exitosamente`,
+      membership: {
+        ...membership,
+        membership_status: status
+      }
+    });
+
+  } catch (error) {
+    logger.error(`Error en updateMembershipStatus:`, error);
+    await LogRepository.create({
+      user_id: requesterId,
+      action: "membership.update",
+      description: `Error crítico: ${error.message}`,
+      ip_address: ip,
+      user_agent: userAgent,
+      status: "error",
+    });
+    return res.status(500).json({
+      success: false,
+      message: "Error interno del servidor",
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
   },
   async index(req, res) {
     const requesterName = req.user?.name || "Anonymous";

@@ -1,6 +1,6 @@
 // app/controllers/InventoryMovementController.js
 const logger = require("../../config/logger");
-const { InventoryMovementRepository, LogRepository } = require("../repositories");
+const { InventoryMovementRepository, LogRepository, CompanyRepository, UserRepository, BranchRepository } = require("../repositories");
 
 const InventoryMovementController = {
   async getMovements(req, res) {
@@ -92,7 +92,41 @@ const InventoryMovementController = {
         details: error.message
       });
     }
+  },
+
+  async list(req, res) {
+  logger.info(`${req.user?.name || 'Unknown'} - Lista inventario consolidado`);
+  const { company_id, user_id, branch_id } = req.body;
+
+    if (company_id) {
+      const company = await CompanyRepository.findById(company_id);
+      if (!company) return res.status(400).json({ msg: "companyNotFound" });
+    }
+    if (user_id) {
+      const user = await UserRepository.findById(user_id);
+      if (!user) return res.status(400).json({ msg: "userNotFound" });
+    }
+    if (branch_id) {
+      const branch = await BranchRepository.findById(branch_id);
+      if (!branch) return res.status(400).json({ msg: "branchNotFound" });
+    }
+
+  try {
+    const inventory = await InventoryMovementRepository.getConsolidatedInventory({
+      companyId: company_id,
+      userId: user_id,
+      branchId: branch_id
+    });
+
+    res.status(200).json({
+      inventory: inventory.length ? inventory : [],
+      message: inventory.length ? "Inventario encontrado" : "NoInventoryFound"
+    });
+  } catch (error) {
+    logger.error("InventoryController->list: " + error.message);
+    res.status(500).json({ error: "ServerError", details: error.message });
   }
+}
 };
 
 module.exports = InventoryMovementController;

@@ -119,7 +119,7 @@ router.get("/images-protect/:foldername/:filename", (req, res) => {
 router.get("/logout", AuthController.logout);
 router.post('/user-create', requireRoles(['Admin', 'Seller Manager']), multerImage("image", "users"), validateSchema(createUserSchema), AuthController.associateUserToCompany);
 router.post("/user-update", requireRoles(['Admin', 'Seller Manager']), multerImage("image", "users"), validateSchema(updateUserSchema), AuthController.updateUserInCompany);
-router.post("/user-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idRoleSchema), AuthController.destroy);
+router.post("/user-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateBranchSchema), AuthController.destroy);
 router.post("/get-users", requireRoles(['Admin', 'Seller Manager']), AuthController.index);
 router.post("/get-pool-warehouse-roles", requireRoles(['Admin', 'Seller Manager']), AuthController.getPoolWarehouseRole);
 router.post("/send-invitation", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateSchema), InvitationController.sendInvitation);
@@ -222,7 +222,7 @@ router.post("/product-user-company", requireRoles(['Admin', 'Seller Manager']), 
 router.post("/product", requireRoles(['Admin', 'Seller Manager']), multerFieldFolders(productImageFields), validateSchema(storeProductSchema), ProductController.store);
 router.post("/product-update", requireRoles(['Admin', 'Seller Manager']), multerFieldFolders(productImageFields), validateSchema(updateProductSchema), ProductController.update);
 router.post("/product-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idProductSchema), ProductController.destroy);
-router.post("/product-state", requireRoles(['Admin', 'Seller Manager']), validateSchema(idProductSchema), ProductController.updateState);
+router.post("/product-state", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateProductSchema), ProductController.updateState);
 router.post("/products-transform", requireRoles(['Admin', 'Seller Manager']), ProductController.transformForMarketplace);
 router.post("/product-category-status", requireRoles(['Admin', 'Seller Manager']), ProductController.getProductMetadata);
 router.post("/product-update-attributes", ProductController.updateAttributes);
@@ -242,8 +242,10 @@ router.post("/warehouse-product-destroy", requireRoles(['Admin', 'Seller Manager
 router.post("/warehouse-movement-stock", requireRoles(['Admin', 'Seller Manager']), validateSchema(transferSchema), WarehouseProductController.createMovement );
 router.post("/warehouse-bulk-movement", requireRoles(['Admin', 'Seller Manager']), validateSchema(bulkTransferSchema), WarehouseProductController.createBulkMovement );
 router.post("/warehouse-products-by-ids", requireRoles(['Admin', 'Seller Manager']), validateSchema(listByWarehouseIdsSchema), WarehouseProductController.listByWarehouseIds);
+
+//Inventario de movimientos
 router.post("/movements", requireRoles(['Admin', 'Seller Manager']), validateSchema(getMovementsSchema), InventoryMovementController.getMovements);
-//router.post("/warehouse-product-bulk-preview", requireRoles(['Admin', 'Seller Manager']), multerGeneric('file'), validateSchema(bulkUploadSchema), WarehouseProductController.bulkUploadPreview);
+router.post("/inventory-products", requireRoles(['Admin', 'Seller Manager']), validateSchema(getMovementsSchema), InventoryMovementController.list);
 //router.post("/warehouse-product-bulk-confirm", requireRoles(['Admin', 'Seller Manager']), WarehouseProductController.bulkUploadConfirm);
 
 // Marketplaces

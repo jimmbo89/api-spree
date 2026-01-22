@@ -1,7 +1,11 @@
 // repositories/InventoryMovementRepository.js
 const { InventoryMovement, Warehouse, Product, ProductVariant, User, Company, Branch } = require("../models");
 const logger = require("../../config/logger");
-const { Op } = require("sequelize");
+const { Op, col, fn } = require("sequelize");
+const WarehouseRepository = require("./WarehouseRepository");
+const WarehouseProductRepository = require("./WarehouseProductRepository");
+const WarehouseProductVariantRepository = require("./WarehouseProductVariantRepository");
+const ProductRepository = require("./ProductRepository");
 
 /**
  * Mapea un registro de InventoryMovement a un objeto plano con relaciones.
@@ -202,7 +206,188 @@ const InventoryMovementRepository = {
     logger.error("InventoryMovementRepository.findWithFilters error:", error.message);
     throw error;
   }
-}
+},
+
+  /**
+   * Obtiene inventario consolidado por variante + almacén.
+   * Si no hay stock, devuelve todos los productos activos con stock=0.
+   *
+   * @param {Object} params
+   * @param {number} params.companyId - ID de la empresa (obligatorio)
+   * @param {number} [params.branchId] - ID de la sucursal (opcional)
+   * @returns {Promise<Array>} Lista de registros de inventario
+   */
+  async getConsolidatedInventory({ companyId, branchId }) {
+    try {
+      // 1. Obtener almacenes válidos
+      const warehouses = await WarehouseRepository.findFiltered({
+        companyId,
+        branchId,
+        includeProducts: false,
+      });
+      const warehouseIds = warehouses.map((w) => w.id);
+      
+      if (warehouseIds.length === 0) {
+        // Si no hay almacenes, devolver productos activos sin stock
+        return await this._getProductsWithoutStock(companyId);
+      }
+
+      // 2. Obtener productos con sus variantes y stock desde los almacenes
+      const warehouseProducts = await WarehouseProductRepository.findFiltered({
+        warehouseId: warehouseIds,
+      });
+
+      if (warehouseProducts.length === 0) {
+        // Si no hay productos asignados, devolver productos activos sin stock
+        return await this._getProductsWithoutStock(companyId);
+      }
+
+      // 3. Extraer IDs únicos
+      const productIds = [...new Set(warehouseProducts.map((wp) => wp.product_id))];
+      const variantIds = [
+        ...new Set(
+          warehouseProducts
+            .flatMap((wp) =>
+              (wp.variants || []).map((v) => v.variant_id).filter((id) => id != null)
+            )
+        ),
+      ];
+
+      // 4. Cargar productos completos (con atributos, imágenes, etc.)
+      const products = await ProductRepository.findFiltered({
+        companyId,
+        productId: productIds,
+        state: 1, // solo activos
+      });
+      const productMap = new Map(products.map((p) => [p.id, p]));
+
+      // 5. Obtener último movimiento por variante (solo si hay variantes)
+      let lastMovements = {};
+      if (variantIds.length > 0) {
+        try {
+          const movements = await InventoryMovement.findAll({
+            where: {
+              variant_id: { [Op.in]: variantIds },
+              company_id: companyId,
+            },
+            attributes: [
+              "variant_id",
+              [fn("MAX", col("createdAt")), "last_movement_at"],
+            ],
+            group: ["variant_id"],
+            raw: true,
+          });
+          lastMovements = movements.reduce((acc, m) => {
+            acc[m.variant_id] = m.last_movement_at;
+            return acc;
+          }, {});
+        } catch (error) {
+          logger.warn("No se pudo cargar último movimiento:", error.message);
+        }
+      }
+
+      // 6. Construir resultado final
+      const result = [];
+      for (const wp of warehouseProducts) {
+        const product = productMap.get(wp.product_id);
+        if (!product) continue;
+
+        const baseData = {
+          product_id: wp.product_id,
+          product_name: wp.name,
+          product_image: wp.product_image,
+          sku: wp.sku,
+        };
+
+        if (wp.variants && wp.variants.length > 0) {
+          // Producto con variantes
+          for (const v of wp.variants) {
+            if ((v.stock || 0) <= 0) continue; // Opcional: omitir stock 0
+
+            const warehouse = warehouses.find((w) => w.id === wp.warehouse_id);
+            if (!warehouse) continue;
+
+            result.push({
+              ...baseData,
+              variant_id: v.variant_id,
+              variant_attributes: v.attributes || {},
+              physical_stock: v.stock || 0,
+              reserved_stock: 0,
+              available_stock: v.stock || 0,
+              last_movement_at: lastMovements[v.variant_id] || null,
+              warehouse_id: warehouse.id,
+              warehouse_name: warehouse.name,
+            });
+          }
+        } else {
+          // Producto sin variantes → usar stock global
+          if ((wp.stock || 0) > 0) {
+            const warehouse = warehouses.find((w) => w.id === wp.warehouse_id);
+            if (warehouse) {
+              result.push({
+                ...baseData,
+                variant_id: null,
+                variant_attributes: {},
+                physical_stock: wp.stock || 0,
+                reserved_stock: 0,
+                available_stock: wp.stock || 0,
+                last_movement_at: null, // No hay variante → no hay movimiento específico
+                warehouse_id: warehouse.id,
+                warehouse_name: warehouse.name,
+              });
+            }
+          }
+        }
+      }
+
+      // 7. Si no hay stock en ningún almacén, devolver todos los productos activos con stock=0
+      if (result.length === 0) {
+        return await this._getProductsWithoutStock(companyId);
+      }
+
+      return result;
+    } catch (error) {
+      logger.error("InventoryRepository.getConsolidatedInventory error:", error.message);
+      throw error;
+    }
+  },
+
+  /**
+   * Devuelve todos los productos activos de una empresa con stock=0.
+   * @private
+   */
+  async _getProductsWithoutStock(companyId) {
+    const products = await ProductRepository.findFiltered({
+      companyId,
+      state: 1,
+    });
+    const result = [];
+    for (const p of products) {
+      const variants = p.variants && p.variants.length > 0 
+        ? p.variants 
+        : [{ id: null, sku: p.sku, attributes: {} }];
+
+      for (const v of variants) {
+        result.push({
+          product_id: p.id,
+          product_name: p.name,
+          product_image: Array.isArray(p.images) ? p.images[0] : null,
+          sku: v.sku || p.sku,
+          variant_id: v.id,
+          variant_attributes: typeof v.attributes === "string"
+            ? JSON.parse(v.attributes || "{}")
+            : v.attributes || {},
+          physical_stock: 0,
+          reserved_stock: 0,
+          available_stock: 0,
+          last_movement_at: null,
+          warehouse_id: null,
+          warehouse_name: "—",
+        });
+      }
+    }
+    return result;
+  },
 };
 
 module.exports = InventoryMovementRepository;
