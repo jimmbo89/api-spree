@@ -59,7 +59,7 @@ const CompanyController = {
             logger.error(
                 `CompanyController->store: Tipo de negocio no encontrado con ID ${business_type_id}`
             );
-            return res.status(400).json({ msg: "BusinessTypeNotFound" });
+            return res.status(400).json({success: false,  message: "Tipo de negocio no encontrado" });
             }
         }
 
@@ -117,14 +117,14 @@ const CompanyController = {
       }*/
       await transaction.commit();
       const companies = await CompanyRepository.getMappedCompaniesByUserId(req.user.id);
-      res.status(201).json({ message: "Compañía creada correctamente", companies: companies });
+      res.status(201).json({ success: true, message: "Compañía creada correctamente", companies: companies });
     } catch (error) {
       await transaction.rollback();
       const errorMsg = error.details
         ? error.details.map(detail => detail.message).join(', ')
         : error.message || 'Error desconocido';
       logger.error('CompanyController->store: ' + errorMsg);
-      res.status(500).json({ error: 'ServerError', details: errorMsg });
+      res.status(500).json({success: false, message: 'error interno del servidor', details: errorMsg });
     }
   },
 
@@ -321,14 +321,14 @@ const CompanyController = {
             logger.error(
                 `CompanyController->update: Tipo de negocio no encontrado con ID ${business_type_id}`
             );
-            return res.status(400).json({ msg: "BusinessTypeNotFound" });
+            return res.status(400).json({success: false,  message: "Tipo de negocio no encontrado" });
             }
         }
 
     try {
       const company = await CompanyRepository.findById(id);
       if (!company) {
-        return res.status(404).json({ msg: 'CompanyNotFound' });
+        return res.status(404).json({success: false,  message: 'Empresa no encontrada' });
       }
 
       // Guardar valores originales para auditoría
@@ -342,8 +342,9 @@ const CompanyController = {
         const value = field === 'rut' ? rut : email;
         logger.error(`El ${fieldName} ya está registrado: ${value}`);
         return res.status(400).json({
-          error: `Duplicate${field.charAt(0).toUpperCase() + field.slice(1)}`,
-          msg: `El ${fieldName} ya está registrado en otra empresa.`
+          success: false,
+          details: `Duplicate${field.charAt(0).toUpperCase() + field.slice(1)}`,
+          message: `El ${fieldName} ya está registrado en otra empresa.`
         });
       }
     }
@@ -377,7 +378,7 @@ const CompanyController = {
         logEntry = {
           user_id: metadata.user_id,
           action: 'company.update',
-          description: `Actualización de compañía ID ${company.id} sin cambios`,
+          description: `Actualización de empresa ID ${company.id} sin cambios`,
           ip_address: metadata.ip_address,
           user_agent: metadata.user_agent,
           status: 'success',
@@ -388,12 +389,12 @@ const CompanyController = {
       // ✅ Crear UN solo registro
       await LogRepository.create(logEntry);
       const companies = await CompanyRepository.getMappedCompaniesByUserId(req.user.id);
-      res.status(200).json({ message: 'Compañía editada correctamente', companies: companies });
+      res.status(200).json({success: true, message: 'Empresa editada correctamente', companies: companies });
     } catch (error) {
        await LogRepository.create({
         user_id: metadata.user_id,
         action: 'company.update',
-        description: `Error al actualizar compañía ID ${id}: ${error.message}`,
+        description: `Error al actualizar empresa ID ${id}: ${error.message}`,
         ip_address: metadata.ip_address,
         user_agent: metadata.user_agent,
         status: 'error',
@@ -403,7 +404,7 @@ const CompanyController = {
         ? error.details.map(detail => detail.message).join(', ')
         : error.message || 'Error desconocido';
       logger.error('CompanyController->update: ' + errorMsg);
-      res.status(500).json({ error: 'ServerError', details: errorMsg });
+      res.status(500).json({success: false,  message: 'Error interno del servidor', details: errorMsg });
     }
   },
 
@@ -414,7 +415,7 @@ const CompanyController = {
     try {
       const company = await CompanyRepository.findById(req.body.id);
       if (!company) {
-        return res.status(404).json({ msg: 'CompanyNotFound' });
+        return res.status(404).json({success: false, message: 'Empresa no encontrada' });
       }
       // ✅ Guardar datos originales PARA EL LOG antes de eliminar
     const companyData = company.get({ plain: true });
@@ -425,7 +426,7 @@ const CompanyController = {
     await LogRepository.create({
       user_id: metadata.user_id,
       action: 'company.delete',
-      description: `Compañía eliminada: ID ${companyData.id}, nombre: "${companyData.name}"`,
+      description: `Empresa eliminada: ID ${companyData.id}, nombre: "${companyData.name}"`,
       ip_address: metadata.ip_address,
       user_agent: metadata.user_agent,
       status: 'success',
@@ -434,12 +435,12 @@ const CompanyController = {
       }
     });
       const companies = await CompanyRepository.getMappedCompaniesByUserId(req.user.id);
-      res.status(200).json({ message: 'Compañía eliminada correctamente', companies: companies });
+      res.status(200).json({success: true, message: 'Empresa eliminada correctamente', companies: companies });
     } catch (error) {
       await LogRepository.create({
       user_id: metadata.user_id,
       action: 'company.delete',
-      description: `Error al eliminar compañía ID ${req.body.id}: ${error.message}`,
+      description: `Error al eliminar empresa ID ${req.body.id}: ${error.message}`,
       ip_address: metadata.ip_address,
       user_agent: metadata.user_agent,
       status: 'error',
@@ -450,7 +451,7 @@ const CompanyController = {
         ? error.details.map(detail => detail.message).join(', ')
         : error.message || 'Error desconocido';
       logger.error('CompanyController->destroy: ' + errorMsg);
-      res.status(500).json({ error: 'ServerError', details: errorMsg });
+      res.status(500).json({ success: false, message: 'Error interno del servidor', details: errorMsg });
     }
   },
 

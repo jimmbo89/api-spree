@@ -87,14 +87,16 @@ const PlanController = {
       const limits = {
         products: getLimit(company.plan.max_products),
         warehouses: getLimit(company.plan.max_stores),
-        pools: getLimit(company.plan.max_pools)
+        pools: getLimit(company.plan.max_pools),
+        publications: getLimit(company.plan.max_global_publications)
       };
 
       // 6. Armar stats con used y limit
       stats = {
         products: { used: productCount, limit: limits.products },
         warehouses: { used: warehouseCount, limit: limits.warehouses },
-        pools: { used: poolCount, limit: limits.pools }
+        pools: { used: poolCount, limit: limits.pools },
+        publications: { used: 0, limit: limits.publications}
       };
     }
   } catch (statsError) {
