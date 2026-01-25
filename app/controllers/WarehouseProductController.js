@@ -673,6 +673,35 @@ const WarehouseProductController = {
 
       // === PROCESAR SEGÚN EL TIPO ===
       if (movement_type === 'entry') {
+        const originCompanyId = await _resolveCompanyFromWarehouse(origin_warehouse_id);
+
+        const alreadyAssociated = await WarehouseProductRepository.isProductAssociatedWithCompany(
+          product_id,
+          originCompanyId
+        );
+
+        if (!alreadyAssociated) {
+    // Es un producto nuevo → verificar límite
+    const company = await CompanyRepository.findById(originCompanyId);
+    if (!company?.plan) {
+      await transaction.rollback();
+      return res.status(400).json({ success: false, message: "Plan no disponible" });
+    }
+
+    const currentCount = await WarehouseProductRepository.countUniqueProductsByCompanyId(originCompanyId);
+    const maxProducts = company.plan.max_products;
+
+    if (maxProducts !== -1 && currentCount >= maxProducts) {
+      await transaction.rollback();
+      return res.status(403).json({
+        success: false,
+        code: 'PLAN_LIMIT_REACHED',
+        message: "Has alcanzado el límite máximo de productos permitidos por tu plan. Actualiza tu plan para agregar más.",
+        limit: maxProducts,
+        current: currentCount
+      });
+    }
+  }
         // --- ENTRADA: crear o actualizar variante en el MISMO almacén ---
         let wpVariant = await WarehouseProductVariantRepository.findByVariantAndWarehouseProduct(
           variant_id,
@@ -893,9 +922,6 @@ const WarehouseProductController = {
     return res.status(500).json({ success: false, message: "Error interno al registrar movimiento" });
   }
 },
-
-// controllers/WarehouseProductController.js
-
 async createBulkMovement(req, res) {
   logger.info(`${req.user?.name || "Unknown"} - Crea movimiento masivo de inventario`);
   logger.info("Datos recibidos (bulk):", JSON.stringify(req.body));
@@ -941,6 +967,48 @@ async createBulkMovement(req, res) {
       }
     }
 
+    if (movement_type === 'entry') {
+  // Pre-validar todos los productos nuevos antes de procesar
+  const originCompanyId = await _resolveCompanyFromWarehouse(origin_warehouse_id);
+
+  let newProductsCount = 0;
+  const newProductIds = [];
+
+  for (const { product_id } of products) {
+    const alreadyAssociated = await WarehouseProductRepository.isProductAssociatedWithCompany(
+      product_id,
+      originCompanyId
+    );
+    if (!alreadyAssociated) {
+      newProductIds.push(product_id);
+      newProductsCount++;
+    }
+  }
+
+  if (newProductsCount > 0) {
+    // Verificar límite global
+    const company = await CompanyRepository.findById(originCompanyId);
+    if (!company?.plan) {
+      await transaction.rollback();
+      return res.status(400).json({ success: false, message: "Plan no disponible" });
+    }
+
+    const currentCount = await WarehouseProductRepository.countUniqueProductsByCompanyId(originCompanyId);
+    const maxProducts = company.plan.max_products;
+
+    if (maxProducts !== -1 && (currentCount + newProductsCount) > maxProducts) {
+      await transaction.rollback();
+      return res.status(403).json({
+        success: false,
+        code: 'PLAN_LIMIT_REACHED',
+        message: "Has alcanzado el límite máximo de productos permitidos por tu plan. Actualiza tu plan para agregar más.",
+        limit: maxProducts,
+        current: currentCount,
+        requested: newProductsCount
+      });
+    }
+  }
+}
     // === Procesar cada producto ===
     for (const { product_id, variants } of products) {
       await _processProductMovement({
@@ -994,415 +1062,26 @@ async createBulkMovement(req, res) {
     return res.status(500).json({ success: false, message: "Error interno al registrar movimiento masivo" });
   }
 },
-  /*async transferStock(req, res) {
-  logger.info(`${req.user?.name || "Unknown"} - Transfiere producto`);
-  logger.info("Datos recibidos al transferir:");
-  logger.info(JSON.stringify(req.body));
 
-  const {
-    origin_warehouse_id,
-    destination_warehouse_id,
-    product_id,
-    variants,
-    reason,
-    notes
-  } = req.body;
-
-  // Validaciones básicas
-  if (!origin_warehouse_id || !destination_warehouse_id || !product_id || !Array.isArray(variants) || variants.length === 0) {
-    return res.status(400).json({ success: false, message: "Datos incompletos" });
-  }
-
-  if (origin_warehouse_id === destination_warehouse_id) {
-    return res.status(400).json({ success: false, message: "Origen y destino deben ser distintos" });
-  }
-
-  if (!reason || !reason.trim()) {
-    return res.status(400).json({ success: false, message: "El motivo es obligatorio" });
-  }
-
-  const currentUserId = req.user.id;
-  const transferReferenceId = uuidv4();
-  let transaction;
-
-  try {
-    transaction = await sequelize.transaction();
-
-    // === Validar almacenes y producto ===
-    const [originWarehouse, destWarehouse, product] = await Promise.all([
-      WarehouseRepository.findById(origin_warehouse_id),
-      WarehouseRepository.findById(destination_warehouse_id),
-      ProductRepository.findById(product_id)
-    ]);
-
-    if (!originWarehouse || !destWarehouse) {
-      await transaction.rollback();
-      return res.status(400).json({ success: false, message: "Almacén no encontrado" });
-    }
-
-    if (!product) {
-      await transaction.rollback();
-      return res.status(400).json({ success: false, message: "Producto no encontrado" });
-    }
-
-    // === Verificar que el producto esté en el almacén de origen ===
-    const originWp = await WarehouseProductRepository.findByWarehouseAndProduct(origin_warehouse_id, product_id);
-    if (!originWp) {
-      await transaction.rollback();
-      return res.status(400).json({ success: false, message: "El producto no está asociado al almacén de origen" });
-    }
-
-    // === Cargar variantes del origen ===
-    const originWpVariants = await WarehouseProductVariantRepository.findByWarehouseProductId(originWp.id);
-    const originVariantMap = new Map(originWpVariants.map(v => [v.variant_id, v]));
-
-    // === ASEGURAR warehouse_product EN DESTINO (¡FUERA DEL BUCLE!) ===
-    let destWp = await WarehouseProductRepository.findByWarehouseAndProduct(destination_warehouse_id, product_id);
-    if (!destWp) {
-      destWp = await WarehouseProductRepository.create({
-        product_id,
-        warehouse_id: destination_warehouse_id,
-        active: true,
-        code: null,
-        company_id: destWarehouse.company_id,
-        branch_id: destWarehouse.branch_id,
-        user_id: currentUserId
-      }, { transaction });
-    }
-
-    // === Procesar cada variante ===
-    for (const { variant_id, quantity } of variants) {
-      if (!Number.isInteger(quantity) || quantity <= 0) {
-        await transaction.rollback();
-        return res.status(400).json({ success: false, message: `Cantidad inválida para variante ${variant_id}` });
-      }
-
-      const originVariant = originVariantMap.get(variant_id);
-      if (!originVariant) {
-        await transaction.rollback();
-        return res.status(400).json({ success: false, message: `Variante ${variant_id} no encontrada en almacén de origen` });
-      }
-
-      const originalStockOrigin = originVariant.stock;
-      if (originalStockOrigin < quantity) {
-        await transaction.rollback();
-        return res.status(400).json({ success: false, message: `Stock insuficiente para variante ${variant_id}` });
-      }
-
-      // === Actualizar stock en origen ===
-      const newStockOrigin = originalStockOrigin - quantity;
-      const updateDataOrigin = { stock: newStockOrigin };
-
-      if (newStockOrigin === 0) {
-        updateDataOrigin.price = null;
-        updateDataOrigin.promotional_price = null;
-        updateDataOrigin.local_sku = null;
-        updateDataOrigin.active = false;
-        updateDataOrigin.published = false;
-      }
-
-      await WarehouseProductVariantRepository.update(
-        originVariant,
-        updateDataOrigin,
-        { transaction }
-      );
-
-      // === Actualizar o crear variante en destino ===
-      let destWpVariant = await WarehouseProductVariantRepository.findByVariantAndWarehouseProduct(variant_id, destWp.id);
-      let oldStockDest, newStockDest;
-
-      if (destWpVariant) {
-        oldStockDest = destWpVariant.stock;
-        newStockDest = oldStockDest + quantity;
-        await WarehouseProductVariantRepository.update(
-          destWpVariant,
-          { stock: newStockDest },
-          { transaction }
-        );
-      } else {
-        oldStockDest = 0;
-        newStockDest = quantity;
-        await WarehouseProductVariantRepository.create({
-          warehouse_product_id: destWp.id,
-          variant_id,
-          active: true,
-          published: false,
-          local_sku: originVariant.local_sku || null,
-          price: originVariant.price || 0,
-          promotional_price: originVariant.promotional_price,
-          stock: newStockDest
-        }, { transaction });
-      }
-
-      // === Registrar movimientos en Kardex ===
-      const baseMovement = {
-        product_id,
-        variant_id,
-        user_id: currentUserId,
-        reason: reason.trim(),
-        notes: notes?.trim() || null,
-        reference_type: 'transfer',
-        reference_id: transferReferenceId,
-        origin_warehouse_id,
-        destination_warehouse_id,
-        company_id: originWarehouse.company_id,
-        branch_id: originWarehouse.branch_id
-      };
-
-      // Movimiento de SALIDA
-      await InventoryMovementRepository.create({
-        ...baseMovement,
-        warehouse_id: origin_warehouse_id,
-        movement_type: 'transfer_exit',
-        quantity,
-        stock_before: originalStockOrigin,
-        stock_after: newStockOrigin,
-        unit_price: originVariant.price,
-        total_value: originVariant.price ? originVariant.price * quantity : null
-      }, { transaction });
-
-      // Movimiento de ENTRADA
-      await InventoryMovementRepository.create({
-        ...baseMovement,
-        warehouse_id: destination_warehouse_id,
-        company_id: destWarehouse.company_id,
-        branch_id: destWarehouse.branch_id,
-        movement_type: 'transfer_entry',
-        quantity,
-        stock_before: oldStockDest,
-        stock_after: newStockDest,
-        unit_price: originVariant.price,
-        total_value: originVariant.price ? originVariant.price * quantity : null
-      }, { transaction });
-    }
-
-    await transaction.commit();
-
-    // === Registrar en log general ===
-    const metadata = getRequestMetadata(req);
-    await LogRepository.create({
-      user_id: metadata.user_id,
-      action: "warehouse.transfer_stock",
-      description: `Transferencia completada: ${variants.length} variantes de ${product.sku}`,
-      ip_address: metadata.ip_address,
-      user_agent: metadata.user_agent,
-      status: "success",
-      extra: JSON.stringify({ reference_id: transferReferenceId })
-    });
-
-    return res.status(200).json({
-      success: true,
-      message: "Transferencia completada exitosamente",
-      reference_id: transferReferenceId
-    });
-
-  } catch (error) {
-    if (transaction) await transaction.rollback();
-    logger.error("Error en transferStock:", error);
-
-    const metadata = getRequestMetadata(req);
-    await LogRepository.create({
-      user_id: metadata?.user_id,
-      action: "warehouse.transfer_stock",
-      description: `Error: ${error.message}`,
-      ip_address: metadata?.ip_address,
-      user_agent: metadata?.user_agent,
-      status: "error"
-    });
-
-    return res.status(500).json({ success: false, message: "Error interno al transferir stock" });
-  }
-}*/
-  /*async transferStock(req, res) {
-    logger.info( `${req.user?.name || "Unknown"} - Transfiere producto` );
-    logger.info("Datos recibidos al transferir:");
-    logger.info(JSON.stringify(req.body));
-  const {
-    origin_warehouse_id,
-    destination_warehouse_id,
-    product_id,
-    variants // array de { variant_id, quantity }
-  } = req.body;
-  const currentUserId = req.user.id;
-
-  // Validaciones básicas
-  if (!origin_warehouse_id || !destination_warehouse_id || !product_id || !Array.isArray(variants)) {
-    return res.status(400).json({ success: false, message: "Datos incompletos" });
-  }
-
-  if (origin_warehouse_id === destination_warehouse_id) {
-    return res.status(400).json({ success: false, message: "Origen y destino deben ser distintos" });
-  }
-
-  if (variants.length === 0) {
-    return res.status(400).json({ success: false, message: "Debe transferir al menos una variante" });
-  }
-
-  let transaction;
-  try {
-    transaction = await sequelize.transaction();
-
-    // Validar almacenes
-    const originWarehouse = await WarehouseRepository.findById(origin_warehouse_id);
-    const destWarehouse = await WarehouseRepository.findById(destination_warehouse_id);
-    if (!originWarehouse || !destWarehouse) {
-      await transaction.rollback();
-      return res.status(400).json({ success: false, message: "Almacén no encontrado" });
-    }
-
-    // Validar producto
-    const product = await ProductRepository.findById(product_id);
-    if (!product) {
-      await transaction.rollback();
-      return res.status(400).json({ success: false, message: "Producto no encontrado" });
-    }
-
-    // Verificar que el producto esté en el almacén origen
-    const originWp = await WarehouseProductRepository.findByWarehouseAndProduct(
-      origin_warehouse_id,
-      product_id
-    );
-    if (!originWp) {
-      await transaction.rollback();
-      return res.status(400).json({ success: false, message: "El producto no está asociado al almacén de origen" });
-    }
-
-    // Cargar variantes actuales del origen
-    const originWpVariants = await WarehouseProductVariantRepository.findByWarehouseProductId(originWp.id);
-    const originVariantMap = new Map(originWpVariants.map(v => [v.variant_id, v]));
-
-    // Validar cada variante y cantidad
-    for (const { variant_id, quantity } of variants) {
-      if (!Number.isInteger(quantity) || quantity <= 0) {
-        await transaction.rollback();
-        return res.status(400).json({ success: false, message: `Cantidad inválida para variante ${variant_id}` });
-      }
-
-      const originVariant = originVariantMap.get(variant_id);
-      if (!originVariant) {
-        await transaction.rollback();
-        return res.status(400).json({ success: false, message: `Variante ${variant_id} no está en el almacén de origen` });
-      }
-
-      if (originVariant.stock < quantity) {
-        await transaction.rollback();
-        return res.status(400).json({ success: false, message: `Stock insuficiente para variante ${variant_id}` });
-      }
-
-      const newStock = originVariant.stock - quantity;
-      const updateData = { stock: newStock };
-
-      // ✅ Si el stock llega a 0, limpiar campos sensibles
-      if (newStock === 0) {
-        updateData.price = null;
-        updateData.promotional_price = null;
-        updateData.local_sku = null;
-        updateData.active = false;
-        updateData.published = false;
-      }
-
-      await WarehouseProductVariantRepository.update(
-        originVariant,
-        updateData,
-        { transaction }
-      );
-
-      let destWp = await WarehouseProductRepository.findByWarehouseAndProduct(
-        destination_warehouse_id,
-        product_id
-      );
-
-      if (!destWp) {
-        destWp = await WarehouseProductRepository.create(
-          {
-            product_id,
-            warehouse_id: destination_warehouse_id,
-            active: true,
-            code: null,
-            company_id: destWarehouse.company_id,
-            branch_id: destWarehouse.branch_id,
-            user_id: currentUserId
-          },
-          { transaction }
-        );
-      }
-
-      // 🔺 Verificar si la variante ya existe en el destino
-      let destWpVariant = await WarehouseProductVariantRepository.findByVariantAndWarehouseProduct(
-        variant_id,
-        destWp.id
-      );
-
-      if (destWpVariant) {
-        // Actualizar stock existente
-        await WarehouseProductVariantRepository.update(
-          destWpVariant,
-          { stock: destWpVariant.stock + quantity },
-          { transaction }
-        );
-      } else {
-        // Crear nueva variante en destino
-        await WarehouseProductVariantRepository.create(
-          {
-            warehouse_product_id: destWp.id,
-            variant_id,
-            active: true,
-            published: false,
-            local_sku: originVariant.local_sku || null,
-            price: originVariant.price || 0,
-            promotional_price: originVariant.promotional_price,
-            stock: quantity
-          },
-          { transaction }
-        );
-      }
-    }
-
-    await transaction.commit();
-
-    // ✅ Registrar en log
-    const metadata = getRequestMetadata(req);
-    await LogRepository.create({
-      user_id: metadata.user_id,
-      action: "warehouse.transfer_stock",
-      description: `Producto ${product.sku} transferido de '${originWarehouse.name}' (ID:${origin_warehouse_id}) a '${destWarehouse.name}' (ID:${destination_warehouse_id})`,
-      ip_address: metadata.ip_address,
-      user_agent: metadata.user_agent,
-      status: "success",
-      extra: JSON.stringify({
-        origin_warehouse_id,
-        destination_warehouse_id,
-        product_id,
-        variants
-      })
-    });
-
-    return res.status(200).json({
-      success: true,
-      message: "Transferencia completada exitosamente"
-    });
-
-  } catch (error) {
-    if (transaction) await transaction.rollback();
-    logger.error("Error en transferStock:", { error: error.message, stack: error.stack });
-
-    const metadata = getRequestMetadata(req);
-    await LogRepository.create({
-      user_id: metadata?.user_id,
-      action: "warehouse.transfer_stock",
-      description: `Error: ${error.message}`,
-      ip_address: metadata?.ip_address,
-      user_agent: metadata?.user_agent,
-      status: "error"
-    });
-
-    return res.status(500).json({ success: false, msg: "Error interno al transferir stock" });
-  }
-}*/
 };
 
 // === Submétodos privados ===
+async function _resolveCompanyFromWarehouse(warehouseId) {
+  const warehouse = await WarehouseRepository.findById(warehouseId);
+  if (warehouse.company_id) {
+    return warehouse.company_id;
+  }
 
+  if (warehouse.branch_id) {
+    const branch = await BranchRepository.findById(warehouse.branch_id);
+    if (!branch || !branch.company_id) {
+      throw new Error('Sucursal sin compañía asociada');
+    }
+    return branch.company_id;
+  }
+
+  throw new Error('Almacén no asociado a compañía ni sucursal');
+}
 async function _validateMovementType(type) {
   if (!['entry', 'exit', 'transfer'].includes(type)) {
     throw new Error("Tipo de movimiento inválido");

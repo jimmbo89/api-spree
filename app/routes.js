@@ -55,6 +55,7 @@ const UserAclScopeController = require("./controllers/UserAclScopeController.js"
 const { createUserAclScopeSchema, userAclScopeIdSchema, userAclScopesByUserAndCompanySchema } = require("./middlewares/validations/userAclScopeValidation.js");
 const AttributeController = require("./controllers/AttributeController.js");
 const { attributeSchema, updateAttributeSchema, idAttributeSchema } = require("./middlewares/validations/attributeValidation.js");
+const { checkPlanLimit } = require("./policies/PlanLimitsPolicity.js");
 const router = express.Router();
 
 
@@ -186,13 +187,13 @@ router.post('/user-acl-scopes-clear', requireRoles(['Admin', 'Seller Manager']),
 
 //Rutas de Sucursales
 router.post("/branch-user-company", requireRoles(['Admin', 'Seller Manager']), validateSchema(listBranchesSchema), BranchController.list);
-router.post("/branch", requireRoles(['Admin', 'Seller Manager']), multerImage("image", "branches"), validateSchema(storeBranchSchema), BranchController.store);
+router.post("/branch", requireRoles(['Admin', 'Seller Manager']), checkPlanLimit('branch'), multerImage("image", "branches"), validateSchema(storeBranchSchema), BranchController.store);
 router.post("/branch-update", requireRoles(['Admin', 'Seller Manager']), multerImage("image", "branches"), validateSchema(updateBranchSchema), BranchController.update);
 router.post("/branch-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idBranchSchema), BranchController.destroy);
 
 //Rutas de Almacénes
 router.post("/warehouse-branch-company", requireRoles(['Admin', 'Seller Manager']), validateSchema(listWarehouseSchema), WarehouseController.list);
-router.post("/warehouse", requireRoles(['Admin', 'Seller Manager']), multerImage("image", "warehouses"), validateSchema(storeWarehouseSchema), WarehouseController.store);
+router.post("/warehouse", requireRoles(['Admin', 'Seller Manager']), checkPlanLimit('warehouse'), multerImage("image", "warehouses"), validateSchema(storeWarehouseSchema), WarehouseController.store);
 router.post("/warehouse-update", requireRoles(['Admin', 'Seller Manager']), multerImage("image", "warehouses"), validateSchema(updateWarehouseSchema), WarehouseController.update);
 router.post("/warehouse-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idWarehouseSchema), WarehouseController.destroy);
 router.post("/warehouse-metadata", requireRoles(['Admin', 'Seller Manager']), WarehouseController.getWarehouseMetadata);
@@ -257,7 +258,7 @@ router.post("/marketplace-list", requireRoles(['Admin', 'Seller Manager']), Mark
 
 //Marketplace Credentiales
 //router.post('/marketplace-credentials-by-context', validateSchema(findByMarketplaceCredentialSchema), MarketplaceCredentialController.index);
-router.post("/marketplace-credential", requireRoles(['Admin', 'Seller Manager']), validateSchema(storeMarketplaceCredentialSchema), MarketplaceCredentialController.store);
+router.post("/marketplace-credential", requireRoles(['Admin', 'Seller Manager']), checkPlanLimit('marketplaces'), validateSchema(storeMarketplaceCredentialSchema), MarketplaceCredentialController.store);
 router.post("/marketplace-credential-update", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateMarketplaceCredentialSchema), MarketplaceCredentialController.update);
 router.post('/marketplace-credentials-by-user', MarketplaceCredentialController.getByUser);
 router.post('/marketplace-refresh-token', validateSchema(idMarketplaceCredentialSchema), MarketplaceCredentialController.refreskToken);
@@ -272,7 +273,7 @@ router.post("/product-field-mapping-list", requireRoles(['Admin', 'Seller Manage
 
 //rutas de pools
 router.post("/pool-list", requireRoles(['Admin', 'Seller Manager']), validateSchema(listPoolsSchema), PoolController.list);
-router.post("/pool", requireRoles(['Admin', 'Seller Manager']), validateSchema(storePoolSchema), PoolController.store);
+router.post("/pool", requireRoles(['Admin', 'Seller Manager']), checkPlanLimit('pools'), validateSchema(storePoolSchema), PoolController.store);
 router.post("/pool-update", requireRoles(['Admin', 'Seller Manager']), validateSchema(updatePoolSchema), PoolController.update);
 router.post("/pool-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idPoolSchema), PoolController.destroy);
 //Rutas de publicaciones de productos

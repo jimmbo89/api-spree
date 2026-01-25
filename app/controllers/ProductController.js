@@ -159,6 +159,21 @@ const ProductController = {
       });
     }
 
+    const plan = company.plan;
+if (plan?.max_products !== undefined && plan.max_products !== -1) {
+  const currentProductCount = await WarehouseProductRepository.countUniqueProductsByCompanyId(company_id);
+  
+  if (currentProductCount >= plan.max_products) {
+    return res.status(403).json({
+      success: false,
+      code: 'PLAN_LIMIT_REACHED',
+      message: "Has alcanzado el límite máximo de productos permitidos por tu plan. Actualiza tu plan para agregar más.",
+      limit: plan.max_products,
+      current: currentProductCount
+    });
+  }
+}
+
     // Validar categoría
     if (category_id) {
       const category = await ProductCategoryRepository.findById(category_id);

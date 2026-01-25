@@ -48,6 +48,11 @@ const BranchRepository = {
     });
   },
 
+  async countByCompanyId (companyId, options = {}){
+  const where = { company_id: companyId, ...options.where };
+  return Branch.count({ where });
+},
+
   async create(body, file, transaction = null) {
     const { name, address, city, phone, status, company_id, user_id } = body;
 

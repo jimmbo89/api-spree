@@ -1,5 +1,5 @@
 const { Op, fn, col, where, and, or, literal } = require('sequelize');
-const { WarehouseProduct, Product, ProductVariant, WarehouseProductVariant, ProductCategory, ProductAttribute, Attribute, Branch, Company, Warehouse, Sequelize } = require('../models');
+const { WarehouseProduct, Product, ProductVariant, WarehouseProductVariant, ProductCategory, ProductAttribute, Attribute, Branch, Company, Warehouse, sequelize } = require('../models');
 const ImageService = require('../services/ImageService');
 const logger = require('../../config/logger');
 
@@ -495,9 +495,6 @@ async findProductsByWarehouseIds({ companyId, warehouseIds }) {
 
 async getCountsByWarehouse(warehouseIds) {
   if (!warehouseIds || warehouseIds.length === 0) return {};
-
-  const { sequelize } = require('../models');
-
   // CORRECCIÓN: Usar los nuevos nombres de campos
   const result = await sequelize.query(`
     SELECT
@@ -540,6 +537,40 @@ async getCountsByWarehouse(warehouseIds) {
       include: [{ model: WarehouseProductVariant, as: 'warehouseVariants' }]
     });
   },
+
+async countUniqueProductsByCompanyId(companyId) {
+  const query = `
+    SELECT COUNT(DISTINCT wp.product_id) AS count
+    FROM warehouse_products wp
+    LEFT JOIN warehouses w ON wp.warehouse_id = w.id
+    LEFT JOIN branches b ON w.branch_id = b.id
+    WHERE wp.company_id = :companyId
+       OR (b.company_id = :companyId AND wp.company_id IS NULL)
+  `;
+  const result = await sequelize.query(query, {
+    replacements: { companyId },
+    type: sequelize.QueryTypes.SELECT
+  });
+  return parseInt(result[0].count, 10) || 0;
+},
+
+// Verifica si un producto YA está asociado a una compañía
+async isProductAssociatedWithCompany(productId, companyId) {
+  const query = `
+    SELECT 1
+    FROM warehouse_products wp
+    LEFT JOIN warehouses w ON wp.warehouse_id = w.id
+    LEFT JOIN branches b ON w.branch_id = b.id
+    WHERE wp.product_id = :productId
+      AND (wp.company_id = :companyId OR (b.company_id = :companyId AND wp.company_id IS NULL))
+    LIMIT 1
+  `;
+  const result = await sequelize.query(query, {
+    replacements: { productId, companyId },
+    type: sequelize.QueryTypes.SELECT
+  });
+  return result.length > 0;
+},
 
   async create(body, options = {}) {
         logger.info('Datos recibidos arehouseproductrepository.create:');

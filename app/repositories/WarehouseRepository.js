@@ -239,6 +239,25 @@ async checkUniqueName(data, excludeId = null) {
     });
   },
 
+  async countByCompanyId(companyId) {
+  const count = await Warehouse.count({
+    where: {
+      [Op.or]: [
+        { company_id: companyId }, // Almacenes directos de la empresa
+        {
+          branch_id: {
+            [Op.in]: Sequelize.literal(
+              `(SELECT id FROM branches WHERE company_id = ${companyId})`
+            )
+          }
+        }
+      ]
+    }
+  });
+
+  return count;
+},
+
   async validateWarehousesExist(warehouseIds, companyId = null) {
   if (!Array.isArray(warehouseIds) || warehouseIds.length === 0) {
     return { valid: false, missing: [], message: "No se proporcionaron almacenes" };
@@ -433,7 +452,8 @@ async checkUniqueName(data, excludeId = null) {
   const existingIds = new Set(existing.map(w => w.id));
   const invalidIds = warehouseIds.filter(id => !existingIds.has(id));
   return { valid: invalidIds.length === 0, invalidIds };
-}
+},
+
 };
 
 module.exports = WarehouseRepository;

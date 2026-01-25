@@ -136,6 +136,11 @@ async findByMarketplaceAndUser(marketplaceId, userId) {
     return records.map(record => record.get({ plain: true }));
   },
 
+      async countActiveByMarketplace (user_id, options = {}){
+        const where = { user_id: user_id, ...options.where };
+        return MarketplaceCredential.count({ where });
+      },
+
   async findById(id) {
     const record = await MarketplaceCredential.findByPk(id);
     if (!record) return null;

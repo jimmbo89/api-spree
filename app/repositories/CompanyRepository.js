@@ -16,7 +16,7 @@ const CompanyRepository = {
 
   async findById(id) {
     return await Company.findByPk(id, {
-      attributes: ['id', 'name', 'description', 'address', 'city', 'country', 'image', 'rut', 'phone', 'business_type_id', 'email', 'currency'],
+      attributes: ['id', 'name', 'description', 'address', 'city', 'country', 'image', 'rut', 'phone', 'business_type_id', 'plan_id', 'email', 'currency'],
       include: [
       { model: BusinessType, as: 'businessType', attributes: ['id', 'name'], required: false },
       { model: Plan, as: 'plan', required: false } // 👈 NUEVO

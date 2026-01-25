@@ -166,6 +166,11 @@ const PoolRepository = {
     return count > 0;
   },
 
+    async countByCompanyId (companyId, options = {}){
+  const where = { company_id: companyId, ...options.where };
+  return Pool.count({ where });
+},
+
   async findByCompany(companyId) {
     return await Pool.findAll({
       where: { company_id: companyId, is_active: true },

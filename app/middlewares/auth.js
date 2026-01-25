@@ -17,13 +17,13 @@ module.exports = async (req, res, next) => {
     // Verificar si el token está revocado o expirado
     const userToken = await UserTokenRepository.findByToken(token);
     if (!userToken) {
-      return res.status(401).json({ msg: 'Acceso no autorizado: token inválido, revocado o expirado' });
+      return res.status(401).json({ succes: false, message: 'Acceso no autorizado: token inválido, revocado o expirado' });
     }
 
     // Verificar la validez del token JWT
     jwt.verify(token, authConfig.secret, async (err, decoded) => {
       if (err) {
-        return res.status(401).json({ msg: "Token inválido o expirado" });
+        return res.status(401).json({ succes: false, message: "Token inválido o expirado" });
       }
 
       // Obtener el companyId del header (si existe)
@@ -51,13 +51,13 @@ module.exports = async (req, res, next) => {
             userWithContext = userWithCompanyContext;
           } catch (error) {
             if (error.message.includes('does not belong')) {
-              return res.status(403).json({
-                msg: "Acceso denegado a esta empresa."
+              return res.status(403).json({ success: false,
+                message: "Acceso denegado a esta empresa."
               });
             }
             logger.error(`Error al establecer contexto de empresa: ${error.message}`);
-            return res.status(500).json({
-              msg: "Error al establecer el contexto de empresa."
+            return res.status(500).json({ success: false,
+              message: "Error al establecer el contexto de empresa."
             });
           }
         }
