@@ -1,4 +1,5 @@
 const AttributeRepository = require("./AttributeRepository");
+const BillingOrderRepository = require("./BillingOrderRepository");
 const BranchRepository = require("./BranchRepository");
 const BusinessTypeRepository = require("./BusinessTypeRepository");
 const CompanyRepository = require("./CompanyRepository");
@@ -7,6 +8,7 @@ const InvitationRepository = require("./InvitationRepository");
 const LogRepository = require("./LogRepository");
 const MarketplaceCredentialRepository = require("./MarketplaceCredentialRepository");
 const MarketplaceRepository = require("./MarketplaceRepository");
+const NotificationRepository = require("./NotificationRepository");
 const PermissionRepository = require("./PermissionRepository");
 const PlanRepository = require("./PlanRepository");
 const PoolRepository = require("./PoolRepository");
@@ -20,6 +22,8 @@ const ProductRepository = require("./ProductRepository");
 const ProductVariantRepository = require("./ProductVariantRepository");
 const RolePermissionRepository = require("./RolePermissionRepository");
 const RoleRepository = require("./RoleRepository");
+const SubscriptionRepository = require("./SubscriptionRepository");
+const UpgradeRequestRepository = require("./UpgradeRequestRepository");
 const UserAclScopeRepository = require("./UserAclScopeRepository");
 const UserCompanyRepository = require("./UserCompanyRepository");
 const UserRepository = require("./UserRepository");
@@ -57,5 +61,9 @@ module.exports = {
     UserCompanyRepository,
     UserAclScopeRepository,
     AttributeRepository,
-    ProductAttributeRepository
+    ProductAttributeRepository,
+    NotificationRepository,
+    SubscriptionRepository,
+    UpgradeRequestRepository,
+    BillingOrderRepository
 };

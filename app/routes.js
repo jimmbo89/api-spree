@@ -49,6 +49,8 @@ const PermissionController = require("./controllers/PermissionController.js");
 const { permissionSchema, updatePermissionSchema, idPermissionSchema } = require("./middlewares/validations/permissionValidation.js");
 const { roleIdSchema, assignPermissionToRoleSchema, assignMultiplePermissionsToRoleSchema, updateRolePermissionSchema, idRolePermissionSchema, availablePermissionsForRoleSchema } = require("./middlewares/validations/rolePermissionValidation.js");
 const RolePermissionController = require("./controllers/RolePermissionController.js");
+const { idSubscriptionSchema, listSubscriptionsSchema, storeSubscriptionSchema, updateSubscriptionSchema } = require("./middlewares/validations/subscriptionValidation.js");
+const SubscriptionController = require("./controllers/SubscriptionController.js");
 const UserCompanyController = require("./controllers/UserCompanyController.js");
 const { createUserCompanySchema, updateUserCompanyStatusSchema, userCompanyIdSchema, userCompanyByUserAndCompanySchema, userCompanyByTokenSchema, listUserCompanySchema, updateUserCompanyRoleSchema, createMembershipRequestSchema } = require("./middlewares/validations/userCompanyValidation.js");
 const UserAclScopeController = require("./controllers/UserAclScopeController.js");
@@ -56,6 +58,12 @@ const { createUserAclScopeSchema, userAclScopeIdSchema, userAclScopesByUserAndCo
 const AttributeController = require("./controllers/AttributeController.js");
 const { attributeSchema, updateAttributeSchema, idAttributeSchema } = require("./middlewares/validations/attributeValidation.js");
 const { checkPlanLimit } = require("./policies/PlanLimitsPolicity.js");
+const { storeUpgradeRequestSchema, listUpgradeRequestsSchema, updateUpgradeRequestSchema, idUpgradeRequestSchema } = require("./middlewares/validations/upgradeRequestValidation.js");
+const UpgradeRequestController = require("./controllers/UpgradeRequestController.js");
+const { listBillingOrdersSchema, storeBillingOrderSchema, updateBillingOrderSchema, idBillingOrderSchema } = require("./middlewares/validations/billingOrderValidation.js");
+const BillingOrderController = require("./controllers/BillingOrderController.js");
+const { listNotificationsSchema, idNotificationSchema, markAsReadSchema } = require("./middlewares/validations/notificationValidation.js");
+const NotificationController = require("./controllers/NotificationController.js");
 const router = express.Router();
 
 
@@ -282,6 +290,32 @@ router.post("/publishing-task", requireRoles(['Admin', 'Seller Manager']), valid
 router.post("/publishing-task-update-status", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateProductPublishingTaskStatusSchema), ProductPublishingTaskController.updateStatus);
 router.post("/publishing-task-list", requireRoles(['Admin', 'Seller Manager']), validateSchema(listProductPublishingTaskSchema), ProductPublishingTaskController.list);
 router.post("/publishing-task-retry", requireRoles(['Admin', 'Seller Manager']), validateSchema(retryProductPublishingTaskSchema), ProductPublishingTaskController.retry);
+
+// Notificaciones
+router.post("/get-user-notifications", requireRoles(['Admin', 'Seller Manager', 'Editor', 'Viewer']), validateSchema(listNotificationsSchema), NotificationController.getUserNotifications);
+router.post("/notification-mark-as-read", requireRoles(['Admin', 'Seller Manager', 'Editor', 'Viewer']), validateSchema(markAsReadSchema), NotificationController.markAsRead);
+router.post("/notification-destroy", requireRoles(['Admin', 'Seller Manager', 'Editor', 'Viewer']), validateSchema(idNotificationSchema), NotificationController.destroy);
+
+//Subcripciones
+router.post("/subscriptions", requireRoles(['Admin', 'Seller Manager']), validateSchema(listSubscriptionsSchema), SubscriptionController.index);
+router.post("/subscription", requireRoles(['Admin', 'Seller Manager']), validateSchema(storeSubscriptionSchema), SubscriptionController.store);
+router.post("/subscription-update", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateSubscriptionSchema), SubscriptionController.update);
+router.post("/subscription-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idSubscriptionSchema), SubscriptionController.destroy);
+
+//updaterequest
+router.post("/upgrade-requests", requireRoles(['Admin', 'Seller Manager']), validateSchema(listUpgradeRequestsSchema), UpgradeRequestController.index);
+router.post("/upgrade-request", validateSchema(storeUpgradeRequestSchema), UpgradeRequestController.store);
+
+// upgrade-request
+router.post("/upgrade-request-update", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateUpgradeRequestSchema), UpgradeRequestController.update);
+router.post("/upgrade-request-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idUpgradeRequestSchema), UpgradeRequestController.destroy);
+
+//billing-orders
+router.post("/billing-orders", requireRoles(['Admin']), validateSchema(listBillingOrdersSchema), BillingOrderController.index);
+router.post("/billing-order", requireRoles(['Admin']), validateSchema(storeBillingOrderSchema), BillingOrderController.store);
+router.post("/billing-order-update", requireRoles(['Admin']), validateSchema(updateBillingOrderSchema), BillingOrderController.update);
+router.post("/billing-order-destroy", requireRoles(['Admin']), validateSchema(idBillingOrderSchema), BillingOrderController.destroy);
+
 
 //Rutas de los logs
 router.post("/get-logs", requireRoles(['Admin', 'Seller Manager']), LogController.getLogs);

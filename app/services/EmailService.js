@@ -36,4 +36,24 @@ async function sendEmail({ to, subject, text, html }) {
   }
 }
 
-module.exports = { sendEmail };
+// Nuevo: envía a múltiples destinatarios
+async function sendEmailsToUsers(users, { subject, text, html }) {
+  const emails = users.map(u => u.email).filter(Boolean);
+  if (emails.length === 0) {
+    logger.warn("No hay emails válidos para enviar notificación");
+    return [];
+  }
+
+  const results = [];
+  for (const email of emails) {
+    try {
+      const result = await sendEmail({ to: email, subject, text, html });
+      results.push({ email, success: true, messageId: result.messageId });
+    } catch (error) {
+      results.push({ email, success: false, error: error.message });
+      // No lanzamos error aquí: queremos que otros correos se envíen aunque uno falle
+    }
+  }
+  return results;
+}
+module.exports = { sendEmail, sendEmailsToUsers };

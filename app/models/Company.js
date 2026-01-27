@@ -14,6 +14,8 @@ module.exports = (sequelize, DataTypes) => {
       Company.hasMany(models.ProductMarketplaceLink, { foreignKey: 'company_id', as: 'productmarketplacelinks', onDelete: 'SET NULL' });
       Company.hasMany(models.Pool, { foreignKey: 'company_id', as: 'pools', onDelete: 'CASCADE' });
       Company.hasMany(models.UserCompany, { foreignKey: 'company_id', as: 'memberships', onDelete: 'CASCADE' });
+      Company.hasMany(models.Notification, { foreignKey: 'company_id', as: 'notifications', onDelete: 'SET NULL' });
+      Company.hasMany(models.UpgradeRequest, { foreignKey: 'company_id', as: 'upgradeRequests', onDelete: 'CASCADE' });
     }
   }
 

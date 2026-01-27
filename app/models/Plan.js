@@ -5,7 +5,7 @@ const { Model } = require('sequelize');
 module.exports = (sequelize, DataTypes) => {
   class Plan extends Model {
     static associate(models) {
-      // Asociaciones se definirán cuando se implementen tenants, etc.
+      Plan.hasMany(models.Company, { foreignKey: 'plan_id', as: 'companies', onDelete: 'SET NULL' });
     }
   }
 

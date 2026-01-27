@@ -370,6 +370,40 @@ async findActiveMembershipsByUserId(userId) {
     logger.error(`Error al obtener membresías activas del usuario ${userId}:`, error);
     throw new Error(`Error al cargar membresías: ${error.message}`);
   }
+},
+
+async findActiveAdminsByCompanyId(company_id) {
+  try {
+    const memberships = await UserCompany.findAll({
+      where: {
+        company_id,
+        status: 1, // activo
+      },
+      include: [
+        {
+          model: User,
+          as: "user",
+          attributes: ["id", "name", "email"],
+          where: {
+            email: { [Op.not]: null }, // opcional: solo usuarios con email
+          },
+        },
+        {
+          model: Role,
+          as: "role",
+          where: {
+            name: "Admin", // asumimos que el rol se llama exactamente "admin"
+          },
+          attributes: ["id", "name"],
+        },
+      ],
+    });
+
+    return memberships.map(m => m.user); // retorna solo los objetos User
+  } catch (error) {
+    logger.error("UserCompanyRepository->findActiveAdminsByCompanyId:", + error.message);
+    throw error;
+  }
 }
 };
 

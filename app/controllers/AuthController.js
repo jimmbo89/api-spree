@@ -264,8 +264,7 @@ const AuthController = {
   },
   async signIn(req, res) {
     logger.info("Entrando a loguearse");
-    logger.info("Datos recibidos al loguearse:");
-    logger.info(JSON.stringify(req.body));
+    logger.info(`'Datos recibidos al loguearse:', ${JSON.stringify(req.body)}`);
 
     try {
       const user = await UserRepository.findByEmailOrName(req.body.email);
