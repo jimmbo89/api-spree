@@ -31,6 +31,7 @@ async function _notifyAdminsAboutUpgradeRequest({
       user_ids: adminUserIds,
       title: "Solicitud de upgrade",
       description: `El usuario ${user.name} ha solicitado cambiar del plan ${currentPlan.name} al plan ${targetPlan.name} (${billing_cycle}).`,
+      type: "upgraderequest",
       data: {
         upgrade_request_id: request.id,
         requested_by_user_id: user.id,
@@ -101,6 +102,7 @@ async function _notifyUserAboutUpgradeRequestResolution({
       description: status === 'approved'
         ? `Tu solicitud de cambio al plan ${targetPlan.name} ha sido aprobada. ¡Bienvenido!`
         : `Tu solicitud de cambio al plan ${targetPlan.name} ha sido rechazada.`,
+        type: "upgraderequest",
        data: {
         upgrade_request_id: request.id,
         target_plan_id: targetPlan.id,

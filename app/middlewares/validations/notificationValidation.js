@@ -5,6 +5,7 @@ const notificationBaseSchema = {
   description: Joi.string().max(1000).optional().allow(null, ''),
   data: Joi.object().optional().default({}),
   status: Joi.number().integer().valid(0, 1, 2).optional().default(0),
+  type: Joi.string().max(50).optional().allow(null, ''),
   firebaseId: Joi.string().max(255).optional().allow(null, ''),
   user_id: Joi.number().integer().positive().required(),
   company_id: Joi.number().integer().positive().required()
@@ -20,6 +21,7 @@ const updateNotificationSchema = Joi.object({
   id: Joi.number().integer().positive().required(),
   title: Joi.string().max(255).optional(),
   description: Joi.string().max(1000).optional().allow(null, ''),
+  type: Joi.string().max(50).optional().allow(null, ''),
   data: Joi.object().optional(),
   status: Joi.number().integer().valid(0, 1, 2).optional(),
   firebaseId: Joi.string().max(255).optional().allow(null, '')

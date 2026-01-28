@@ -19,7 +19,7 @@ const NotificationRepository = {
 
     const { count, rows } = await Notification.findAndCountAll({
       where,
-      attributes: ['id', 'title', 'description', 'data', 'status', 'firebaseId', 'user_id', 'company_id', 'createdAt', 'updatedAt'],
+      attributes: ['id', 'title', 'description', 'type', 'data', 'status', 'firebaseId', 'user_id', 'company_id', 'createdAt', 'updatedAt'],
       order: [['createdAt', 'DESC']],
       limit,
       offset
@@ -30,6 +30,7 @@ const NotificationRepository = {
         id: n.id,
         title: n.title,
         description: n.description,
+        type: n.type,
         data: typeof n.data === 'string' ? JSON.parse(n.data || '{}') : n.data || {},
         status: n.status,
         firebaseId: n.firebaseId,
@@ -80,6 +81,7 @@ async getUserNotifications({ user_id, company_id, limit = 10, cursor = null }) {
         'company_id',
         'title',
         'description',
+        'type',
         'data',
         'status',
         'createdAt'
@@ -117,6 +119,7 @@ async getUserNotifications({ user_id, company_id, limit = 10, cursor = null }) {
       company_id: notification.company_id,
       title: notification.title,
       description: notification.description,
+      type: notification.type,
       data: typeof notification.data === 'string'
         ? JSON.parse(notification.data || '{}')
         : notification.data || {},
@@ -161,6 +164,7 @@ async allExistForUser(notificationIds, userId) {
       const notificationData = {
         title: body.title,
         description: body.description || null,
+        type: body.type,
         data: body.data || {},
         status: body.status !== undefined ? body.status : 0,
         firebaseId: body.firebaseId || null,
@@ -179,7 +183,7 @@ async allExistForUser(notificationIds, userId) {
 
   async update(notification, body, options = {}) {
     try {
-      const fieldsToUpdate = ["title", "description", "data", "status", "firebaseId"];
+      const fieldsToUpdate = ["title", "description", "type", "data", "status", "firebaseId"];
       const updatedData = {};
 
       for (const key of fieldsToUpdate) {
@@ -237,12 +241,13 @@ async markAsRead(userId, notificationIds, newStatus = 2) {
  * @param {Object} [options={}] - Opciones de Sequelize (ej. transacción)
  * @returns {Promise<Array>} - Array de notificaciones creadas
  */
-async createForMultipleUsers({ company_id, user_ids, title, description, data, status = 0 }, options = {}) {
+async createForMultipleUsers({ company_id, user_ids, title, description, type, data, status = 0 }, options = {}) {
   const notificationsToCreate = user_ids.map(user_id => ({
     company_id,
     user_id,
     title,
     description: description || null,
+    type: type,
     data: data || {},
     status,
     createdAt: new Date(),

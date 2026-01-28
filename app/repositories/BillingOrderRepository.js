@@ -1,39 +1,71 @@
-const { BillingOrder, sequelize } = require("../models");
+const { BillingOrder, Plan, sequelize } = require("../models");
 const { Op } = require("sequelize");
 const logger = require("../../config/logger");
 
 const BillingOrderRepository = {
-  async findFiltered({ company_id, status, type, page = 1, limit = 20 }) {
-    const offset = (page - 1) * limit;
-    const where = {};
-    if (company_id !== undefined) where.company_id = company_id;
-    if (status !== undefined) where.status = status;
-    if (type !== undefined) where.type = type;
+ async findFiltered({ company_id, status, type, page = 1, limit = 20 }) {
+  const offset = (page - 1) * limit;
+  const where = {};
+  if (company_id !== undefined) where.company_id = company_id;
+  if (status !== undefined) where.status = status;
+  if (type !== undefined) where.type = type;
 
-    const { count, rows } = await BillingOrder.findAndCountAll({
-      where,
-      attributes: [
-        'id', 'company_id', 'current_plan_id', 'target_plan_id', 'billing_cycle', 'type',
-        'status', 'total_amount', 'currency', 'payment_method', 'payment_link_url',
-        'proof_url', 'invoice_request', 'effective_date', 'paid_at', 'createdAt', 'updatedAt'
-      ],
-      order: [['createdAt', 'DESC']],
-      limit,
-      offset
-    });
+  const { count, rows } = await BillingOrder.findAndCountAll({
+    where,
+    include: [
+      {
+        model: Plan,
+        as: 'currentPlan',
+        attributes: ['name'],
+        required: false
+      },
+      {
+        model: Plan,
+        as: 'targetPlan',
+        attributes: ['name'],
+        required: false
+      }
+    ],
+    attributes: [
+      'id', 'company_id', 'current_plan_id', 'target_plan_id', 'billing_cycle', 'type',
+      'status', 'total_amount', 'currency', 'payment_method', 'payment_link_url',
+      'proof_url', 'invoice_request', 'effective_date', 'paid_at', 'createdAt', 'updatedAt'
+    ],
+    order: [['createdAt', 'DESC']],
+    limit,
+    offset
+  });
 
-    return {
-      billingOrders: rows.map(order => ({
-        ...order.toJSON(),
-        invoice_request: typeof order.invoice_request === 'string'
-          ? JSON.parse(order.invoice_request || '{}')
-          : order.invoice_request || {}
-      })),
-      total: count,
-      page,
-      totalPages: Math.ceil(count / limit)
-    };
-  },
+  return {
+    billingOrders: rows.map(order => ({
+      id: order.id,
+      company_id: order.company_id,
+      current_plan_id: order.current_plan_id,
+      target_plan_id: order.target_plan_id,
+      billing_cycle: order.billing_cycle,
+      type: order.type,
+      status: order.status,
+      total_amount: order.total_amount,
+      currency: order.currency,
+      payment_method: order.payment_method,
+      payment_link_url: order.payment_link_url,
+      proof_url: order.proof_url,
+      invoice_request: typeof order.invoice_request === 'string'
+        ? JSON.parse(order.invoice_request || '{}')
+        : order.invoice_request || {},
+      effective_date: order.effective_date,
+      paid_at: order.paid_at,
+      createdAt: order.createdAt,
+      updatedAt: order.updatedAt,
+      // Nombres de planes
+      current_plan_name: order.currentPlan?.name || `Plan ${order.current_plan_id}`,
+      target_plan_name: order.targetPlan?.name || `Plan ${order.target_plan_id}`
+    })),
+    total: count,
+    page,
+    totalPages: Math.ceil(count / limit)
+  };
+},
 
   async findById(id) {
     const order = await BillingOrder.findByPk(id);

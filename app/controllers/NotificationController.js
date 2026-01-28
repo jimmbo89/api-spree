@@ -69,7 +69,7 @@ async getUserNotifications(req, res) {
     logger.info(`${req.user?.user || 'Anonymous'} - Crea notificación`);
     logger.info(`'Datos recibidos:', ${JSON.stringify(req.body)}`);
 
-    const { title, description, data, status, firebaseId, company_id, user_id: bodyUserId } = req.body;
+    const { title, description, type, data, status, firebaseId, company_id, user_id: bodyUserId } = req.body;
     const user_id = bodyUserId || getUserId();
 
     // Validar existencia de compañía y usuario
@@ -86,7 +86,7 @@ async getUserNotifications(req, res) {
     const t = await sequelize.transaction();
     try {
       const notification = await NotificationRepository.create({
-        title, description, data, status, firebaseId, user_id, company_id
+        title, description, type, data, status, firebaseId, user_id, company_id
       }, t);
       await t.commit();
 
@@ -96,6 +96,7 @@ async getUserNotifications(req, res) {
           id: notification.id,
           title: notification.title,
           description: notification.description,
+          type: notification.type,
           data: notification.data,
           status: notification.status,
           firebaseId: notification.firebaseId,
@@ -115,7 +116,7 @@ async getUserNotifications(req, res) {
   async update(req, res) {
     logger.info(`${req.user?.user || 'Anonymous'} - Edita notificación ${req.body.id}`);
     logger.info(`'Datos recibidos:', ${JSON.stringify(req.body)}`);
-    const { id, title, description, data, status, firebaseId } = req.body;
+    const { id, title, description, type, data, status, firebaseId } = req.body;
 
     try {
       const notification = await NotificationRepository.findById(id);
@@ -123,7 +124,7 @@ async getUserNotifications(req, res) {
 
       const t = await sequelize.transaction();
       try {
-        const updated = await NotificationRepository.update(notification, { title, description, data, status, firebaseId }, t);
+        const updated = await NotificationRepository.update(notification, { title, description, type, data, status, firebaseId }, t);
         await t.commit();
 
         return res.status(200).json({

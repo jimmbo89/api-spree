@@ -10,12 +10,22 @@ module.exports = (sequelize, DataTypes) => {
   }
 
   Notification.init({
+    id: {
+      type: DataTypes.BIGINT,
+      autoIncrement: true,
+      primaryKey: true,
+      comment: 'ID autoincremental de la notificación'
+    },
     title: {
       type: DataTypes.STRING,
       allowNull: false
     },
     description: {
       type: DataTypes.TEXT,
+      allowNull: true
+    },
+      type: {
+      type: DataTypes.STRING,
       allowNull: true
     },
     data: {

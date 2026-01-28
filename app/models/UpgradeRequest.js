@@ -12,6 +12,12 @@ module.exports = (sequelize, DataTypes) => {
   }
 
   UpgradeRequest.init({
+    id: {
+      type: DataTypes.BIGINT,
+      autoIncrement: true,
+      primaryKey: true,
+      comment: 'ID autoincremental de la solicitud de actualización'
+    },
     company_id: {
       type: DataTypes.BIGINT,
       allowNull: false

@@ -11,6 +11,12 @@ module.exports = (sequelize, DataTypes) => {
   }
 
   BillingOrder.init({
+    id: {
+      type: DataTypes.BIGINT,
+      autoIncrement: true,
+      primaryKey: true,
+      comment: 'ID autoincremental de la orden'
+    },
     company_id: {
       type: DataTypes.BIGINT,
       allowNull: false
