@@ -32,8 +32,7 @@ const BillingOrderController = {
 
     const {
       company_id, current_plan_id, target_plan_id, billing_cycle, type,
-      total_amount, currency, payment_method, payment_link_url, proof_url,
-      invoice_request, effective_date
+      total_amount, currency, payment_method, payment_link_url, invoice_request, effective_date
     } = req.body;
 
     const company = await CompanyRepository.findById(company_id);
@@ -58,14 +57,25 @@ const BillingOrderController = {
     try {
       const order = await BillingOrderRepository.create({
         company_id, current_plan_id, target_plan_id, billing_cycle, type,
-        total_amount, currency, payment_method, payment_link_url, proof_url,
+        total_amount, currency, payment_method, payment_link_url,
         invoice_request, effective_date
-      }, t);
+      }, req.files?.proof_url, t);
+
+          // ✅ ACTUALIZAR EL PLAN DE LA COMPAÑÍA SI APLICA
+    const immediateUpdateTypes = ['upgrade', 'reactivation', 'past_due_payment', 'renewal'];
+    
+    if (immediateUpdateTypes.includes(type)) {
+     await company.update({ plan_id: target_plan_id }, { transaction: t });
+          
+        newPlan = targetPlan.get({ plain: true }); // ← convertir a objeto plano
+        logger.info(`Plan actualizado: ${JSON.stringify(newPlan)}`);
+        }
       await t.commit();
 
       return res.status(201).json({
         success: true,
         billingOrder: order,
+        plan: newPlan,
         message: "Orden de facturación creada correctamente"
       });
     } catch (err) {

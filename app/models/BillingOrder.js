@@ -44,7 +44,8 @@ module.exports = (sequelize, DataTypes) => {
     },
     total_amount: {
       type: DataTypes.DECIMAL(16,2),
-      allowNull: false
+      allowNull: false,
+      defaultValue: 0.0
     },
     currency: {
       type: DataTypes.STRING,

@@ -1,6 +1,9 @@
 const { BillingOrder, Plan, sequelize } = require("../models");
 const { Op } = require("sequelize");
 const logger = require("../../config/logger");
+const ImageService = require("../services/ImageService");
+const FileService = require("../services/FileService");
+const DEFAULT_PROOF_URL = 'billingorders/default.jpg';
 
 const BillingOrderRepository = {
  async findFiltered({ company_id, status, type, page = 1, limit = 20 }) {
@@ -80,14 +83,21 @@ const BillingOrderRepository = {
     return null;
   },
 
-  async create(body, options = {}) {
+  async create(body, file, options = {}) {
     try {
+      body.proof_url = DEFAULT_PROOF_URL;
       const orderData = { ...body };
       if (typeof body.invoice_request === 'object') {
         orderData.invoice_request = body.invoice_request;
       }
 
       const order = await BillingOrder.create(orderData, options);
+       if (file) {
+        //const filename = `${company.id}${ext}`;
+        const filename = FileService.generateFilename('billingorders', order.id, file.originalname);
+        const relativePath = await FileService.moveFile(file, filename);
+        await order.update({ proof_url: relativePath }, options);
+      }
       logger.info(`Orden de facturación creada (ID: ${order.id})`);
       return order;
     } catch (error) {

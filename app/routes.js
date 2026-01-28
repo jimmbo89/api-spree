@@ -2,7 +2,6 @@ const express = require("express");
 const logger = require('../config/logger');
 const fs = require("fs");
 const path = require("path");
-const mime = require("mime-types"); 
 const { requireRoles } = require('./policies/RolePolicity.js')
 const validateSchema = require("./middlewares/validateSchema");
 const auth = require("./middlewares/auth");
@@ -64,6 +63,9 @@ const { listBillingOrdersSchema, storeBillingOrderSchema, updateBillingOrderSche
 const BillingOrderController = require("./controllers/BillingOrderController.js");
 const { listNotificationsSchema, idNotificationSchema, markAsReadSchema } = require("./middlewares/validations/notificationValidation.js");
 const NotificationController = require("./controllers/NotificationController.js");
+const multerDisk = require("./middlewares/multerDisk.js");
+const { UPLOAD_BASE_PATH } = require("../config/upload.js");
+const { getMimeTypeFromExtension } = require("./util/fileUtils.js");
 const router = express.Router();
 
 
@@ -81,22 +83,21 @@ router.get('/validate-requests/:id/reject', UserCompanyController.handleMembersh
 router.post('/ml-callback', OAuthController.mercadoLibreCallback);
 router.get("/images/:foldername/:filename", (req, res) => {
   const { foldername, filename } = req.params;
-  const imagePath = path.join(__dirname, "../public", foldername, filename);
+  const safeFoldername = path.basename(foldername); // prevención de path traversal
+  const safeFile = path.basename(filename);
+  const imagePath = path.join(UPLOAD_BASE_PATH, safeFoldername, safeFile);
 
-  // Verifica si el archivo existe
   if (!fs.existsSync(imagePath)) {
-    return res.status(400).send("Imagen no encontrada");
+    return res.status(404).send("Imagen no encontrada");
   }
 
-  // Obtén el tipo MIME del archivo
-  const fileType = mime.lookup(imagePath) || "application/octet-stream";
+  const contentType = getMimeTypeFromExtension(safeFile);
 
-  // Lee el archivo y envíalo en la respuesta
   fs.readFile(imagePath, (err, file) => {
     if (err) {
       return res.status(500).send("Error al leer la imagen");
     }
-    res.writeHead(200, { "Content-Type": fileType });
+    res.writeHead(200, { "Content-Type": contentType });
     res.end(file);
   });
 });
@@ -105,22 +106,21 @@ router.use(auth);
 
 router.get("/images-protect/:foldername/:filename", (req, res) => {
   const { foldername, filename } = req.params;
-  const imagePath = path.join(__dirname, "../public", foldername, filename);
+  const safeFoldername = path.basename(foldername);
+  const safeFile = path.basename(filename);
+  const imagePath = path.join(UPLOAD_BASE_PATH, safeFoldername, safeFile);
 
-  // Verifica si el archivo existe
   if (!fs.existsSync(imagePath)) {
-    return res.status(400).send("Imagen no encontrada");
+    return res.status(404).send("Imagen no encontrada");
   }
 
-  // Obtén el tipo MIME del archivo
-  const fileType = mime.lookup(imagePath) || "application/octet-stream";
+ const contentType = getMimeTypeFromExtension(safeFile);
 
-  // Lee el archivo y envíalo en la respuesta
   fs.readFile(imagePath, (err, file) => {
     if (err) {
       return res.status(500).send("Error al leer la imagen");
     }
-    res.writeHead(200, { "Content-Type": fileType });
+    res.writeHead(200, { "Content-Type": contentType });
     res.end(file);
   });
 });
@@ -312,7 +312,7 @@ router.post("/upgrade-request-destroy", requireRoles(['Admin', 'Seller Manager']
 
 //billing-orders
 router.post("/billing-orders", requireRoles(['Admin']), validateSchema(listBillingOrdersSchema), BillingOrderController.index);
-router.post("/billing-order", requireRoles(['Admin']), validateSchema(storeBillingOrderSchema), BillingOrderController.store);
+router.post("/billing-order", requireRoles(['Admin']), multerDisk({ proof_url: 'billingorders' }), validateSchema(storeBillingOrderSchema), BillingOrderController.store);
 router.post("/billing-order-update", requireRoles(['Admin']), validateSchema(updateBillingOrderSchema), BillingOrderController.update);
 router.post("/billing-order-destroy", requireRoles(['Admin']), validateSchema(idBillingOrderSchema), BillingOrderController.destroy);
 
