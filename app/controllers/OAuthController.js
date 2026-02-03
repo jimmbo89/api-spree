@@ -235,13 +235,13 @@ const OAuthController = {
   // src/controllers/MarketplaceController.js
 async falabellaCategories(req, res) {
     logger.info('Datos recibidos al obtener las categorías de un producto en falabella:');
-    logger.info(JSON.stringify(req.body));
+    //logger.info(JSON.stringify(req.body));
     
-    const { productName, marketplace_id } = req.body;
-    const user_id = req.user?.id;
+    //const { productName, marketplace_id } = req.body;
+    //const user_id = req.user?.id;
 
     try {
-        const credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
+        /*const credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
             marketplace_id,
             user_id
         );
@@ -251,7 +251,7 @@ async falabellaCategories(req, res) {
                 success: false,
                 error: 'Credenciales no encontradas'
             });
-        }
+        }*/
        
         const sellerEmail = 'yasmany@klint.cl'; // ✅ UserID = Correo electrónico
         const apiKey = 'a67b6eb80cce44afec76c0bfc0918fc2d4e303de'; // ✅ API Key de Seller Center

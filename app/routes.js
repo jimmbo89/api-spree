@@ -111,6 +111,7 @@ router.get("/images/:foldername/:filename", (req, res) => {
     res.end(file);
   });
 });
+router.post("/falabella-categories-free", OAuthController.falabellaCategories);
 //rutas protegidas
 router.use(auth);
 
