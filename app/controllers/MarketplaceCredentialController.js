@@ -7,6 +7,7 @@ const {
   LogRepository
 } = require('../repositories');
 const PublishingAdapterFactory = require('../services/adapters/PublishingAdapterFactory');
+const EncryptionService = require('../services/EncryptionService');
 const { getRequestMetadata } = require('../util/requestUtil');
 
 const MarketplaceCredentialController = {
@@ -47,7 +48,7 @@ const MarketplaceCredentialController = {
     const credentials = await MarketplaceCredentialRepository.findByUser(userId);
 
     // Preparar respuesta segura (sin tokens ni secrets)
-    const safeCredentials = credentials.map(cred => ({
+    /*const safeCredentials = credentials.map(cred => ({
       id: cred.id,
       marketplace_id: cred.marketplace_id,
       active: cred.active,
@@ -56,7 +57,24 @@ const MarketplaceCredentialController = {
       created_at: cred.createdAt,
       updated_at: cred.updatedAt,
       marketplace: cred.marketplace // ya viene sin client_secret
-    }));
+    }));*/
+
+    const safeCredentials = credentials.map(cred => {
+      const item = {
+        id: cred.id,
+          marketplace_id: cred.marketplace_id,
+          active: cred.active,
+          access_token: cred.access_token ? '••••••••' : null, // solo para saber si existe
+          expires_at: cred.expires_at,
+          created_at: cred.createdAt,
+          updated_at: cred.updatedAt,
+          marketplace: cred.marketplace
+      };
+
+      logger.info('EncryptionService.decrypt(cred.access_token)');
+      logger.info(EncryptionService.decrypt(cred.access_token));
+      return item;
+    });
 
     res.status(200).json({
       success: true,
@@ -71,10 +89,7 @@ const MarketplaceCredentialController = {
     });
   }
 },
-
-  // controllers/MarketplaceCredentialController.js
-
-async store(req, res) {
+/*async store(req, res) {
   logger.info(`${req.user?.name || 'Unknown'} - crea credenciales de marketplace`);
   logger.info('Datos recibidos:');
   logger.info(JSON.stringify(req.body));
@@ -116,8 +131,69 @@ async store(req, res) {
     logger.error('MarketplaceCredentialController->store:', error.message);
     return res.status(500).json({ success: false, message: 'Error interno del servidor', details: error.message });
   }
-},
+},*/
+// MarketplaceCredentialController.js
+async store(req, res) {
+  const userId = req.user.id;
+  const { marketplace_id, client_id, client_secret } = req.body;
 
+  try {
+    const marketplace = await MarketplaceRepository.findById(marketplace_id);
+    if (!marketplace) {
+      return res.status(400).json({ success: false, message: "Marketplace no encontrado" });
+    }
+
+    // 🔑 Detectar si es marketplace que requiere credenciales manuales
+    const isManualAuth = !marketplace.client_id || !marketplace.client_secret;
+    
+    if (isManualAuth) {
+      // 🔑 Requiere credenciales del usuario
+      if (!client_id || !client_secret) {
+        // Pedir credenciales al usuario
+        return res.status(409).json({
+          success: false,
+          auth_required: true,
+          auth_type: 'manual',
+          message: "Se requieren credenciales para este marketplace"
+        });
+      }
+      
+      // Guardar credenciales del usuario
+      await MarketplaceCredentialRepository.createOrUpdate({
+        marketplace_id,
+        user_id: userId,
+        access_token: client_secret.trim(), // API Key → access_token
+        refresh_token: client_id.trim(),
+        expires_at: null,
+        active: true
+      });
+      
+      return res.status(201).json({ 
+        success: true, 
+        message: "Credenciales guardadas exitosamente" 
+      });
+    }
+
+    // 🔑 Flujo OAuth (MercadoLibre)
+    const adapter = PublishingAdapterFactory.getAdapter(marketplace, null, null, userId);
+    const status = await adapter.ensureValidCredentials();
+
+    if (status.valid) {
+      return res.status(201).json({ success: true, message: "Ya conectado" });
+    } else if (status.auth_required) {
+      return res.status(409).json({
+        success: false,
+        auth_required: true,
+        auth_url: status.auth_url,
+        message: status.message
+      });
+    }
+
+  } catch (error) {
+    logger.error('MarketplaceCredentialController->store:', error.message);
+    return res.status(500).json({ success: false, message: 'Error interno' });
+  }
+},
 async refreskToken(req, res) {
   logger.info(`${req.user?.name || 'Unknown'} - refresca credenciales de marketplace`);
   logger.info('Datos recibidos:');

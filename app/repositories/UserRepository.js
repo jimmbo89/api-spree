@@ -389,7 +389,7 @@ async create(userData, file, transaction = null) {
     try {
       const fieldsToUpdate = [
         'name', 'email', 'status', 'email_verified_at', 'password', 'remember_token',
-        'external_id', 'external_auth', 'registration_date', 'user'
+        'external_id', 'external_auth', 'registration_date', 'user', 'reset_expire', 'reset_token'
       ];
       const updatedData = Object.keys(body)
       .filter(key => fieldsToUpdate.includes(key) && body[key] !== undefined)

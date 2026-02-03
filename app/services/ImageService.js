@@ -1,11 +1,15 @@
-/*const path = require('path');
+const path = require('path');
 const fs = require('fs');
 const logger = require('../../config/logger'); // Asegúrate de que este sea tu logger configurado
+const { UPLOAD_BASE_PATH } = require('../../config/upload');
 
 const ImageService = {
+  _getFullPath(filepath) {
+    return path.join(UPLOAD_BASE_PATH, filepath);
+  },
   // Mover archivo a un nuevo destino
   async moveFile(file, destination) {
-    const newPath = path.join(__dirname, '..', '..', 'public', destination);
+    const newPath = this._getFullPath(destination);
 
     try {
       await fs.promises.rename(file.path, newPath);
@@ -19,7 +23,7 @@ const ImageService = {
 
   // Eliminar archivo si existe
   async deleteFile(filepath) {
-    const fullPath = path.join(__dirname, '..', '..', 'public', filepath);
+    const fullPath = this._getFullPath(filepath);
 
     if (fs.existsSync(fullPath)) {
       try {
@@ -39,8 +43,8 @@ const ImageService = {
   },
 };
 
-module.exports = ImageService;*/
-const path = require('path');
+module.exports = ImageService;
+/*const path = require('path');
 const fs = require('fs');
 const logger = require('../../config/logger');
 const { UPLOAD_BASE_PATH } = require('../../config/upload');
@@ -107,4 +111,4 @@ const ImageService = {
   },
 };
 
-module.exports = ImageService;
+module.exports = ImageService;*/

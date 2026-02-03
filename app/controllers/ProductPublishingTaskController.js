@@ -186,7 +186,12 @@ const ProductPublishingTaskController = {
           mp.domain = mp.domain.trim();
         }
 
-        return mp;
+        return {
+        ...mp,
+        credential_id: credential.id,
+        expires_at: credential.expires_at,
+        is_expired: credential.expires_at ? new Date(credential.expires_at) < new Date() : false,
+      };
       });
 
       res.status(200).json({ pools: pools, marketplaces: marketplaces });

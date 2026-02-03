@@ -1,8 +1,8 @@
 const { Product, ProductVariant, ProductAttribute, Attribute, sequelize } = require("../models");
 const { Op } = require("sequelize");
 const logger = require("../../config/logger");
-const ImageService = require("../services/ImageService");
 const WarehouseProductRepository = require("./WarehouseProductRepository");
+const FileService = require("../services/FileService");
 const DEFAULT_IMAGE = "products/default.jpg";
 
 const ProductRepository = {
@@ -192,12 +192,12 @@ const ProductRepository = {
         const imagePaths = [];
         for (const file of files) {
           if (file?.originalname) {
-            const newFilename = ImageService.generateFilename(
+            const newFilename = await FileService.generateFilename(
               "products",
               `${product.id}_${Date.now()}`,
               file.originalname
             );
-            const filePath = await ImageService.moveFile(file, newFilename);
+            const filePath = await FileService.moveFile(file, newFilename);
             imagePaths.push(filePath);
           }
         }
@@ -225,12 +225,12 @@ const ProductRepository = {
       if (files?.length > 0) {
         for (const file of files) {
           if (file?.originalname) {
-            const newFilename = ImageService.generateFilename(
+            const newFilename = await FileService.generateFilename(
               "products",
               `${product.id}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
               file.originalname
             );
-            const filePath = await ImageService.moveFile(file, newFilename);
+            const filePath = await FileService.moveFile(file, newFilename);
             finalImages.push(filePath);
           }
         }
@@ -276,7 +276,7 @@ const ProductRepository = {
     if (Array.isArray(product.images)) {
       for (const imagePath of product.images) {
         if (imagePath && imagePath !== DEFAULT_IMAGE) {
-          await ImageService.deleteFile(imagePath);
+          await FileService.deleteFile(imagePath);
         }
       }
     }

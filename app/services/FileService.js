@@ -69,6 +69,43 @@ const FileService = {
     }
   },
 
+  async renameFile(file, newRelativePath) {
+    if (!file || !file.path) {
+      throw new Error('Archivo inválido: falta ruta');
+    }
+
+    const currentFullPath = file.path; // Ruta actual: companies/1749050487659-123456789.jpg
+    const newFullPath = this._getFullPath(newRelativePath); // Ruta nueva: companies/1.jpg
+    const dir = path.dirname(newFullPath);
+
+    try {
+      // 1. Crear directorio si no existe
+      await fs.mkdir(dir, { recursive: true });
+      
+      // 2. Si ya existe un archivo con el nuevo nombre, borrarlo
+      try {
+        await fs.access(newFullPath);
+        await fs.unlink(newFullPath);
+        logger.info(`Archivo existente eliminado: ${newRelativePath}`);
+      } catch {
+        // No existe, continuar
+      }
+      
+      // 3. Renombrar (mover) el archivo
+      await fs.rename(currentFullPath, newFullPath);
+      
+      // 4. Actualizar la ruta en el objeto file
+      file.path = newRelativePath;
+      file.filename = path.basename(newRelativePath);
+      
+      logger.info(`Archivo renombrado: ${currentFullPath} → ${newFullPath}`);
+      return newRelativePath;
+    } catch (err) {
+      logger.error(`Error al renombrar archivo: ${err.message}`);
+      throw new Error('Error al renombrar el archivo');
+    }
+  },
+
   async deleteFileArray(files) {
     for (const file of files) {
       if (!file.path || typeof file.path !== 'string') continue;
@@ -76,7 +113,7 @@ const FileService = {
     }
   },
 
-  generateFilename(folder, id, originalName) {
+  async generateFilename(folder, id, originalName) {
     const extension = path.extname(originalName).toLowerCase();
     return `${folder}/${id}${extension}`;
   },

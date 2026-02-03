@@ -29,12 +29,13 @@ const mimeTypes = {
  *   }
  * @param {Number} maxFileSize - Tamaño máximo por archivo en bytes (default: 2MB)
  */
+const { UPLOAD_BASE_PATH } = require('../../config/upload'); // ← Ruta base configurable
+
 const multerFieldFolders = (fieldConfig, maxFileSize = 2 * 1024 * 1024) => {
   if (!fieldConfig || Object.keys(fieldConfig).length === 0) {
     throw new Error('fieldConfig es requerido y no puede estar vacío');
   }
 
-  // Normalizar fieldConfig para que todos los valores sean objetos
   const normalizedConfig = {};
   for (const [fieldName, value] of Object.entries(fieldConfig)) {
     if (typeof value === 'string') {
@@ -58,10 +59,12 @@ const multerFieldFolders = (fieldConfig, maxFileSize = 2 * 1024 * 1024) => {
     destination: async function (req, file, cb) {
       const config = normalizedConfig[file.fieldname];
       if (!config) {
-        return cb(new Error(`Campo no permitido: ${file.fieldname}`));
+        return cb(new Error(`Campo no permitido1: ${file.fieldname}`));
       }
 
-      const folder = `public/${config.folder}`;
+      // ✅ Usar UPLOAD_BASE_PATH en lugar de 'public'
+      const folder = path.join(UPLOAD_BASE_PATH, config.folder);
+
       try {
         await fs.access(folder);
         cb(null, folder);
@@ -81,10 +84,14 @@ const multerFieldFolders = (fieldConfig, maxFileSize = 2 * 1024 * 1024) => {
     }
   });
 
+  // ... resto del código (fileFilter, upload, etc.) permanece igual
+  // Solo cambia el destino físico
+
+  // (Mantén el resto exactamente como lo tienes)
   const fileFilter = function (req, file, cb) {
     const config = normalizedConfig[file.fieldname];
     if (!config) {
-      return cb(new Error(`Campo no permitido: ${file.fieldname}`));
+      return cb(new Error(`Campo no permitido2: ${file.fieldname}`));
     }
 
     const ext = path.extname(file.originalname).toLowerCase().slice(1);
@@ -102,14 +109,19 @@ const multerFieldFolders = (fieldConfig, maxFileSize = 2 * 1024 * 1024) => {
     }
   };
 
-  // Configurar Multer: usar .any() + filtrar manualmente es más flexible
   const upload = multer({
     storage,
     limits: { fileSize: maxFileSize },
     fileFilter
-  }).any(); // acepta cualquier campo, pero validamos con normalizedConfig
+  }).any();
 
   return (req, res, next) => {
+    const contentType = req.headers['content-type'] || '';
+    if (!contentType.includes('multipart/form-data')) {
+      req.files = {};
+      return next();
+    }
+
     upload(req, res, (err) => {
       if (err) {
         if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
@@ -120,13 +132,13 @@ const multerFieldFolders = (fieldConfig, maxFileSize = 2 * 1024 * 1024) => {
         return res.status(400).json({ error: err.message });
       }
 
-      // Organizar req.files por campo (como lo haría .fields() o .array())
+      const rawFiles = Array.isArray(req.files) ? req.files : [];
       const organizedFiles = {};
       const fieldNames = Object.keys(normalizedConfig);
 
       for (const fieldName of fieldNames) {
         const config = normalizedConfig[fieldName];
-        const files = req.files.filter(file => file.fieldname === fieldName);
+        const files = rawFiles.filter(file => file.fieldname === fieldName);
 
         if (files.length === 0) continue;
 
@@ -145,9 +157,7 @@ const multerFieldFolders = (fieldConfig, maxFileSize = 2 * 1024 * 1024) => {
         organizedFiles[fieldName] = config.multiple ? files : files[0];
       }
 
-      // Reemplazar req.files con el objeto organizado
       req.files = organizedFiles;
-
       next();
     });
   };

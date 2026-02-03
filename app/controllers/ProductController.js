@@ -15,10 +15,10 @@ const {
   ProductAttributeRepository,
 } = require("../repositories");
 const { sequelize } = require("../models");
-const ImageService = require("../services/ImageService");
 const MarketplaceTransformer = require("../services/MarketplaceTransformer");
 const { detectChanges } = require("../util/auditUtils");
 const { getRequestMetadata } = require("../util/requestUtil");
+const FileService = require("../services/FileService");
 const DEFAULT_IMAGE = "products/default.jpg";
 
 // Campos auditables (sin base_price, status, branch_id)
@@ -547,28 +547,6 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
       if (req.body.images && typeof req.body.images === "string") {
         req.body.images = JSON.parse(req.body.images);
       }
-
-      // Eliminar imágenes físicas
-      /*if (images_to_remove) {
-        const indices =
-          typeof images_to_remove === "string"
-            ? JSON.parse(images_to_remove)
-            : images_to_remove;
-        const currentImages = [
-          ...(Array.isArray(product.images) ? product.images : []),
-        ];
-        const sorted = [...indices].sort((a, b) => b - a);
-        for (const i of sorted) {
-          if (currentImages[i] && currentImages[i] !== DEFAULT_IMAGE) {
-            await ImageService.deleteFile(currentImages[i]);
-          }
-        }
-        if (req.body.images === undefined) {
-          req.body.images = currentImages.filter(
-            (_, idx) => !indices.includes(idx)
-          );
-        }
-      }*/
       if (images_to_remove) {
         const namesToRemove = 
           typeof images_to_remove === 'string' 
@@ -589,7 +567,7 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
         // Eliminar archivos físicos
         for (const filename of namesToRemove) {
           if (currentImages.includes(filename) && filename !== DEFAULT_IMAGE) {
-            await ImageService.deleteFile(filename);
+            await FileService.deleteFile(filename);
           }
         }
 

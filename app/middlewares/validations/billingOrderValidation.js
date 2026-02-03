@@ -67,30 +67,30 @@ const updateBillingOrderSchema = Joi.object({
   id: Joi.number().integer().positive().required(),
   status: Joi.string().valid('paid', 'rejected', 'canceled').optional(),
   paid_at: Joi.date().iso().optional(),
- proof_file: Joi.any()
-  .custom((value, helpers) => {
-    if (value) {
-      // Configuración de tipos de archivo permitidos
-      const fileConfig = {
-        image: {
-          mimetypes: ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'],
-          extensions: ['.jpg', '.jpeg', '.png', '.gif', '.webp']
-        },
-        pdf: {
-          mimetypes: ['application/pdf'],
-          extensions: ['.pdf']
-        },
-        document: {
-          mimetypes: [
-            'application/pdf',
-            'application/msword',
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-            'application/vnd.ms-excel',
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-          ],
-          extensions: ['.pdf', '.doc', '.docx', '.xls', '.xlsx']
-        }
-      };
+  proof_file: Joi.any()
+    .custom((value, helpers) => {
+      if (value) {
+        // Configuración de tipos de archivo permitidos
+        const fileConfig = {
+          image: {
+            mimetypes: ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'],
+            extensions: ['.jpg', '.jpeg', '.png', '.gif', '.webp']
+          },
+          pdf: {
+            mimetypes: ['application/pdf'],
+            extensions: ['.pdf']
+          },
+          document: {
+            mimetypes: [
+              'application/pdf',
+              'application/msword',
+              'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+              'application/vnd.ms-excel',
+              'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            ],
+            extensions: ['.pdf', '.doc', '.docx', '.xls', '.xlsx']
+          }
+        };
 
       // Combinar todos los MIME types permitidos
       const allValidMimeTypes = [

@@ -755,7 +755,7 @@ const AuthController = {
       await sendEmail(
         {
           to: email,
-          subject: "Recuperación de contraseña - Huoon",
+          subject: "Recuperación de contraseña - Spree",
           text: `Tu código es: ${code}`,
           html: `<p>Tu código de recuperación es: <strong>${code}</strong></p>`,
         },

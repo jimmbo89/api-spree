@@ -2,7 +2,10 @@ const AttributeRepository = require("./AttributeRepository");
 const BillingOrderRepository = require("./BillingOrderRepository");
 const BranchRepository = require("./BranchRepository");
 const BusinessTypeRepository = require("./BusinessTypeRepository");
+const CompanyPreferenceRepository = require("./CompanyPreferenceRepository");
 const CompanyRepository = require("./CompanyRepository");
+const DteDocumentRepository = require("./DteDocumentRepository");
+const FeatureFlagRepository = require("./FeatureFlagRepository");
 const InventoryMovementRepository = require("./InventoryMovementRepository");
 const InvitationRepository = require("./InvitationRepository");
 const LogRepository = require("./LogRepository");
@@ -22,7 +25,11 @@ const ProductRepository = require("./ProductRepository");
 const ProductVariantRepository = require("./ProductVariantRepository");
 const RolePermissionRepository = require("./RolePermissionRepository");
 const RoleRepository = require("./RoleRepository");
+const SiiCafRepository = require("./SiiCafRepository");
+const SiiCertificateRepository = require("./SiiCertificateRepository");
+const SiiConfigurationRepository = require("./SiiConfigurationRepository");
 const SubscriptionRepository = require("./SubscriptionRepository");
+const TenantLogRepository = require("./TenantLogRepository");
 const UpgradeRequestRepository = require("./UpgradeRequestRepository");
 const UserAclScopeRepository = require("./UserAclScopeRepository");
 const UserCompanyRepository = require("./UserCompanyRepository");
@@ -65,5 +72,12 @@ module.exports = {
     NotificationRepository,
     SubscriptionRepository,
     UpgradeRequestRepository,
-    BillingOrderRepository
+    BillingOrderRepository,
+    CompanyPreferenceRepository,
+    SiiConfigurationRepository,
+    SiiCertificateRepository,
+    FeatureFlagRepository,
+    DteDocumentRepository,
+    SiiCafRepository,
+    TenantLogRepository
 };

@@ -16,6 +16,12 @@ module.exports = (sequelize, DataTypes) => {
       Company.hasMany(models.UserCompany, { foreignKey: 'company_id', as: 'memberships', onDelete: 'CASCADE' });
       Company.hasMany(models.Notification, { foreignKey: 'company_id', as: 'notifications', onDelete: 'SET NULL' });
       Company.hasMany(models.UpgradeRequest, { foreignKey: 'company_id', as: 'upgradeRequests', onDelete: 'CASCADE' });
+      Company.hasOne(models.CompanyPreference, { foreignKey: 'company_id', as: 'preference', onDelete: 'CASCADE' });
+      Company.hasOne(models.SiiConfiguration, { foreignKey: 'company_id', as: 'siiConfig', onDelete: 'CASCADE' });
+      //Company.hasOne(models.NotificationSetting, { foreignKey: 'company_id', as: 'notificationSetting', onDelete: 'CASCADE' });
+      Company.hasMany(models.SiiCertificate, { foreignKey: 'company_id', as: 'siiCertificates', onDelete: 'CASCADE' });
+      Company.hasMany(models.FeatureFlag, { foreignKey: 'company_id', as: 'featureFlags', onDelete: 'CASCADE' });
+      //Company.hasMany(models.TenantLog, { foreignKey: 'company_id', as: 'tenantLogs', onDelete: 'CASCADE' });
     }
   }
 

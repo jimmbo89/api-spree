@@ -66,6 +66,16 @@ const NotificationController = require("./controllers/NotificationController.js"
 const multerDisk = require("./middlewares/multerDisk.js");
 const { UPLOAD_BASE_PATH } = require("../config/upload.js");
 const { getMimeTypeFromExtension } = require("./util/fileUtils.js");
+const { companyPreferenceSchema } = require("./middlewares/validations/companyPreferenceValidation.js");
+const CompanyPreferenceController = require("./controllers/CompanyPreferenceController.js");
+const { siiConfigSchema } = require("./middlewares/validations/siiConfigurationValidation.js");
+const SiiConfigurationController = require("./controllers/SiiConfigurationController.js");
+const { siiCertificateSchema } = require("./middlewares/validations/siiCertificateValidation.js");
+const SiiCertificateController = require("./controllers/SiiCertificateController.js");
+const Joi = require("joi");
+const FeatureFlagController = require("./controllers/FeatureFlagController.js");
+const SiiCafController = require("./controllers/SiiCafController.js");
+const DteDocumentController = require("./controllers/DteDocumentController.js");
 const router = express.Router();
 
 
@@ -263,6 +273,9 @@ router.post("/marketplace-update", requireRoles(['Admin', 'Seller Manager']), va
 router.post("/marketplace-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idMarketplaceSchema), MarketplaceController.destroy);
 router.post("/marketplace-show", requireRoles(['Admin', 'Seller Manager']), validateSchema(idMarketplaceSchema), MarketplaceController.show);
 router.post("/marketplace-list", requireRoles(['Admin', 'Seller Manager']), MarketplaceController.list); // list no necesita schema (validación manual de company_id)
+router.post("/mercado-libre-category", OAuthController.mercadoLibreCategory);
+router.post("/mercado-libre-attributes", OAuthController.mercadoLibreAttributes);
+router.post("/falabella-categories", OAuthController.falabellaCategories);
 
 //Marketplace Credentiales
 //router.post('/marketplace-credentials-by-context', validateSchema(findByMarketplaceCredentialSchema), MarketplaceCredentialController.index);
@@ -314,9 +327,41 @@ router.post("/upgrade-request-destroy", requireRoles(['Admin', 'Seller Manager']
 router.post("/billing-orders", requireRoles(['Admin']), validateSchema(listBillingOrdersSchema), BillingOrderController.index);
 router.post("/billing-order", requireRoles(['Admin']), multerDisk({ proof_url: 'billingorders' }), validateSchema(storeBillingOrderSchema), BillingOrderController.store);
 router.post("/billing-order-update", requireRoles(['Admin']), validateSchema(updateBillingOrderSchema), BillingOrderController.update);
+router.post("/billing-order-status", requireRoles(['Admin']), validateSchema(updateBillingOrderSchema),  BillingOrderController.updateStatus );
 router.post("/billing-order-destroy", requireRoles(['Admin']), validateSchema(idBillingOrderSchema), BillingOrderController.destroy);
 
+//Ruta de configuraciones
+router.post("/preferences", requireRoles(['Admin']), validateSchema(companyPreferenceSchema), CompanyPreferenceController.store);
+router.post("/preferences-show", requireRoles(['Admin']), validateSchema(Joi.object({ company_id: Joi.number().required() })), CompanyPreferenceController.show);
 
+//Rutas Sii-configurations
+router.get('/configurations', SiiConfigurationController.show);
+router.post('/configuration', SiiConfigurationController.store);
+router.post('/configuration/connect', SiiConfigurationController.connect);
+router.post('/configuration/disconnect', SiiConfigurationController.disconnect);
+//router.post("/sii-config", requireRoles(['Admin']), validateSchema(siiConfigSchema), SiiConfigurationController.store);
+//router.post("/sii-config-show", requireRoles(['Admin']), validateSchema(Joi.object({ company_id: Joi.number().required() })), SiiConfigurationController.show);
+//router.post("/sii-connect", requireRoles(['Admin']), validateSchema(Joi.object({ company_id: Joi.number().required() })), SiiConfigurationController.connect);
+//router.post("/sii-disconnect", requireRoles(['Admin']), validateSchema(Joi.object({ company_id: Joi.number().required() })), SiiConfigurationController.disconnect);
+
+// Certificados
+router.post('/certificates-upload', /*upload.single('certificate'),*/ SiiCertificateController.upload);
+router.get('/certificates', SiiCertificateController.show);
+// Feature flags (solo lectura)
+router.post("/feature-flags", requireRoles(['Admin', 'User']), validateSchema(Joi.object({ company_id: Joi.number().required() })), FeatureFlagController.index);
 //Rutas de los logs
 router.post("/get-logs", requireRoles(['Admin', 'Seller Manager']), LogController.getLogs);
+
+// CAF
+router.post('/cafs-upload', /*upload.single('caf'),*/ SiiCafController.upload);
+router.get('/cafs', SiiCafController.index);
+router.post('/cafs-toggle-active', SiiCafController.toggleActive);
+
+// Documentos DTE
+router.post('/documents-issue', DteDocumentController.issue);
+router.get('/documents', DteDocumentController.index);
+router.post('/documents-show', DteDocumentController.show);
+router.post('/document-check-status', DteDocumentController.checkStatus);
+
+
 module.exports = router;

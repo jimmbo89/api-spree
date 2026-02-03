@@ -62,20 +62,20 @@ const BillingOrderController = {
       }, req.files?.proof_url, t);
 
           // ✅ ACTUALIZAR EL PLAN DE LA COMPAÑÍA SI APLICA
-    const immediateUpdateTypes = ['upgrade', 'reactivation', 'past_due_payment', 'renewal'];
+    //const immediateUpdateTypes = ['upgrade', 'reactivation', 'past_due_payment', 'renewal'];
     
-    if (immediateUpdateTypes.includes(type)) {
+    /*if (immediateUpdateTypes.includes(type)) {
      await company.update({ plan_id: target_plan_id }, { transaction: t });
           
         newPlan = targetPlan.get({ plain: true }); // ← convertir a objeto plano
         logger.info(`Plan actualizado: ${JSON.stringify(newPlan)}`);
-        }
+        }*/
       await t.commit();
 
       return res.status(201).json({
         success: true,
         billingOrder: order,
-        plan: newPlan,
+        //plan: newPlan,
         message: "Orden de facturación creada correctamente"
       });
     } catch (err) {
@@ -112,6 +112,81 @@ const BillingOrderController = {
     }
   },
 
+  async updateStatus(req, res) {
+  logger.info(`${req.user?.user || 'Anonymous'} - Actualiza estado de orden de facturación`);
+  logger.info("Datos recibidos:");
+  logger.info(JSON.stringify(req.body));
+
+  const { id, action } = req.body;
+
+  if (!['accept', 'reject'].includes(action)) {
+    return res.status(400).json({ success: false, message: "Acción inválida. Use 'accept' o 'reject'." });
+  }
+
+  try {
+    const order = await BillingOrderRepository.findById(id);
+
+    if (!order) {
+      return res.status(404).json({ success: false, message: "Orden no encontrada" });
+    }
+
+    if (order.status !== 'pending_payment') {
+      return res.status(400).json({ success: false, message: "La orden ya fue procesada" });
+    }
+
+     const targetPlan = await PlanRepository.findById(order.target_plan_id);
+    if (!targetPlan) {
+      return res.status(404).json({ success: false, message: "Plan objetivo no encontrado" });
+    }
+
+    const t = await sequelize.transaction();
+    try {
+      if (action === 'accept') {
+        await BillingOrderRepository.update(order, { status: 'paid', paid_at: new Date() }, { transaction: t });
+
+        const immediateTypes = ['upgrade', 'reactivation', 'past_due_payment', 'renewal'];
+        if (immediateTypes.includes(order.type)) {
+          const company = await CompanyRepository.findById(order.company_id);
+          if (company) {
+            await CompanyRepository.update(company, { plan_id: order.target_plan_id }, null);
+            logger.info(`Plan de compañía actualizado a ID ${order.target_plan_id} (Orden ID: ${order.id})`);
+          }
+        }
+
+        /*const updatedCompany = await Company.findByPk(order.company_id, {
+          include: [{ model: Plan, as: 'plan' }],
+          transaction: t
+        });*/
+        const newPlan = targetPlan?.get({ plain: true }) || null;
+
+        await t.commit();
+
+        return res.status(200).json({
+          success: true,
+          order,
+          plan: newPlan,
+          message: "Orden aceptada y marcada como pagada"
+        });
+      } else if (action === 'reject') {
+        await BillingOrderRepository.update(order, { status: 'rejected' }, { transaction: t });
+        await t.commit();
+
+        return res.status(200).json({
+          success: true,
+          order,
+          message: "Orden rechazada"
+        });
+      }
+    } catch (err) {
+      if (t && !t.finished) await t.rollback();
+      logger.error("BillingOrderController->updateStatus: " + err.message);
+      return res.status(500).json({ success: false, message: "Error al actualizar estado de orden", details: err.message });
+    }
+  } catch (err) {
+    logger.error("BillingOrderController->updateStatus: " + err.message);
+    return res.status(500).json({ success: false, message: "Error al actualizar estado de orden", details: err.message });
+  }
+},
   async destroy(req, res) {
     logger.info(`${req.user?.user || 'Anonymous'} - Elimina orden de facturación con ID ${req.body.id}`);
     logger.info("Datos recibidos:");

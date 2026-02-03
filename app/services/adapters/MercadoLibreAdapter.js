@@ -1,146 +1,275 @@
+// src/services/adapters/MercadoLibreAdapter.js
 const BaseAdapter = require("./BaseAdapter");
 const logger = require("../../../config/logger");
 const { MarketplaceCredentialRepository } = require("../../repositories");
 const axios = require('axios');
 const MarketplaceTransformerMercadoLibre = require("../MarketplaceTransformerMercadoLibre");
+const MercadoLibreAttributesService = require('../MercadoLibreAttributesService'); // 🔑 Nuevo requerimiento
 
 class MercadoLibreAdapter extends BaseAdapter {
   static supportsCategoryPrediction() {
     return true;
   }
+
   static getTransformer() {
     return MarketplaceTransformerMercadoLibre;
   }
-  /*async ensureValidCredentials() {
+
+  // 🔑 NUEVO MÉTODO: Preprocesamiento específico de MercadoLibre
+  async prepareProduct(productData) {
+    // Copia base del producto
+    const prepared = {
+      ...productData,
+      price: productData.price,
+      available_quantity: productData.stock ?? 0,
+      pictures: productData.images || [],
+      name: productData.name,
+      title: productData.title || productData.name
+    };
+
+    // Solo procesar si tiene datos de MercadoLibre
+    const mlData = productData.mercado_libre?.[this.marketplaceId];
+    if (!mlData?.category?.category_id) {
+      logger.warn(`[ML Adapter] No hay datos de MercadoLibre para producto ${productData.id}`);
+      return prepared;
+    }
+
+    try {
+      // Obtener credenciales y atributos de categoría
+      const credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
+        this.marketplaceId,
+        this.userId
+      );
+
+      const { attributes: categoryAttributes, success: attrsSuccess } =
+        await MercadoLibreAttributesService.getCategoryAttributes(
+          mlData.category.category_id,
+          credential.access_token
+        );
+
+      if (!attrsSuccess) {
+        throw new Error(`No se pudieron obtener atributos de categoría ${mlData.category.category_id}`);
+      }
+
+      // Asignar categoría
+      prepared.category_id = mlData.category.category_id;
+
+      // Separar atributos de variaciones
+      const variationAttrIds = new Set(
+        categoryAttributes.filter(a => a.tags?.allow_variations).map(a => a.id)
+      );
+
+      // Atributos que NO son variaciones
+      prepared.attributes = mlData.attributes.filter(
+        a => !variationAttrIds.has(a.id)
+      );
+
+      // Construir variaciones válidas
+      const variations = this.buildValidMercadoLibreVariations(
+        productData.variants,
+        categoryAttributes
+      );
+
+      if (variations && variations.length > 0) {
+        prepared.variations = variations;
+        logger.info(`[ML Adapter] ✅ Variaciones construidas: ${variations.length}`);
+      } else {
+        logger.warn(`[ML Adapter] ⚠️ No se construyeron variaciones válidas`);
+      }
+
+      // 🔑 family_name si la categoría requiere variaciones
+      const hasVariationAttributes = categoryAttributes.some(a => a.tags?.allow_variations);
+      if (hasVariationAttributes) {
+        prepared.family_name = 
+          productData.family_name || 
+          productData.name || 
+          productData.title || 
+          "Producto";
+        
+        // 🔑 Almacenar flag para ajuste POST-transformación
+        prepared.__ml_has_variation_attributes = true;
+        logger.info(`[ML Adapter] 🔑 Categoría con atributos de variación → FORZANDO family_name: "${prepared.family_name}"`);
+      } else {
+        prepared.__ml_has_variation_attributes = false;
+      }
+
+      // Preservar category_settings para validación posterior
+      prepared.category_settings = mlData.category.settings || {};
+
+      return prepared;
+
+    } catch (error) {
+      logger.error(`[ML Adapter] Error preparando producto:`, error);
+      throw error;
+    }
+  }
+
+  // 🔑 Validación específica para MercadoLibre
+  validateProduct(product) {
+    const errors = [];
+
+    if (!product.category_id) {
+      errors.push('category_id es requerido');
+    }
+
+    if (product.price <= 0) {
+      errors.push('price debe ser mayor a 0');
+    }
+
+    // Validación específica: si tiene variaciones, requiere family_name
+    if (Array.isArray(product.variations) && product.variations.length > 0 && !product.family_name) {
+      errors.push('family_name es requerido cuando existen variaciones');
+    }
+
+    return {
+      valid: errors.length === 0,
+      errors
+    };
+  }
+
+  // 🔑 MÉTODO AUXILIAR: Construir variaciones (migrado de PublishingService)
+  buildValidMercadoLibreVariations(variants, categoryAttributes) {
+    if (!Array.isArray(variants) || variants.length === 0) return null;
+
+    const variationAttrs = categoryAttributes.filter(
+      a => a.tags?.allow_variations === true || a.hierarchy === 'CHILD_PK'
+    );
+
+    if (variationAttrs.length === 0) return null;
+
+    const validVariations = [];
+
+    for (const variant of variants.filter(v => v.publish)) {
+      const combinations = [];
+
+      for (const mlAttr of variationAttrs) {
+        const match = Object.entries(variant.attributes || {}).find(
+          ([key]) => this.normalizeForComparison(key) === this.normalizeForComparison(mlAttr.name)
+        );
+
+        if (!match) {
+          combinations.length = 0;
+          break;
+        }
+
+        const value = match[1];
+        const combo = { id: mlAttr.id };
+
+        const valueMatch = mlAttr.values?.find(
+          v => this.normalizeForComparison(v.name) === this.normalizeForComparison(value)
+        );
+
+        if (valueMatch) {
+          combo.value_id = valueMatch.id;
+          combo.value_name = valueMatch.name;
+        } else {
+          combo.value_name = String(value);
+        }
+
+        combinations.push(combo);
+      }
+
+      if (combinations.length === variationAttrs.length) {
+        validVariations.push({
+          seller_custom_field: variant.sku || String(variant.id),
+          price: Number(variant.price),
+          available_quantity: Number(variant.publishStock ?? variant.totalStock ?? 0),
+          attribute_combinations: combinations
+        });
+      }
+    }
+
+    return validVariations.length >= 1 ? validVariations : null;
+  }
+
+  // 🔑 MÉTODO AUXILIAR: Normalización para comparación (migrado de PublishingService)
+  normalizeForComparison(str) {
+    if (typeof str !== 'string') return '';
+    return str
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]/g, ' ')
+      .trim()
+      .replace(/\s+/g, ' ');
+  }
+
+  // === MÉTODOS EXISTENTES (SIN CAMBIOS) ===
+  async ensureValidCredentials() {
     this.credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
       this.marketplaceId,
       this.userId
     );
-      if (!this.credential) {
-    logger.info(`[MercadoLibreAdapter] No existe credencial para marketplace ${this.marketplaceId} y user ${this.userId}`);
-    const authResponse = await this.getAuthUrl();
-    if (authResponse.auth_required) {
-      throw new Error(JSON.stringify({
-        code: "oauth_required",
-        message: authResponse.message,
-        auth_url: authResponse.auth_url
-      }));
-    } else {
-      throw new Error("marketplace_credentials_incomplete");
-    }
-  }
+
     if (!this.credential) {
-      throw new Error("marketplace_credentials_not_found");
+      logger.info(`[MercadoLibreAdapter] No existe credencial para marketplace ${this.marketplaceId} y user ${this.userId}`);
+      const authResponse = await this.getAuthUrl();
+      if (authResponse.auth_required) {
+        return {
+          valid: false,
+          auth_required: true,
+          auth_url: authResponse.auth_url,
+          message: authResponse.message
+        };
+      } else {
+        return {
+          valid: false,
+          error: "marketplace_credentials_incomplete"
+        };
+      }
     }
+
     if (!this.credential.access_token) {
       logger.info("[MercadoLibreAdapter] No hay access_token disponible");
-      return await this.getAuthUrl();
-    }
-    try {
-      const tokenCheck = await axios.get("https://api.mercadolibre.com/users/me", {
-        headers: { Authorization: `Bearer ${this.credential.access_token}` },
-        timeout: 3000,
-      });
-      logger.info(`[MercadoLibreAdapter] ✅ Token válido para: ${tokenCheck.data.nickname}`);
-      return true;
-    } catch (error) {
-      logger.info(`[MercadoLibreAdapter] Token no funciona: ${error.message}`);
-      if (error.response?.status === 403) {
-        logger.error("[MercadoLibreAdapter] Error 403 - App en modo Development. NO intentar refresh.");
-        return false;
-      }
-      if (this.credential.refresh_token) {
-        try {
-          await this.refreshAccessToken();
-          return true;
-        } catch (refreshError) {
-          logger.error("[MercadoLibreAdapter] Refresh falló:", refreshError.message);
-          return false;
-        }
-      }
-      return false;
-    }
-  }*/
-  async ensureValidCredentials() {
-  this.credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
-    this.marketplaceId,
-    this.userId
-  );
-
-  // Caso 1: No existe credencial → pedir auth
-  if (!this.credential) {
-    logger.info(`[MercadoLibreAdapter] No existe credencial para marketplace ${this.marketplaceId} y user ${this.userId}`);
-    const authResponse = await this.getAuthUrl();
-    if (authResponse.auth_required) {
+      const authResponse = await this.getAuthUrl();
       return {
         valid: false,
         auth_required: true,
         auth_url: authResponse.auth_url,
         message: authResponse.message
       };
-    } else {
-      return {
-        valid: false,
-        error: "marketplace_credentials_incomplete"
-      };
     }
-  }
 
-  // Caso 2: No hay access_token → pedir auth
-  if (!this.credential.access_token) {
-    logger.info("[MercadoLibreAdapter] No hay access_token disponible");
-    const authResponse = await this.getAuthUrl();
-    return {
-      valid: false,
-      auth_required: true,
-      auth_url: authResponse.auth_url,
-      message: authResponse.message
-    };
-  }
+    try {
+      const tokenCheck = await axios.get("https://api.mercadolibre.com/users/me", {
+        headers: { Authorization: `Bearer ${this.credential.access_token}` },
+        timeout: 3000,
+      });
+      logger.info(`[MercadoLibreAdapter] ✅ Token válido para: ${tokenCheck.data.nickname}`);
+      return { valid: true };
+    } catch (error) {
+      logger.info(`[MercadoLibreAdapter] Token inválido: ${error.message}`);
 
-  // Caso 3: Verificar validez del token
-  try {
-    const tokenCheck = await axios.get("https://api.mercadolibre.com/users/me", {
-      headers: { Authorization: `Bearer ${this.credential.access_token}` },
-      timeout: 3000,
-    });
-    logger.info(`[MercadoLibreAdapter] ✅ Token válido para: ${tokenCheck.data.nickname}`);
-    return { valid: true };
-  } catch (error) {
-    logger.info(`[MercadoLibreAdapter] Token inválido: ${error.message}`);
+      if (error.response?.status === 403) {
+        logger.error("[MercadoLibreAdapter] Error 403 - App en modo Development. NO intentar refresh.");
+        const authResponse = await this.getAuthUrl();
+        return {
+          valid: false,
+          auth_required: true,
+          auth_url: authResponse.auth_url,
+          message: "App en modo desarrollo. Requiere nueva autorización."
+        };
+      }
 
-    // Si es 403 (modo desarrollo), no intentar refresh
-    if (error.response?.status === 403) {
-      logger.error("[MercadoLibreAdapter] Error 403 - App en modo Development. NO intentar refresh.");
+      if (this.credential.refresh_token) {
+        try {
+          await this.refreshAccessToken();
+          return { valid: true };
+        } catch (refreshError) {
+          logger.error("[MercadoLibreAdapter] Refresh falló:", refreshError.message);
+        }
+      }
+
       const authResponse = await this.getAuthUrl();
       return {
         valid: false,
         auth_required: true,
         auth_url: authResponse.auth_url,
-        message: "App en modo desarrollo. Requiere nueva autorización."
+        message: "Token expirado o inválido. Requiere reautorización."
       };
     }
-
-    // Intentar refresh si hay refresh_token
-    if (this.credential.refresh_token) {
-      try {
-        await this.refreshAccessToken();
-        return { valid: true };
-      } catch (refreshError) {
-        logger.error("[MercadoLibreAdapter] Refresh falló:", refreshError.message);
-      }
-    }
-
-    // Si todo falla, pedir nueva autorización
-    const authResponse = await this.getAuthUrl();
-    return {
-      valid: false,
-      auth_required: true,
-      auth_url: authResponse.auth_url,
-      message: "Token expirado o inválido. Requiere reautorización."
-    };
   }
-}
+
   async refreshAccessToken() {
     if (!this.credential.refresh_token) throw new Error("refresh_token_not_available");
     if (!this.credential.client_id || !this.credential.client_secret) throw new Error("client_credentials_missing");
@@ -166,9 +295,6 @@ class MercadoLibreAdapter extends BaseAdapter {
         expires_at: expiresAt,
         marketplace_id: this.marketplaceId,
         user_id: this.userId
-        //company_id: this.companyId,
-        //branch_id: this.branchId,
-        //scopes: response.data.scope || this.credential.scopes,
       };
 
       await MarketplaceCredentialRepository.createOrUpdate(newTokenData);
@@ -186,7 +312,6 @@ class MercadoLibreAdapter extends BaseAdapter {
 
   async predictCategory(title) {
     logger.info(`[MercadoLibreAdapter] Prediciendo categoría para título: ${title}`);
-    logger.info(`${title}`);
     if (!this.credential.access_token) {
       throw new Error("No hay access_token disponible para predicción");
     }
@@ -215,10 +340,6 @@ class MercadoLibreAdapter extends BaseAdapter {
         })
       ]);
 
-      //logger.info(`[MercadoLibreAdapter] Atributos obtenidos para categoría ${categoryId}:`);
-      //logger.info(JSON.stringify(attributesRes.data));
-      //logger.info(JSON.stringify(categoryRes.data));
-
       const categoryAttributes = Array.isArray(attributesRes.data) ? attributesRes.data : [];
       const categoryInfoData = categoryRes.data || {};
 
@@ -246,92 +367,142 @@ class MercadoLibreAdapter extends BaseAdapter {
       throw error;
     }
   }
+
   async publish(transformedProduct) {
-  try {
-    logger.info("[MercadoLibreAdapter] Iniciando publicación...");
-    const hasValidCredentials = await this.ensureValidCredentials();
-    if (!hasValidCredentials) {
-      return await this.getAuthUrl();
-    }
+    try {
+      logger.info("[MercadoLibreAdapter] === INICIANDO PUBLICACIÓN ===");
+      logger.info(`[DEBUG] Título recibido: "${transformedProduct.title}" (${transformedProduct.title?.length || 0} caracteres)`);
+      logger.info(`[DEBUG] Name recibido: "${transformedProduct.name}"`);
+      logger.info(`[DEBUG] Family_name recibido: "${transformedProduct.family_name}"`);
+      logger.info(`[DEBUG] Category ID: ${transformedProduct.category_id}`);
+      logger.info(`[DEBUG] Tiene variaciones: ${!!(Array.isArray(transformedProduct.variations) && transformedProduct.variations.length > 0)}`);
+      logger.info(`[DEBUG] Variaciones count: ${transformedProduct.variations?.length || 0}`);
 
-    const categoryId = (transformedProduct.category_id || '').trim();
-    const categorySettings = transformedProduct.category_settings || {};
-    const catalogDomain = categorySettings?.settings?.catalog_domain;
-    const isUserProduct = !catalogDomain || catalogDomain === "MLC-UNCLASSIFIED_PRODUCTS";
-    const hasVariations = Array.isArray(transformedProduct.variations) && transformedProduct.variations.length > 0;
+      const credentialStatus = await this.ensureValidCredentials();
+      if (!credentialStatus?.valid) {
+        return credentialStatus;
+      }
 
-    const productToPublish = {
-      category_id: categoryId,
-      price: transformedProduct.price,
-      available_quantity: transformedProduct.available_quantity ?? transformedProduct.stock ?? 0,
-      currency_id: "CLP",
-      buying_mode: "buy_it_now",
-      listing_type_id: "bronze",
-      condition: "new",
-      pictures: transformedProduct.pictures || [],
-      site_id: this.getSiteId(),
-    };
+      const categoryId = (transformedProduct.category_id || '').trim();
+      const categorySettings = transformedProduct.category_settings || {};
+      const catalogDomain = categorySettings?.settings?.catalog_domain;
+      const isCatalogProduct = !!catalogDomain && catalogDomain !== "MLC-UNCLASSIFIED_PRODUCTS";
 
-    if (Array.isArray(transformedProduct.attributes)) {
-      productToPublish.attributes = transformedProduct.attributes;
-    }
-    if (Array.isArray(transformedProduct.sale_terms)) {
-      productToPublish.sale_terms = transformedProduct.sale_terms;
-    }
-    if (hasVariations) {
-      productToPublish.variations = transformedProduct.variations;
-    }
+      const hasVariations =
+        Array.isArray(transformedProduct.variations) &&
+        transformedProduct.variations.length > 0;
 
-    // ✅ Regla definitiva: title vs family_name
-    if (isUserProduct) {
-      productToPublish.family_name = (
-        (transformedProduct.family_name || transformedProduct.name || "Producto")
-          .toString()
-          .trim()
-          .substring(0, 60) || "Producto"
+      // 🔑 AJUSTE POST-TRANSFORMACIÓN: Regla ML específica
+      if (transformedProduct.__ml_has_variation_attributes) {
+        if (!transformedProduct.family_name && transformedProduct.title) {
+          // Convertir title → family_name (regla ML para categorías con variaciones)
+          transformedProduct.family_name = transformedProduct.title;
+          delete transformedProduct.title;
+          logger.info(`[ML Adapter] 🔑 Convirtiendo title a family_name: "${transformedProduct.family_name}"`);
+        }
+      }
+
+      // 🔑 Fallback genérico de seguridad (igual que PublishingService original)
+      if (!transformedProduct.family_name && !transformedProduct.title) {
+        transformedProduct.title = 
+          transformedProduct.name || 
+          `Producto ${Date.now().toString().slice(-6)}`;
+        logger.warn(`[ML Adapter] ⚠️ Sin family_name ni title → usando fallback: "${transformedProduct.title}"`);
+      }
+
+      const productToPublish = {
+        site_id: this.getSiteId(),
+        category_id: categoryId,
+        price: transformedProduct.price,
+        available_quantity:
+          transformedProduct.available_quantity ??
+          transformedProduct.stock ??
+          0,
+        currency_id: "CLP",
+        buying_mode: "buy_it_now",
+        listing_type_id: "bronze",
+        condition: "new",
+        pictures: transformedProduct.pictures || []
+      };
+
+      if (Array.isArray(transformedProduct.attributes)) {
+        productToPublish.attributes = transformedProduct.attributes;
+      }
+
+      if (Array.isArray(transformedProduct.sale_terms)) {
+        productToPublish.sale_terms = transformedProduct.sale_terms;
+      }
+
+      if (hasVariations) {
+        productToPublish.variations = transformedProduct.variations;
+      }
+
+      // 🔑 APLICAR REGLA DEFINITIVA DE NAMING
+      if (hasVariations) {
+        if (isCatalogProduct) {
+          let titleValue = (transformedProduct.title || transformedProduct.name || "Producto").toString().trim();
+          if (!titleValue || titleValue.length === 0) titleValue = `Producto ${Date.now().toString().slice(-6)}`;
+          if (titleValue.length < 6) titleValue = titleValue.padEnd(6, " ");
+          if (titleValue.length > 60) titleValue = titleValue.substring(0, 60);
+          productToPublish.title = titleValue;
+          logger.info(`[DEBUG] 📦 Catálogo con variaciones → title: "${titleValue}"`);
+        } else {
+          let familyValue = (transformedProduct.family_name || transformedProduct.name || transformedProduct.title || "Producto").toString().trim();
+          if (!familyValue || familyValue.length === 0) familyValue = `Producto ${Date.now().toString().slice(-6)}`;
+          if (familyValue.length > 60) familyValue = familyValue.substring(0, 60);
+          productToPublish.family_name = familyValue;
+          logger.info(`[DEBUG] 📦 Variaciones → family_name: "${familyValue}"`);
+        }
+      } else {
+        if (transformedProduct.family_name) {
+          let familyValue = transformedProduct.family_name.toString().trim();
+          if (familyValue.length > 60) familyValue = familyValue.substring(0, 60);
+          productToPublish.family_name = familyValue;
+          logger.info(`[DEBUG] 📦 Sin variaciones pero con family_name → usando: "${familyValue}"`);
+        } else {
+          let title = (transformedProduct.title || transformedProduct.name || "").toString().trim();
+          if (!title || title.length === 0) title = `Producto ${Date.now().toString().slice(-6)}`;
+          if (title.length < 6) title = title.padEnd(6, " ");
+          if (title.length > 60) title = title.substring(0, 60);
+          productToPublish.title = title;
+          logger.info(`[DEBUG] 📦 Sin variaciones ni family_name → title: "${title}"`);
+        }
+      }
+
+      logger.info("[MercadoLibreAdapter] === PAYLOAD FINAL QUE SE ENVIARÁ A MERCADO LIBRE ===");
+      logger.info(JSON.stringify(productToPublish, null, 2));
+
+      const response = await axios.post(
+        "https://api.mercadolibre.com/items",
+        productToPublish,
+        {
+          headers: {
+            Authorization: `Bearer ${this.credential.access_token}`,
+            "Content-Type": "application/json",
+            Accept: "application/json"
+          },
+          timeout: 30000
+        }
       );
-    } else {
-      const title = (transformedProduct.title || transformedProduct.name || "").trim();
-      if (title.length < 6 || title.length > 60) {
-        return {
-          success: false,
-          error: `Título inválido (${title.length} caracteres). Debe tener entre 6 y 60 caracteres.`,
-        };
+
+      logger.info(`[MercadoLibreAdapter] ✅ Publicado exitosamente: ${response.data.id}`);
+      return {
+        success: true,
+        external_id: response.data.id,
+        data: response.data
+      };
+    } catch (error) {
+      logger.error("[MercadoLibreAdapter] ❌ Error en publicación:");
+      logger.error(`Error message: ${error.message}`);
+      
+      if (error.response) {
+        logger.error(`Status: ${error.response.status}`);
+        logger.error(`Response: ${JSON.stringify(error.response.data, null, 2)}`);
       }
-      productToPublish.title = title;
+      
+      return this.handlePublishError(error);
     }
-
-    logger.info("[MercadoLibreAdapter] === PAYLOAD FINAL ===");
-    logger.info(JSON.stringify(productToPublish, null, 2));
-
-    const response = await axios.post(
-      "https://api.mercadolibre.com/items",
-      productToPublish,
-      {
-        headers: {
-          Authorization: `Bearer ${this.credential.access_token}`,
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        timeout: 30000,
-      }
-    );
-
-    logger.info(`[MercadoLibreAdapter] ✅ ¡Éxito! ID: ${response.data.id}`);
-    return {
-      success: true,
-       data:response.data,
-      external_id: response.data.id,
-    };
-  } catch (error) {
-    logger.error("[MercadoLibreAdapter] Error en publicación:");
-    if (error.response) {
-      logger.error(`Status: ${error.response.status}`);
-      logger.error(`Error: ${JSON.stringify(error.response.data)}`);
-    }
-    return this.handlePublishError(error);
   }
-}
 
   handlePublishError(error) {
     if (error.response) {
@@ -353,8 +524,6 @@ class MercadoLibreAdapter extends BaseAdapter {
       this.marketplaceId,
       this.userId
     );
-    logger.info('basicCred');
-    logger.info(JSON.stringify(basicCred));
     if (!basicCred || !basicCred.client_id || !basicCred.redirect_uri) {
       return { success: false, error: "Credenciales incompletas para autenticación" };
     }

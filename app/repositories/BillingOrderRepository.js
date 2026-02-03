@@ -1,4 +1,4 @@
-const { BillingOrder, Plan, sequelize } = require("../models");
+const { BillingOrder, Plan, Company, sequelize } = require("../models");
 const { Op } = require("sequelize");
 const logger = require("../../config/logger");
 const ImageService = require("../services/ImageService");
@@ -19,15 +19,18 @@ const BillingOrderRepository = {
       {
         model: Plan,
         as: 'currentPlan',
-        attributes: ['name'],
         required: false
       },
       {
         model: Plan,
         as: 'targetPlan',
-        attributes: ['name'],
         required: false
-      }
+      },
+      {
+        model: Company,
+        as: 'company',
+        required: false
+      },
     ],
     attributes: [
       'id', 'company_id', 'current_plan_id', 'target_plan_id', 'billing_cycle', 'type',
@@ -62,7 +65,8 @@ const BillingOrderRepository = {
       updatedAt: order.updatedAt,
       // Nombres de planes
       current_plan_name: order.currentPlan?.name || `Plan ${order.current_plan_id}`,
-      target_plan_name: order.targetPlan?.name || `Plan ${order.target_plan_id}`
+      target_plan_name: order.targetPlan?.name || `Plan ${order.target_plan_id}`,
+      company: order.company
     })),
     total: count,
     page,
@@ -71,16 +75,10 @@ const BillingOrderRepository = {
 },
 
   async findById(id) {
-    const order = await BillingOrder.findByPk(id);
-    if (order) {
-      return {
-        ...order.toJSON(),
-        invoice_request: typeof order.invoice_request === 'string'
-          ? JSON.parse(order.invoice_request || '{}')
-          : order.invoice_request || {}
-      };
-    }
-    return null;
+    const order = await BillingOrder.findByPk(id, {
+      include: [{ model: Company, as: 'company' }, { model: Plan, as: 'targetPlan' }]
+    });
+    return order;
   },
 
   async create(body, file, options = {}) {
