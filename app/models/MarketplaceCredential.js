@@ -37,6 +37,29 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.DATE,
       allowNull: true
     },
+    // ===== Campos para marketplaces sin OAuth (Falabella, etc.) =====
+    seller_email: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+      comment: 'Correo electrónico del usuario de Seller Center (UserID para Falabella)'
+    },
+    seller_id: {
+      type: DataTypes.STRING(50),
+      allowNull: true,
+      comment: 'ID del vendedor (para header User-Agent en Falabella)'
+    },
+    api_key: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      comment: 'API Key para marketplaces sin OAuth (Falabella)'
+    },
+    
+    // ===== Campo genérico para datos adicionales =====
+    additional_data: {
+      type: DataTypes.JSON,
+      allowNull: true,
+      comment: 'Datos adicionales específicos por marketplace'
+    },
     active: {
       type: DataTypes.BOOLEAN,
       allowNull: false,

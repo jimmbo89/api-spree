@@ -16,7 +16,7 @@ class MercadoLibreAdapter extends BaseAdapter {
   }
 
   // 🔑 NUEVO MÉTODO: Preprocesamiento específico de MercadoLibre
-  async prepareProduct(productData) {
+  /*async prepareProduct(productData) {
     // Copia base del producto
     const prepared = {
       ...productData,
@@ -102,8 +102,168 @@ class MercadoLibreAdapter extends BaseAdapter {
       logger.error(`[ML Adapter] Error preparando producto:`, error);
       throw error;
     }
+  }*/
+  async prepareProduct(productData) {
+  logger.info('[MercadoLibreAdapter] Preparando producto para publicación', {
+    productId: productData.id,
+    name: productData.name,
+    variantsCount: productData.variants?.length || 0
+  });
+
+  if (!productData.mercado_libre || Object.keys(productData.mercado_libre).length === 0) {
+    logger.info('No se encontró información de MercadoLibre para el producto');
+    throw new Error('No se encontró información de MercadoLibre para el producto');
   }
 
+  const marketId = Object.keys(productData.mercado_libre)[0];
+  const mlData = productData.mercado_libre[marketId];
+
+  if (!mlData?.category?.category_id) {
+    throw new Error('Falta category_id para MercadoLibre');
+  }
+
+  const credential = await this.ensureValidCredentials();
+  const categoryAttributes = await MercadoLibreAttributesService.getCategoryAttributes(
+    mlData.category.category_id,
+    credential.access_token,
+    'MLC'
+  );
+
+  const prepared = {
+    title: productData.name?.trim() || '',
+    category_id: mlData.category.category_id,
+    price: Number(productData.price) || 0,
+    currency_id: 'CLP',
+    available_quantity: Number(productData.totalStock) || 0,
+    buying_mode: 'buy_it_now',
+    listing_type_id: 'gold_special', // o 'gold_pro' según tu lógica
+    condition: productData.condition?.toLowerCase() === 'new' ? 'new' : 'used',
+    description: {
+      plain_text: productData.description?.trim() || productData.name?.trim() || ''
+    },
+    shipping: {
+      mode: 'me2',
+      local_pick_up: true,
+      free_shipping: false
+    },
+    sale_terms: [],
+    attributes: [],
+    variations: undefined
+  };
+
+  // Normalizar atributos desde mercado_libre (fuente de verdad)
+  if (Array.isArray(mlData.attributes) && mlData.attributes.length > 0) {
+    prepared.attributes = mlData.attributes
+      .filter(attr => attr.id && (attr.value_name || attr.value_id))
+      .map(attr => ({
+        id: attr.id,
+        value_name: attr.value_name ? String(attr.value_name).trim() : undefined,
+        value_id: attr.value_id ? String(attr.value_id).trim() : undefined
+      }));
+  }
+
+  // Detectar variantes publicables
+  const publishableVariants = (productData.variants || []).filter(v => v.publish && v.price > 0);
+  const hasMultipleVariants = publishableVariants.length > 1;
+  const hasSingleVariant = publishableVariants.length === 1;
+
+  // Identificar atributos de variación según ML
+  const variationAttrIds = new Set(
+    categoryAttributes
+      .filter(a => a.tags?.allow_variations === true || a.hierarchy === 'CHILD_PK')
+      .map(a => a.id)
+  );
+
+  if (hasMultipleVariants) {
+    // ✅ MÚLTIPLES variantes → requiere array variations[] + family_name
+    logger.info(`[ML Adapter] Producto con ${publishableVariants.length} variantes publicables. Construyendo array variations.`);
+    
+    // Filtrar atributos de variación del nivel base (solo para múltiples variantes)
+    const baseAttributes = prepared.attributes.filter(
+      a => !variationAttrIds.has(a.id)
+    );
+    
+    prepared.attributes = baseAttributes;
+    
+    // Construir variaciones
+    const variations = this.buildValidMercadoLibreVariations(
+      publishableVariants,
+      categoryAttributes
+    );
+    
+    if (variations && variations.length >= 2) {
+      prepared.variations = variations;
+      prepared.family_name = productData.name?.trim() || `Producto ${productData.sku || Date.now().toString().slice(-6)}`;
+      delete prepared.title; // ML requiere family_name en lugar de title para productos con variaciones
+      
+      logger.info(`[ML Adapter] ✅ Variaciones construidas exitosamente: ${variations.length}`);
+    } else {
+      // Fallback: si falla la construcción, restaurar todos los atributos para evitar producto inválido
+      logger.warn(`[ML Adapter] ⚠️ No se construyeron variaciones válidas (se esperaban >=2). Restaurando atributos de variación en nivel base.`);
+      prepared.attributes = mlData.attributes
+        .filter(attr => attr.id && (attr.value_name || attr.value_id))
+        .map(attr => ({
+          id: attr.id,
+          value_name: attr.value_name ? String(attr.value_name).trim() : undefined,
+          value_id: attr.value_id ? String(attr.value_id).trim() : undefined
+        }));
+      prepared.variations = undefined;
+      delete prepared.family_name;
+    }
+  } else if (hasSingleVariant) {
+    // ✅ UNA SOLA variante → permitir atributos de variación en nivel base (ML lo acepta)
+    logger.info(`[ML Adapter] Producto con 1 variante publicable. Permitiendo atributos de variación en nivel base.`);
+    
+    // NO filtrar atributos de variación → mantener TODOS los atributos de mercado_libre
+    prepared.attributes = mlData.attributes
+      .filter(attr => attr.id && (attr.value_name || attr.value_id))
+      .map(attr => ({
+        id: attr.id,
+        value_name: attr.value_name ? String(attr.value_name).trim() : undefined,
+        value_id: attr.value_id ? String(attr.value_id).trim() : undefined
+      }));
+    
+    // Ajustar stock y precio según la variante única
+    const singleVariant = publishableVariants[0];
+    prepared.available_quantity = Number(singleVariant.publishStock ?? singleVariant.totalStock ?? productData.totalStock) || 0;
+    prepared.price = Number(singleVariant.price) || Number(productData.price) || 0;
+    
+    // NO incluir variations[] para productos simples (ML rechaza con 1 variante)
+    prepared.variations = undefined;
+    delete prepared.family_name;
+  } else {
+    // ✅ SIN variantes publicables → producto simple sin variaciones
+    logger.info(`[ML Adapter] Producto sin variantes publicables. Usando datos del producto principal.`);
+    
+    // Mantener todos los atributos de mercado_libre
+    prepared.attributes = mlData.attributes
+      .filter(attr => attr.id && (attr.value_name || attr.value_id))
+      .map(attr => ({
+        id: attr.id,
+        value_name: attr.value_name ? String(attr.value_name).trim() : undefined,
+        value_id: attr.value_id ? String(attr.value_id).trim() : undefined
+      }));
+    
+    prepared.variations = undefined;
+    delete prepared.family_name;
+  }
+
+  // Validación final antes de enviar
+  if (!prepared.title && !prepared.family_name) {
+    prepared.title = productData.name?.trim() || 'Producto sin título';
+    logger.warn(`[ML Adapter] ⚠️ Forzando título por falta de title/family_name: "${prepared.title}"`);
+  }
+
+  logger.info(`[ML Adapter] ✅ Producto preparado para ML:`, {
+    has_title: !!prepared.title,
+    has_family_name: !!prepared.family_name,
+    attributes_count: prepared.attributes?.length || 0,
+    has_variations: !!prepared.variations,
+    variations_count: prepared.variations?.length || 0
+  });
+
+  return prepared;
+}
   // 🔑 Validación específica para MercadoLibre
   validateProduct(product) {
     const errors = [];
@@ -383,7 +543,7 @@ class MercadoLibreAdapter extends BaseAdapter {
         return credentialStatus;
       }
 
-      const categoryId = (transformedProduct.category_id || '').trim();
+      const categoryId = transformedProduct.category_id || '';
       const categorySettings = transformedProduct.category_settings || {};
       const catalogDomain = categorySettings?.settings?.catalog_domain;
       const isCatalogProduct = !!catalogDomain && catalogDomain !== "MLC-UNCLASSIFIED_PRODUCTS";

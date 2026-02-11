@@ -11,7 +11,10 @@ const mimeTypes = {
   'pdf': ['application/pdf'],
   'doc': ['application/msword'],
   'docx': ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
-  'txt': ['text/plain']
+  'txt': ['text/plain'],
+    'pfx': ['application/x-pkcs12', 'application/pkcs12'],
+  'p12': ['application/x-pkcs12', 'application/pkcs12'],
+  'xml': ['application/xml', 'text/xml']
 };
 
 /**

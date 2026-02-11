@@ -13,7 +13,8 @@ const {
   WarehouseProductRepository,
   MarketplaceCredentialRepository,
   ProductMarketplaceLinkRepository,
-  PoolRepository
+  PoolRepository,
+  ProductCategoryRepository
 } = require('../repositories');
 const MercadoLibreAdapter = require('../services/adapters/MercadoLibreAdapter');
 const MarketplaceTransformer = require('../services/MarketplaceTransformer');
@@ -155,7 +156,7 @@ const ProductPublishingTaskController = {
       const company = await CompanyRepository.findById(company_id);
       if (!company) {
         logger.info(`WarehouseController->list: Compañía no encontrada con ID ${company_id}`);
-        return res.status(400).json({ msg: "companyNotFound" });
+        return res.status(400).json({ success: false, message: "companyNotFound" });
       }
     }
 
@@ -194,10 +195,12 @@ const ProductPublishingTaskController = {
       };
       });
 
-      res.status(200).json({ pools: pools, marketplaces: marketplaces });
+      const categories = await ProductCategoryRepository.findActive();
+
+      res.status(200).json({ success: true, pools: pools, marketplaces: marketplaces, categories: categories });
     } catch (error) {
       logger.error('ProductCategoryController->warehouseMarketplaces: ' + error.message);
-      res.status(500).json({ error: 'ServerError', details: error.message });
+      res.status(500).json({ success: false,  message: 'Error interno del servidor', details: error.message });
     }
   },
   async store(req, res) {

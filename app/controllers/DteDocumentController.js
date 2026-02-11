@@ -2,7 +2,7 @@
 const logger = require("../../config/logger");
 const { DteDocumentRepository, CompanyRepository, TenantLogRepository } = require("../repositories");
 const { sequelize } = require('../models');
-const SiiIntegrationService = require("../services/SII/SIIIntegrationService");
+const SiiIntegrationService = require("../services/SII/SiiIntegrationService");
 
 class DteDocumentController {
   async issue(req, res) {

@@ -4,11 +4,8 @@ const { Model } = require('sequelize');
 module.exports = (sequelize, DataTypes) => {
   class SiiCertificate extends Model {
     static associate(models) {
-      SiiCertificate.belongsTo(models.Company, {
-        foreignKey: 'company_id',
-        as: 'company',
-        onDelete: 'CASCADE'
-      });
+      SiiCertificate.belongsTo(models.Company, { foreignKey: 'company_id', as: 'company', onDelete: 'CASCADE' });
+      SiiCertificate.hasMany(models.SiiCaf, { foreignKey: 'certificate_id', as: 'cafs', onDelete: 'CASCADE' });
     }
   }
 

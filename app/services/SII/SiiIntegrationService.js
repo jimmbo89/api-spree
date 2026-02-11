@@ -11,6 +11,7 @@ const DTEGenerator = require("./DTEGenerator");
 const CertificateManager = require("./CertificateManager");
 const CAFManager = require("./CAFManager");
 const SIIConnectionService = require("./SIIConnectionService");
+const logger = require("../../../config/logger");
 
 class SiiIntegrationService {
   constructor() {
@@ -83,7 +84,6 @@ class SiiIntegrationService {
     const config = await SiiConfigurationRepository.findByCompanyId(companyId);
     const certificate = await SiiCertificateRepository.findActiveByCompanyId(companyId);
     const cafs = await SiiCafRepository.findByCompanyId(companyId, options);
-
     if (!config) {
       return {
         estado_general: '🔴 No configurado',

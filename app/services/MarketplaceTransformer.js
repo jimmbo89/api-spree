@@ -9,27 +9,35 @@ class MarketplaceTransformer {
       m.direction === 'export' || m.direction === 'both'
     );
     return products.map(product => {
-      const transformed = {};
-      for (const mapping of exportMappings) {
-        const {
-          internal_field,
-          external_field,
-          default_value,
-          validation_rules
-        } = mapping;
-        let value = product[internal_field];
-        if (value === null || value === undefined || (typeof value === 'string' && value === '')) {
-          value = default_value !== undefined && default_value !== null ? default_value : null;
+      const transformed = exportMappings.length > 0 ? {} : { ...product };
+       if (exportMappings.length > 0) {
+        for (const mapping of exportMappings) {
+          const {
+            internal_field,
+            external_field,
+            default_value,
+            validation_rules
+          } = mapping;
+          
+          let value = product[internal_field];
+          
+          if (value === null || value === undefined || (typeof value === 'string' && value === '')) {
+            value = default_value !== undefined && default_value !== null ? default_value : null;
+          }
+          
+          if (value !== null && validation_rules) {
+            value = this.applyValidationRules(value, validation_rules, internal_field);
+          }
+          
+          // ✅ Solo mapear campos simples. No tocar attributes, family_name, sale_terms, etc.
+          if (external_field === 'attributes' || external_field === 'family_name' || external_field === 'sale_terms') {
+            continue;
+          }
+          
+          this.setNestedField(transformed, external_field, value);
         }
-        if (value !== null && validation_rules) {
-          value = this.applyValidationRules(value, validation_rules, internal_field);
-        }
-        // ✅ Solo mapear campos simples. No tocar attributes, family_name, sale_terms, etc.
-        if (external_field === 'attributes' || external_field === 'family_name' || external_field === 'sale_terms') {
-          // Estos campos ya están preprocesados en PublishingService
-          continue;
-        }
-        this.setNestedField(transformed, external_field, value);
+      } else {
+        logger.warn(`[Transformer] No hay mapeos definidos para marketplace ${marketplaceId}. Usando producto sin transformar.`);
       }
 
       // ✅ Respetar campos de negocio ya procesados

@@ -3,14 +3,14 @@
 const { Model } = require('sequelize');
 
 module.exports = (sequelize, DataTypes) => {
-  class SIICaf extends Model {
+  class SiiCaf extends Model {
     static associate(models) {
-      SIICaf.belongsTo(models.Company, {
+      SiiCaf.belongsTo(models.Company, {
         foreignKey: 'company_id',
         as: 'company',
         onDelete: 'CASCADE'
       });
-      SIICaf.belongsTo(models.SiiCertificate, {
+      SiiCaf.belongsTo(models.SiiCertificate, {
         foreignKey: 'certificate_id',
         as: 'certificate',
         onDelete: 'CASCADE'
@@ -18,7 +18,7 @@ module.exports = (sequelize, DataTypes) => {
     }
   }
 
-  SIICaf.init({
+  SiiCaf.init({
     id: {
       type: DataTypes.BIGINT,
       autoIncrement: true,
@@ -87,10 +87,10 @@ module.exports = (sequelize, DataTypes) => {
     }
   }, {
     sequelize,
-    modelName: 'SIICaf',
+    modelName: 'SiiCaf',
     tableName: 'sii_cafs',
     timestamps: true
   });
 
-  return SIICaf;
+  return SiiCaf;
 };

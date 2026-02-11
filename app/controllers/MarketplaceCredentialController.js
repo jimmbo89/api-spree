@@ -23,7 +23,7 @@ const MarketplaceCredentialController = {
 
       // ⚠️ Nunca devolver tokens en lista
       const safeCredentials = credentials.map(cred => {
-        const { access_token, refresh_token, ...safe } = cred;
+        const { access_token, refresh_token, api_key, ...safe } = cred;
         return safe;
       });
 
@@ -66,6 +66,10 @@ const MarketplaceCredentialController = {
           active: cred.active,
           access_token: cred.access_token ? '••••••••' : null, // solo para saber si existe
           expires_at: cred.expires_at,
+          seller_email: cred.seller_email,
+          seller_id: cred.seller_id,
+          api_key: cred.api_key ? '........' : null,
+          additional_data: cred.additional_data,
           created_at: cred.createdAt,
           updated_at: cred.updatedAt,
           marketplace: cred.marketplace
@@ -134,8 +138,10 @@ const MarketplaceCredentialController = {
 },*/
 // MarketplaceCredentialController.js
 async store(req, res) {
+  logger.info(`${req.user?.name || 'Unknown'} - Sincroniza con marketplace`);
+  logger.info(`Datos recibidos:, ${JSON.stringify(req.body)}`);
   const userId = req.user.id;
-  const { marketplace_id, client_id, client_secret } = req.body;
+  const { marketplace_id, seller_email, seller_id, api_key } = req.body;
 
   try {
     const marketplace = await MarketplaceRepository.findById(marketplace_id);
@@ -144,9 +150,9 @@ async store(req, res) {
     }
 
     // 🔑 Detectar si es marketplace que requiere credenciales manuales
-    const isManualAuth = !marketplace.client_id || !marketplace.client_secret;
+    //const isManualAuth = !marketplace.client_id || !marketplace.client_secret;
     
-    if (isManualAuth) {
+    /*if (isManualAuth) {
       // 🔑 Requiere credenciales del usuario
       if (!client_id || !client_secret) {
         // Pedir credenciales al usuario
@@ -156,14 +162,15 @@ async store(req, res) {
           auth_type: 'manual',
           message: "Se requieren credenciales para este marketplace"
         });
-      }
+      }*/
       
       // Guardar credenciales del usuario
       await MarketplaceCredentialRepository.createOrUpdate({
         marketplace_id,
         user_id: userId,
-        access_token: client_secret.trim(), // API Key → access_token
-        refresh_token: client_id.trim(),
+        api_key: api_key, // API Key → access_token
+        seller_email: seller_email,
+        seller_id: seller_id,
         expires_at: null,
         active: true
       });
@@ -172,7 +179,7 @@ async store(req, res) {
         success: true, 
         message: "Credenciales guardadas exitosamente" 
       });
-    }
+    //}
 
     // 🔑 Flujo OAuth (MercadoLibre)
     const adapter = PublishingAdapterFactory.getAdapter(marketplace, null, null, userId);
@@ -190,14 +197,13 @@ async store(req, res) {
     }
 
   } catch (error) {
-    logger.error('MarketplaceCredentialController->store:', error.message);
-    return res.status(500).json({ success: false, message: 'Error interno' });
+    logger.error(`MarketplaceCredentialController->store:, ${error.message}`);
+    return res.status(500).json({ success: false, message: 'Error interno', details: error.message });
   }
 },
 async refreskToken(req, res) {
   logger.info(`${req.user?.name || 'Unknown'} - refresca credenciales de marketplace`);
-  logger.info('Datos recibidos:');
-  logger.info(JSON.stringify(req.body));
+  logger.info(`Datos recibidos:\n ${JSON.stringify(req.body)}`);
   const userId = getUserId();
   const { id } = req.body;
 
@@ -242,7 +248,7 @@ async refreskToken(req, res) {
     logger.info(`${req.user?.name || 'Unknown'} - Actualiza credenciales de marketplace`);
     logger.info(JSON.stringify(req.body));
 
-    const { id, access_token, refresh_token, expires_at, active } = req.body;
+    const { id, access_token, refresh_token, expires_at, active, seller_email, seller_id, api_key, additional_data } = req.body;
     const metadata = getRequestMetadata(req);
 
     try {
@@ -261,7 +267,11 @@ async refreskToken(req, res) {
         access_token,
         refresh_token,
         expires_at,
-        active
+        active,
+        seller_email,
+        seller_id,
+        api_key,
+        additional_data
       };
 
       const credential = await MarketplaceCredentialRepository.createOrUpdate(updatedData);
@@ -312,6 +322,49 @@ async refreskToken(req, res) {
     } catch (error) {
       logger.error('MarketplaceCredentialController->show: ' + error.message);
       res.status(500).json({ error: 'ServerError' });
+    }
+  },
+
+  async destroy(req, res) {
+    logger.info(`${req.user?.name || 'Unknown'} - Elimina credencial de marketplace`);
+
+    const {id} =req.body;
+
+    const metadata = getRequestMetadata(req);
+
+    try {
+      // 1. Buscar la credencial
+      const credential = await MarketplaceCredentialRepository.findByDelete(id);
+      if (!credential) return res.status(404).json({ msg: 'CredencialNotFound' });
+
+      // 2. Eliminar la credencial usando el repositorio correcto
+      await MarketplaceCredentialRepository.delete(credential); // <-- Aquí está el cambio
+
+      // 3. Registrar el log de éxito
+      await LogRepository.create({
+        user_id: metadata.user_id,
+        action: 'marketplace_credential.delete',
+        description: `Credencial para marketplace "${credential.marketplace.name}" eliminada`,
+        ip_address: metadata.ip_address,
+        user_agent: metadata.user_agent,
+        status: 'success',
+        meta: { id: credential.id, marketplace_id: credential.marketplace_id }
+      });
+
+      res.status(200).json({ message: "Credencial de marketplace eliminada correctamente" });
+    } catch (error) {
+      // 4. Registrar el log de error
+      await LogRepository.create({
+        user_id: metadata?.user_id,
+        action: 'marketplace_credential.delete',
+        description: `Error al eliminar credencial ID ${id}: ${error.message}`,
+        ip_address: metadata?.ip_address,
+        user_agent: metadata?.user_agent,
+        status: 'error',
+        meta: { id }
+      });
+      logger.error('MarketplaceController->destroy: ' + error.message);
+      res.status(500).json({ error: 'ServerError', details: error.message });
     }
   }
 };

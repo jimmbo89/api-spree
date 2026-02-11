@@ -1,30 +1,36 @@
 // src/services/MarketplaceTransformerMercadoLibre.js
+const logger = require('../../config/logger');
 const { MarketplaceRepository } = require('../repositories');
 
 class MarketplaceTransformerMercadoLibre {
 
- static async transformProducts(products, marketplaceId) {
+  static async transformProducts(products, marketplaceId) {
     const mappings = await MarketplaceRepository.findMappingsByMarketplace(marketplaceId);
     const exportMappings = mappings.filter(m => m.direction !== 'import');
 
     return products.map(product => {
       const transformed = {};
 
-      // 🔑 CORREGIDO: Preservar SIEMPRE name y title originales
+      // 🔑 Preservar name y title originales
       transformed.name = product.name || product.title || "Producto sin nombre";
       transformed.title = product.title || product.name || "Producto sin título";
 
-      // 🔑 CORREGIDO: Si existe family_name en el producto original, preservarlo
+      // 🔑 Preservar family_name si existe
       if (product.family_name) {
         transformed.family_name = product.family_name;
       }
 
-      // Atributos prioritarios
+      // ✅ ATRIBUTOS PRIORITARIOS CON NORMALIZACIÓN DE IMÁGENES
       if (product.attributes) transformed.attributes = product.attributes;
       if (product.variations) transformed.variations = product.variations;
       if (product.sale_terms) transformed.sale_terms = product.sale_terms;
       if (product.description) transformed.description = product.description;
-      if (product.pictures) transformed.pictures = product.pictures;
+      
+      // ✅ NORMALIZAR IMÁGENES ANTES DE ASIGNAR
+      if (product.pictures) {
+        transformed.pictures = this.normalizePictures(product.pictures);
+      }
+      
       if (product.price !== undefined) transformed.price = product.price;
       if (product.available_quantity !== undefined) transformed.available_quantity = product.available_quantity;
       if (product.stock !== undefined) transformed.stock = product.stock;
@@ -35,7 +41,7 @@ class MarketplaceTransformerMercadoLibre {
       if (product.listing_type_id) transformed.listing_type_id = product.listing_type_id;
       if (product.seller_custom_field) transformed.seller_custom_field = product.seller_custom_field;
 
-      // Mappings adicionales (solo si no existen ya)
+      // Mappings adicionales
       for (const mapping of exportMappings) {
         if (transformed[mapping.external_field] !== undefined) continue;
 
@@ -45,13 +51,77 @@ class MarketplaceTransformerMercadoLibre {
         }
       }
 
-      // 🔑 CORREGIDO: Si no hay family_name pero sí hay variaciones, usar name como fallback
+      // 🔑 Fallback para family_name con variaciones
       if (!transformed.family_name && (transformed.variations || product.variants)) {
         transformed.family_name = transformed.name || transformed.title || "Producto";
       }
 
       return transformed;
     });
+  }
+
+  // ✅ MÉTODO DE NORMALIZACIÓN DE IMÁGENES (COPIADO DE MarketplaceTransformer)
+  static normalizePictures(value) {
+    const result = [];
+    try {
+      if (Array.isArray(value) && value.length > 0) {
+        for (const item of value) {
+          if (typeof item === 'object' && item.source) {
+            result.push({ source: this.normalizeImageUrl(item.source) });
+          } else if (typeof item === 'object' && item.url) {
+            result.push({ source: this.normalizeImageUrl(item.url) });
+          } else if (typeof item === 'string' && item.trim()) {
+            result.push({ source: this.normalizeImageUrl(item) });
+          }
+        }
+      } else if (typeof value === 'string' && value.trim()) {
+        if (value.startsWith('[') || value.startsWith('{')) {
+          try {
+            const parsed = JSON.parse(value);
+            return this.normalizePictures(parsed);
+          } catch (e) {}
+        }
+        const urlRegex = /(https?:\/\/[^\s\]}]+|[\w\-_]+\.(jpg|jpeg|png|gif|webp))/gi;
+        const matches = value.match(urlRegex);
+        if (matches) {
+          matches.forEach(url => result.push({ source: this.normalizeImageUrl(url) }));
+        } else {
+          result.push({ source: this.normalizeImageUrl(value) });
+        }
+      } else if (value && typeof value === 'object' && !Array.isArray(value)) {
+        if (value.source) result.push({ source: this.normalizeImageUrl(value.source) });
+        else if (value.url) result.push({ source: this.normalizeImageUrl(value.url) });
+      }
+    } catch (error) {
+      logger.error(`[TransformerML] Error normalizando imágenes:`, error.message);
+    }
+    
+    if (result.length === 0) {
+      logger.warn(`[TransformerML] No se encontraron imágenes válidas, usando placeholder`);
+      result.push({ 
+        source: 'https://via.placeholder.com/600x600/3498db/ffffff?text=Producto+Sin+Imagen'
+      });
+    }
+    
+    logger.info(`[TransformerML] Normalizadas ${result.length} imágenes`);
+    return result;
+  }
+
+  // ✅ MÉTODO DE NORMALIZACIÓN DE URL (COPIADO DE MarketplaceTransformer)
+  static normalizeImageUrl(url) {
+    if (!url || typeof url !== 'string') {
+      return 'https://via.placeholder.com/600x600/e74c3c/ffffff?text=Error+URL';
+    }
+    url = url.trim();
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      return url;
+    }
+    const baseUrl = process.env.APP_URL || 'https://spree.api.klint.cl/api';
+    if (url.startsWith('/')) url = url.substring(1);
+    if (url.includes('warehouse_products/') || url.includes('products/')) {
+      return `${baseUrl}/images/${url}`;
+    }
+    return `${baseUrl}/images/${url}`;
   }
 }
 

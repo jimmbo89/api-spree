@@ -87,8 +87,10 @@ async findByMarketplaceAndUser(marketplaceId, userId) {
   // Descifrar tokens del usuario (si existen)
   let access_token = credential?.access_token;
   let refresh_token = credential?.refresh_token;
+  let api_key = credential?.api_key;
   if (access_token) access_token = EncryptionService.decrypt(access_token);
   if (refresh_token) refresh_token = EncryptionService.decrypt(refresh_token);
+  if (api_key) api_key = EncryptionService.decrypt(api_key);
 
   // Construir objeto plano
   const combined = {
@@ -100,6 +102,10 @@ async findByMarketplaceAndUser(marketplaceId, userId) {
     refresh_token: refresh_token || null,
     expires_at: credential?.expires_at || null,
     active: credential?.active || false,
+    seller_email: credential?.seller_email || null,
+    seller_id: credential?.seller_id,
+    api_key: api_key || null,
+    additional_data: credential?.additional_data,
 
     // Campos de Marketplace (siempre presentes)
     client_id: marketplace.client_id,
@@ -148,7 +154,20 @@ async findByMarketplaceAndUser(marketplaceId, userId) {
     const plain = record.get({ plain: true });
     if (plain.access_token) plain.access_token = EncryptionService.decrypt(plain.access_token);
     if (plain.refresh_token) plain.refresh_token = EncryptionService.decrypt(plain.refresh_token);
+    if (plain.api_key) plain.api_key = EncryptionService.decrypt(plain.api_key);
     return plain;
+  },
+
+  async findByDelete(id) {
+    return await MarketplaceCredential.findByPk(id, {
+    include: [
+      {
+        model: Marketplace, // Asegúrate de que el nombre del modelo sea correcto
+        as: 'marketplace', // Usa el alias correcto definido en tu asociación
+        attributes: ['name'] // Solo traemos lo necesario
+      }
+    ]
+  });
   },
 
   /**
@@ -156,7 +175,7 @@ async findByMarketplaceAndUser(marketplaceId, userId) {
    */
   async createOrUpdate(credentialData, options = {}) {
     try {
-      const { user_id, marketplace_id } = credentialData;
+      const { user_id, marketplace_id, seller_email, seller_id, api_key, additional_data } = credentialData;
 
       if (!user_id || !marketplace_id) {
         throw new Error('user_id y marketplace_id son obligatorios');
@@ -188,7 +207,10 @@ async findByMarketplaceAndUser(marketplaceId, userId) {
         marketplace_id,
         user_id,
         active: credentialData.active ?? (existing?.active ?? true),
-        expires_at: credentialData.expires_at ?? existing?.expires_at
+        expires_at: credentialData.expires_at ?? existing?.expires_at,
+        seller_email: credentialData.seller_email,
+        seller_id: credentialData.seller_id,
+        additional_data: credentialData.additional_data
       };
 
       // Solo actualizar tokens si se proporcionan explícitamente
@@ -201,6 +223,12 @@ async findByMarketplaceAndUser(marketplaceId, userId) {
       if (credentialData.refresh_token !== undefined) {
         dataToSave.refresh_token = credentialData.refresh_token
           ? EncryptionService.encrypt(credentialData.refresh_token)
+          : null;
+      }
+
+      if (credentialData.api_key !== undefined) {
+        dataToSave.api_key = credentialData.api_key
+          ? EncryptionService.encrypt(credentialData.api_key)
           : null;
       }
 
@@ -220,7 +248,11 @@ async findByMarketplaceAndUser(marketplaceId, userId) {
       logger.error(`[REPO] ERROR al guardar credenciales de token:`, error.message);
       throw error;
     }
-  }
+  },
+
+    async delete(record) {
+    return await record.destroy();
+  },
 };
 
 module.exports = MarketplaceCredentialRepository;

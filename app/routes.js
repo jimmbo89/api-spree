@@ -76,6 +76,8 @@ const Joi = require("joi");
 const FeatureFlagController = require("./controllers/FeatureFlagController.js");
 const SiiCafController = require("./controllers/SiiCafController.js");
 const DteDocumentController = require("./controllers/DteDocumentController.js");
+const { createCafSchema, updateCafSchema, listCafsSchema } = require("./middlewares/validations/siiCafValidation.js");
+const cafXmlUpload = require("./middlewares/siiCafUpload.js");
 const router = express.Router();
 
 
@@ -111,7 +113,6 @@ router.get("/images/:foldername/:filename", (req, res) => {
     res.end(file);
   });
 });
-router.post("/falabella-categories-free", OAuthController.falabellaCategories);
 //rutas protegidas
 router.use(auth);
 
@@ -274,14 +275,20 @@ router.post("/marketplace-update", requireRoles(['Admin', 'Seller Manager']), va
 router.post("/marketplace-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idMarketplaceSchema), MarketplaceController.destroy);
 router.post("/marketplace-show", requireRoles(['Admin', 'Seller Manager']), validateSchema(idMarketplaceSchema), MarketplaceController.show);
 router.post("/marketplace-list", requireRoles(['Admin', 'Seller Manager']), MarketplaceController.list); // list no necesita schema (validación manual de company_id)
+router.post('/mercado-libre-suggested-categories', OAuthController.mercadoLibreSuggestedCategoriesWithAttributes);
 router.post("/mercado-libre-category", OAuthController.mercadoLibreCategory);
 router.post("/mercado-libre-attributes", OAuthController.mercadoLibreAttributes);
+router.post("/falabella-suggested-categories", OAuthController.falabellaSuggestedCategoriesWithAttributes);
 router.post("/falabella-categories", OAuthController.falabellaCategories);
+router.post("/falabella-category-attributes", OAuthController.falabellaAttributes);
+router.post("/falabella-product-status", OAuthController.falabellaProductStatus);
+router.post("/falabella-feed-status", OAuthController.falabellaFeedStatus);
 
 //Marketplace Credentiales
 //router.post('/marketplace-credentials-by-context', validateSchema(findByMarketplaceCredentialSchema), MarketplaceCredentialController.index);
 router.post("/marketplace-credential", requireRoles(['Admin', 'Seller Manager']), checkPlanLimit('marketplaces'), validateSchema(storeMarketplaceCredentialSchema), MarketplaceCredentialController.store);
 router.post("/marketplace-credential-update", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateMarketplaceCredentialSchema), MarketplaceCredentialController.update);
+router.post("/marketplace-credential-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idMarketplaceCredentialSchema), MarketplaceCredentialController.destroy);
 router.post('/marketplace-credentials-by-user', MarketplaceCredentialController.getByUser);
 router.post('/marketplace-refresh-token', validateSchema(idMarketplaceCredentialSchema), MarketplaceCredentialController.refreskToken);
 
@@ -336,27 +343,39 @@ router.post("/preferences", requireRoles(['Admin']), validateSchema(companyPrefe
 router.post("/preferences-show", requireRoles(['Admin']), validateSchema(Joi.object({ company_id: Joi.number().required() })), CompanyPreferenceController.show);
 
 //Rutas Sii-configurations
-router.get('/configurations', SiiConfigurationController.show);
+router.post('/configurations', requireRoles(['Admin', 'Seller Manager']), SiiConfigurationController.show);
 router.post('/configuration', SiiConfigurationController.store);
-router.post('/configuration/connect', SiiConfigurationController.connect);
-router.post('/configuration/disconnect', SiiConfigurationController.disconnect);
+router.post('/configuration-connect', SiiConfigurationController.connect);
+router.post('/configuration-disconnect', SiiConfigurationController.disconnect);
 //router.post("/sii-config", requireRoles(['Admin']), validateSchema(siiConfigSchema), SiiConfigurationController.store);
 //router.post("/sii-config-show", requireRoles(['Admin']), validateSchema(Joi.object({ company_id: Joi.number().required() })), SiiConfigurationController.show);
 //router.post("/sii-connect", requireRoles(['Admin']), validateSchema(Joi.object({ company_id: Joi.number().required() })), SiiConfigurationController.connect);
 //router.post("/sii-disconnect", requireRoles(['Admin']), validateSchema(Joi.object({ company_id: Joi.number().required() })), SiiConfigurationController.disconnect);
 
 // Certificados
-router.post('/certificates-upload', /*upload.single('certificate'),*/ SiiCertificateController.upload);
+
+const certificatePpath = {
+  certificate_path: {
+    folder: 'certificates', multiple: false}
+};
+router.post('/sii-certificates-list', requireRoles(['Admin', 'Seller Manager']), validateSchema(idCompanySchema), SiiCertificateController.list);
+router.post('/certificate-upload', requireRoles(['Admin', 'Seller Manager']), multerFieldFolders(certificatePpath), validateSchema(siiCertificateSchema), SiiCertificateController.createOrUpdate);
 router.get('/certificates', SiiCertificateController.show);
+router.post('/certificate-destroy', requireRoles(['Admin', 'Seller Manager']), validateSchema(idRoleSchema), SiiCertificateController.destroy);
 // Feature flags (solo lectura)
 router.post("/feature-flags", requireRoles(['Admin', 'User']), validateSchema(Joi.object({ company_id: Joi.number().required() })), FeatureFlagController.index);
 //Rutas de los logs
 router.post("/get-logs", requireRoles(['Admin', 'Seller Manager']), LogController.getLogs);
 
 // CAF
-router.post('/cafs-upload', /*upload.single('caf'),*/ SiiCafController.upload);
-router.get('/cafs', SiiCafController.index);
-router.post('/cafs-toggle-active', SiiCafController.toggleActive);
+const cafXml = {
+  caf_xml: {
+    folder: 'cafs', multiple: false}
+};
+router.post('/sii-cafs-list', requireRoles(['Admin', 'Seller Manager']), validateSchema(listCafsSchema), SiiCafController.list);
+router.post('/caf-store', requireRoles(['Admin', 'Seller Manager']), cafXmlUpload, validateSchema(createCafSchema), SiiCafController.create);
+router.post('/caf-update', requireRoles(['Admin', 'Seller Manager']), cafXmlUpload, validateSchema(updateCafSchema), SiiCafController.update);
+router.post('/caf-destroy', requireRoles(['Admin', 'Seller Manager']), validateSchema(idRoleSchema), SiiCafController.destroy);
 
 // Documentos DTE
 router.post('/documents-issue', DteDocumentController.issue);

@@ -67,13 +67,20 @@ class PublishingService {
       const preparedProduct = await adapter.prepareProduct(productData);
       
       logger.info(`[PublishingService] Producto preparado para ${marketplace.name}`);
-      logger.info(`Preparado:`, JSON.stringify(preparedProduct, null, 2));
+      logger.info(`Preparado:\n ${JSON.stringify(preparedProduct, null, 2)}`);
 
       // === 2. Transformar usando mapeos genéricos ===
-      const [transformed] = await MarketplaceTransformer.transformProducts(
-        [preparedProduct],
-        marketplace.id
-      );
+      let transformer = MarketplaceTransformer; // Default genérico
+    if (typeof adapter.constructor.getTransformer === 'function') {
+      transformer = adapter.constructor.getTransformer();
+      logger.info(`[PublishingService] ✅ Usando transformer específico: ${transformer.name || 'Custom'}`);
+    }
+
+    const [transformed] = await transformer.transformProducts(
+      [preparedProduct],
+      marketplace.id
+    );
+
 
       if (!transformed) {
         logger.error(`[PublishingService] Transformación fallida`);
@@ -81,12 +88,12 @@ class PublishingService {
       }
 
       logger.info(`[PublishingService] Producto transformado`);
-      logger.info(`Transformado:`, JSON.stringify(transformed, null, 2));
+      logger.info(`Transformado:\n ${JSON.stringify(transformed, null, 2)}`);
 
       // === 3. Validar antes de publicar ===
       const validation = adapter.validateProduct(transformed);
       if (!validation.valid) {
-        logger.error(`[PublishingService] Validación fallida:`, validation.errors);
+        logger.error(`[PublishingService] Validación fallida: ${JSON.stringify(validation.errors)}`);
         return {
           success: false,
           error: 'validation_failed',

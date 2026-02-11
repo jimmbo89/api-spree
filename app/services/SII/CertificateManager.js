@@ -2,6 +2,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const forge = require('node-forge');
+const logger = require('../../../config/logger');
 
 class CertificateManager {
   async validateCertificate(certificateBuffer, password) {
@@ -35,12 +36,10 @@ class CertificateManager {
       try {
         const p12Asn1 = forge.asn1.fromDer(certificateBuffer.toString('binary'));
         const p12 = forge.pkcs12.pkcs12FromAsn1(p12Asn1, password);
-        
         // Extraer certificado
         const certBags = p12.getBags({ bagType: forge.pki.oids.certBag });
         const certBag = certBags[forge.pki.oids.certBag][0];
         const cert = certBag.cert;
-        
         // Obtener fecha de expiración
         const expiresAt = new Date(cert.validity.notAfter);
         const today = new Date();
@@ -49,14 +48,44 @@ class CertificateManager {
           return {
             isValid: false,
             message: `Certificado expirado el ${expiresAt.toISOString().split('T')[0]}`,
-            expiresAt: expiresAt
+            expiresAt: expiresAt,
+            documentTypes: []
           };
         }
+
+        let documentTypes = [];
+    try {
+      // OID específico del SII para tipos de documento
+      const SII_DOCUMENT_TYPES_OID = '2.16.458.1.1';
+      
+      // Buscar la extensión en el certificado
+      const extensions = cert.extensions || [];
+      const docTypeExtension = extensions.find(ext => ext.id === SII_DOCUMENT_TYPES_OID);
+      
+      if (docTypeExtension && docTypeExtension.value) {
+        // El valor está en formato ASN.1, lo parseamos
+        const valueAsn1 = forge.asn1.fromDer(docTypeExtension.value);
+        // El valor es una secuencia de enteros
+        if (valueAsn1.type === forge.asn1.Type.SEQUENCE) {
+          documentTypes = valueAsn1.value.map(item => {
+            if (item.type === forge.asn1.Type.INTEGER) {
+              return item.value.toString(); // Ej: "33", "34", etc.
+            }
+            return null;
+          }).filter(Boolean);
+        }
+      }
+    } catch (extError) {
+      logger.warn(`No se pudieron extraer tipos de documento del certificado: ${extError.message}`);
+      // No fallamos si no se pueden extraer, solo dejamos el array vacío
+    }
+
 
         return {
           isValid: true,
           message: 'Certificado válido',
           expiresAt: expiresAt,
+          documentTypes: documentTypes,
           subject: cert.subject.getField('CN').value,
           issuer: cert.issuer.getField('CN').value
         };

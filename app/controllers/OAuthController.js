@@ -1,98 +1,120 @@
-const logger = require('../../config/logger');
-const axios = require('axios');
-const qs = require('qs');
+const logger = require("../../config/logger");
+const axios = require("axios");
+const qs = require("qs");
 const {
   MarketplaceCredentialRepository,
-  LogRepository
-} = require('../repositories');
-const { getRequestMetadata } = require('../util/requestUtil');
-const { getUserId } = require('../../config/context');
-const crypto = require('crypto');
-function rawurlencode(str) {
-  return encodeURIComponent(str)
-    .replace(/!/g, '%21')
-    .replace(/'/g, '%27')
-    .replace(/\(/g, '%28')
-    .replace(/\)/g, '%29')
-    .replace(/\*/g, '%2A')
-    .replace(/~/g, '%7E');
-}
+  LogRepository,
+} = require("../repositories");
+const { getRequestMetadata } = require("../util/requestUtil");
+const { getUserId } = require("../../config/context");
+const crypto = require("crypto");
+const { getFromCache, clearMarketplaceCache, clearAllCache, saveToCache, getCacheStats } = require("../../helpers/marketplaceCacheHelper");
+const { marketplaceRateLimiter } = require("../../config/rateLimiter");
+
+const rfc3986Encode = (str) =>
+  encodeURIComponent(str).replace(
+    /[!'()*]/g,
+    (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase(),
+  );
+
+const timestampMinus03 = (date = new Date()) => {
+  const pad = (n) => String(n).padStart(2, "0");
+  return (
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+    `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}-03:00`
+  );
+};
 
 const OAuthController = {
   async mercadoLibreCallback(req, res) {
     const { code, state } = req.body;
-    logger.info('Datos recibidos actualizar las credenciales de mercado libre:');
+    logger.info(
+      "Datos recibidos actualizar las credenciales de mercado libre:",
+    );
     logger.info(JSON.stringify(req.body));
     const metadata = getRequestMetadata(req);
 
     if (!code || !state) {
-      logger.warn('OAuth callback sin code o state');
-      return res.status(400).json({ error: 'Datos incompletos: se requieren "code" y "state"' });
+      logger.warn("OAuth callback sin code o state");
+      return res
+        .status(400)
+        .json({ error: 'Datos incompletos: se requieren "code" y "state"' });
     }
 
     try {
-      const [marketplaceId, userId] = state.split('_');
-      logger.info('Marketplace');
+      const [marketplaceId, userId] = state.split("_");
+      logger.info("Marketplace");
       logger.info(marketplaceId);
-      const credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
-        marketplaceId,
-        userId
-      );
+      const credential =
+        await MarketplaceCredentialRepository.findByMarketplaceAndUser(
+          marketplaceId,
+          userId,
+        );
 
-      logger.info('Credenciales básicas obtenidas para OAuth Mercado Libre');
+      logger.info("Credenciales básicas obtenidas para OAuth Mercado Libre");
       logger.info(JSON.stringify(credential));
 
       if (!credential || !credential.client_id || !credential.client_secret) {
-        throw new Error('Credenciales OAuth incompletas en la base de datos');
+        throw new Error("Credenciales OAuth incompletas en la base de datos");
       }
 
       // ✅ URL oficial de tokens (sin espacios)
-      const oauthTokenUrl = 'https://api.mercadolibre.com/oauth/token';
+      const oauthTokenUrl = "https://api.mercadolibre.com/oauth/token";
 
-      logger.info('[OAuth] Enviando solicitud a Mercado Libre');
+      logger.info("[OAuth] Enviando solicitud a Mercado Libre");
 
-      logger.info(JSON.stringify({
-        client_id: credential.client_id,
-        client_secret: credential.client_secret,
-        code: `"${code}"`, // comillas para detectar espacios
-        redirect_uri: `"${credential.redirect_uri}"`, // comillas para detectar espacios
-      }));
-
-      logger.info(JSON.stringify(qs.stringify({
-          grant_type: 'authorization_code',
+      logger.info(
+        JSON.stringify({
           client_id: credential.client_id,
           client_secret: credential.client_secret,
-          code: code,
-          redirect_uri: credential.redirect_uri.trim() // ✅ elimina espacios
-        })));
+          code: `"${code}"`, // comillas para detectar espacios
+          redirect_uri: `"${credential.redirect_uri}"`, // comillas para detectar espacios
+        }),
+      );
+
+      logger.info(
+        JSON.stringify(
+          qs.stringify({
+            grant_type: "authorization_code",
+            client_id: credential.client_id,
+            client_secret: credential.client_secret,
+            code: code,
+            redirect_uri: credential.redirect_uri.trim(), // ✅ elimina espacios
+          }),
+        ),
+      );
       // ✅ Petición exactamente como en tu ejemplo que funciona
       const tokenRes = await axios.post(
         oauthTokenUrl,
         qs.stringify({
-          grant_type: 'authorization_code',
+          grant_type: "authorization_code",
           client_id: credential.client_id,
           client_secret: credential.client_secret,
           code: code,
-          redirect_uri: credential.redirect_uri.trim() // ✅ elimina espacios
+          redirect_uri: credential.redirect_uri.trim(), // ✅ elimina espacios
         }),
         {
           headers: {
-            'Content-Type': 'application/x-www-form-urlencoded'
+            "Content-Type": "application/x-www-form-urlencoded",
             // ❌ NO incluir 'Authorization' header
-          }
-        }
+          },
+        },
       );
 
-      logger.info('[OAuth] Tokens recibidos correctamente');
+      logger.info("[OAuth] Tokens recibidos correctamente");
 
-      logger.info(JSON.stringify({
-        has_access_token: !!tokenRes.data.access_token,
-        has_refresh_token: !!tokenRes.data.refresh_token,
-        expires_in: tokenRes.data.expires_in
-      }));
+      logger.info(
+        JSON.stringify({
+          has_access_token: !!tokenRes.data.access_token,
+          has_refresh_token: !!tokenRes.data.refresh_token,
+          expires_in: tokenRes.data.expires_in,
+        }),
+      );
 
       if (!tokenRes.data.access_token || !tokenRes.data.refresh_token) {
-        throw new Error('Respuesta de Mercado Libre no contiene access_token o refresh_token');
+        throw new Error(
+          "Respuesta de Mercado Libre no contiene access_token o refresh_token",
+        );
       }
 
       // ✅ Guardar con redirect_uri limpio (sin espacios)
@@ -110,86 +132,94 @@ const OAuthController = {
 
       await LogRepository.create({
         user_id: userId,
-        action: 'oauth.mercadolibre.success',
-        description: 'Tokens de Mercado Libre guardados exitosamente',
+        action: "oauth.mercadolibre.success",
+        description: "Tokens de Mercado Libre guardados exitosamente",
         ip_address: metadata.ip_address,
         user_agent: metadata.user_agent,
-        status: 'success',
-        meta: { marketplace_id: marketplaceId }
+        status: "success",
+        meta: { marketplace_id: marketplaceId },
       });
 
       return res.status(200).json({
         success: true,
-        message: 'Tokens de Mercado Libre guardados correctamente',
+        message: "Tokens de Mercado Libre guardados correctamente",
         data: {
           marketplace_id: marketplaceId,
-          access_token: '[REDACTADO]',
-          refresh_token: '[REDACTADO]',
-          expires_in: tokenRes.data.expires_in
-        }
+          access_token: "[REDACTADO]",
+          refresh_token: "[REDACTADO]",
+          expires_in: tokenRes.data.expires_in,
+        },
       });
-
     } catch (error) {
-      logger.error('OAuth callback error:', {
+      logger.error("OAuth callback error:", {
         message: error.message,
         stack: error.stack,
         code: req.query.code?.substring(0, 10),
-        state: req.query.state
+        state: req.query.state,
       });
 
       await LogRepository.create({
         user_id: userId,
-        action: 'oauth.mercadolibre.error',
+        action: "oauth.mercadolibre.error",
         description: `Error en OAuth: ${error.message}`,
         ip_address: metadata.ip_address,
         user_agent: metadata.user_agent,
-        status: 'error',
-        meta: { error: error.message }
+        status: "error",
+        meta: { error: error.message },
       });
 
       return res.status(500).json({
         success: false,
-        error: error.message || 'Error interno al procesar el callback de Mercado Libre'
+        error:
+          error.message ||
+          "Error interno al procesar el callback de Mercado Libre",
       });
     }
   },
 
   async mercadoLibreCategory(req, res) {
-    const { productName, site_id, marketplace_id, user_id: bodyUserId } = req.body;
+    const {
+      productName,
+      site_id,
+      marketplace_id,
+      user_id: bodyUserId,
+    } = req.body;
     const user_id = bodyUserId || getUserId();
-    logger.info('Datos recibidos al optener ls categorías de un producto en mercado libre:');
+    logger.info(
+      "Datos recibidos al optener ls categorías de un producto en mercado libre:",
+    );
     logger.info(JSON.stringify(req.body));
 
     try {
-      const credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
-        marketplace_id,
-        user_id
-      );
-      logger.info('Credenciales básicas obtenidas para OAuth Mercado Libre');
+      const credential =
+        await MarketplaceCredentialRepository.findByMarketplaceAndUser(
+          marketplace_id,
+          user_id,
+        );
+      logger.info("Credenciales básicas obtenidas para OAuth Mercado Libre");
       logger.info(JSON.stringify(credential));
 
-      
-       const domainDiscoveryUrl = `https://api.mercadolibre.com/sites/${site_id}/domain_discovery/search`;
-            const response = await axios.get(domainDiscoveryUrl, {
-              params: { q: productName, limit: 8 }//,
-              //headers: { Authorization: `Bearer ${credential.access_token}` }
-            });
-
-      
-      return res.status(200).json({
-        success: true,
-       categories: response.data
+      const domainDiscoveryUrl = `https://api.mercadolibre.com/sites/${site_id}/domain_discovery/search`;
+      const response = await axios.get(domainDiscoveryUrl, {
+        params: { q: productName, limit: 8 }, //,
+        //headers: { Authorization: `Bearer ${credential.access_token}` }
       });
 
+      return res.status(200).json({
+        success: true,
+        categories: response.data,
+      });
     } catch (error) {
-      logger.error('OAuth Category error:', {
+      logger.error("OAuth Category error:", {
         message: error.message,
-        stack: error.stack
+        stack: error.stack,
       });
 
       return res.status(500).json({
         success: false,
-        error: error.message || 'Error interno al obtener las categorías de Mercado Libre'
+        error:
+          error.message ||
+          "Error interno al obtener las categorías de Mercado Libre",
       });
     }
   },
@@ -197,192 +227,1447 @@ const OAuthController = {
   async mercadoLibreAttributes(req, res) {
     const { category_id, marketplace_id, user_id: bodyUserId } = req.body;
     const user_id = bodyUserId || getUserId();
-    logger.info('Datos recibidos al optener los atributos de una categoría en mercado libre:');
+    logger.info(
+      "Datos recibidos al optener los atributos de una categoría en mercado libre:",
+    );
     logger.info(JSON.stringify(req.body));
 
     try {
-      const credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
-        marketplace_id,
-        user_id
-      );
-      logger.info('Credenciales básicas obtenidas para OAuth Mercado Libre');
+      const credential =
+        await MarketplaceCredentialRepository.findByMarketplaceAndUser(
+          marketplace_id,
+          user_id,
+        );
+      logger.info("Credenciales básicas obtenidas para OAuth Mercado Libre");
       logger.info(JSON.stringify(credential));
 
       const domainCategoriesUrl = `https://api.mercadolibre.com/categories/${category_id}/attributes`;
       const response = await axios.get(domainCategoriesUrl, {
-        headers: { Authorization: `Bearer ${credential.access_token}` }
+        headers: { Authorization: `Bearer ${credential.access_token}` },
       });
 
-      
       return res.status(200).json({
         success: true,
-       attributes: response.data
+        attributes: response.data,
       });
-
     } catch (error) {
-      logger.error('OAuth Category error:', {
+      logger.error("OAuth Category error:", {
         message: error.message,
-        stack: error.stack
+        stack: error.stack,
       });
 
       return res.status(500).json({
         success: false,
-        error: error.message || 'Error interno al obtener los atributos de Mercado Libre'
+        error:
+          error.message ||
+          "Error interno al obtener los atributos de Mercado Libre",
       });
     }
   },
 
-  // src/controllers/MarketplaceController.js
-async falabellaCategories(req, res) {
-    logger.info('Datos recibidos al obtener las categorías de un producto en falabella:');
-    //logger.info(JSON.stringify(req.body));
+  // controllers/marketplace/mercadoLibreController.js
+
+async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
+  logger.info(`Datos recibidos para categorías sugeridas con atributos en MercadoLibre:\n ${JSON.stringify(req.body)}`);
+
+  const { marketplace_id, site_id, products } = req.body;
+  const user_id = req.user?.id || req.body.user_id;
+
+  if (!site_id || !['MLC', 'MLA', 'MLB', 'MCO', 'MPE', 'MLM', 'MLU', 'MLV', 'MPY', 'MBO', 'MEC', 'MCR', 'MPA', 'MRD', 'MGT', 'MHN', 'MNI', 'MSV', 'MCU'].includes(site_id)) {
+    return res.status(400).json({
+      success: false,
+      error: "site_id inválido o no soportado"
+    });
+  }
+
+  if (!Array.isArray(products) || products.length === 0) {
+    return res.status(400).json({
+      success: false,
+      error: "Se requiere un array no vacío de productos con 'id' y 'name'."
+    });
+  }
+
+  try {
+    // === PASO 1: Aplicar Rate Limit por usuario ===
+    try {
+      await marketplaceRateLimiter.consume(user_id);
+    } catch (rateLimitError) {
+      logger.warn(`Rate limit excedido para usuario ${user_id}`);
+      return res.status(429).json({
+        success: false,
+        error: "Demasiadas solicitudes. Por favor, espera un momento."
+      });
+    }
+
+    // === PASO 2: Obtener Credenciales ===
+    const credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
+      marketplace_id,
+      user_id
+    );
+
+    if (!credential) {
+      return res.status(400).json({
+        success: false,
+        error: "Credenciales no encontradas"
+      });
+    }
+
+    const suggestions = [];
+    let cacheHits = 0;
+    let apiCalls = 0;
+
+    // === PASO 3: Procesar Cada Producto ===
+    for (const product of products) {
+      if (!product.id || !product.name) {
+        logger.warn(`Producto inválido omitido: ${JSON.stringify(product)}`);
+        continue;
+      }
+
+      const nameFixed = product.name.trim();
+
+      // === PASO 4: Verificar Caché GLOBAL para este Producto ===
+      const cachedProductResult = getFromCache(marketplace_id, `product_suggestion_${site_id}`, nameFixed);
+
+      if (cachedProductResult) {
+        logger.info(`[CACHE HIT] Producto "${nameFixed}" en MercadoLibre ${site_id} (compartido)`);
+        cacheHits++;
+        
+        suggestions.push({
+          product_id: product.id,
+          categories: cachedProductResult
+        });
+        continue;
+      }
+
+      logger.info(`[CACHE MISS] Producto "${nameFixed}" en MercadoLibre ${site_id}`);
+      apiCalls++;
+
+      let categories = [];
+
+      // === PASO 5: Obtener Categorías Sugeridas ===
+      try {
+        // ✅ URL CORREGIDA: sin espacios
+        const domainDiscoveryUrl = `https://api.mercadolibre.com/sites/${site_id}/domain_discovery/search`;
+        const catResponse = await axios.get(domainDiscoveryUrl, {
+          params: { q: nameFixed, limit: 3 },
+          timeout: 20000
+        });
+
+        const rawCategories = catResponse.data || [];
+        logger.info(`Categorías obtenidas:\n ${JSON.stringify(rawCategories)}`);
+        
+        // ✅ Mapeo correcto de campos
+        categories = rawCategories.map(cat => ({
+          category_id: cat.category_id,
+          category_name: cat.category_name,
+          domain_id: cat.domain_id,
+          domain_name: cat.domain_name,
+          path: cat.domain_name || ''
+        }));
+      } catch (catErr) {
+        logger.error(`Error al obtener categorías para "${nameFixed}": ${catErr.message}`);
+        continue;
+      }
+
+      // === PASO 6: Para cada categoría, cargar atributos ===
+      const categoriesWithAttrs = [];
+      
+      for (const cat of categories) {
+        if (!cat.category_id) {
+          logger.warn(`Categoría sin ID omitida: ${JSON.stringify(cat)}`);
+          continue;
+        }
+
+        // === PASO 7: Verificar Caché GLOBAL para esta Categoría ===
+        const cachedCategory = getFromCache(marketplace_id, `category_attributes_${site_id}`, cat.category_id);
+
+        if (cachedCategory) {
+          logger.info(`[CACHE HIT] Categoría ${cat.category_id} en MercadoLibre ${site_id} (compartido)`);
+          categoriesWithAttrs.push(cachedCategory);
+          continue;
+        }
+
+        logger.info(`[CACHE MISS] Categoría ${cat.category_id} en MercadoLibre ${site_id}`);
+
+        let attributes = [];
+        try {
+          // ✅ URL CORREGIDA: sin espacios
+          const attrUrl = `https://api.mercadolibre.com/categories/${cat.category_id}/attributes`;
+          const attrResponse = await axios.get(attrUrl, {
+            headers: { Authorization: `Bearer ${credential.access_token}` },
+            timeout: 20000
+          });
+
+          const rawAttrs = attrResponse.data || [];
+          logger.info(`Atributos obtenidos para categoría ${cat.category_id}: ${rawAttrs.length} atributos`);
+          
+          // ✅ DEVOLVER ATRIBUTOS SIN MODIFICAR - TAL CUAL COMO VIENEN DE MERCADOLIBRE
+          attributes = rawAttrs;
+        } catch (attrErr) {
+          logger.error(`Error al cargar atributos para categoría ${cat.category_id}: ${attrErr.message}`);
+        }
+
+        // === PASO 8: Guardar Categoría en Caché GLOBAL ===
+        const categoryData = {
+          category_id: cat.category_id,
+          category_name: cat.category_name,
+          domain_id: cat.domain_id,
+          domain_name: cat.domain_name,
+          path: cat.path,
+          attributes // ✅ Atributos sin modificar
+        };
+
+        saveToCache(marketplace_id, `category_attributes_${site_id}`, cat.category_id, categoryData);
+        categoriesWithAttrs.push(categoryData);
+      }
+
+      // === PASO 9: Guardar Resultado del Producto en Caché GLOBAL ===
+      saveToCache(marketplace_id, `product_suggestion_${site_id}`, nameFixed, categoriesWithAttrs);
+
+      suggestions.push({
+        product_id: product.id,
+        categories: categoriesWithAttrs
+      });
+    }
+
+    // === PASO 10: Retornar Resultado con Estadísticas ===
+    return res.status(200).json({
+      success: true,
+      suggestions,
+      count: suggestions.length,
+      stats: {
+        total_products: products.length,
+        cache_hits: cacheHits,
+        api_calls: apiCalls,
+        cache_hit_rate: products.length > 0 
+          ? ((cacheHits / products.length) * 100).toFixed(2) + '%'
+          : '0%'
+      }
+    });
+
+  } catch (error) {
+    logger.error(`❌ Error general en mercadoLibreSuggestedCategoriesWithAttributes: ${error.message}`, {
+      stack: error.stack,
+      body: req.body
+    });
+    return res.status(500).json({
+      success: false,
+      error: "Error interno al procesar categorías con atributos de MercadoLibre."
+    });
+  }
+},
+
+  async clearMercadoLibreCache(req, res) {
+  const { marketplace_id } = req.params;
+  
+  try {
+    const count = clearMarketplaceCache(marketplace_id);
+    logger.info(`Caché limpiado para marketplace ${marketplace_id} (${count} entradas)`);
     
-    //const { productName, marketplace_id } = req.body;
-    //const user_id = req.user?.id;
+    return res.status(200).json({
+      success: true,
+      message: `Caché de marketplace ${marketplace_id} limpiado correctamente`,
+      entries_cleared: count
+    });
+  } catch (error) {
+    logger.error(`Error al limpiar caché del marketplace: ${error.message}`);
+    return res.status(500).json({
+      success: false,
+      error: "Error al limpiar el caché del marketplace"
+    });
+  }
+},
+
+/**
+ * Limpiar caché de un site específico de MercadoLibre
+ */
+async clearMercadoLibreSiteCache(req, res) {
+  const { marketplace_id, site_id } = req.params;
+  
+  try {
+    const count = clearMarketplaceCache(marketplace_id, site_id);
+    logger.info(`Caché limpiado para marketplace ${marketplace_id} site ${site_id} (${count} entradas)`);
+    
+    return res.status(200).json({
+      success: true,
+      message: `Caché de marketplace ${marketplace_id} site ${site_id} limpiado correctamente`,
+      entries_cleared: count
+    });
+  } catch (error) {
+    logger.error(`Error al limpiar caché del site: ${error.message}`);
+    return res.status(500).json({
+      success: false,
+      error: "Error al limpiar el caché del site"
+    });
+  }
+},
+
+/**
+ * Obtener estadísticas del caché
+ */
+async getMercadoLibreCacheStats(req, res) {
+  try {
+    const stats = getCacheStats();
+    
+    return res.status(200).json({
+      success: true,
+      stats: {
+        total_keys: stats.keys,
+        hits: stats.hits,
+        misses: stats.misses,
+        hit_rate: stats.keys > 0 ? ((stats.hits / (stats.hits + stats.misses)) * 100).toFixed(2) + '%' : '0%'
+      }
+    });
+  } catch (error) {
+    logger.error(`Error al obtener estadísticas del caché: ${error.message}`);
+    return res.status(500).json({
+      success: false,
+      error: "Error al obtener estadísticas del caché"
+    });
+  }
+},
+  async falabellaSuggestedCategoriesWithAttributes(req, res) {
+    logger.info(`Datos recibidos para categorías sugeridas con atributos en Falabella:\n ${JSON.stringify(req.body)}`);
+
+    const { marketplace_id, products } = req.body;
+    const user_id = req.user?.id;
+
+    if (!Array.isArray(products) || products.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Se requiere un array no vacío de productos con 'id' y 'name'."
+      });
+    }
 
     try {
-        /*const credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
-            marketplace_id,
-            user_id
-        );
+      // === PASO 1: Aplicar Rate Limit por usuario ===
+      try {
+        await marketplaceRateLimiter.consume(user_id);
+      } catch (rateLimitError) {
+        logger.warn(`Rate limit excedido para usuario ${user_id}`);
+        return res.status(429).json({
+          success: false,
+          error: "Demasiadas solicitudes. Por favor, espera un momento."
+        });
+      }
 
-        if (!credential) {
-            return res.status(400).json({
-                success: false,
-                error: 'Credenciales no encontradas'
-            });
-        }*/
-       
-        const sellerEmail = 'yasmany@klint.cl'; // ✅ UserID = Correo electrónico
-        const apiKey = 'a67b6eb80cce44afec76c0bfc0918fc2d4e303de'; // ✅ API Key de Seller Center
-        const sellerId = 'SC72B9D'; // ✅ Seller ID para User-Agent
+      // === PASO 2: Obtener Credenciales ===
+      const credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
+        marketplace_id,
+        user_id
+      );
 
-        if (!sellerEmail || !apiKey || !sellerId) {
-            return res.status(400).json({
-                success: false,
-                error: 'Credenciales de Falabella incompletas. Se requiere: correo (UserID), API Key y Seller ID'
-            });
+      if (!credential) {
+        return res.status(400).json({
+          success: false,
+          error: "Credenciales no encontradas"
+        });
+      }
+
+      const baseUrl = "https://sellercenter-api.falabella.com";
+      const userId = credential.seller_email;
+      const apiKey = credential.api_key;
+
+      if (!userId || !apiKey) {
+        return res.status(500).json({
+          success: false,
+          error: "Faltan credenciales de Falabella (seller_email o api_key)"
+        });
+      }
+
+      const suggestions = [];
+      let cacheHits = 0;
+      let apiCalls = 0;
+
+      // === PASO 3: Procesar Cada Producto ===
+      for (const product of products) {
+        if (!product.id || !product.name) {
+          logger.warn(`Producto inválido omitido: ${JSON.stringify(product)}`);
+          continue;
         }
 
-        // ✅ Timestamp ISO 8601 completo con segundos
-        //const timestamp = new Date().toISOString().replace(/\.\d+Z$/, '+0000');
-        
-      const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+        const nameFixed = product.name.trim();
 
-        logger.info(`🕐 Timestamp generado: ${timestamp}`);
-        const params = {
+        // === PASO 4: Verificar Caché GLOBAL para este Producto ===
+        // Clave: {marketplace_id}_product_suggestion_{nombre_producto}
+        const cachedProductResult = getFromCache(marketplace_id, 'product_suggestion', nameFixed);
+
+        if (cachedProductResult) {
+          // ✅ CACHE HIT - Usar datos del caché (cualquier usuario puede usarlo)
+          logger.info(`[CACHE HIT] Producto "${nameFixed}" en marketplace ${marketplace_id} (compartido)`);
+          cacheHits++;
+          
+          suggestions.push({
+            product_id: product.id,
+            categories: cachedProductResult
+          });
+          continue; // Saltar a siguiente producto
+        }
+
+        // ❌ CACHE MISS - Hacer llamada a API
+        logger.info(`[CACHE MISS] Producto "${nameFixed}" en marketplace ${marketplace_id}`);
+        apiCalls++;
+
+        const categories = [];
+
+        // === PASO 5: Obtener Categorías Sugeridas ===
+        const paramsSuggest = {
+          UserID: userId,
+          Version: "1.0",
           Action: "GetCategorySuggestion",
           Format: "JSON",
-          Name: "Mouse inalambrico Logitech",
-          Timestamp: timestamp,
-          UserID: sellerEmail,
-          Version: "1.0"
+          Name: nameFixed,
+          Timestamp: timestampMinus03(),
         };
-        const sortedKeys = Object.keys(params).sort();
 
-        // :two: string a firmar (SIN encode)
-        const stringToSign = sortedKeys
-          .map(k => `${k}=${params[k]}`)
+        const keysSuggest = Object.keys(paramsSuggest).sort();
+        const canonicalQuerySuggest = keysSuggest
+          .map(k => `${rfc3986Encode(k)}=${rfc3986Encode(String(paramsSuggest[k]))}`)
           .join("&");
+        const signatureSuggest = rfc3986Encode(
+          crypto.createHmac("sha256", apiKey).update(canonicalQuerySuggest).digest("hex")
+        );
+        const urlSuggest = `${baseUrl}?${canonicalQuerySuggest}&Signature=${signatureSuggest}`;
 
-        // :three: firma
-        const signature = crypto
-          .createHmac("sha256", apiKey)
-          .update(stringToSign)
-          .digest("hex");
-
-        // :four: query encodeada
-        const query = sortedKeys
-          .map(
-            k => `${encodeURIComponent(k)}=${encodeURIComponent(params[k])}`
-          )
-          .join("&");
-        const url = `https://sellercenter-api.falabella.com?${query}&Signature=${signature}`;
-
-        // debug vital
-        logger.info("STRING TO SIGN:");
-        logger.info( stringToSign);
-        logger.info("STRING TO SIGN:");
-        logger.info(signature);
-        logger.info("URL:");
-        logger.info(url);
-        // ✅ Solicitud
-        const response = await axios.get(url);
-
-        logger.info('✅ Respuesta de Falabella:');
-        logger.info(JSON.stringify(response.data, null, 2));
-        
-        const data = response.data;
-        const categories = [];
-        
-        // ✅ Procesar respuesta según estructura real de Falabella
-        if (data.SuccessResponse?.Body?.Categories?.Category) {
-            const categoriesData = data.SuccessResponse.Body.Categories.Category;
-            
-            if (Array.isArray(categoriesData)) {
-                categoriesData.forEach(cat => {
-                    if (cat.CategoryId && cat.CategoryName) {
-                        categories.push({
-                            id: cat.CategoryId,
-                            name: cat.CategoryName
-                        });
-                    }
-                });
-            } else if (categoriesData?.CategoryId && categoriesData?.CategoryName) {
-                categories.push({
-                    id: categoriesData.CategoryId,
-                    name: categoriesData.CategoryName
-                });
-            }
+        let suggestionResponse;
+        try {
+          suggestionResponse = await axios.get(urlSuggest, { timeout: 20000 });
+        } catch (err) {
+          logger.error(`Error al obtener sugerencias para "${nameFixed}":`, err.message);
+          continue;
         }
 
-        return res.status(200).json({
-            success: true,
-            categories: categories,
-            count: categories.length
+        const dataSuggest = suggestionResponse.data;
+        let suggestedItems = [];
+
+        if (dataSuggest.SuccessResponse?.Body?.SuggestedCategory) {
+          const raw = dataSuggest.SuccessResponse.Body.SuggestedCategory;
+          suggestedItems = Array.isArray(raw) ? raw : [raw];
+        }
+
+        // === PASO 6: Obtener Atributos para Cada Categoría ===
+        for (const item of suggestedItems) {
+          if (!item.CategoryId || !item.CategoryName) continue;
+
+          const categoryId = item.CategoryId.toString();
+
+          // === PASO 7: Verificar Caché GLOBAL para esta Categoría ===
+          // Clave: {marketplace_id}_category_attributes_{category_id}
+          const cachedCategory = getFromCache(marketplace_id, 'category_attributes', categoryId);
+
+          if (cachedCategory) {
+            // ✅ CACHE HIT - Usar atributos del caché (compartido entre usuarios)
+            logger.info(`[CACHE HIT] Categoría ${categoryId} en marketplace ${marketplace_id} (compartido)`);
+            categories.push(cachedCategory);
+            continue;
+          }
+
+          // ❌ CACHE MISS - Hacer llamada a API
+          logger.info(`[CACHE MISS] Categoría ${categoryId} en marketplace ${marketplace_id}`);
+
+          // Obtener atributos
+          const paramsAttrs = {
+            UserID: userId,
+            Version: "1.0",
+            Action: "GetCategoryAttributes",
+            Format: "JSON",
+            PrimaryCategory: categoryId,
+            Timestamp: timestampMinus03(),
+          };
+
+          const keysAttrs = Object.keys(paramsAttrs).sort();
+          const canonicalQueryAttrs = keysAttrs
+            .map(k => `${rfc3986Encode(k)}=${rfc3986Encode(String(paramsAttrs[k]))}`)
+            .join("&");
+          const signatureAttrs = rfc3986Encode(
+            crypto.createHmac("sha256", apiKey).update(canonicalQueryAttrs).digest("hex")
+          );
+          const urlAttrs = `${baseUrl}?${canonicalQueryAttrs}&Signature=${signatureAttrs}`;
+
+          let attributes = [];
+          try {
+            const attrResponse = await axios.get(urlAttrs, { timeout: 20000 });
+            const attrData = attrResponse.data;
+
+            if (attrData.SuccessResponse?.Body?.Attribute) {
+              const rawAttrs = attrData.SuccessResponse.Body.Attribute;
+              const attrList = Array.isArray(rawAttrs) ? rawAttrs : [rawAttrs];
+
+              attributes = attrList
+                .filter(attr => attr.Name && attr.Label)
+                .map(attr => ({
+                  id: attr.FeedName || attr.Name,
+                  name: attr.Label,
+                  label: attr.Label,
+                  is_mandatory: attr.isMandatory === "1" || attr.isMandatory === true,
+                  description: attr.Description || '',
+                  attribute_type: attr.AttributeType || 'string',
+                  example_value: attr.ExampleValue || '',
+                  value_type:
+                    attr.AttributeType === 'option' || attr.AttributeType === 'multi_option'
+                      ? 'list'
+                      : attr.AttributeType === 'numberfield'
+                        ? 'number'
+                        : 'string',
+                  values: attr.Options?.Option
+                    ? (Array.isArray(attr.Options.Option)
+                        ? attr.Options.Option.map(opt => ({ id: opt.id, name: opt.Name }))
+                        : [{ id: attr.Options.Option.id, name: attr.Options.Option.Name }])
+                    : [],
+                  tags: {
+                    required: attr.isMandatory === "1" || attr.isMandatory === true,
+                    catalog_required: attr.isMandatory === "1" || attr.isMandatory === true,
+                    hidden: false
+                  }
+                }))
+                .sort((a, b) => (a.is_mandatory ? 0 : 1) - (b.is_mandatory ? 0 : 1));
+            }
+          } catch (attrErr) {
+            logger.warn(`Error al cargar atributos para categoría ${categoryId}:`, attrErr.message);
+          }
+
+          // === PASO 8: Guardar Categoría en Caché GLOBAL ===
+          const categoryData = {
+            id: categoryId,
+            name: item.CategoryName,
+            path: item.SuggestedCategory || "",
+            search_term: item.Name || "",
+            attributes
+          };
+
+          saveToCache(marketplace_id, 'category_attributes', categoryId, categoryData);
+          categories.push(categoryData);
+        }
+
+        // === PASO 9: Guardar Resultado del Producto en Caché GLOBAL ===
+        saveToCache(marketplace_id, 'product_suggestion', nameFixed, categories);
+
+        suggestions.push({
+          product_id: product.id,
+          categories
         });
+      }
+
+      // === PASO 10: Retornar Resultado con Estadísticas ===
+      return res.status(200).json({
+        success: true,
+        suggestions,
+        count: suggestions.length,
+        stats: {
+          total_products: products.length,
+          cache_hits: cacheHits,
+          api_calls: apiCalls,
+          cache_hit_rate: products.length > 0 
+            ? ((cacheHits / products.length) * 100).toFixed(2) + '%'
+            : '0%'
+        }
+      });
 
     } catch (error) {
-        logger.error('❌ Falabella Categories error:', error.message);
-        
-        if (error.response) {
-            logger.error('❌ Respuesta de error:');
-            logger.error(JSON.stringify(error.response.data, null, 2));
-        }
-
-        // ✅ Mensajes de error específicos según código
-        let errorMessage = error.message || 'Error interno';
+      logger.error(`❌ Error general en falabellaSuggestedCategoriesWithAttributes: ${error.message}`);
+      
+      if (error.response?.data?.ErrorResponse?.Head) {
+        const head = error.response.data.ErrorResponse.Head;
+        const errorCode = head.ErrorCode;
+        let errorMessage = head.ErrorMessage;
         let statusCode = 500;
 
-        if (error.response?.data?.ErrorResponse?.Head) {
-            const errorCode = error.response.data.ErrorResponse.Head.ErrorCode;
-            const errorMsg = error.response.data.ErrorResponse.Head.ErrorMessage;
-            
-            if (errorCode === '7') {
-                errorMessage = 'Firma inválida (E007). Verifica que la API Key sea correcta y que el correo electrónico (UserID) sea el de tu cuenta de Seller Center.';
-                statusCode = 401;
-            } else if (errorCode === '9') {
-                errorMessage = 'Acceso denegado (E009). Verifica que tu usuario tenga el rol "Seller API Product Access" en Seller Center.';
-                statusCode = 403;
-            } else if (errorCode === '3') {
-                errorMessage = 'Timestamp expirado (E003). Por favor intenta nuevamente.';
-                statusCode = 400;
-            } else if (errorCode === '4') {
-                errorMessage = 'Formato de timestamp inválido (E004).';
-                statusCode = 400;
-            } else {
-                errorMessage = `${errorMsg} (Código: ${errorCode})`;
-            }
+        if (errorCode === "7") {
+          errorMessage = "Firma inválida (E007). Verifica API Key y seller_email.";
+          statusCode = 401;
+        } else if (errorCode === "9") {
+          errorMessage = 'Acceso denegado (E009). Verifica rol "Seller API Product Access".';
+          statusCode = 403;
+        } else if ([3, 4].includes(Number(errorCode))) {
+          errorMessage = "Error de timestamp (E003/E004).";
+          statusCode = 400;
         }
 
-        return res.status(statusCode).json({
-            success: false,
-            error: errorMessage,
-            error_code: error.response?.data?.ErrorResponse?.Head?.ErrorCode
-        });
-    }
-}
+        return res.status(statusCode).json({ success: false, error: errorMessage });
+      }
 
+      return res.status(500).json({
+        success: false,
+        error: "Error interno al procesar categorías con atributos."
+      });
+    }
+  },
+  /*async falabellaSuggestedCategoriesWithAttributes(req, res) {
+  logger.info(`Datos recibidos para categorías sugeridas con atributos en Falabella:\n ${JSON.stringify(req.body)}`);
+
+  const { marketplace_id, products } = req.body;
+  const user_id = req.user?.id;
+
+  if (!Array.isArray(products) || products.length === 0) {
+    return res.status(400).json({
+      success: false,
+      error: "Se requiere un array no vacío de productos con 'id' y 'name'."
+    });
+  }
+
+  try {
+    const credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
+      marketplace_id,
+      user_id
+    );
+
+    if (!credential) {
+      return res.status(400).json({
+        success: false,
+        error: "Credenciales no encontradas"
+      });
+    }
+
+    const baseUrl = "https://sellercenter-api.falabella.com";
+    const userId = credential.seller_email;
+    const apiKey = credential.api_key;
+
+    if (!userId || !apiKey) {
+      return res.status(500).json({
+        success: false,
+        error: "Faltan credenciales de Falabella (seller_email o api_key)"
+      });
+    }
+
+    const suggestions = [];
+
+    // Procesar cada producto secuencialmente (para evitar rate limit)
+    for (const product of products) {
+      if (!product.id || !product.name) {
+        logger.warn(`Producto inválido omitido: ${JSON.stringify(product)}`);
+        continue;
+      }
+
+      const nameFixed = product.name.trim();
+      const categories = [];
+
+      // Paso 1: Obtener categorías sugeridas para este producto
+      const paramsSuggest = {
+        UserID: userId,
+        Version: "1.0",
+        Action: "GetCategorySuggestion",
+        Format: "JSON",
+        Name: nameFixed,
+        Timestamp: timestampMinus03(),
+      };
+
+      const keysSuggest = Object.keys(paramsSuggest).sort();
+      const canonicalQuerySuggest = keysSuggest
+        .map(k => `${rfc3986Encode(k)}=${rfc3986Encode(String(paramsSuggest[k]))}`)
+        .join("&");
+      const signatureSuggest = rfc3986Encode(
+        crypto.createHmac("sha256", apiKey).update(canonicalQuerySuggest).digest("hex")
+      );
+      const urlSuggest = `${baseUrl}?${canonicalQuerySuggest}&Signature=${signatureSuggest}`;
+
+      let suggestionResponse;
+      try {
+        suggestionResponse = await axios.get(urlSuggest, { timeout: 20000 });
+      } catch (err) {
+        logger.error(`Error al obtener sugerencias para "${nameFixed}":`, err.message);
+        // Continuar con el siguiente producto
+        continue;
+      }
+
+      const dataSuggest = suggestionResponse.data;
+      let suggestedItems = [];
+
+      if (dataSuggest.SuccessResponse?.Body?.SuggestedCategory) {
+        const raw = dataSuggest.SuccessResponse.Body.SuggestedCategory;
+        suggestedItems = Array.isArray(raw) ? raw : [raw];
+      }
+
+      // Paso 2: Para cada categoría sugerida, obtener sus atributos
+      for (const item of suggestedItems) {
+        if (!item.CategoryId || !item.CategoryName) continue;
+
+        const categoryId = item.CategoryId.toString();
+
+        // Obtener atributos
+        const paramsAttrs = {
+          UserID: userId,
+          Version: "1.0",
+          Action: "GetCategoryAttributes",
+          Format: "JSON",
+          PrimaryCategory: categoryId,
+          Timestamp: timestampMinus03(),
+        };
+
+        const keysAttrs = Object.keys(paramsAttrs).sort();
+        const canonicalQueryAttrs = keysAttrs
+          .map(k => `${rfc3986Encode(k)}=${rfc3986Encode(String(paramsAttrs[k]))}`)
+          .join("&");
+        const signatureAttrs = rfc3986Encode(
+          crypto.createHmac("sha256", apiKey).update(canonicalQueryAttrs).digest("hex")
+        );
+        const urlAttrs = `${baseUrl}?${canonicalQueryAttrs}&Signature=${signatureAttrs}`;
+
+        let attributes = [];
+        try {
+          const attrResponse = await axios.get(urlAttrs, { timeout: 20000 });
+          const attrData = attrResponse.data;
+
+          if (attrData.SuccessResponse?.Body?.Attribute) {
+            const rawAttrs = attrData.SuccessResponse.Body.Attribute;
+            const attrList = Array.isArray(rawAttrs) ? rawAttrs : [rawAttrs];
+
+            attributes = attrList
+              .filter(attr => attr.Name && attr.Label)
+              .map(attr => ({
+                id: attr.FeedName || attr.Name,
+                name: attr.Label,
+                label: attr.Label,
+                is_mandatory: attr.isMandatory === "1" || attr.isMandatory === true,
+                description: attr.Description || '',
+                attribute_type: attr.AttributeType || 'string',
+                example_value: attr.ExampleValue || '',
+                value_type:
+                  attr.AttributeType === 'option' || attr.AttributeType === 'multi_option'
+                    ? 'list'
+                    : attr.AttributeType === 'numberfield'
+                      ? 'number'
+                      : 'string',
+                values: attr.Options?.Option
+                  ? (Array.isArray(attr.Options.Option)
+                      ? attr.Options.Option.map(opt => ({ id: opt.id, name: opt.Name }))
+                      : [{ id: attr.Options.Option.id, name: attr.Options.Option.Name }])
+                  : [],
+                tags: {
+                  required: attr.isMandatory === "1" || attr.isMandatory === true,
+                  catalog_required: attr.isMandatory === "1" || attr.isMandatory === true,
+                  hidden: false // opcional, si backend lo marca
+                }
+              }))
+              .sort((a, b) => (a.is_mandatory ? 0 : 1) - (b.is_mandatory ? 0 : 1));
+          }
+        } catch (attrErr) {
+          logger.warn(`Error al cargar atributos para categoría ${categoryId}:`, attrErr.message);
+          // Continuar con atributos vacíos
+        }
+
+        // Agregar categoría con atributos
+        categories.push({
+          id: categoryId,
+          name: item.CategoryName,
+          path: item.SuggestedCategory || "",
+          search_term: item.Name || "",
+          attributes // ← ¡incluidos aquí!
+        });
+      }
+
+      suggestions.push({
+        product_id: product.id,
+        categories
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      suggestions,
+      count: suggestions.length
+    });
+
+  } catch (error) {
+    logger.error(`❌ Error general en falabellaSuggestedCategoriesWithAttributes: ${error.message}`);
+    
+    if (error.response?.data?.ErrorResponse?.Head) {
+      const head = error.response.data.ErrorResponse.Head;
+      const errorCode = head.ErrorCode;
+      let errorMessage = head.ErrorMessage;
+      let statusCode = 500;
+
+      if (errorCode === "7") {
+        errorMessage = "Firma inválida (E007). Verifica API Key y seller_email.";
+        statusCode = 401;
+      } else if (errorCode === "9") {
+        errorMessage = 'Acceso denegado (E009). Verifica rol "Seller API Product Access".';
+        statusCode = 403;
+      } else if ([3, 4].includes(Number(errorCode))) {
+        errorMessage = "Error de timestamp (E003/E004).";
+        statusCode = 400;
+      }
+
+      return res.status(statusCode).json({ success: false, error: errorMessage });
+    }
+
+    return res.status(500).json({
+      success: false,
+      error: "Error interno al procesar categorías con atributos."
+    });
+  }
+},*/
+  async falabellaCategories(req, res) {
+    logger.info(
+      "Datos recibidos al obtener las categorías de un producto en falabella:",
+    );
+    logger.info(JSON.stringify(req.body));
+
+    const { productName, marketplace_id } = req.body;
+    const user_id = req.user?.id;
+
+    try {
+      const credential =
+        await MarketplaceCredentialRepository.findByMarketplaceAndUser(
+          marketplace_id,
+          user_id,
+        );
+
+      if (!credential) {
+        return res.status(400).json({
+          success: false,
+          error: "Credenciales no encontradas",
+        });
+      }
+      const baseUrl = "https://sellercenter-api.falabella.com";
+      const userId = credential.seller_email; /*'evelyn@klint.cl'*/
+      const apiKey = credential.api_key; /*'79c1b4e70aedbccd614cb3815f524aca2ea0c220'*/
+      const nameFixed = productName.trim();
+
+      if (!userId || !apiKey) {
+        return res
+          .status(500)
+          .json({ success: false, error: "Faltan env vars Falabella" });
+      }
+
+      const params = {
+        UserID: userId,
+        Version: "1.0",
+        Action: "GetCategorySuggestion",
+        Format: "JSON",
+        Name: nameFixed,
+        Timestamp: timestampMinus03(), // o usa -03:00 si tu cuenta lo exige
+      };
+
+      // 1) ordenar
+      const keys = Object.keys(params).sort();
+
+      // 2) construir query ENCODEADA (esto se firma)
+      const canonicalQuery = keys
+        .map((k) => `${rfc3986Encode(k)}=${rfc3986Encode(String(params[k]))}`)
+        .join("&");
+
+      // 3) firma HMAC SHA256 HEX (igual PHP hash_hmac(..., false))
+      const signatureHex = crypto
+        .createHmac("sha256", apiKey)
+        .update(canonicalQuery)
+        .digest("hex");
+
+      // 4) Falabella/PHP hace rawurlencode(signature)
+      const signature = rfc3986Encode(signatureHex);
+
+      const url = `${baseUrl}?${canonicalQuery}&Signature=${signature}`;
+      const response = await axios.get(url, { timeout: 20000 });
+
+      const data = response.data;
+      const categories = [];
+
+      logger.info(`Categorias obtenidas:, ${JSON.stringify(data)}`);
+
+      // ✅ Procesar respuesta de Falabella para GetCategorySuggestion
+      if (data.SuccessResponse?.Body?.SuggestedCategory) {
+        const suggested = data.SuccessResponse.Body.SuggestedCategory;
+
+        // Manejar tanto objeto único como array (aunque normalmente es objeto único)
+        const items = Array.isArray(suggested) ? suggested : [suggested];
+
+        items.forEach((item) => {
+          if (item.CategoryId && item.CategoryName) {
+            categories.push({
+              id: item.CategoryId.toString(), // ID numérico
+              name: item.CategoryName, // Nombre amigable
+              path: item.SuggestedCategory || "", // Path/código jerárquico (ej: G12020103)
+              search_term: item.Name || "", // Término de búsqueda que generó la sugerencia
+            });
+          }
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        categories: categories,
+        count: categories.length,
+      });
+    } catch (error) {
+      logger.error(`❌ Falabella Categories error:, ${error.message}`);
+
+      if (error.response) {
+        logger.error("❌ Respuesta de error:");
+        logger.error(JSON.stringify(error.response.data, null, 2));
+      }
+
+      // ✅ Mensajes de error específicos según código
+      let errorMessage = error.message || "Error interno";
+      let statusCode = 500;
+
+      if (error.response?.data?.ErrorResponse?.Head) {
+        const errorCode = error.response.data.ErrorResponse.Head.ErrorCode;
+        const errorMsg = error.response.data.ErrorResponse.Head.ErrorMessage;
+
+        if (errorCode === "7") {
+          errorMessage =
+            "Firma inválida (E007). Verifica que la API Key sea correcta y que el correo electrónico (UserID) sea el de tu cuenta de Seller Center.";
+          statusCode = 401;
+        } else if (errorCode === "9") {
+          errorMessage =
+            'Acceso denegado (E009). Verifica que tu usuario tenga el rol "Seller API Product Access" en Seller Center.';
+          statusCode = 403;
+        } else if (errorCode === "3") {
+          errorMessage =
+            "Timestamp expirado (E003). Por favor intenta nuevamente.";
+          statusCode = 400;
+        } else if (errorCode === "4") {
+          errorMessage = "Formato de timestamp inválido (E004).";
+          statusCode = 400;
+        } else {
+          errorMessage = `${errorMsg} (Código: ${errorCode})`;
+        }
+      }
+
+      return res.status(statusCode).json({
+        success: false,
+        error: errorMessage,
+        error_code: error.response?.data?.ErrorResponse?.Head?.ErrorCode,
+      });
+    }
+  },
+
+  // controllers/marketplace/falabellaController.js
+  async falabellaAttributes(req, res) {
+    logger.info(
+      "Datos recibidos al obtener los atributos de una categoría en falabella:",
+    );
+    logger.info(JSON.stringify(req.body));
+
+    const { category_id, marketplace_id } = req.body;
+    const user_id = req.user?.id;
+
+    try {
+      const credential =
+        await MarketplaceCredentialRepository.findByMarketplaceAndUser(
+          marketplace_id,
+          user_id,
+        );
+
+      if (!credential) {
+        return res.status(400).json({
+          success: false,
+          error: "Credenciales no encontradas",
+        });
+      }
+
+      const baseUrl = "https://sellercenter-api.falabella.com";
+      const userId = credential.seller_email;
+      const apiKey = credential.api_key;
+
+      if (!userId || !apiKey || !category_id) {
+        return res.status(400).json({
+          success: false,
+          error: "Faltan datos requeridos: category_id, seller_email o api_key",
+        });
+      }
+
+      // ✅ Parámetros para GetCategoryAttributes
+      const params = {
+        UserID: userId,
+        Version: "1.0",
+        Action: "GetCategoryAttributes",
+        Format: "JSON",
+        PrimaryCategory: category_id.toString(), // ✅ ID de la categoría
+        Timestamp: timestampMinus03(),
+      };
+
+      // 1) ordenar alfabéticamente
+      const keys = Object.keys(params).sort();
+
+      // 2) construir query ENCODEADA (esto se firma)
+      const canonicalQuery = keys
+        .map((k) => `${rfc3986Encode(k)}=${rfc3986Encode(String(params[k]))}`)
+        .join("&");
+
+      // 3) firma HMAC SHA256 HEX
+      const signatureHex = crypto
+        .createHmac("sha256", apiKey)
+        .update(canonicalQuery)
+        .digest("hex");
+
+      // 4) encodear la firma
+      const signature = rfc3986Encode(signatureHex);
+
+      const url = `${baseUrl}?${canonicalQuery}&Signature=${signature}`;
+      
+      logger.info(`🔍 URL para atributos: ${url}`);
+
+      const response = await axios.get(url, { timeout: 20000 });
+
+    const data = response.data;
+    const attributes = [];
+
+    logger.info(`Atributos obtenidos: ${JSON.stringify(data)}`);
+
+    // ✅ Procesar respuesta REAL de Falabella para GetCategoryAttributes
+    if (data.SuccessResponse?.Body?.Attribute) {
+      const attrs = data.SuccessResponse.Body.Attribute;
+      
+      // Manejar array o objeto único
+      const items = Array.isArray(attrs) ? attrs : [attrs];
+
+      items.forEach((attr) => {
+        if (attr.Name && attr.Label) {
+          attributes.push({
+            id: attr.FeedName || attr.Name, // FeedName es el verdadero identificador para XMLs
+            name: attr.Label, // Nombre legibles
+            label: attr.Label,
+            is_mandatory: attr.isMandatory === "1" || attr.isMandatory === true,
+            description: attr.Description || '',
+            attribute_type: attr.AttributeType || 'string',
+            example_value: attr.ExampleValue || '',
+            value_type: 
+              attr.AttributeType === 'option' || attr.AttributeType === 'multi_option'
+                ? 'list'
+                : attr.AttributeType === 'numberfield'
+                  ? 'number'
+                  : 'string',
+            values: attr.Options?.Option 
+              ? (Array.isArray(attr.Options.Option) 
+                  ? attr.Options.Option.map(opt => ({ 
+                      id: opt.id,       // ✅ Campo real: id
+                      name: opt.Name    // ✅ Campo real: Name
+                    }))
+                  : [{ id: attr.Options.Option.id, name: attr.Options.Option.Name }])
+              : [],
+            tags: {
+              required: attr.isMandatory === "1" || attr.isMandatory === true,
+              catalog_required: attr.isMandatory === "1" || attr.isMandatory === true
+            }
+          });
+        }
+      });
+    }
+
+        // ✅ Ordenar: requeridos primero
+        const sortedAttributes = attributes.sort((a, b) => {
+          const aReq = a.is_mandatory ? 0 : 1;
+          const bReq = b.is_mandatory ? 0 : 1;
+          return aReq - bReq;
+        });
+
+      return res.status(200).json({
+        success: true,
+        attributes: sortedAttributes,
+        count: sortedAttributes.length,
+      });
+    } catch (error) {
+      logger.error(`❌ Falabella Attributes error: ${error.message}`);
+
+      if (error.response) {
+        logger.error("❌ Respuesta de error:");
+        logger.error(JSON.stringify(error.response.data, null, 2));
+      }
+
+      let errorMessage = error.message || "Error interno";
+      let statusCode = 500;
+
+      if (error.response?.data?.ErrorResponse?.Head) {
+        const errorCode = error.response.data.ErrorResponse.Head.ErrorCode;
+        const errorMsg = error.response.data.ErrorResponse.Head.ErrorMessage;
+
+        if (errorCode === "57") {
+          errorMessage = "No hay atributos para esta categoría (E057)";
+          statusCode = 404;
+        } else if (errorCode === "7") {
+          errorMessage =
+            "Firma inválida (E007). Verifica que la API Key sea correcta.";
+          statusCode = 401;
+        } else if (errorCode === "9") {
+          errorMessage =
+            'Acceso denegado (E009). Verifica que tu usuario tenga el rol "Seller API Product Access".';
+          statusCode = 403;
+        } else if (errorCode === "3") {
+          errorMessage = "Timestamp expirado (E003).";
+          statusCode = 400;
+        } else if (errorCode === "4") {
+          errorMessage = "Formato de timestamp inválido (E004).";
+          statusCode = 400;
+        } else {
+          errorMessage = `${errorMsg} (Código: ${errorCode})`;
+        }
+      }
+
+      return res.status(statusCode).json({
+        success: false,
+        error: errorMessage,
+        error_code: error.response?.data?.ErrorResponse?.Head?.ErrorCode,
+      });
+    }
+  },
+
+async falabellaProductStatus(req, res) {
+  logger.info(`${req.user?.name || "Unknown"} - Consulta status del producto publicado en Falabella`);
+  logger.info("Datos recibidos:");
+  logger.info(JSON.stringify(req.body));
+
+  const { sku, marketplace_id } = req.body;
+  const user_id = req.user?.id;
+
+  // ✅ VALIDACIÓN temprana de parámetros requeridos
+  if (!sku || !marketplace_id) {
+    const hasTypo = req.body.marketplsce_id !== undefined;
+    return res.status(400).json({
+      success: false,
+      error: hasTypo 
+        ? 'Parámetro incorrecto: "marketplsce_id" (typo). Debe ser "marketplace_id"'
+        : 'Faltan parámetros requeridos: sku y marketplace_id'
+    });
+  }
+
+  try {
+    const credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
+      marketplace_id,
+      user_id,
+    );
+
+    if (!credential) {
+      return res.status(400).json({
+        success: false,
+        error: "Credenciales no encontradas para este marketplace y usuario",
+      });
+    }
+
+    const baseUrl = "https://sellercenter-api.falabella.com";
+    const userId = credential.seller_email;
+    const apiKey = credential.api_key;
+
+    if (!userId || !apiKey) {
+      return res.status(400).json({
+        success: false,
+        error: "Faltan credenciales: seller_email o api_key",
+      });
+    }
+
+    // ✅ PARÁMETROS CORRECTOS para búsqueda EXACTA por SKU
+    const params = {
+      UserID: userId,
+      Version: "1.0",
+      Action: "GetProducts",
+      Format: "JSON",
+      Timestamp: timestampMinus03(),
+      SellerSku: sku // ✅ ARRAY JSON para búsqueda EXACTA
+    };
+
+    // 1) Ordenar alfabéticamente
+    const keys = Object.keys(params).sort();
+
+    // 2) Construir query ENCODEADA (esto se firma)
+    const canonicalQuery = keys
+      .map((k) => `${rfc3986Encode(k)}=${rfc3986Encode(String(params[k]))}`)
+      .join("&");
+
+    // 3) Firma HMAC SHA256 HEX
+    const signatureHex = crypto
+      .createHmac("sha256", apiKey)
+      .update(canonicalQuery)
+      .digest("hex");
+
+    // 4) Encodear la firma
+    const signature = rfc3986Encode(signatureHex);
+
+    const url = `${baseUrl}?${canonicalQuery}&Signature=${signature}`;
+    
+    logger.info(`🔍 URL para estado del producto: ${url}`);
+
+    const response = await axios.get(url, { timeout: 20000 });
+
+    const data = response.data;
+    logger.info(`Estado obtenido: ${JSON.stringify(data)}`);
+
+    // ✅ PROCESAR RESPUESTA CORRECTAMENTE (estructura real de Falabella)
+    let productStatus = null;
+    
+    if (data.SuccessResponse?.Body?.Products?.Product) {
+      // Normalizar a array (puede ser objeto único o array)
+      const products = Array.isArray(data.SuccessResponse.Body.Products.Product)
+        ? data.SuccessResponse.Body.Products.Product
+        : [data.SuccessResponse.Body.Products.Product];
+      
+      // Buscar producto EXACTO por SKU
+      const product = products.find(p => p.SellerSku === sku);
+      
+      if (product) {
+        // ✅ EXTRAER BusinessUnit (puede ser objeto o array)
+        let businessUnit = product.BusinessUnits?.BusinessUnit;
+        if (Array.isArray(businessUnit)) {
+          businessUnit = businessUnit[0]; // Tomar primera unidad de negocio
+        }
+        
+        // ✅ Estructura limpia para el frontend
+        productStatus = {
+          sku: product.SellerSku,
+          name: product.Name || 'Sin nombre',
+          brand: product.Brand || 'Genérica',
+          status: businessUnit?.Status || 'unknown', // 'active', 'inactive', 'deleted'
+          stock: parseInt(businessUnit?.Stock || '0', 10),
+          price: parseFloat(businessUnit?.Price || '0'),
+          published: businessUnit?.IsPublished === '1' || businessUnit?.IsPublished === 1,
+          qc_status: product.QCStatus || 'pending', // 'approved', 'pending', 'rejected'
+          category: product.PrimaryCategory || '',
+          last_updated: product.LastUpdateDate || null,
+          url: product.Url || null,
+          main_image: product.MainImage || null,
+          content_score: parseInt(product.ContentScore || '0', 10)
+        };
+      }
+    }
+
+    // ✅ RESPUESTA OPTIMIZADA PARA FRONTEND
+    return res.status(200).json({
+      success: true,
+      found: !!productStatus,
+      product: productStatus, // ✅ Nombre consistente con otros endpoints
+      message: productStatus 
+        ? `Producto encontrado en Falabella (estado: ${productStatus.status})`
+        : `Producto con SKU "${sku}" no encontrado en Falabella`
+    });
+  } catch (error) {
+    logger.error(`❌ Falabella status error: ${error.message}`);
+
+    if (error.response) {
+      logger.error("❌ Respuesta de error:");
+      logger.error(JSON.stringify(error.response.data, null, 2));
+    }
+
+    let errorMessage = error.message || "Error interno";
+    let statusCode = 500;
+
+    if (error.response?.data?.ErrorResponse?.Head) {
+      const errorCode = error.response.data.ErrorResponse.Head.ErrorCode;
+      const errorMsg = error.response.data.ErrorResponse.Head.ErrorMessage;
+
+      if (errorCode === "7") {
+        errorMessage = "Firma inválida (E007). Verifica API Key y formato de timestamp";
+        statusCode = 401;
+      } else if (errorCode === "9") {
+        errorMessage = 'Acceso denegado (E009). Verifica rol "Seller API Product Access"';
+        statusCode = 403;
+      } else if (errorCode === "3") {
+        errorMessage = "Timestamp expirado (E003).";
+        statusCode = 400;
+      } else if (errorCode === "70") {
+        errorMessage = "SKU no válido o datos corruptos en la lista (E070).";
+        statusCode = 400;
+      } else {
+        errorMessage = `${errorMsg} (Código: ${errorCode})`;
+      }
+    }
+
+    return res.status(statusCode).json({
+      success: false,
+      error: errorMessage,
+      error_code: error.response?.data?.ErrorResponse?.Head?.ErrorCode,
+    });
+  }
+},
+async falabellaFeedStatus(req, res) {
+  logger.info(`${req.user?.name || "Unknown"} - Consulta estado de feed en Falabella`);
+  logger.info("Datos recibidos:");
+  logger.info(JSON.stringify(req.body));
+
+  const { feed_id, marketplace_id } = req.body;
+  const user_id = req.user?.id;
+
+  // ✅ VALIDACIÓN temprana de parámetros requeridos
+  if (!feed_id || !marketplace_id) {
+    return res.status(400).json({
+      success: false,
+      error: 'Faltan parámetros requeridos: feed_id y marketplace_id'
+    });
+  }
+
+  try {
+    const credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
+      marketplace_id,
+      user_id,
+    );
+
+    if (!credential) {
+      return res.status(400).json({
+        success: false,
+        error: "Credenciales no encontradas para este marketplace y usuario",
+      });
+    }
+
+    const baseUrl = "https://sellercenter-api.falabella.com";
+    const userId = credential.seller_email;
+    const apiKey = credential.api_key;
+
+    if (!userId || !apiKey) {
+      return res.status(400).json({
+        success: false,
+        error: "Faltan credenciales: seller_email o api_key",
+      });
+    }
+
+    // ✅ PARÁMETROS para FeedStatus (igual que falabellaCategories que funciona)
+    const params = {
+      UserID: userId,
+      Version: "1.0",
+      Action: "FeedStatus",
+      Format: "JSON",
+      Timestamp: timestampMinus03(),
+      FeedID: feed_id // ✅ UUID del feed a consultar
+    };
+
+    // 1) Ordenar alfabéticamente
+    const keys = Object.keys(params).sort();
+
+    // 2) Construir query ENCODEADA (esto se firma)
+    const canonicalQuery = keys
+      .map((k) => `${rfc3986Encode(k)}=${rfc3986Encode(String(params[k]))}`)
+      .join("&");
+
+    logger.info(`[FalabellaFeedStatus] 🔍 String to sign (ENCODEADO):`);
+    logger.info(canonicalQuery);
+
+    // 3) Firma HMAC SHA256 HEX
+    const signatureHex = crypto
+      .createHmac("sha256", apiKey)
+      .update(canonicalQuery)
+      .digest("hex");
+
+    logger.info(`[FalabellaFeedStatus] ✅ Firma generada (HEX): ${signatureHex.substring(0, 16)}...`);
+
+    // 4) Encodear la firma
+    const signature = rfc3986Encode(signatureHex);
+
+    // 5) Construir URL final
+    const url = `${baseUrl}?${canonicalQuery}&Signature=${signature}`;
+    
+    logger.info(`[FalabellaFeedStatus] 🌐 URL para consulta de feed:`);
+    logger.info(url);
+
+    // ✅ Realizar solicitud a Falabella
+    const response = await axios.get(url, { timeout: 10000 });
+
+    const data = response.data;
+    logger.info(`[FalabellaFeedStatus] 📊 Respuesta de Falabella:`);
+    logger.info(JSON.stringify(data, null, 2));
+
+    // ✅ Procesar respuesta exitosa
+    if (data.SuccessResponse?.Body?.Feed) {
+      const feed = data.SuccessResponse.Body.Feed;
+      
+      // Estructura limpia para el frontend
+      const feedStatus = {
+        feed_id: feed.FeedID || feed_id,
+        status: feed.Status || 'unknown', // Queued, Processing, Canceled, Finished, Error
+        action: feed.Action || 'unknown',
+        source: feed.Source || 'unknown',
+        total_records: parseInt(feed.TotalRecords || '0', 10),
+        processed_records: parseInt(feed.ProcessedRecords || '0', 10),
+        failed_records: parseInt(feed.FailedRecords || '0', 10),
+        created_at: feed.CreatedAt || null,
+        updated_at: feed.UpdatedAt || null,
+        errors: feed.FeedErrors?.Error || [],
+        warnings: feed.FeedWarnings?.Warning || []
+      };
+
+      return res.status(200).json({
+        success: true,
+        feed: feedStatus,
+        message: `Feed ${feedStatus.status.toLowerCase()}`
+      });
+    }
+
+    // ✅ Manejar respuesta sin datos (feed no encontrado)
+    return res.status(404).json({
+      success: false,
+      error: `Feed con ID "${feed_id}" no encontrado`,
+      error_code: "FEED_NOT_FOUND"
+    });
+
+  } catch (error) {
+    logger.error(`[FalabellaFeedStatus] ❌ Error consultando estado de feed:`, error.message);
+
+    if (error.response) {
+      logger.error("❌ Respuesta de error de Falabella:");
+      logger.error(JSON.stringify(error.response.data, null, 2));
+    }
+
+    let errorMessage = error.message || "Error interno";
+    let statusCode = 500;
+    let errorCode = null;
+
+    if (error.response?.data?.ErrorResponse?.Head) {
+      const head = error.response.data.ErrorResponse.Head;
+      errorCode = head.ErrorCode;
+      errorMessage = head.ErrorMessage || `Error ${errorCode}`;
+
+      // Mapeo de códigos de error específicos
+      if (errorCode === "12") {
+        errorMessage = "ID de feed no válido (E012). Verifica que el FeedID sea un UUID correcto";
+        statusCode = 400;
+      } else if (errorCode === "7") {
+        errorMessage = "Firma inválida (E007). Verifica API Key y formato de timestamp";
+        statusCode = 401;
+      } else if (errorCode === "9") {
+        errorMessage = 'Acceso denegado (E009). Verifica rol "Seller API Product Access"';
+        statusCode = 403;
+      } else if (errorCode === "3") {
+        errorMessage = "Timestamp expirado (E003).";
+        statusCode = 400;
+      } else if (errorCode === "1") {
+        errorMessage = "Parámetro FeedID es obligatorio (E001)";
+        statusCode = 400;
+      }
+    }
+
+    return res.status(statusCode).json({
+      success: false,
+      error: errorMessage,
+      error_code: errorCode || 'UNKNOWN_ERROR',
+      feed_id: feed_id
+    });
+  }
+},
+async clearFalabellaMarketplaceCache(req, res) {
+  const { marketplace_id } = req.params;
+  
+  try {
+    clearMarketplaceCache(marketplace_id);
+    logger.info(`Caché limpiado para marketplace ${marketplace_id}`);
+    
+    return res.status(200).json({
+      success: true,
+      message: `Caché de marketplace ${marketplace_id} limpiado correctamente`
+    });
+  } catch (error) {
+    logger.error(`Error al limpiar caché del marketplace: ${error.message}`);
+    return res.status(500).json({
+      success: false,
+      error: "Error al limpiar el caché del marketplace"
+    });
+  }
+},
+
+/**
+ * Limpiar caché global (todas las plataformas)
+ */
+async clearAllMarketplacesCache(req, res) {
+  try {
+    clearAllCache();
+    logger.info(`Caché global limpiado`);
+    
+    return res.status(200).json({
+      success: true,
+      message: "Caché global limpiado correctamente"
+    });
+  } catch (error) {
+    logger.error(`Error al limpiar caché global: ${error.message}`);
+    return res.status(500).json({
+      success: false,
+      error: "Error al limpiar el caché global"
+    });
+  }
+}
 };
 
 module.exports = OAuthController;

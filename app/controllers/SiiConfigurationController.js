@@ -1,8 +1,8 @@
 // controllers/sii/SIIConfigurationController.js
 const logger = require("../../config/logger");
-const { SiiConfigurationRepository, CompanyRepository } = require("../repositories");
+const { SiiConfigurationRepository, CompanyRepository, TenantLogRepository } = require("../repositories");
 const { sequelize } = require('../models');
-const SIIConnectionService = require("../services/SII/SIIConnectionService");
+const SiiIntegrationService = require("../services/SII/SiiIntegrationService");
 
 class SIIConfigurationController {
   async show(req, res) {
@@ -16,12 +16,11 @@ class SIIConfigurationController {
           message: "Compañía no encontrada" 
         });
       }
-
-      const status = await SIIConnectionService.getIntegrationStatus(company_id);
-
+      const status = await SiiIntegrationService.getIntegrationStatus(company_id);
       return res.status(200).json({
         success: true,
-         status
+         status: status,
+         configuration: status.configuracion
       });
     } catch (err) {
       logger.error("SIIConfigurationController->show: " + err.message);

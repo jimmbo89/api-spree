@@ -1,15 +1,55 @@
 const logger = require("../../config/logger");
 const { SiiCertificateRepository, CompanyRepository, TenantLogRepository } = require("../repositories");
 const { sequelize } = require('../models');
+const CertificateManager = require("../services/SII/CertificateManager");
+const { destroy } = require("./RoleController");
 
 const SiiCertificateController = {
+
+  async list(req, res) {
+    logger.info(`${req.user?.name || 'Unknown'} - Busca certificados de la company`);
+    logger.info(`Datos obtenidos body: ${JSON.stringify(req.body)}`);
+    try {
+      const { company_id } = req.body;
+      // Verificar que la compañía exista
+      const company = await CompanyRepository.findById(company_id);
+      if (!company) {
+        return res.status(404).json({ 
+          success: false, 
+          message: "Compañía no encontrada" 
+        });
+      }
+
+      // Obtener todos los certificados
+      const certificates = await SiiCertificateRepository.findByCompanyId(company_id);
+
+      // Formatear la respuesta para excluir datos sensibles (como la ruta del archivo)
+      const formattedCertificates = certificates.map(cert => ({
+        id: cert.id,
+        uploaded_at: cert.uploaded_at,
+        expires_at: cert.expires_at,
+        is_valid: cert.is_valid,
+        document_types_enabled: cert.document_types_enabled,
+        folios_available: cert.folios_available
+      }));
+
+      return res.status(200).json({
+        success: true,
+          certificates: formattedCertificates
+      });
+
+    } catch (err) {
+      logger.error("SIICertificateController->list: " + err.message);
+      return res.status(500).json({ 
+        success: false, 
+        message: "Error al listar los certificados.",
+        details: err.message 
+      });
+    }
+  },
   async store(req, res) {
     const { company_id, password, document_types_enabled, folios_available, uploaded_at, expires_at } = req.body;
-    const file = req.files?.certificate_file;
-
-    if (!file) {
-      return res.status(400).json({ success: false, message: "Certificado es requerido" });
-    }
+    const file = req.file?.certificate_file;
 
     const company = await CompanyRepository.findById(company_id);
     if (!company) return res.status(404).json({ success: false, message: "Compañía no encontrada" });
@@ -124,6 +164,64 @@ const SiiCertificateController = {
     }
   },
 
+  async createOrUpdate(req, res) {
+    logger.info(`${req.user?.name || "Unknown"} - Crea o edita sii cerstificate`);
+    logger.info("Datos recibidos del SiiCertificate:");
+    logger.info(JSON.stringify(req.body));
+    try {
+      const { company_id, id } = req.body;
+      
+       const company = await CompanyRepository.findById(company_id);
+      if (!company) {
+        return res.status(404).json({ success: false, message: "Compañía no encontrada" });
+      }
+
+      const t = await sequelize.transaction();
+      try {
+        // ✅ Llamada única al repositorio
+        const certificateRecord = await SiiCertificateRepository.createOrUpdate(
+          { ...req.body, company_id },
+          req.files?.certificate_path, // Pasa el archivo directamente
+          { transaction: t }
+        );
+
+        const action = id ? 'actualizado' : 'cargado';
+        await TenantLogRepository.create({
+          company_id,
+          user_id: req.user?.id,
+          module: 'sii',
+          event_type: id ? 'update' : 'create',
+          action: `Certificado SII ${action}`,
+          description: `Certificado ${action} correctamente`,
+          result: 'success'
+        }, { transaction: t });
+
+        await t.commit();
+
+        return res.status(200).json({
+          success: true,
+          message: `Certificado ${action} correctamente`,
+           data: {
+            id: certificateRecord.id,
+            expires_at: certificateRecord.expires_at,
+            is_valid: certificateRecord.is_valid
+          }
+        });
+
+      } catch (err) {
+        if (t && !t.finished) await t.rollback();
+        throw err;
+      }
+    } catch (err) {
+      logger.error("SIICertificateController->createOrUpdate: " + err.message);
+      return res.status(500).json({ 
+        success: false, 
+        message: "Error al procesar el certificado.",
+        details: err.message 
+      });
+    }
+  },
+
   async show(req, res) {
     try {
       const { company_id } = req.body;
@@ -154,6 +252,34 @@ const SiiCertificateController = {
           is_valid: certificate.is_valid,
           document_types_enabled: certificate.document_types_enabled
         }
+      });
+    } catch (err) {
+      logger.error("SIICertificateController->show: " + err.message);
+      return res.status(500).json({ 
+        success: false, 
+        message: "Error al obtener certificado.",
+        details: err.message 
+      });
+    }
+  },
+
+   async destroy(req, res) {
+    try {
+      const { id } = req.body;
+      const certificate = await SiiCertificateRepository.findById(id);
+      
+      if (!certificate) {
+        return res.status(404).json({ 
+          success: false, 
+          message: "Certificado no encontrado" 
+        });
+      }
+
+      await SiiCertificateRepository.delete(certificate);
+
+      return res.status(200).json({
+        success: true,
+         message: 'Certificado eliminado correctamente'
       });
     } catch (err) {
       logger.error("SIICertificateController->show: " + err.message);
