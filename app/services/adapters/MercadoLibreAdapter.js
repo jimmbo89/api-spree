@@ -16,94 +16,7 @@ class MercadoLibreAdapter extends BaseAdapter {
   }
 
   // 🔑 NUEVO MÉTODO: Preprocesamiento específico de MercadoLibre
-  /*async prepareProduct(productData) {
-    // Copia base del producto
-    const prepared = {
-      ...productData,
-      price: productData.price,
-      available_quantity: productData.stock ?? 0,
-      pictures: productData.images || [],
-      name: productData.name,
-      title: productData.title || productData.name
-    };
-
-    // Solo procesar si tiene datos de MercadoLibre
-    const mlData = productData.mercado_libre?.[this.marketplaceId];
-    if (!mlData?.category?.category_id) {
-      logger.warn(`[ML Adapter] No hay datos de MercadoLibre para producto ${productData.id}`);
-      return prepared;
-    }
-
-    try {
-      // Obtener credenciales y atributos de categoría
-      const credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
-        this.marketplaceId,
-        this.userId
-      );
-
-      const { attributes: categoryAttributes, success: attrsSuccess } =
-        await MercadoLibreAttributesService.getCategoryAttributes(
-          mlData.category.category_id,
-          credential.access_token
-        );
-
-      if (!attrsSuccess) {
-        throw new Error(`No se pudieron obtener atributos de categoría ${mlData.category.category_id}`);
-      }
-
-      // Asignar categoría
-      prepared.category_id = mlData.category.category_id;
-
-      // Separar atributos de variaciones
-      const variationAttrIds = new Set(
-        categoryAttributes.filter(a => a.tags?.allow_variations).map(a => a.id)
-      );
-
-      // Atributos que NO son variaciones
-      prepared.attributes = mlData.attributes.filter(
-        a => !variationAttrIds.has(a.id)
-      );
-
-      // Construir variaciones válidas
-      const variations = this.buildValidMercadoLibreVariations(
-        productData.variants,
-        categoryAttributes
-      );
-
-      if (variations && variations.length > 0) {
-        prepared.variations = variations;
-        logger.info(`[ML Adapter] ✅ Variaciones construidas: ${variations.length}`);
-      } else {
-        logger.warn(`[ML Adapter] ⚠️ No se construyeron variaciones válidas`);
-      }
-
-      // 🔑 family_name si la categoría requiere variaciones
-      const hasVariationAttributes = categoryAttributes.some(a => a.tags?.allow_variations);
-      if (hasVariationAttributes) {
-        prepared.family_name = 
-          productData.family_name || 
-          productData.name || 
-          productData.title || 
-          "Producto";
-        
-        // 🔑 Almacenar flag para ajuste POST-transformación
-        prepared.__ml_has_variation_attributes = true;
-        logger.info(`[ML Adapter] 🔑 Categoría con atributos de variación → FORZANDO family_name: "${prepared.family_name}"`);
-      } else {
-        prepared.__ml_has_variation_attributes = false;
-      }
-
-      // Preservar category_settings para validación posterior
-      prepared.category_settings = mlData.category.settings || {};
-
-      return prepared;
-
-    } catch (error) {
-      logger.error(`[ML Adapter] Error preparando producto:`, error);
-      throw error;
-    }
-  }*/
-  async prepareProduct(productData) {
+async prepareProduct(productData) {
   logger.info('[MercadoLibreAdapter] Preparando producto para publicación', {
     productId: productData.id,
     name: productData.name,
@@ -111,7 +24,6 @@ class MercadoLibreAdapter extends BaseAdapter {
   });
 
   if (!productData.mercado_libre || Object.keys(productData.mercado_libre).length === 0) {
-    logger.info('No se encontró información de MercadoLibre para el producto');
     throw new Error('No se encontró información de MercadoLibre para el producto');
   }
 
@@ -122,11 +34,11 @@ class MercadoLibreAdapter extends BaseAdapter {
     throw new Error('Falta category_id para MercadoLibre');
   }
 
+  // ✅ PASO 1: Obtener SOLO metadatos de la categoría (tags, settings, allow_variations)
   const credential = await this.ensureValidCredentials();
-  const categoryAttributes = await MercadoLibreAttributesService.getCategoryAttributes(
+  const categoryInfo = await this.getCategoryMetadata(
     mlData.category.category_id,
-    credential.access_token,
-    'MLC'
+    credential.access_token
   );
 
   const prepared = {
@@ -136,7 +48,7 @@ class MercadoLibreAdapter extends BaseAdapter {
     currency_id: 'CLP',
     available_quantity: Number(productData.totalStock) || 0,
     buying_mode: 'buy_it_now',
-    listing_type_id: 'gold_special', // o 'gold_pro' según tu lógica
+    listing_type_id: 'gold_special',
     condition: productData.condition?.toLowerCase() === 'new' ? 'new' : 'used',
     description: {
       plain_text: productData.description?.trim() || productData.name?.trim() || ''
@@ -148,10 +60,13 @@ class MercadoLibreAdapter extends BaseAdapter {
     },
     sale_terms: [],
     attributes: [],
-    variations: undefined
+    variations: undefined,
+    // ✅ PRESERVAR metadatos para publish()
+    category_settings: categoryInfo.settings || {},
+    __ml_has_variation_attributes: categoryInfo.hasVariationAttributes || false
   };
 
-  // Normalizar atributos desde mercado_libre (fuente de verdad)
+  // ✅ PASO 2: USAR atributos con valores DEL FRONTEND (fuente de verdad)
   if (Array.isArray(mlData.attributes) && mlData.attributes.length > 0) {
     prepared.attributes = mlData.attributes
       .filter(attr => attr.id && (attr.value_name || attr.value_id))
@@ -162,44 +77,38 @@ class MercadoLibreAdapter extends BaseAdapter {
       }));
   }
 
-  // Detectar variantes publicables
+  // ✅ PASO 3: Detectar variantes publicables
   const publishableVariants = (productData.variants || []).filter(v => v.publish && v.price > 0);
   const hasMultipleVariants = publishableVariants.length > 1;
   const hasSingleVariant = publishableVariants.length === 1;
 
-  // Identificar atributos de variación según ML
-  const variationAttrIds = new Set(
-    categoryAttributes
-      .filter(a => a.tags?.allow_variations === true || a.hierarchy === 'CHILD_PK')
-      .map(a => a.id)
-  );
+  // ✅ PASO 4: Identificar atributos de variación (usando SOLO metadatos de ML)
+  const variationAttrIds = new Set(categoryInfo.variationAttributeIds || []);
 
-  if (hasMultipleVariants) {
-    // ✅ MÚLTIPLES variantes → requiere array variations[] + family_name
-    logger.info(`[ML Adapter] Producto con ${publishableVariants.length} variantes publicables. Construyendo array variations.`);
+  if (hasMultipleVariants && categoryInfo.hasVariationAttributes) {
+    // ✅ MÚLTIPLES variantes + categoría con variaciones → construir variations[]
+    logger.info(`[ML Adapter] Producto con ${publishableVariants.length} variantes. Construyendo array variations.`);
     
-    // Filtrar atributos de variación del nivel base (solo para múltiples variantes)
+    // Filtrar atributos de variación del nivel base
     const baseAttributes = prepared.attributes.filter(
       a => !variationAttrIds.has(a.id)
     );
-    
     prepared.attributes = baseAttributes;
     
-    // Construir variaciones
+    // Construir variaciones (requiere categoryInfo.attributes con valores permitidos)
     const variations = this.buildValidMercadoLibreVariations(
       publishableVariants,
-      categoryAttributes
+      categoryInfo.attributes // ← Solo metadatos, NO valores
     );
     
     if (variations && variations.length >= 2) {
       prepared.variations = variations;
       prepared.family_name = productData.name?.trim() || `Producto ${productData.sku || Date.now().toString().slice(-6)}`;
-      delete prepared.title; // ML requiere family_name en lugar de title para productos con variaciones
-      
-      logger.info(`[ML Adapter] ✅ Variaciones construidas exitosamente: ${variations.length}`);
+      delete prepared.title;
+      logger.info(`[ML Adapter] ✅ Variaciones construidas: ${variations.length}`);
     } else {
-      // Fallback: si falla la construcción, restaurar todos los atributos para evitar producto inválido
-      logger.warn(`[ML Adapter] ⚠️ No se construyeron variaciones válidas (se esperaban >=2). Restaurando atributos de variación en nivel base.`);
+      // Fallback: restaurar atributos si falla construcción
+      logger.warn(`[ML Adapter] ⚠️ No se construyeron variaciones válidas. Restaurando atributos.`);
       prepared.attributes = mlData.attributes
         .filter(attr => attr.id && (attr.value_name || attr.value_id))
         .map(attr => ({
@@ -211,10 +120,10 @@ class MercadoLibreAdapter extends BaseAdapter {
       delete prepared.family_name;
     }
   } else if (hasSingleVariant) {
-    // ✅ UNA SOLA variante → permitir atributos de variación en nivel base (ML lo acepta)
-    logger.info(`[ML Adapter] Producto con 1 variante publicable. Permitiendo atributos de variación en nivel base.`);
+    // ✅ 1 sola variante → ML acepta atributos de variación en nivel base
+    logger.info(`[ML Adapter] Producto con 1 variante. Permitiendo atributos de variación en nivel base.`);
     
-    // NO filtrar atributos de variación → mantener TODOS los atributos de mercado_libre
+    // ✅ MANTENER TODOS los atributos (incluyendo COLOR, MAIN_COLOR, etc.)
     prepared.attributes = mlData.attributes
       .filter(attr => attr.id && (attr.value_name || attr.value_id))
       .map(attr => ({
@@ -223,46 +132,85 @@ class MercadoLibreAdapter extends BaseAdapter {
         value_id: attr.value_id ? String(attr.value_id).trim() : undefined
       }));
     
-    // Ajustar stock y precio según la variante única
+    // Ajustar stock/precio según variante
     const singleVariant = publishableVariants[0];
     prepared.available_quantity = Number(singleVariant.publishStock ?? singleVariant.totalStock ?? productData.totalStock) || 0;
     prepared.price = Number(singleVariant.price) || Number(productData.price) || 0;
     
-    // NO incluir variations[] para productos simples (ML rechaza con 1 variante)
     prepared.variations = undefined;
     delete prepared.family_name;
   } else {
-    // ✅ SIN variantes publicables → producto simple sin variaciones
-    logger.info(`[ML Adapter] Producto sin variantes publicables. Usando datos del producto principal.`);
-    
-    // Mantener todos los atributos de mercado_libre
-    prepared.attributes = mlData.attributes
-      .filter(attr => attr.id && (attr.value_name || attr.value_id))
-      .map(attr => ({
-        id: attr.id,
-        value_name: attr.value_name ? String(attr.value_name).trim() : undefined,
-        value_id: attr.value_id ? String(attr.value_id).trim() : undefined
-      }));
-    
+    // ✅ Sin variantes → producto simple
+    logger.info(`[ML Adapter] Producto sin variantes publicables.`);
     prepared.variations = undefined;
     delete prepared.family_name;
   }
 
-  // Validación final antes de enviar
+  // Validación final
   if (!prepared.title && !prepared.family_name) {
     prepared.title = productData.name?.trim() || 'Producto sin título';
-    logger.warn(`[ML Adapter] ⚠️ Forzando título por falta de title/family_name: "${prepared.title}"`);
+    logger.warn(`[ML Adapter] ⚠️ Forzando título: "${prepared.title}"`);
   }
 
-  logger.info(`[ML Adapter] ✅ Producto preparado para ML:`, {
-    has_title: !!prepared.title,
-    has_family_name: !!prepared.family_name,
-    attributes_count: prepared.attributes?.length || 0,
+  logger.info(`[ML Adapter] ✅ Producto preparado:`, {
+    category_id: prepared.category_id,
     has_variations: !!prepared.variations,
-    variations_count: prepared.variations?.length || 0
+    variations_count: prepared.variations?.length || 0,
+    attributes_count: prepared.attributes?.length || 0,
+    has_family_name: !!prepared.family_name,
+    ml_has_variation_attrs: prepared.__ml_has_variation_attributes,
+    is_catalog: !!(prepared.category_settings?.catalog_domain && prepared.category_settings.catalog_domain !== "MLC-UNCLASSIFIED_PRODUCTS")
   });
 
   return prepared;
+}
+
+// ✅ NUEVO MÉTODO: Obtener SOLO metadatos de la categoría (sin valores de atributos)
+async getCategoryMetadata(categoryId, accessToken) {
+  try {
+    // Obtener settings de la categoría
+    const [attributesRes, categoryRes] = await Promise.all([
+      axios.get(`https://api.mercadolibre.com/categories/${categoryId}/attributes`, {
+        headers: { 'Authorization': `Bearer ${accessToken}` },
+        timeout: 10000
+      }),
+      axios.get(`https://api.mercadolibre.com/categories/${categoryId}`, {
+        headers: { 'Authorization': `Bearer ${accessToken}` },
+        timeout: 10000
+      })
+    ]);
+
+    const rawAttributes = Array.isArray(attributesRes.data) ? attributesRes.data : [];
+    const categoryData = categoryRes.data || {};
+
+    // ✅ EXTRAER SOLO metadatos (tags, allow_variations, hierarchy, values[])
+    const attributes = rawAttributes.map(attr => ({
+      id: attr.id,
+      name: attr.name,
+      tags: attr.tags || {},
+      values: attr.values || [], // ← Solo para buildValidMercadoLibreVariations()
+      hierarchy: attr.hierarchy
+    }));
+
+    const variationAttributes = attributes.filter(
+      a => a.tags?.allow_variations === true || a.hierarchy === 'CHILD_PK'
+    );
+
+    const hasVariationAttributes = variationAttributes.length > 0;
+    const variationAttributeIds = new Set(variationAttributes.map(a => a.id));
+
+    return {
+      success: true,
+      attributes, // ← Metadatos + valores permitidos (para coincidencias)
+      settings: categoryData.settings || {},
+      hasVariationAttributes,
+      variationAttributeIds,
+      isCatalog: !!(categoryData.settings?.catalog_domain && categoryData.settings.catalog_domain !== "MLC-UNCLASSIFIED_PRODUCTS")
+    };
+  } catch (error) {
+    logger.error(`[ML Adapter] Error obteniendo metadatos de categoría ${categoryId}:`, error.message);
+    throw new Error(`No se pudieron obtener metadatos de categoría ${categoryId}: ${error.message}`);
+  }
 }
   // 🔑 Validación específica para MercadoLibre
   validateProduct(product) {
