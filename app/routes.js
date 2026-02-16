@@ -32,7 +32,7 @@ const { storeMarketplaceSchema, updateMarketplaceSchema, idMarketplaceSchema } =
 const MarketplaceController = require("./controllers/MarketplaceController.js");
 const { createProductFieldMappingSchema, updateProductFieldMappingSchema, idProductFieldMappingSchema, listProductFieldMappingSchema, bulkCreateProductFieldMappingSchema } = require("./middlewares/validations/productFieldMappingValidations.js");
 const ProductFieldMappingController = require("./controllers/ProductFieldMappingController.js");
-const { storeProductPublishingTaskSchema, updateProductPublishingTaskStatusSchema, listProductPublishingTaskSchema, retryProductPublishingTaskSchema } = require("./middlewares/validations/productPublishingTaskValidations.js");
+const { storeProductPublishingTaskSchema, updateProductPublishingTaskStatusSchema, listProductPublishingTaskSchema, retryProductPublishingTaskSchema, publishDraftSchema } = require("./middlewares/validations/productPublishingTaskValidations.js");
 const ProductPublishingTaskController = require("./controllers/ProductPublishingTaskController.js");
 const { storeMarketplaceCredentialSchema, findByMarketplaceCredentialSchema, updateMarketplaceCredentialSchema, idMarketplaceCredentialSchema } = require("./middlewares/validations/marketplaceCredentialValidations.js");
 const MarketplaceCredentialController = require("./controllers/MarketplaceCredentialController.js");
@@ -78,6 +78,7 @@ const SiiCafController = require("./controllers/SiiCafController.js");
 const DteDocumentController = require("./controllers/DteDocumentController.js");
 const { createCafSchema, updateCafSchema, listCafsSchema } = require("./middlewares/validations/siiCafValidation.js");
 const cafXmlUpload = require("./middlewares/siiCafUpload.js");
+const { createDteSchema, checkStatusSchema } = require("./middlewares/validations/dteDocumentValidation.js");
 const router = express.Router();
 
 
@@ -309,8 +310,10 @@ router.post("/pool-destroy", requireRoles(['Admin', 'Seller Manager']), validate
 router.post("/marketplaces-pools", requireRoles(['Admin', 'Seller Manager']), validateSchema(listProductPublishingTaskSchema), ProductPublishingTaskController.warehouseMarketplaces);
 router.post("/publishing-task", requireRoles(['Admin', 'Seller Manager']), validateSchema(storeProductPublishingTaskSchema), ProductPublishingTaskController.store);
 router.post("/publishing-task-update-status", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateProductPublishingTaskStatusSchema), ProductPublishingTaskController.updateStatus);
-router.post("/publishing-task-list", requireRoles(['Admin', 'Seller Manager']), validateSchema(listProductPublishingTaskSchema), ProductPublishingTaskController.list);
+router.post("/publishing-tasks-list", requireRoles(['Admin', 'Seller Manager']), validateSchema(listProductPublishingTaskSchema), ProductPublishingTaskController.list);
 router.post("/publishing-task-retry", requireRoles(['Admin', 'Seller Manager']), validateSchema(retryProductPublishingTaskSchema), ProductPublishingTaskController.retry);
+router.post("/publishing-draft", requireRoles(['Admin', 'Seller Manager']), validateSchema(publishDraftSchema), ProductPublishingTaskController.publishDraft);
+router.post("/publishing-task-delete", requireRoles(['Admin', 'Seller Manager']), validateSchema(idCompanySchema), ProductPublishingTaskController.destroy);
 
 // Notificaciones
 router.post("/get-user-notifications", requireRoles(['Admin', 'Seller Manager', 'Editor', 'Viewer']), validateSchema(listNotificationsSchema), NotificationController.getUserNotifications);
@@ -378,10 +381,25 @@ router.post('/caf-update', requireRoles(['Admin', 'Seller Manager']), cafXmlUplo
 router.post('/caf-destroy', requireRoles(['Admin', 'Seller Manager']), validateSchema(idRoleSchema), SiiCafController.destroy);
 
 // Documentos DTE
-router.post('/documents-issue', DteDocumentController.issue);
+/*router.post('/documents-issue', DteDocumentController.issue);
 router.get('/documents', DteDocumentController.index);
 router.post('/documents-show', DteDocumentController.show);
-router.post('/document-check-status', DteDocumentController.checkStatus);
+router.post('/document-check-status', DteDocumentController.checkStatus);*/
+
+router.post('/dte-document', requireRoles(['Admin', 'Seller Manager']), validateSchema(createDteSchema), DteDocumentController.create );
+router.post('/dte-document-issue', requireRoles(['Admin', 'Seller Manager']), validateSchema(createDteSchema), DteDocumentController.issue );
+router.post('/dte-documents-list', requireRoles(['Admin', 'Seller Manager']), validateSchema(idCompanySchema), DteDocumentController.index );
+/*router.post(
+  '/dte-documents/show', 
+  requireRoles(['Admin', 'Seller Manager']),
+  validateSchema({ company_id: Joi.number().integer().positive().required(), document_id: Joi.number().integer().positive().required() }),
+  DteDocumentController.show
+);*/
+
+// Actualizar documento DTE
+router.post('/dte-document-update',  requireRoles(['Admin', 'Seller Manager']), validateSchema(createDteSchema), DteDocumentController.update );
+router.post('/dte-document-delete', requireRoles(['Admin', 'Seller Manager']), validateSchema(checkStatusSchema), DteDocumentController.destroy );
+router.post('/dte-document-status', requireRoles(['Admin', 'Seller Manager']), validateSchema(checkStatusSchema), DteDocumentController.checkStatus );
 
 
 module.exports = router;

@@ -92,6 +92,24 @@ const SiiCafRepository = {
     return caf;
   },
 
+  async incrementFolio(caf_id, options = {}) {
+    const caf = await SiiCaf.findByPk(caf_id, options);
+    if (!caf) throw new Error("CAF no encontrado");
+
+    const nextFolio = caf.folio_next + 1;
+    const isExhausted = nextFolio > caf.folio_end;
+
+    const updatedCaf = await caf.update({
+      folio_next: nextFolio,
+      used_count: caf.used_count + 1,
+      remaining_count: caf.remaining_count - 1,
+      is_exhausted: isExhausted
+    }, options);
+
+    logger.info(`CAF ${caf_id} folio incrementado a ${nextFolio}`);
+
+    return updatedCaf;
+  },
   async toggleActive(caf_id, is_active, options = {}) {
     const caf = await SiiCaf.findByPk(caf_id);
     if (!caf) throw new Error("CAF no encontrado");

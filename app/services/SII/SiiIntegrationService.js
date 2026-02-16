@@ -1,12 +1,9 @@
 // services/sii/SIIIntegrationService.js
-const { 
-  SiiConfigurationRepository,
-  SiiCertificateRepository,
-  DteDocumentRepository,
-  TenantLogRepository,
-  SiiCafRepository,
-  /*SIITransactionLogRepository*/
-} = require("../../repositories");
+const SiiConfigurationRepository = require("../../repositories/SiiConfigurationRepository");
+const SiiCertificateRepository = require("../../repositories/SiiCertificateRepository");
+const DteDocumentRepository = require("../../repositories/DteDocumentRepository");
+const TenantLogRepository = require("../../repositories/TenantLogRepository");
+const SiiCafRepository = require("../../repositories/SiiCafRepository");
 const DTEGenerator = require("./DTEGenerator");
 const CertificateManager = require("./CertificateManager");
 const CAFManager = require("./CAFManager");
@@ -139,18 +136,20 @@ class SiiIntegrationService {
     };
   }
 
-  async issueDTE(companyId, documentData, userId = null, options = {}) {
-    const config = await this.validateSIISetup(companyId);
+  async issueDTE(documentId,  userId = null, options = {}) { // ✅ CORREGIDO: Recibe documentId, no companyId + data
+    // 1. Obtener documento ya creado
+    const document = await DteDocumentRepository.findById(documentId, options);
+    if (!document) throw new Error('Documento DTE no encontrado');
 
-    const folio = await DteDocumentRepository.getNextFolio(
-      companyId,
-      documentData.document_type,
-      options
-    );
+    const companyId = document.company_id;
 
-    const caf = await SiiCafRepository.getNextAvailableCAF(
+    // 2. Validar configuración SII
+    const config = await this.validateSIISetup(companyId, options);
+
+    // 3. Obtener CAF activo para el tipo de documento
+    const caf = await SiiCafRepository.findActiveByCompanyAndType(
       companyId,
-      documentData.document_type,
+      document.document_type,
       options
     );
 
@@ -158,88 +157,61 @@ class SiiIntegrationService {
       throw new Error('No hay CAF disponible para el tipo de documento solicitado');
     }
 
+    // 4. Generar XML DTE con folio del documento (ya asignado desde el controlador)
     const dteData = {
-      ...documentData,
-      company_id: companyId,
-      folio: folio,
+      ...document.get({ plain: true }), // Obtener datos planos del modelo
       rut_emisor: config.rut,
-      fecha_emision: documentData.fecha_emision || new Date().toISOString().split('T')[0]
+      legal_name_emisor: config.legal_name
     };
 
     const { xmlDte } = await this.dteGenerator.generateDTE(dteData, caf);
 
+    // 5. Obtener certificado y firmar
     const certificate = await SiiCertificateRepository.findActiveByCompanyId(companyId, options);
+       // ✅ DESENCRIPTAR la contraseña del certificado
+    const certificatePassword = await CertificateManager.decryptPassword(certificate.password_hash);
 
+    // 5. Firmar documento
     const signature = await this.certificateManager.signDocument(
       xmlDte,
       certificate.certificate_path,
-      await this.decryptCertificatePassword(certificate.password_hash)
+      certificatePassword // ✅ Usar contraseña desencriptada
     );
 
+    // 6. Enviar al SII
     const siiResponse = await this.siiConnection.sendDTE(
       config.sii_environment,
       xmlDte,
       signature,
       config.rut
     );
-
-    const document = await DteDocumentRepository.create({
-      company_id: companyId,
-      document_type: documentData.document_type,
-      folio: folio,
-      rut_emisor: config.rut,
-      rut_receptor: documentData.rut_receptor,
-      razon_social_receptor: documentData.razon_social_receptor,
-      giro_receptor: documentData.giro_receptor,
-      direccion_receptor: documentData.direccion_receptor,
-      comuna_receptor: documentData.comuna_receptor,
-      ciudad_receptor: documentData.ciudad_receptor,
-      monto_neto: documentData.monto_neto,
-      monto_iva: documentData.monto_iva,
-      monto_total: documentData.monto_total,
-      fecha_emision: dteData.fecha_emision,
-      sii_status: siiResponse.status === 'OK' ? 'enviado' : 'rechazado',
+    const siiResponseString = JSON.stringify(siiResponse);
+    // 7. Actualizar documento con resultado
+    await DteDocumentRepository.update(documentId, {
+      sii_status: siiResponse.status === 'OK' ? 'aceptado' : 'rechazado',
       track_id: siiResponse.trackId,
-      sii_response: JSON.stringify(siiResponse),
+      sii_response: siiResponseString,
       sii_error_code: siiResponse.status !== 'OK' ? siiResponse.errorCode : null,
       sii_error_message: siiResponse.status !== 'OK' ? siiResponse.message : null,
       xml_dte: xmlDte,
-      detalles: documentData.detalles,
-      order_id: documentData.order_id,
-      order_type: documentData.order_type
+      xml_envio: signature // o el XML de envío completo según tu implementación
     }, options);
 
-    await SiiCafRepository.update(caf.id, {
-      folio_next: folio + 1,
-      used_count: caf.used_count + 1,
-      remaining_count: caf.remaining_count - 1,
-      is_exhausted: caf.remaining_count - 1 <= 0
-    }, options);
+    // 8. Actualizar CAF (incrementar folio)
+    await SiiCafRepository.incrementFolio(caf.id, options);
 
-    /*await SIITransactionLogRepository.create({
-      company_id: companyId,
-      document_id: document.id,
-      transaction_type: 'send_dte',
-      request_xml: xmlDte,
-      response_xml: siiResponse.rawResponse,
-      response_status: siiResponse.status,
-      error_code: siiResponse.errorCode,
-      error_message: siiResponse.message,
-      endpoint: siiResponse.endpoint,
-      duration_ms: siiResponse.duration
-    }, options);*/
-
+    // 9. Registrar log
     await TenantLogRepository.create({
       company_id: companyId,
       user_id: userId,
       module: 'sii',
       event_type: 'create',
       action: 'DTE emitido',
-      description: `${documentData.document_type} ${folio} emitido a ${documentData.rut_receptor}`,
+      description: `${document.document_type} ${document.folio} emitido a ${document.rut_receptor}`,
       meta: {
-        document_id: document.id,
-        folio: folio,
-        monto_total: documentData.monto_total,
+        document_id: documentId,
+        folio: document.folio,
+        monto_total: document.monto_total,
         track_id: siiResponse.trackId
       },
       result: siiResponse.status === 'OK' ? 'success' : 'error',
@@ -251,13 +223,10 @@ class SiiIntegrationService {
       message: siiResponse.status === 'OK' 
         ? 'Documento emitido correctamente' 
         : 'Documento rechazado por SII',
-       data: {
-        document_id: document.id,
-        folio: folio,
-        track_id: siiResponse.trackId,
-        sii_status: siiResponse.status,
-        sii_message: siiResponse.message
-      }
+      sii_status: siiResponse.status === 'OK' ? 'aceptado' : 'rechazado',
+      track_id: siiResponse.trackId,
+      sii_response: siiResponse,
+      xml_dte: xmlDte
     };
   }
 

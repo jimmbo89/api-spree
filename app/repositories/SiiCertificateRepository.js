@@ -71,12 +71,12 @@ const SiiCertificateRepository = {
 
   async create(data, file, options = {}) {
   // 1. Hashear la contraseña ANTES de crear el registro
-  const passwordHash = await CertificateManager.hashPassword(data.password);
+   const encryptedPassword = await CertificateManager.encryptPassword(data.password);
 
   // 2. Crear el registro con los datos básicos
   const certificate = await SiiCertificate.create({
     company_id: data.company_id,
-    password_hash: passwordHash, // <-- Contraseña hasheada
+    password_hash: encryptedPassword, // <-- Contraseña hasheada
     uploaded_at: new Date(),
     is_valid: true, // Se asume válido hasta que se valide el archivo
     certificate_path: 'certificates/temp.pfx' // Placeholder temporal
@@ -159,11 +159,15 @@ const SiiCertificateRepository = {
       data.is_valid = validation.isValid
 
     }
-    data.password_hash = await CertificateManager.hashPassword(data.password);
+    
     data.uploaded_at = new Date();
     // 2. Actualizar los campos en la BD
     const fieldsToUpdate = ['password_hash', 'is_valid', 'certificate_path', 'expires_at', 'document_types_enabled'];
     const updatedData = {};
+      if (data.password) {
+      const encryptedPassword = await CertificateManager.encryptPassword(data.password);
+      updatedData.password_hash = JSON.stringify(encryptedPassword);
+    }
     for (const field of fieldsToUpdate) {
       if (data[field] !== undefined) {
         updatedData[field] = data[field];

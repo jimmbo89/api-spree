@@ -1,9 +1,11 @@
 // src/services/PublishingService.js
 const PublishingAdapterFactory = require('./adapters/PublishingAdapterFactory');
 const MarketplaceTransformer = require('./MarketplaceTransformer');
+const MercadoLibreAttributesService = require('./MercadoLibreAttributesService');
 const {
   ProductPublishingTaskRepository,
-  ProductMarketplaceLinkRepository
+  ProductMarketplaceLinkRepository,
+  MarketplaceCredentialRepository
 } = require('../repositories');
 const logger = require('../../config/logger');
 
@@ -71,20 +73,25 @@ class PublishingService {
 
       // === 2. Transformar usando mapeos genéricos ===
       let transformer = MarketplaceTransformer; // Default genérico
-    if (typeof adapter.constructor.getTransformer === 'function') {
-      transformer = adapter.constructor.getTransformer();
-      logger.info(`[PublishingService] ✅ Usando transformer específico: ${transformer.name || 'Custom'}`);
-    }
+      if (typeof adapter.constructor.getTransformer === 'function') {
+        transformer = adapter.constructor.getTransformer();
+        logger.info(`[PublishingService] ✅ Usando transformer específico: ${transformer.name || 'Custom'}`);
+      }
 
-    const [transformed] = await transformer.transformProducts(
-      [preparedProduct],
-      marketplace.id
-    );
-
+      const [transformed] = await transformer.transformProducts(
+        [preparedProduct],
+        marketplace.id
+      );
 
       if (!transformed) {
         logger.error(`[PublishingService] Transformación fallida`);
         return { success: false, error: 'productTransformFailed', product_id: productData.id };
+      }
+
+      // ✅ ÚLTIMO fallback para family_name/title (según documentación ML)
+      if (!transformed.family_name && !transformed.title) {
+        transformed.title = productData.name || productData.title || `Producto ${productData.id}`;
+        logger.warn(`[PublishingService] ⚠️ Sin family_name ni title → usando título fallback: "${transformed.title}"`);
       }
 
       logger.info(`[PublishingService] Producto transformado`);
