@@ -72,6 +72,7 @@ const ProductPublishingTaskController = {
         return {
         ...mp,
         credential_id: credential.id,
+        access_token: credential ? 'Token existente' : null,
         seller_id: credential.seller_id,
         seller_email: credential.seller_email,
         api_key: credential.api_key,
