@@ -89,51 +89,7 @@ const MarketplaceCredentialController = {
     }
   },
 
-  /*async store(req, res) {
-  logger.info(`${req.user?.name || 'Unknown'} - crea credenciales de marketplace`);
-  logger.info('Datos recibidos:');
-  logger.info(JSON.stringify(req.body));
-  const userId = req.user.id;
-  const { marketplace_id } = req.body;
-
-  try {
-    const marketplace = await MarketplaceRepository.findById(marketplace_id);
-    if (!marketplace) {
-      return res.status(400).json({ success: false, message: "Marketplace no encontrado" });
-    }
-
-    const adapter = PublishingAdapterFactory.getAdapter(marketplace, null, null, userId);
-    if (!adapter) {
-      return res.status(400).json({ success: false, message: "Adaptador no disponible" });
-    }
-
-    const status = await adapter.ensureValidCredentials();
-
-    if (status.valid) {
-      // Ya está conectado
-      return res.status(201).json({ success: true, message: "Ya conectado" });
-    } else if (status.auth_required) {
-      // Devolver URL para redirección
-      return res.status(409).json({
-        success: false,
-        auth_required: true,
-        auth_url: status.auth_url,
-        message: status.message
-      });
-    } else {
-      return res.status(400).json({
-        success: false,
-        error: status.error || "Error al validar credenciales"
-      });
-    }
-
-  } catch (error) {
-    logger.error('MarketplaceCredentialController->store:', error.message);
-    return res.status(500).json({ success: false, message: 'Error interno del servidor', details: error.message });
-  }
-},*/
-
-  async store(req, res) {
+ async store(req, res) {
   logger.info(`${req.user?.name || 'Unknown'} - Crea credencial de marketplace`);
   logger.info(`Datos recibidos: ${JSON.stringify(req.body)}`);
 
@@ -212,64 +168,64 @@ const MarketplaceCredentialController = {
     }
 
    // 5. Flujo OAuth (MercadoLibre): Guardar + Iniciar flujo de autorización
-if (isOAuth) {
-  // ✅ Guardar credenciales base y CAPTURAR el registro creado
-  const newCredential = await MarketplaceCredentialRepository.createOrUpdate({
-    marketplace_id,
-    user_id: userId,
-    name,
-    country,
-    // Tokens se obtendrán después de la autorización
-    access_token: null,
-    refresh_token: null,
-    expires_at: null,
-    active: false
-  });
+    if (isOAuth) {
+      // ✅ Guardar credenciales base y CAPTURAR el registro creado
+      const newCredential = await MarketplaceCredentialRepository.createOrUpdate({
+        marketplace_id,
+        user_id: userId,
+        name,
+        country,
+        // Tokens se obtendrán después de la autorización
+        access_token: null,
+        refresh_token: null,
+        expires_at: null,
+        active: false
+      });
 
-    logger.info(`[store] Nueva credencial creada:`, {
-    id: newCredential?.id,
-    marketplace_id: newCredential?.marketplace_id,
-    user_id: newCredential?.user_id
-  });
+        logger.info(`[store] Nueva credencial creada:`, {
+        id: newCredential?.id,
+        marketplace_id: newCredential?.marketplace_id,
+        user_id: newCredential?.user_id
+      });
 
-  // ✅ EJECUTAR LÓGICA DE OAUTH con la credencial recién creada
-  const adapter = PublishingAdapterFactory.getAdapter(
-    marketplace, 
-    null, // companyId
-    null, // branchId
-    userId,
-    newCredential.id  // ← CLAVE: Pasar ID de la NUEVA credencial
-  );
-  
-  if (!adapter) {
-    return res.status(400).json({ success: false, message: "Adaptador no disponible" });
-  }
+      // ✅ EJECUTAR LÓGICA DE OAUTH con la credencial recién creada
+      const adapter = PublishingAdapterFactory.getAdapter(
+        marketplace, 
+        null, // companyId
+        null, // branchId
+        userId,
+        newCredential.id  // ← CLAVE: Pasar ID de la NUEVA credencial
+      );
+      
+      if (!adapter) {
+        return res.status(400).json({ success: false, message: "Adaptador no disponible" });
+      }
 
-  const status = await adapter.ensureValidCredentials();
+      const status = await adapter.ensureValidCredentials();
 
-  if (status.valid) {
-    // Ya está conectado (caso raro al crear, pero posible)
-    return res.status(201).json({ 
-      success: true, 
-      message: "Ya conectado",
-      credential_id: newCredential.id
-    });
-  } else if (status.auth_required) {
-    // ✅ DEVOLVER URL DE AUTORIZACIÓN - ESTO ES CLAVE
-    return res.status(409).json({
-      success: false,
-      auth_required: true,
-      auth_url: status.auth_url,
-      message: status.message,
-      credential_id: newCredential.id  // ← Para referencia del frontend
-    });
-  } else {
-    return res.status(400).json({
-      success: false,
-      error: status.error || "Error al iniciar conexión OAuth"
-    });
-  }
-}
+      if (status.valid) {
+        // Ya está conectado (caso raro al crear, pero posible)
+        return res.status(201).json({ 
+          success: true, 
+          message: "Ya conectado",
+          credential_id: newCredential.id
+        });
+      } else if (status.auth_required) {
+        // ✅ DEVOLVER URL DE AUTORIZACIÓN - ESTO ES CLAVE
+        return res.status(409).json({
+          success: false,
+          auth_required: true,
+          auth_url: status.auth_url,
+          message: status.message,
+          credential_id: newCredential.id  // ← Para referencia del frontend
+        });
+      } else {
+        return res.status(400).json({
+          success: false,
+          error: status.error || "Error al iniciar conexión OAuth"
+        });
+      }
+    }
 
     // Fallback por seguridad
     return res.status(400).json({
@@ -278,6 +234,14 @@ if (isOAuth) {
     });
 
   } catch (error) {
+    if (newCredential?.id) {
+      try {
+        await MarketplaceCredentialRepository.deleteById(newCredential.id);
+        logger.info(`[store] Credencial huérfana eliminada: ${newCredential.id}`);
+      } catch (deleteError) {
+        logger.error(`[store] No se pudo eliminar credencial huérfana ${newCredential.id}:`, deleteError.message);
+      }
+    }
     const errorMessage = formatSequelizeValidationError(error);
     await LogRepository.create({
       user_id: metadata?.user_id,
@@ -298,55 +262,6 @@ if (isOAuth) {
     });
   }
 },
-
-  /*async refreshToken(req, res) {
-    logger.info(`${req.user?.name || 'Unknown'} - Refresca credenciales de marketplace`);
-    logger.info(`Datos recibidos: ${JSON.stringify(req.body)}`);
-    
-    const userId = getUserId();
-    const { id } = req.body;
-
-    try {
-      const marketplace = await MarketplaceRepository.findById(id);
-      if (!marketplace) {
-        return res.status(400).json({ success: false, message: "Marketplace no encontrado" });
-      }
-
-      const adapter = PublishingAdapterFactory.getAdapter(marketplace, null, null, userId);
-      if (!adapter) {
-        return res.status(400).json({ success: false, message: "Adaptador no disponible" });
-      }
-
-      const status = await adapter.ensureValidCredentials();
-
-      if (status.valid) {
-        return res.status(201).json({ success: true, message: "Token refrescado correctamente" });
-      } else if (status.auth_required) {
-        return res.status(409).json({
-          success: false,
-          auth_required: true,
-          auth_url: status.auth_url,
-          message: status.message
-        });
-      } else {
-        return res.status(400).json({
-          success: false,
-          error: status.error || "Error al validar credenciales"
-        });
-      }
-
-    } catch (error) {
-      logger.error('MarketplaceCredentialController->refreshToken: ' + error.message);
-      return res.status(500).json({ 
-        success: false, 
-        message: 'Error interno del servidor', 
-        details: error.message 
-      });
-    }
-  },*/
-
-  // controllers/MarketplaceCredentialController.js
-
 async refreshToken(req, res) {
   logger.info(`${req.user?.name || 'Unknown'} - Refresca credenciales de marketplace`);
   logger.info(`Datos recibidos: ${JSON.stringify(req.body)}`);

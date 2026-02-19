@@ -21,6 +21,7 @@ const MercadoLibreAdapter = require('../services/adapters/MercadoLibreAdapter');
 const MarketplaceTransformer = require('../services/MarketplaceTransformer');
 const PublishingService = require('../services/PublishingService');
 const { getRequestMetadata } = require('../util/requestUtil');
+const PublishingAdapterFactory = require('../services/adapters/PublishingAdapterFactory');
 
 const ProductPublishingTaskController = {
   // 1. Registrar publicación (simula envío a API)
@@ -49,10 +50,13 @@ const ProductPublishingTaskController = {
       isActive: true
     });
 
-    const credentials = await MarketplaceCredentialRepository.findByUser(user_id);
-   
-    // Transformar resultados
-    const marketplaces = credentials.map(credential => {
+    const credentials = await MarketplaceCredentialRepository.findByUserDecifrado(user_id);
+    
+    // 3. ✅ RENOVAR TOKENS EXPIRADOS ANTES DE TRANSFORMAR
+    const refreshedCredentials = await ProductPublishingTaskController.refreshExpiredTokens(credentials, userId);
+
+    // 4. Transformar resultados (igual que antes, pero con credenciales actualizadas)
+    const marketplaces = refreshedCredentials.map(credential => {
       const mp = credential.marketplace;
 
       // Opcional: limpiar espacios en domain
@@ -61,20 +65,11 @@ const ProductPublishingTaskController = {
       }
 
       return {
-        // ✅ ID PRINCIPAL: Usar credential_id como identificador único
         id: credential.id,
-        
-        // ✅ NOMBRE PRINCIPAL: Usar nombre de la credencial
         name: credential.name || `${mp.name} (${credential.seller_email || 'Sin nombre'})`,
-        
-        // ✅ DESCRIPCIÓN: Usar descripción del marketplace
         description: mp.description || 'Integración con marketplace',
-        
-        // ✅ DATOS DEL MARKETPLACE (separados)
         marketplace_id: mp.id,
         marketplace_name: mp.name,
-        
-        // ✅ RESTO DE CAMPOS DEL MARKETPLACE
         type: mp.type,
         domain: mp.domain,
         config: mp.config,
@@ -85,8 +80,6 @@ const ProductPublishingTaskController = {
         scopes: mp.scopes,
         createdAt: mp.createdAt,
         updatedAt: mp.updatedAt,
-        
-        // ✅ DATOS DE LA CREDENCIAL
         credential_id: credential.id,
         access_token: credential.access_token ? 'Token existente' : null,
         seller_id: credential.seller_id,
@@ -114,6 +107,77 @@ const ProductPublishingTaskController = {
       details: error.message 
     });
   }
+},
+
+/**
+ * Verifica y renueva automáticamente tokens expirados para marketplaces que lo requieran
+ * @param {Array} credentials - Lista de credenciales con marketplace incluido
+ * @param {number} userId - ID del usuario propietario
+ * @returns {Promise<Array>} - Lista de credenciales (algunas con tokens renovados)
+ */
+async refreshExpiredTokens(credentials, userId) {
+  // Marketplaces que requieren validación de token (no API key como Falabella)
+  
+  const refreshPromises = credentials.map(async (credential) => {
+    try {
+      const mp = credential.marketplace;
+      const mpName = mp?.domain || '';
+      
+      // ✅ Solo procesar marketplaces basados en token
+      const isTokenBased = mpName.includes("mercadolibre");
+      if (!isTokenBased) {
+        return credential; // Falabella y otros con API key no necesitan refresh
+      }
+      
+      // ✅ Verificar si el token está expirado o ausente
+      const isExpired = credential.expires_at 
+        ? new Date(credential.expires_at) < new Date() 
+        : true;
+      
+      const hasNoToken = !credential.access_token;
+      
+      if (isExpired || hasNoToken) {
+        logger.info(`[warehouseMarketplaces] Token expirado/ausente para credential ${credential.id}. Intentando refresh...`);
+        
+        // ✅ Crear adapter y validar/renovar credenciales
+        const adapter = PublishingAdapterFactory.getAdapter(
+          mp, 
+          null, // companyId
+          null, // branchId
+          userId,
+          credential // ← Pasar credencial específica
+        );
+        
+        if (adapter && typeof adapter.ensureValidCredentials === 'function') {
+          const status = await adapter.ensureValidCredentials();
+          
+          if (status.valid) {
+            logger.info(`[warehouseMarketplaces] ✅ Token renovado para credential ${credential.id}`);
+            // ✅ Recargar la credencial actualizada desde la BD
+            const updated = await MarketplaceCredentialRepository.findById(credential.id);
+            if (updated) {
+              updated.marketplace = mp; // Mantener el include del marketplace
+              return updated;
+            }
+          } else if (status.auth_required) {
+            logger.warn(`[warehouseMarketplaces] ⚠️ Credential ${credential.id} requiere re-autorización: ${status.auth_url}`);
+          } else {
+            logger.warn(`[warehouseMarketplaces] ⚠️ No se pudo validar credential ${credential.id}: ${status.error || 'unknown'}`);
+          }
+        }
+      }
+      
+      return credential; // Retornar original si no hubo cambios o falló el refresh
+    } catch (error) {
+      // ✅ NO bloquear el flujo: loggear y continuar con la credencial original
+      logger.error(`[warehouseMarketplaces] Error al refresh credential ${credential?.id}: ${error.message}`);
+      return credential;
+    }
+  });
+  
+  // ✅ Ejecutar en paralelo con aislamiento de errores
+  const results = await Promise.all(refreshPromises);
+  return results;
 },
   async store(req, res) {
   logger.info(`${req.user?.name || 'Unknown'} - Publicación/Draft iniciado`);

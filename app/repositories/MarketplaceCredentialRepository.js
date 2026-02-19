@@ -94,6 +94,111 @@ const MarketplaceCredentialRepository = {
     return records.map(record => record.get({ plain: true }));
   },
 
+  /**
+ * Obtiene todas las credenciales de un usuario (opcionalmente filtradas por marketplace)
+ * ✅ CAMBIO: Devuelve credenciales con campos sensibles decifrados
+ */
+async findByUserDecifrado(userId, marketplaceId = null) {
+  const where = { user_id: userId };
+  if (marketplaceId) where.marketplace_id = marketplaceId;
+
+  const records = await MarketplaceCredential.findAll({
+    where,
+    include: [
+      {
+        model: Marketplace,
+        as: 'marketplace',
+      }
+    ],
+    order: [['createdAt', 'DESC']]
+  });
+
+  // ✅ Transformar cada registro decifrando campos sensibles
+  return records.map(record => {
+    const credential = record.get({ plain: true });
+    const mp = credential.marketplace || {};
+
+    // === 🔐 DECIFRAR CAMPOS DEL MARKETPLACE ===
+    let mp_client_secret = mp.client_secret;
+    if (mp_client_secret) {
+      try {
+        mp_client_secret = EncryptionService.decrypt(mp_client_secret);
+      } catch (err) {
+        console.warn(`[findByUser] Error al decifrar marketplace.client_secret: ${err.message}`);
+        mp_client_secret = null;
+      }
+    }
+
+    // === 🔐 DECIFRAR CAMPOS DE LA CREDENCIAL ===
+    let access_token = credential.access_token;
+    let refresh_token = credential.refresh_token;
+    let api_key = credential.api_key;
+
+    if (access_token) {
+      try {
+        access_token = EncryptionService.decrypt(access_token);
+      } catch (err) {
+        console.warn(`[findByUser] Error al decifrar access_token: ${err.message}`);
+        access_token = null;
+      }
+    }
+    if (refresh_token) {
+      try {
+        refresh_token = EncryptionService.decrypt(refresh_token);
+      } catch (err) {
+        console.warn(`[findByUser] Error al decifrar refresh_token: ${err.message}`);
+        refresh_token = null;
+      }
+    }
+    if (api_key) {
+      try {
+        api_key = EncryptionService.decrypt(api_key);
+      } catch (err) {
+        console.warn(`[findByUser] Error al decifrar api_key: ${err.message}`);
+        api_key = null;
+      }
+    }
+
+    // ✅ Retornar objeto combinado CON AMBOS OBJETOS DECIFRADOS
+    return {
+      // Campos de la credencial (decifrados)
+      id: credential.id || null,
+      user_id: credential.user_id || userId,
+      marketplace_id: mp.id || null,
+      name: credential.name || null,
+      country: credential.country || null,
+      access_token: access_token || null,
+      refresh_token: refresh_token || null,
+      expires_at: credential.expires_at || null,
+      active: credential.active || false,
+      seller_email: credential.seller_email || null,
+      seller_id: credential.seller_id,
+      api_key: api_key || null,
+      additional_data: credential.additional_data,
+      
+      // Campos del marketplace (decifrados) ← ✅ ESTO FALTABA
+      client_id: mp.client_id,
+      client_secret: mp_client_secret || null,  // ✅ Decifrado
+      redirect_uri: mp.redirect_uri,
+      scopes: mp.scopes,
+      domain: mp.domain?.trim() || null,
+      marketplace_name: mp.name,
+      type: mp.type,
+      description: mp.description,
+      config: mp.config,
+      active: mp.active,
+      createdAt: mp.createdAt,
+      updatedAt: mp.updatedAt,
+      
+      // Mantener el include del marketplace para compatibilidad
+      marketplace: {
+        ...mp,
+        client_secret: mp_client_secret || null  // ✅ Asegurar que también esté decifrado aquí
+      }
+    };
+  });
+},
+
   async findByUserObject(userId, marketplaceId = null) {
     const where = { user_id: userId };
     if (marketplaceId) where.marketplace_id = marketplaceId;
