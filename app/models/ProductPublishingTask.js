@@ -10,6 +10,7 @@ module.exports = (sequelize, DataTypes) => {
       ProductPublishingTask.belongsTo(models.Branch, { foreignKey: 'branch_id', as: 'branch', onDelete: 'SET NULL' }); // ✅ Nuevo
       ProductPublishingTask.belongsTo(models.Company, { foreignKey: 'company_id', as: 'company' });
       ProductPublishingTask.belongsTo(models.User, { foreignKey: 'user_id', as: 'user' });
+      ProductPublishingTask.belongsTo(models.MarketplaceCredential, {  foreignKey: 'credential_id',  as: 'credential', onDelete: 'SET NULL' });
     }
   }
 
@@ -48,6 +49,11 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: true,
       defaultValue: DataTypes.UUIDV4 // ✅ Nuevo
     },
+    credential_id: {
+    type: DataTypes.BIGINT,
+    allowNull: true,
+    comment: 'ID de la credencial específica usada para esta publicación'
+  },
     status: {
       type: DataTypes.ENUM('draft', 'pending', 'processing', 'published', 'failed', 'cancelled'), // ✅ Actualizado
       allowNull: false,

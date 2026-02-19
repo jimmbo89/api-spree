@@ -8,118 +8,71 @@ const MarketplaceCredentialRepository = {
   /**
    * Obtiene la credencial (token) de un usuario para un marketplace específico
    */
-  /*async findByMarketplaceAndUser(marketplaceId, userId) {
-  const record = await MarketplaceCredential.findOne({
-    where: { marketplace_id: marketplaceId, user_id: userId },
-    include: [
-      {
-        model: Marketplace,
-        as: 'marketplace',
-        required: true
-      }
-    ]
-  });
+  async findByMarketplaceAndUser(marketplaceId, userId, name = null) {
+    const where = {
+      marketplace_id: marketplaceId,
+      user_id: userId
+    };
 
-  if (!record) return null;
+    if (name) {
+      where.name = name;
+    }
 
-  // Descifrar tokens del usuario
-  let access_token = record.access_token;
-  let refresh_token = record.refresh_token;
-  if (access_token) access_token = EncryptionService.decrypt(access_token);
-  if (refresh_token) refresh_token = EncryptionService.decrypt(refresh_token);
+    const marketplace = await Marketplace.findOne({
+      where: { id: marketplaceId },
+      include: [{
+        model: MarketplaceCredential,
+        as: 'credentials',
+        where,
+        required: false
+      }]
+    });
 
-  // Descifrar credenciales OAuth del marketplace
-  let client_secret = record.marketplace.client_secret;
-  if (client_secret) client_secret = EncryptionService.decrypt(client_secret);
+    if (!marketplace) {
+      return null;
+    }
 
-  // Construir objeto plano explícito (sin spread ni riesgo de colisión)
-  const combined = {
-    // Campos de MarketplaceCredential
-    id: record.id,
-    user_id: record.user_id,
-    marketplace_id: record.marketplace_id,
-    access_token,
-    refresh_token,
-    expires_at: record.expires_at,
-    active: record.active,
+    const credential = marketplace.credentials?.[0];
 
-    // Campos de Marketplace (credenciales OAuth)
-    client_id: record.marketplace.client_id,
-    client_secret,
-    redirect_uri: record.marketplace.redirect_uri,
-    scopes: record.marketplace.scopes,
-    domain: record.marketplace.domain?.trim() || null,
+    let client_secret = marketplace.client_secret;
+    if (client_secret) {
+      client_secret = EncryptionService.decrypt(client_secret);
+    }
 
-    // (Opcional) otros campos de marketplace si los necesitas
-    name: record.marketplace.name,
-    type: record.marketplace.type,
-    description: record.marketplace.description
-  };
+    let access_token = credential?.access_token;
+    let refresh_token = credential?.refresh_token;
+    let api_key = credential?.api_key;
+    if (access_token) access_token = EncryptionService.decrypt(access_token);
+    if (refresh_token) refresh_token = EncryptionService.decrypt(refresh_token);
+    if (api_key) api_key = EncryptionService.decrypt(api_key);
 
-  return combined;
-},*/
+    const combined = {
+      id: credential?.id || null,
+      user_id: userId,
+      marketplace_id: marketplace.id,
+      name: credential?.name || null,
+      country: credential?.country || null,
+      access_token: access_token || null,
+      refresh_token: refresh_token || null,
+      expires_at: credential?.expires_at || null,
+      active: credential?.active || false,
+      seller_email: credential?.seller_email || null,
+      seller_id: credential?.seller_id,
+      api_key: api_key || null,
+      additional_data: credential?.additional_data,
+      client_id: marketplace.client_id,
+      client_secret,
+      redirect_uri: marketplace.redirect_uri,
+      scopes: marketplace.scopes,
+      domain: marketplace.domain?.trim() || null,
+      marketplace_name: marketplace.name,
+      type: marketplace.type,
+      description: marketplace.description
+    };
 
-async findByMarketplaceAndUser(marketplaceId, userId) {
-  // Buscar el marketplace + credencial del usuario (si existe)
-  const marketplace = await Marketplace.findOne({
-    where: { id: marketplaceId },
-    include: [{
-      model: MarketplaceCredential,
-      as: 'credentials', // debe coincidir con la asociación Marketplace.hasMany(Credential)
-      where: { user_id: userId },
-      required: false // ← clave: LEFT JOIN
-    }]
-  });
+    return combined;
+  },
 
-  if (!marketplace) {
-    return null; // marketplace no existe
-  }
-
-  // Extraer credencial (puede ser undefined)
-  const credential = marketplace.credentials?.[0]; // hasMany → array
-
-  // Descifrar client_secret del marketplace
-  let client_secret = marketplace.client_secret;
-  if (client_secret) {
-    client_secret = EncryptionService.decrypt(client_secret);
-  }
-
-  // Descifrar tokens del usuario (si existen)
-  let access_token = credential?.access_token;
-  let refresh_token = credential?.refresh_token;
-  let api_key = credential?.api_key;
-  if (access_token) access_token = EncryptionService.decrypt(access_token);
-  if (refresh_token) refresh_token = EncryptionService.decrypt(refresh_token);
-  if (api_key) api_key = EncryptionService.decrypt(api_key);
-
-  // Construir objeto plano
-  const combined = {
-    // Campos de MarketplaceCredential (pueden ser null)
-    id: credential?.id || null,
-    user_id: userId,
-    marketplace_id: marketplace.id,
-    access_token: access_token || null,
-    refresh_token: refresh_token || null,
-    expires_at: credential?.expires_at || null,
-    active: credential?.active || false,
-    seller_email: credential?.seller_email || null,
-    seller_id: credential?.seller_id,
-    api_key: api_key || null,
-    additional_data: credential?.additional_data,
-
-    // Campos de Marketplace (siempre presentes)
-    client_id: marketplace.client_id,
-    client_secret,
-    redirect_uri: marketplace.redirect_uri,
-    scopes: marketplace.scopes,
-    domain: marketplace.domain?.trim() || null,
-    name: marketplace.name,
-    type: marketplace.type,
-    description: marketplace.description
-  };
-
-  return combined;
-},
   /**
    * Obtiene todas las credenciales de un usuario (opcionalmente filtradas por marketplace)
    */
@@ -138,107 +91,182 @@ async findByMarketplaceAndUser(marketplaceId, userId) {
       order: [['createdAt', 'DESC']]
     });
 
-    // No desciframos en listas (solo al usar tokens)
     return records.map(record => record.get({ plain: true }));
   },
 
-      async countActiveByMarketplace (user_id, options = {}){
-        const where = { user_id: user_id, ...options.where };
-        return MarketplaceCredential.count({ where });
-      },
+  async findByUserObject(userId, marketplaceId = null) {
+    const where = { user_id: userId };
+    if (marketplaceId) where.marketplace_id = marketplaceId;
 
-  async findById(id) {
-    const record = await MarketplaceCredential.findByPk(id);
-    if (!record) return null;
+    const records = await MarketplaceCredential.findAll({
+      where,
+      include: [
+        {
+          model: Marketplace,
+          as: 'marketplace',
+        }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
 
-    const plain = record.get({ plain: true });
-    if (plain.access_token) plain.access_token = EncryptionService.decrypt(plain.access_token);
-    if (plain.refresh_token) plain.refresh_token = EncryptionService.decrypt(plain.refresh_token);
-    if (plain.api_key) plain.api_key = EncryptionService.decrypt(plain.api_key);
-    return plain;
-  },
-
-  async findByDelete(id) {
-    return await MarketplaceCredential.findByPk(id, {
-    include: [
-      {
-        model: Marketplace, // Asegúrate de que el nombre del modelo sea correcto
-        as: 'marketplace', // Usa el alias correcto definido en tu asociación
-        attributes: ['name'] // Solo traemos lo necesario
-      }
-    ]
-  });
+    return records;
   },
 
   /**
-   * Crea o actualiza una credencial de token (por usuario + marketplace)
+ * Elimina una credencial por ID
+ * @param {number} id - ID de la credencial a eliminar
+ * @returns {Promise<object>} - Resultado de la eliminación
+ */
+async deleteById(id) {
+  try {
+    const credential = await MarketplaceCredential.findByPk(id);
+    
+    if (!credential) {
+      throw new Error(`Credencial con ID ${id} no encontrada`);
+    }
+    
+    await credential.destroy();
+    
+    logger.info(`[REPO] Credencial eliminada (ID: ${id})`);
+    
+    return { 
+      success: true, 
+      message: "Credencial eliminada correctamente",
+      id: id
+    };
+  } catch (error) {
+    logger.error(`[REPO] ERROR al eliminar credencial (ID: ${id}):`, error.message);
+    throw error;
+  }
+},
+
+  async countActiveByMarketplace(user_id, options = {}) {
+    const where = { user_id: user_id, ...options.where };
+    return MarketplaceCredential.count({ where });
+  },
+
+  async findById(id) {
+  // Buscamos el registro por PK e incluimos la relación 'marketplace'
+  const record = await MarketplaceCredential.findByPk(id, {
+    include: [
+      {
+        model: Marketplace,
+        as: 'marketplace',
+      }
+    ]
+  });
+
+  if (!record) return null;
+
+  // Obtenemos los datos planos (objeto simple)
+  const plain = record.get({ plain: true });
+
+  // Desencriptamos los campos sensibles de la CREDENCIAL si existen
+  if (plain.access_token) plain.access_token = EncryptionService.decrypt(plain.access_token);
+  if (plain.refresh_token) plain.refresh_token = EncryptionService.decrypt(plain.refresh_token);
+  if (plain.api_key) plain.api_key = EncryptionService.decrypt(plain.api_key);
+
+  // ✅ NUEVO: Desencriptar client_secret del MARKETPLACE si existe
+  if (plain.marketplace?.client_secret) {
+    plain.marketplace.client_secret = EncryptionService.decrypt(plain.marketplace.client_secret);
+  }
+
+  return plain;
+},
+
+  async findByDelete(id) {
+    return await MarketplaceCredential.findByPk(id, {
+      include: [
+        {
+          model: Marketplace,
+          as: 'marketplace',
+          attributes: ['name']
+        }
+      ]
+    });
+  },
+
+  /**
+   * Crea o actualiza una credencial de token (por usuario + marketplace + name)
    */
   async createOrUpdate(credentialData, options = {}) {
     try {
-      const { user_id, marketplace_id, seller_email, seller_id, api_key, additional_data } = credentialData;
+      const { 
+        id, 
+        user_id, 
+        marketplace_id, 
+        name, 
+        country,
+        access_token, 
+        refresh_token, 
+        api_key,
+        seller_email, 
+        seller_id, 
+        additional_data,
+        active,
+        expires_at 
+      } = credentialData;
 
       if (!user_id || !marketplace_id) {
         throw new Error('user_id y marketplace_id son obligatorios');
       }
 
-      let existing = null;
-      if (credentialData.id) {
-        existing = await MarketplaceCredential.findByPk(credentialData.id);
-        if (!existing) {
-          throw new Error('credentialNotFound');
-        }
-      }
+      // Name por defecto si no se proporciona
+      const credentialName = name?.trim() || null;
 
-      // Verificar duplicado: (marketplace_id, user_id)
+      // Verificar duplicado: (marketplace_id, user_id, name)
       const conflictWhere = {
         marketplace_id,
         user_id,
-        id: { [Op.ne]: credentialData.id || null }
+        name: credentialName
       };
-      if (credentialData.id) conflictWhere.id = { [Op.ne]: credentialData.id };
+
+      if (id) {
+        conflictWhere.id = { [Op.ne]: id };
+      }
 
       const conflict = await MarketplaceCredential.findOne({ where: conflictWhere });
       if (conflict) {
-        throw new Error('Ya existe una credencial para este usuario y marketplace');
+        throw new Error('Ya existe una credencial con este nombre para este usuario y marketplace');
       }
 
-      // Preparar datos para guardar
       const dataToSave = {
         marketplace_id,
         user_id,
-        active: credentialData.active ?? (existing?.active ?? true),
-        expires_at: credentialData.expires_at ?? existing?.expires_at,
-        seller_email: credentialData.seller_email,
-        seller_id: credentialData.seller_id,
-        additional_data: credentialData.additional_data
+        name: credentialName,
+        country: country || null,
+        active: active ?? true,
+        expires_at: expires_at || null,
+        seller_email: seller_email || null,
+        seller_id: seller_id || null,
+        additional_data: additional_data || null
       };
 
-      // Solo actualizar tokens si se proporcionan explícitamente
-      if (credentialData.access_token !== undefined) {
-        dataToSave.access_token = credentialData.access_token
-          ? EncryptionService.encrypt(credentialData.access_token)
+      if (access_token !== undefined) {
+        dataToSave.access_token = access_token
+          ? EncryptionService.encrypt(access_token)
           : null;
       }
 
-      if (credentialData.refresh_token !== undefined) {
-        dataToSave.refresh_token = credentialData.refresh_token
-          ? EncryptionService.encrypt(credentialData.refresh_token)
+      if (refresh_token !== undefined) {
+        dataToSave.refresh_token = refresh_token
+          ? EncryptionService.encrypt(refresh_token)
           : null;
       }
 
-      if (credentialData.api_key !== undefined) {
-        dataToSave.api_key = credentialData.api_key
-          ? EncryptionService.encrypt(credentialData.api_key)
+      if (api_key !== undefined) {
+        dataToSave.api_key = api_key
+          ? EncryptionService.encrypt(api_key)
           : null;
       }
 
       let record;
-      if (credentialData.id) {
+      if (id) {
         await MarketplaceCredential.update(dataToSave, {
-          where: { id: credentialData.id },
+          where: { id },
           ...options
         });
-        record = await MarketplaceCredential.findByPk(credentialData.id);
+        record = await MarketplaceCredential.findByPk(id);
       } else {
         record = await MarketplaceCredential.create(dataToSave, options);
       }
@@ -250,9 +278,175 @@ async findByMarketplaceAndUser(marketplaceId, userId) {
     }
   },
 
-    async delete(record) {
+    /**
+   * Actualiza SOLO los campos enviados (partial update)
+   * @param {number} id - ID de la credencial a actualizar
+   * @param {object} data - Campos a actualizar (solo los que se envían)
+   * @returns {Promise<object>} - Registro actualizado en plano
+   */
+  async updatePartial(id, data) {
+    try {
+      // 1. Verificar que el registro existe
+      const existing = await MarketplaceCredential.findByPk(id);
+      if (!existing) {
+        throw new Error('credentialNotFound');
+      }
+
+      // 2. Construir objeto solo con campos definidos
+      const updateData = {};
+
+      // Campos simples
+      if (data.name !== undefined) {
+        updateData.name = data.name?.trim() || existing.name;
+      }
+      if (data.country !== undefined) {
+        updateData.country = data.country || null;
+      }
+      if (data.active !== undefined) {
+        updateData.active = data.active;
+      }
+      if (data.expires_at !== undefined) {
+        updateData.expires_at = data.expires_at || null;
+      }
+      if (data.seller_email !== undefined) {
+        updateData.seller_email = data.seller_email || null;
+      }
+      if (data.seller_id !== undefined) {
+        updateData.seller_id = data.seller_id || null;
+      }
+      if (data.additional_data !== undefined) {
+        updateData.additional_data = data.additional_data || null;
+      }
+
+      // Campos encriptados
+      if (data.access_token !== undefined) {
+        updateData.access_token = data.access_token
+          ? EncryptionService.encrypt(data.access_token)
+          : null;
+      }
+      if (data.refresh_token !== undefined) {
+        updateData.refresh_token = data.refresh_token
+          ? EncryptionService.encrypt(data.refresh_token)
+          : null;
+      }
+      if (data.api_key !== undefined) {
+        updateData.api_key = data.api_key
+          ? EncryptionService.encrypt(data.api_key)
+          : null;
+      }
+
+      // Si no hay nada para actualizar, retornar el registro actual
+      if (Object.keys(updateData).length === 0) {
+        return existing.get({ plain: true });
+      }
+
+      // 3. Ejecutar actualización (SIN returning: true para MySQL)
+      await MarketplaceCredential.update(updateData, {
+        where: { id }
+        // ⚠️ NO usar returning: true en MySQL
+        // ⚠️ NO usar individualHooks: true (no soportado en update masivo)
+      });
+
+      // 4. Obtener y retornar el registro actualizado
+      const updated = await MarketplaceCredential.findByPk(id);
+      return updated.get({ plain: true });
+
+    } catch (error) {
+      logger.error(`[REPO] ERROR en updatePartial (ID: ${id}):`, error.message);
+      throw error;
+    }
+  },
+
+  /**
+ * Busca una credencial por ml_user_id almacenado en additional_data
+ * @param {number} marketplaceId - ID del marketplace
+ * @param {number} userId - ID del usuario del sistema
+ * @param {number} mlUserId - ID del usuario de MercadoLibre
+ * @param {number|null} excludeId - ID de credencial a excluir (para updates)
+ * @returns {Promise<object|null>} - Credencial encontrada o null
+ */
+async findByMLUserId(marketplaceId, userId, mlUserId, excludeId = null) {
+  // Buscar todas las credenciales del usuario para este marketplace
+  const credentials = await MarketplaceCredential.findAll({
+    where: {
+      marketplace_id: marketplaceId,
+      user_id: userId
+    }
+  });
+
+  // Filtrar en memoria por ml_user_id en additional_data
+  const matched = credentials.find(cred => {
+    // Excluir si es la misma credencial (para updates)
+    if (excludeId && cred.id === excludeId) return false;
+    
+    // Verificar si additional_data tiene ml_user_id
+    return cred.additional_data?.ml_user_id === mlUserId;
+  });
+
+  if (!matched) return null;
+  return matched.get({ plain: true });
+},
+
+  async delete(record) {
     return await record.destroy();
   },
+
+    async existsByName(marketplaceId, userId, name, excludeId = null) {
+    const where = {
+      marketplace_id: marketplaceId,
+      user_id: userId,
+      name: name?.trim()
+    };
+
+    if (excludeId) {
+      where.id = { [Op.ne]: excludeId };
+    }
+
+    const existing = await MarketplaceCredential.findOne({ where });
+    return !!existing;
+  },
+
+    async existsByCredentials(marketplaceId, userId, credentials, excludeId = null) {
+    const where = {
+      marketplace_id: marketplaceId,
+      user_id: userId
+    };
+
+    if (excludeId) {
+      where.id = { [Op.ne]: excludeId };
+    }
+
+    const orConditions = [];
+
+    if (credentials.seller_email) {
+      orConditions.push({ seller_email: credentials.seller_email });
+    }
+
+    if (credentials.seller_id) {
+      orConditions.push({ seller_id: credentials.seller_id });
+    }
+
+    if (credentials.api_key) {
+      const encryptedApiKey = EncryptionService.encrypt(credentials.api_key);
+      orConditions.push({ api_key: encryptedApiKey });
+    }
+
+    // ===== OPCIONAL: Validar country también =====
+    if (credentials.country) {
+      orConditions.push({ country: credentials.country });
+    }
+    // ===========================================
+
+    if (orConditions.length === 0) {
+      return false;
+    }
+
+    where[Op.or] = orConditions;
+
+    const existing = await MarketplaceCredential.findOne({ where });
+    return !!existing;
+  },
+
 };
 
 module.exports = MarketplaceCredentialRepository;

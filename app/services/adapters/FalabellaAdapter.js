@@ -15,11 +15,24 @@ class FalabellaAdapter extends BaseAdapter {
     return MarketplaceTransformerFalabella; // 🔑 Usar transformer específico
   }
 
-  async ensureValidCredentials() {
+    async ensureValidCredentials() {
+    // ← NUEVO: Si hay credentialId, buscar por ID específico
+    if (this.credentialId) {
+    if (typeof this.credentialId === 'object' && this.credentialId !== null) {
+      // Ya es el objeto completo
+      this.credential = this.credentialId;
+    } else {
+      // Es un ID, buscar en repositorio
+      this.credential = await MarketplaceCredentialRepository.findById(this.credentialId);
+    }
+  } else {
+    // Fallback al comportamiento original
     this.credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
       this.marketplaceId,
       this.userId
     );
+  }
+
 
     if (!this.credential || !this.credential.seller_email || !this.credential.api_key) {
       return {

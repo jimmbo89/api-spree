@@ -10,6 +10,7 @@ const { getUserId } = require("../../config/context");
 const crypto = require("crypto");
 const { getFromCache, clearMarketplaceCache, clearAllCache, saveToCache, getCacheStats } = require("../../helpers/marketplaceCacheHelper");
 const { marketplaceRateLimiter } = require("../../config/rateLimiter");
+const { getMercadoLibreSiteId } = require("../util/marketplaceUtil");
 
 const rfc3986Encode = (str) =>
   encodeURIComponent(str).replace(
@@ -26,7 +27,7 @@ const timestampMinus03 = (date = new Date()) => {
 };
 
 const OAuthController = {
-  async mercadoLibreCallback(req, res) {
+  /*async mercadoLibreCallback(req, res) {
     const { code, state } = req.body;
     logger.info(
       "Datos recibidos actualizar las credenciales de mercado libre:",
@@ -175,8 +176,199 @@ const OAuthController = {
           "Error interno al procesar el callback de Mercado Libre",
       });
     }
-  },
+  },*/
+async mercadoLibreCallback(req, res) {
+  const { code, state } = req.body;
+  logger.info("Datos recibidos actualizar las credenciales de mercado libre:");
+  logger.info(JSON.stringify(req.body));
+  const metadata = getRequestMetadata(req);
 
+  if (!code || !state) {
+    logger.warn("OAuth callback sin code o state");
+    return res.status(400).json({ error: 'Datos incompletos: se requieren "code" y "state"' });
+  }
+
+  try {
+    // ✅ Parsear credential_id del state (formato: marketplaceId_userId_credentialId)
+    const stateParts = state.split("_");
+    const marketplaceId = stateParts[0];
+    const userId = stateParts[1];
+    const credentialId = stateParts[2];
+    
+    // ✅ Buscar credencial específica por ID
+    const credential = credentialId 
+      ? await MarketplaceCredentialRepository.findById(credentialId)
+      : await MarketplaceCredentialRepository.findByMarketplaceAndUser(marketplaceId, userId);
+
+    logger.info("Credenciales básicas obtenidas para OAuth Mercado Libre");
+    logger.info(JSON.stringify(credential));
+
+    const marketplace = credential?.marketplace || {};
+
+    if (!credential || !marketplace.client_id || !marketplace.client_secret) {
+      throw new Error("Credenciales OAuth incompletas en la base de datos");
+    }
+
+    // ✅ URL oficial de tokens (sin espacios)
+    const oauthTokenUrl = "https://api.mercadolibre.com/oauth/token";
+
+    logger.info("[OAuth] Enviando solicitud a Mercado Libre");
+
+    // ✅ Obtener tokens
+    const tokenRes = await axios.post(
+      oauthTokenUrl,
+      qs.stringify({
+        grant_type: "authorization_code",
+        client_id: marketplace.client_id,
+        client_secret: marketplace.client_secret,
+        code: code,
+        redirect_uri: marketplace.redirect_uri.trim(),
+      }),
+      {
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+      },
+    );
+
+    logger.info("[OAuth] Tokens recibidos correctamente");
+
+    if (!tokenRes.data.access_token || !tokenRes.data.refresh_token) {
+      throw new Error(
+        "Respuesta de Mercado Libre no contiene access_token o refresh_token",
+      );
+    }
+
+    // ✅ NUEVO: Obtener datos del usuario de ML para validar duplicados
+    const mlUserRes = await axios.get("https://api.mercadolibre.com/users/me", {
+      headers: { Authorization: `Bearer ${tokenRes.data.access_token}` },
+      timeout: 5000,
+    });
+
+    const mlUserId = mlUserRes.data?.id;
+    
+    if (!mlUserId) {
+      throw new Error("No se pudo obtener el ID del usuario de MercadoLibre");
+    }
+
+    logger.info(`[OAuth] ML User ID obtenido: ${mlUserId}`);
+
+    const allCredentials = await MarketplaceCredentialRepository.findByUser(userId);
+
+    function getMLUserIdFromCredential(cred) {
+  if (!cred.additional_data) return null;
+  
+  // Si ya es objeto (depende de configuración de Sequelize)
+  if (typeof cred.additional_data === 'object') {
+    return cred.additional_data.ml_user_id;
+  }
+  
+  // Si es string JSON, parsearlo
+  try {
+    const parsed = JSON.parse(cred.additional_data);
+    return parsed?.ml_user_id;
+  } catch (e) {
+    return null;
+  }
+}
+    
+    // Filtrar las que son de este marketplace y tienen el mismo ml_user_id
+    const duplicateCredential = allCredentials.find(c => 
+      c.marketplace_id === Number(marketplaceId) &&
+      c.id !== credential.id &&  // Excluir la credencial actual
+      getMLUserIdFromCredential(c) === mlUserId  // Mismo usuario de ML
+    );
+
+    if (duplicateCredential) {
+      logger.warn(`[OAuth] DUPLICADO DETECTADO: ML user ${mlUserId} ya existe en credencial ${duplicateCredential.id}`);
+      
+      // ✅ ELIMINAR la credencial en proceso (la que se está creando)
+      // ELIMINAR la credencial en proceso (la que se está creando)
+      try {
+        await MarketplaceCredentialRepository.deleteById(credential.id);
+        logger.info(`[OAuth] Credencial ${credential.id} eliminada por duplicado`);
+      } catch (deleteError) {
+        logger.error('[OAuth] Error eliminando credencial duplicada:', deleteError.message);
+      }
+
+      return res.status(409).json({
+        success: false,
+        error: "duplicate_ml_account",
+        message: `Ya tienes una conexión con esta cuenta de MercadoLibre (Usuario ML: ${mlUserId}). Nombre de conexión existente: "${duplicateCredential.name}"`,
+        existing_credential: {
+          id: duplicateCredential.id,
+          name: duplicateCredential.name,
+          country: duplicateCredential.country,
+          ml_user_id: mlUserId
+        }
+      });
+    }
+
+
+    // ✅ No hay duplicado: guardar tokens + ml_user_id en additional_data
+    const updatedAdditionalData = {
+      ...(credential.additional_data || {}),
+      ml_user_id: mlUserId  // ← Guardar ID de usuario de ML
+    };
+
+    await MarketplaceCredentialRepository.updatePartial(credential.id, {
+      access_token: tokenRes.data.access_token,
+      refresh_token: tokenRes.data.refresh_token,
+      expires_at: new Date(Date.now() + tokenRes.data.expires_in * 1000),
+      additional_data: updatedAdditionalData  // ← NUEVO: Incluir ml_user_id
+    });
+
+    await LogRepository.create({
+      user_id: userId,
+      action: "oauth.mercadolibre.success",
+      description: `Tokens guardados para ML user ${mlUserId}`,
+      ip_address: metadata.ip_address,
+      user_agent: metadata.user_agent,
+      status: "success",
+      meta: { 
+        marketplace_id: marketplaceId,
+        credential_id: credential.id,
+        ml_user_id: mlUserId
+      },
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Tokens de Mercado Libre guardados correctamente",
+      data: {
+        marketplace_id: marketplaceId,
+        credential_id: credential.id,
+        ml_user_id: mlUserId,  // ← NUEVO: Para referencia del frontend
+        access_token: "[REDACTADO]",
+        refresh_token: "[REDACTADO]",
+        expires_in: tokenRes.data.expires_in,
+      },
+    });
+
+  } catch (error) {
+    logger.error("OAuth callback error:", {
+      message: error.message,
+      stack: error.stack,
+      code: req.body.code?.substring(0, 10),
+      state: req.body.state,
+    });
+
+    await LogRepository.create({
+      user_id: req.body.userId,
+      action: "oauth.mercadolibre.error",
+      description: `Error en OAuth: ${error.message}`,
+      ip_address: metadata.ip_address,
+      user_agent: metadata.user_agent,
+      status: "error",
+      meta: { error: error.message },
+    });
+
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Error interno al procesar el callback de Mercado Libre",
+    });
+  }
+},
   async mercadoLibreCategory(req, res) {
     const {
       productName,
@@ -267,7 +459,7 @@ const OAuthController = {
 
   // controllers/marketplace/mercadoLibreController.js
 
-async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
+/*async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
   logger.info(`Datos recibidos para categorías sugeridas con atributos en MercadoLibre:\n ${JSON.stringify(req.body)}`);
 
   const { marketplace_id, site_id, products } = req.body;
@@ -455,8 +647,198 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
       error: "Error interno al procesar categorías con atributos de MercadoLibre."
     });
   }
-},
+},*/
+async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
+  logger.info(`Datos recibidos para categorías sugeridas con atributos en MercadoLibre:\n ${JSON.stringify(req.body)}`);
 
+  // ← CAMBIO: Recibir credential_id en lugar de marketplace_id
+  const { credential_id, products } = req.body;
+  const user_id = req.user?.id || req.body.user_id;
+
+  if (!credential_id) {
+    return res.status(400).json({
+      success: false,
+      error: "credential_id es requerido"
+    });
+  }
+
+  if (!Array.isArray(products) || products.length === 0) {
+    return res.status(400).json({
+      success: false,
+      error: "Se requiere un array no vacío de productos con 'id' y 'name'."
+    });
+  }
+
+  try {
+    // === PASO 1: Aplicar Rate Limit por usuario ===
+    try {
+      await marketplaceRateLimiter.consume(user_id);
+    } catch (rateLimitError) {
+      logger.warn(`Rate limit excedido para usuario ${user_id}`);
+      return res.status(429).json({
+        success: false,
+        error: "Demasiadas solicitudes. Por favor, espera un momento."
+      });
+    }
+
+    // === PASO 2: Obtener Credencial ESPECÍFICA por ID ← CAMBIO
+    const credential = await MarketplaceCredentialRepository.findById(credential_id);
+
+    if (!credential) {
+      return res.status(404).json({
+        success: false,
+        error: "Credencial no encontrada"
+      });
+    }
+
+    // Verificar propiedad
+    if (credential.user_id !== user_id) {
+      return res.status(403).json({
+        success: false,
+        error: "No autorizado"
+      });
+    }
+
+    const marketplace_id = credential.marketplace_id;
+    const site_id = getMercadoLibreSiteId(credential.marketplace?.domain);
+
+    const suggestions = [];
+    let cacheHits = 0;
+    let apiCalls = 0;
+
+    for (const product of products) {
+      if (!product.id || !product.name) {
+        logger.warn(`Producto inválido omitido: ${JSON.stringify(product)}`);
+        continue;
+      }
+
+      const nameFixed = product.name.trim();
+
+      // ← CAMBIO: Usar credential_id en la clave de caché
+      const cachedProductResult = getFromCache(`credential_${credential_id}`, `product_suggestion_${site_id}`, nameFixed);
+
+      if (cachedProductResult) {
+        logger.info(`[CACHE HIT] Producto "${nameFixed}" en credential ${credential_id}`);
+        cacheHits++;
+        
+        suggestions.push({
+          product_id: product.id,
+          credential_id: credential_id,
+          marketplace_id: marketplace_id,
+          categories: cachedProductResult
+        });
+        continue;
+      }
+
+      logger.info(`[CACHE MISS] Producto "${nameFixed}" en credential ${credential_id}`);
+      apiCalls++;
+
+      let categories = [];
+
+      try {
+        const domainDiscoveryUrl = `https://api.mercadolibre.com/sites/${site_id}/domain_discovery/search`;
+        const catResponse = await axios.get(domainDiscoveryUrl, {
+          params: { q: nameFixed, limit: 3 },
+          timeout: 20000
+        });
+
+        const rawCategories = catResponse.data || [];
+        logger.info(`Categorías obtenidas:\n ${JSON.stringify(rawCategories)}`);
+        
+        categories = rawCategories.map(cat => ({
+          category_id: cat.category_id,
+          category_name: cat.category_name,
+          domain_id: cat.domain_id,
+          domain_name: cat.domain_name,
+          path: cat.domain_name || ''
+        }));
+      } catch (catErr) {
+        logger.error(`Error al obtener categorías para "${nameFixed}": ${catErr.message}`);
+        continue;
+      }
+
+      const categoriesWithAttrs = [];
+      
+      for (const cat of categories) {
+        if (!cat.category_id) {
+          logger.warn(`Categoría sin ID omitida: ${JSON.stringify(cat)}`);
+          continue;
+        }
+
+        const cachedCategory = getFromCache(`credential_${credential_id}`, `category_attributes_${site_id}`, cat.category_id);
+
+        if (cachedCategory) {
+          logger.info(`[CACHE HIT] Categoría ${cat.category_id} en credential ${credential_id}`);
+          categoriesWithAttrs.push(cachedCategory);
+          continue;
+        }
+
+        logger.info(`[CACHE MISS] Categoría ${cat.category_id} en credential ${credential_id}`);
+
+        let attributes = [];
+        try {
+          const attrUrl = `https://api.mercadolibre.com/categories/${cat.category_id}/attributes`;
+          const attrResponse = await axios.get(attrUrl, {
+            headers: { Authorization: `Bearer ${credential.access_token}` },
+            timeout: 20000
+          });
+
+          const rawAttrs = attrResponse.data || [];
+          logger.info(`Atributos obtenidos para categoría ${cat.category_id}: ${rawAttrs.length} atributos`);
+          
+          attributes = rawAttrs;
+        } catch (attrErr) {
+          logger.error(`Error al cargar atributos para categoría ${cat.category_id}: ${attrErr.message}`);
+        }
+
+        const categoryData = {
+          category_id: cat.category_id,
+          category_name: cat.category_name,
+          domain_id: cat.domain_id,
+          domain_name: cat.domain_name,
+          path: cat.path,
+          attributes
+        };
+
+        saveToCache(`credential_${credential_id}`, `category_attributes_${site_id}`, cat.category_id, categoryData);
+        categoriesWithAttrs.push(categoryData);
+      }
+
+      saveToCache(`credential_${credential_id}`, `product_suggestion_${site_id}`, nameFixed, categoriesWithAttrs);
+
+      suggestions.push({
+        product_id: product.id,
+        credential_id: credential_id,
+        marketplace_id: marketplace_id,
+        categories: categoriesWithAttrs
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      suggestions,
+      count: suggestions.length,
+      stats: {
+        total_products: products.length,
+        cache_hits: cacheHits,
+        api_calls: apiCalls,
+        cache_hit_rate: products.length > 0 
+          ? ((cacheHits / products.length) * 100).toFixed(2) + '%'
+          : '0%'
+      }
+    });
+
+  } catch (error) {
+    logger.error(`❌ Error general en mercadoLibreSuggestedCategoriesWithAttributes: ${error.message}`, {
+      stack: error.stack,
+      body: req.body
+    });
+    return res.status(500).json({
+      success: false,
+      error: "Error interno al procesar categorías con atributos de MercadoLibre."
+    });
+  }
+},
   async clearMercadoLibreCache(req, res) {
   const { marketplace_id } = req.params;
   
@@ -526,7 +908,7 @@ async getMercadoLibreCacheStats(req, res) {
     });
   }
 },
-  async falabellaSuggestedCategoriesWithAttributes(req, res) {
+  /*async falabellaSuggestedCategoriesWithAttributes(req, res) {
     logger.info(`Datos recibidos para categorías sugeridas con atributos en Falabella:\n ${JSON.stringify(req.body)}`);
 
     const { marketplace_id, products } = req.body;
@@ -791,12 +1173,20 @@ async getMercadoLibreCacheStats(req, res) {
         error: "Error interno al procesar categorías con atributos."
       });
     }
-  },
-  /*async falabellaSuggestedCategoriesWithAttributes(req, res) {
+  },*/
+  async falabellaSuggestedCategoriesWithAttributes(req, res) {
   logger.info(`Datos recibidos para categorías sugeridas con atributos en Falabella:\n ${JSON.stringify(req.body)}`);
 
-  const { marketplace_id, products } = req.body;
+  // ← CAMBIO: Recibir credential_id en lugar de marketplace_id
+  const { credential_id, products } = req.body;
   const user_id = req.user?.id;
+
+  if (!credential_id) {
+    return res.status(400).json({
+      success: false,
+      error: "credential_id es requerido"
+    });
+  }
 
   if (!Array.isArray(products) || products.length === 0) {
     return res.status(400).json({
@@ -806,17 +1196,36 @@ async getMercadoLibreCacheStats(req, res) {
   }
 
   try {
-    const credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
-      marketplace_id,
-      user_id
-    );
-
-    if (!credential) {
-      return res.status(400).json({
+    // === PASO 1: Aplicar Rate Limit por usuario ===
+    try {
+      await marketplaceRateLimiter.consume(user_id);
+    } catch (rateLimitError) {
+      logger.warn(`Rate limit excedido para usuario ${user_id}`);
+      return res.status(429).json({
         success: false,
-        error: "Credenciales no encontradas"
+        error: "Demasiadas solicitudes. Por favor, espera un momento."
       });
     }
+
+    // === PASO 2: Obtener Credencial ESPECÍFICA por ID ← CAMBIO
+    const credential = await MarketplaceCredentialRepository.findById(credential_id);
+
+    if (!credential) {
+      return res.status(404).json({
+        success: false,
+        error: "Credencial no encontrada"
+      });
+    }
+
+    // Verificar propiedad
+    if (credential.user_id !== user_id) {
+      return res.status(403).json({
+        success: false,
+        error: "No autorizado"
+      });
+    }
+
+    const marketplace_id = credential.marketplace_id; // ← Obtener marketplace_id de la credencial
 
     const baseUrl = "https://sellercenter-api.falabella.com";
     const userId = credential.seller_email;
@@ -829,9 +1238,11 @@ async getMercadoLibreCacheStats(req, res) {
       });
     }
 
+    // ... RESTO DEL CÓDIGO IGUAL ...
     const suggestions = [];
+    let cacheHits = 0;
+    let apiCalls = 0;
 
-    // Procesar cada producto secuencialmente (para evitar rate limit)
     for (const product of products) {
       if (!product.id || !product.name) {
         logger.warn(`Producto inválido omitido: ${JSON.stringify(product)}`);
@@ -839,9 +1250,28 @@ async getMercadoLibreCacheStats(req, res) {
       }
 
       const nameFixed = product.name.trim();
+
+      // Usar credential_id en la clave de caché para diferenciar
+      const cachedProductResult = getFromCache(`credential_${credential_id}`, 'product_suggestion', nameFixed);
+
+      if (cachedProductResult) {
+        logger.info(`[CACHE HIT] Producto "${nameFixed}" en credential ${credential_id}`);
+        cacheHits++;
+        
+        suggestions.push({
+          product_id: product.id,
+          credential_id: credential_id,
+          marketplace_id: marketplace_id,
+          categories: cachedProductResult
+        });
+        continue;
+      }
+
+      logger.info(`[CACHE MISS] Producto "${nameFixed}" en credential ${credential_id}`);
+      apiCalls++;
+
       const categories = [];
 
-      // Paso 1: Obtener categorías sugeridas para este producto
       const paramsSuggest = {
         UserID: userId,
         Version: "1.0",
@@ -865,7 +1295,6 @@ async getMercadoLibreCacheStats(req, res) {
         suggestionResponse = await axios.get(urlSuggest, { timeout: 20000 });
       } catch (err) {
         logger.error(`Error al obtener sugerencias para "${nameFixed}":`, err.message);
-        // Continuar con el siguiente producto
         continue;
       }
 
@@ -877,13 +1306,21 @@ async getMercadoLibreCacheStats(req, res) {
         suggestedItems = Array.isArray(raw) ? raw : [raw];
       }
 
-      // Paso 2: Para cada categoría sugerida, obtener sus atributos
       for (const item of suggestedItems) {
         if (!item.CategoryId || !item.CategoryName) continue;
 
         const categoryId = item.CategoryId.toString();
 
-        // Obtener atributos
+        const cachedCategory = getFromCache(`credential_${credential_id}`, 'category_attributes', categoryId);
+
+        if (cachedCategory) {
+          logger.info(`[CACHE HIT] Categoría ${categoryId} en credential ${credential_id}`);
+          categories.push(cachedCategory);
+          continue;
+        }
+
+        logger.info(`[CACHE MISS] Categoría ${categoryId} en credential ${credential_id}`);
+
         const paramsAttrs = {
           UserID: userId,
           Version: "1.0",
@@ -935,28 +1372,33 @@ async getMercadoLibreCacheStats(req, res) {
                 tags: {
                   required: attr.isMandatory === "1" || attr.isMandatory === true,
                   catalog_required: attr.isMandatory === "1" || attr.isMandatory === true,
-                  hidden: false // opcional, si backend lo marca
+                  hidden: false
                 }
               }))
               .sort((a, b) => (a.is_mandatory ? 0 : 1) - (b.is_mandatory ? 0 : 1));
           }
         } catch (attrErr) {
           logger.warn(`Error al cargar atributos para categoría ${categoryId}:`, attrErr.message);
-          // Continuar con atributos vacíos
         }
 
-        // Agregar categoría con atributos
-        categories.push({
+        const categoryData = {
           id: categoryId,
           name: item.CategoryName,
           path: item.SuggestedCategory || "",
           search_term: item.Name || "",
-          attributes // ← ¡incluidos aquí!
-        });
+          attributes
+        };
+
+        saveToCache(`credential_${credential_id}`, 'category_attributes', categoryId, categoryData);
+        categories.push(categoryData);
       }
+
+      saveToCache(`credential_${credential_id}`, 'product_suggestion', nameFixed, categories);
 
       suggestions.push({
         product_id: product.id,
+        credential_id: credential_id,
+        marketplace_id: marketplace_id,
         categories
       });
     }
@@ -964,7 +1406,15 @@ async getMercadoLibreCacheStats(req, res) {
     return res.status(200).json({
       success: true,
       suggestions,
-      count: suggestions.length
+      count: suggestions.length,
+      stats: {
+        total_products: products.length,
+        cache_hits: cacheHits,
+        api_calls: apiCalls,
+        cache_hit_rate: products.length > 0 
+          ? ((cacheHits / products.length) * 100).toFixed(2) + '%'
+          : '0%'
+      }
     });
 
   } catch (error) {
@@ -995,7 +1445,7 @@ async getMercadoLibreCacheStats(req, res) {
       error: "Error interno al procesar categorías con atributos."
     });
   }
-},*/
+},
   async falabellaCategories(req, res) {
     logger.info(
       "Datos recibidos al obtener las categorías de un producto en falabella:",

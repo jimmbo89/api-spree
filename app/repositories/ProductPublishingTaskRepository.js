@@ -1,4 +1,4 @@
-const { ProductPublishingTask, Product, Marketplace, Warehouse, Branch, Company, User } = require('../models');
+const { ProductPublishingTask, Product, Marketplace, Warehouse, Branch, Company, User, MarketplaceCredential } = require('../models');
 const logger = require('../../config/logger');
 
 const ProductPublishingTaskRepository = {
@@ -40,7 +40,8 @@ const ProductPublishingTaskRepository = {
       include: [
         { model: Product, as: 'product' },
         { model: Marketplace, as: 'marketplace' },
-        { model: User, as: 'user' }
+        { model: User, as: 'user' },
+        { model: MarketplaceCredential, as: 'credential' }
       ]
     });
   },
@@ -51,7 +52,8 @@ const ProductPublishingTaskRepository = {
       include: [
         { model: Product, as: 'product' },
         { model: Marketplace, as: 'marketplace' },
-        { model: User, as: 'user' }
+        { model: User, as: 'user' },
+        { model: MarketplaceCredential, as: 'credential' }
       ],
       order: [['createdAt', 'DESC']]
     });
@@ -63,7 +65,8 @@ const ProductPublishingTaskRepository = {
       include: [
         { model: Product, as: 'product' },
         { model: Marketplace, as: 'marketplace' },
-        { model: User, as: 'user' }
+        { model: User, as: 'user' },
+        { model: MarketplaceCredential, as: 'credential' }
       ],
       order: [['createdAt', 'DESC']]
     });
@@ -75,7 +78,8 @@ const ProductPublishingTaskRepository = {
       include: [
         { model: Product, as: 'product' },
         { model: Marketplace, as: 'marketplace' },
-        { model: User, as: 'user' }
+        { model: User, as: 'user' },
+        { model: MarketplaceCredential, as: 'credential' }
       ],
       order: [['createdAt', 'DESC']]
     });
@@ -90,7 +94,8 @@ const ProductPublishingTaskRepository = {
       where,
       include: [
         { model: Product, as: 'product' },
-        { model: Marketplace, as: 'marketplace' }
+        { model: Marketplace, as: 'marketplace' },
+        { model: MarketplaceCredential, as: 'credential' }
       ],
       order: [['createdAt', 'DESC']]
     });
@@ -101,7 +106,8 @@ const ProductPublishingTaskRepository = {
       where: { warehouse_id: warehouseId, status },
       include: [
         { model: Product, as: 'product' },
-        { model: Marketplace, as: 'marketplace' }
+        { model: Marketplace, as: 'marketplace' },
+        { model: MarketplaceCredential, as: 'credential' }
       ],
       order: [['createdAt', 'DESC']]
     });

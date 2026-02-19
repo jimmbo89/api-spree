@@ -11,8 +11,7 @@ const logger = require('../../config/logger');
 
 class PublishingService {
 
-  static async publishProducts(products, marketplace, warehouse, userId, companyId, mode, config, credentialId = null) {
-    // ← NUEVO: credentialId opcional
+  static async publishProducts(products, marketplace, warehouse, userId, companyId, mode, config) {
     const success = [];
     const errors = [];
 
@@ -24,30 +23,18 @@ class PublishingService {
           branch_id: null
         };
 
-        // ✅ Pasar credentialId al método publishProduct
-        const result = await this.publishProduct(
-          productData, 
-          marketplace, 
-          fullWarehouse, 
-          userId,
-          credentialId  // ← NUEVO
-        );
+        const result = await this.publishProduct(productData, marketplace, fullWarehouse, userId);
 
         if (result.auth_required) {
-          return { auth_required: true, auth_url: result.auth_url, credential_id: credentialId };
+          return { auth_required: true, auth_url: result.auth_url };
         }
 
         if (result.success) {
-          success.push({ 
-            product_id: productData.id, 
-            external_id: result.external_id,
-            credential_id: credentialId  // ← NUEVO
-          });
+          success.push({ product_id: productData.id, external_id: result.external_id });
         } else {
           errors.push({
             product_id: productData.id,
             marketplace_id: marketplace.id,
-            credential_id: credentialId,  // ← NUEVO
             error: result.error || 'unknown_error'
           });
         }
@@ -56,7 +43,6 @@ class PublishingService {
         errors.push({
           product_id: productData.id,
           marketplace_id: marketplace.id,
-          credential_id: credentialId,  // ← NUEVO
           error: err.message || 'internal_error'
         });
       }
@@ -65,16 +51,12 @@ class PublishingService {
     return { success, errors };
   }
 
-  static async publishProduct(productData, marketplace, warehouse, userId, credentialId = null) {
-    // ← NUEVO: credentialId opcional
-    
-    // ✅ Pasar credentialId al adapter factory
+  static async publishProduct(productData, marketplace, warehouse, userId) {
     const adapter = PublishingAdapterFactory.getAdapter(
       marketplace,
       warehouse.company_id,
       warehouse.branch_id,
-      userId,
-      credentialId  // ← NUEVO: credential_id específico
+      userId
     );
 
     if (!adapter) {
@@ -83,14 +65,14 @@ class PublishingService {
     }
 
     try {
-      // === 1. Preparar producto (el adapter ya usa credentialId internamente) ===
+      // === 1. Preparar producto (responsabilidad del adapter) ===
       const preparedProduct = await adapter.prepareProduct(productData);
       
       logger.info(`[PublishingService] Producto preparado para ${marketplace.name}`);
       logger.info(`Preparado:\n ${JSON.stringify(preparedProduct, null, 2)}`);
 
       // === 2. Transformar usando mapeos genéricos ===
-      let transformer = MarketplaceTransformer;
+      let transformer = MarketplaceTransformer; // Default genérico
       if (typeof adapter.constructor.getTransformer === 'function') {
         transformer = adapter.constructor.getTransformer();
         logger.info(`[PublishingService] ✅ Usando transformer específico: ${transformer.name || 'Custom'}`);
@@ -106,7 +88,7 @@ class PublishingService {
         return { success: false, error: 'productTransformFailed', product_id: productData.id };
       }
 
-      // ✅ Fallback para family_name/title
+      // ✅ ÚLTIMO fallback para family_name/title (según documentación ML)
       if (!transformed.family_name && !transformed.title) {
         transformed.title = productData.name || productData.title || `Producto ${productData.id}`;
         logger.warn(`[PublishingService] ⚠️ Sin family_name ni title → usando título fallback: "${transformed.title}"`);
@@ -136,8 +118,7 @@ class PublishingService {
           auth_required: true,
           auth_url: result.auth_url,
           message: result.message || 'Autenticación requerida',
-          product_id: productData.id,
-          credential_id: credentialId  // ← NUEVO
+          product_id: productData.id
         };
       }
 
@@ -146,7 +127,6 @@ class PublishingService {
         const task = await ProductPublishingTaskRepository.create({
           product_id: productData.id,
           marketplace_id: marketplace.id,
-          credential_id: credentialId,  // ← NUEVO: Guardar credential_id
           warehouse_id: warehouse.id,
           user_id: userId,
           date: new Date(),
@@ -159,7 +139,6 @@ class PublishingService {
         await ProductMarketplaceLinkRepository.upsert({
           product_id: productData.id,
           marketplace_id: marketplace.id,
-          credential_id: credentialId,  // ← NUEVO
           company_id: warehouse.company_id,
           branch_id: warehouse.branch_id,
           status: 'published',
@@ -173,8 +152,7 @@ class PublishingService {
           success: true,
           task_id: task.id,
           external_id: result.external_id || result.data?.id,
-          product_id: productData.id,
-          credential_id: credentialId  // ← NUEVO
+          product_id: productData.id
         };
       }
 
@@ -185,8 +163,7 @@ class PublishingService {
         details: result.details,
         status_code: result.status_code,
         payload: transformed,
-        product_id: productData.id,
-        credential_id: credentialId  // ← NUEVO
+        product_id: productData.id
       };
 
     } catch (error) {
@@ -197,16 +174,14 @@ class PublishingService {
           success: false,
           auth_required: true,
           error: error.message,
-          product_id: productData.id,
-          credential_id: credentialId  // ← NUEVO
+          product_id: productData.id
         };
       }
       
       return {
         success: false,
         error: error.message || 'internal_error',
-        product_id: productData.id,
-        credential_id: credentialId  // ← NUEVO
+        product_id: productData.id
       };
     }
   }

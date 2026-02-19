@@ -291,7 +291,7 @@ router.post("/marketplace-credential", requireRoles(['Admin', 'Seller Manager'])
 router.post("/marketplace-credential-update", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateMarketplaceCredentialSchema), MarketplaceCredentialController.update);
 router.post("/marketplace-credential-destroy", requireRoles(['Admin', 'Seller Manager']), validateSchema(idMarketplaceCredentialSchema), MarketplaceCredentialController.destroy);
 router.post('/marketplace-credentials-by-user', MarketplaceCredentialController.getByUser);
-router.post('/marketplace-refresh-token', validateSchema(idMarketplaceCredentialSchema), MarketplaceCredentialController.refreskToken);
+router.post('/marketplace-refresh-token', validateSchema(idMarketplaceCredentialSchema), MarketplaceCredentialController.refreshToken);
 
 // Metadatos de los marketplaces
 router.post("/product-field-mapping", requireRoles(['Admin', 'Seller Manager']), validateSchema(createProductFieldMappingSchema), ProductFieldMappingController.store);

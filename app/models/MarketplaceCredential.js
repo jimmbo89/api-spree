@@ -7,6 +7,7 @@ module.exports = (sequelize, DataTypes) => {
     static associate(models) {
       MarketplaceCredential.belongsTo(models.Marketplace, { foreignKey: 'marketplace_id', as: 'marketplace' });
       MarketplaceCredential.belongsTo(models.User, { foreignKey: 'user_id', as: 'user', onDelete: 'CASCADE' });
+      MarketplaceCredential.hasMany(models.ProductPublishingTask, { foreignKey: 'credential_id', as: 'credentials', onDelete: 'SET NULL' });
     }
   }
 
@@ -24,6 +25,22 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.BIGINT,
       allowNull: false,
       references: { model: 'users', key: 'id' }
+    },
+    name: {
+      type: DataTypes.STRING(100),
+      allowNull: false,
+      defaultValue: 'Conexión Principal',
+      validate: {
+        notEmpty: true,
+        len: [3, 100]
+      },
+      comment: 'Nombre identificador de la conexión'
+    },
+    country: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      defaultValue: null,
+      comment: 'Código ISO del país (ej: CL, PE, CO)'
     },
     access_token: {
       type: DataTypes.TEXT,
@@ -73,8 +90,12 @@ module.exports = (sequelize, DataTypes) => {
      indexes: [
       {
         unique: true,
-        fields: ['marketplace_id', 'user_id'],
-        name: 'mc_marketplace_user_unique'
+        fields: ['marketplace_id', 'user_id', 'name'],
+        name: 'mc_marketplace_user_name_unique'
+      },
+      {
+        fields: ['name'],
+        name: 'mc_name_idx'
       }
     ]
   });

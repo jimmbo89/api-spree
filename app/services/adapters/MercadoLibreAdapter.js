@@ -456,7 +456,7 @@ class MercadoLibreAdapter extends BaseAdapter {
   }
 
   // === MÉTODOS EXISTENTES (CORREGIDOS) ===
-  async ensureValidCredentials() {
+  /*async ensureValidCredentials() {
     this.credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
       this.marketplaceId,
       this.userId
@@ -530,9 +530,91 @@ class MercadoLibreAdapter extends BaseAdapter {
         message: "Token expirado o inválido. Requiere reautorización."
       };
     }
+  }*/
+
+      async ensureValidCredentials() {
+    if (this.credentialId) {
+    if (typeof this.credentialId === 'object' && this.credentialId !== null) {
+      // Ya es el objeto completo
+      this.credential = this.credentialId;
+    } else {
+      // Es un ID, buscar en repositorio
+      this.credential = await MarketplaceCredentialRepository.findById(this.credentialId);
+    }
+  } else {
+    // Fallback al comportamiento original
+    this.credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
+      this.marketplaceId,
+      this.userId
+    );
   }
 
-  async refreshAccessToken() {
+  if (!this.credential) {
+    logger.info(`[MercadoLibreAdapter] No existe credencial para marketplace ${this.marketplaceId} y user ${this.userId}`);
+    const authResponse = await this.getAuthUrl();
+    if (authResponse.auth_required) {
+      return {
+        valid: false,
+        auth_required: true,
+        auth_url: authResponse.auth_url,
+        message: authResponse.message
+      };
+    } else {
+      return { valid: false, error: "marketplace_credentials_incomplete" };
+    }
+  }
+
+    if (!this.credential.access_token) {
+      logger.info("[MercadoLibreAdapter] No hay access_token disponible");
+      const authResponse = await this.getAuthUrl();
+      return {
+        valid: false,
+        auth_required: true,
+        auth_url: authResponse.auth_url,
+        message: authResponse.message
+      };
+    }
+
+    try {
+      const tokenCheck = await axios.get("https://api.mercadolibre.com/users/me", {
+        headers: { Authorization: `Bearer ${this.credential.access_token}` },
+        timeout: 3000,
+      });
+      logger.info(`[MercadoLibreAdapter] ✅ Token válido para: ${tokenCheck.data.nickname}`);
+      return { valid: true };
+    } catch (error) {
+      logger.info(`[MercadoLibreAdapter] Token inválido: ${error.message}`);
+
+      if (error.response?.status === 403) {
+        logger.error("[MercadoLibreAdapter] Error 403 - App en modo Development. NO intentar refresh.");
+        const authResponse = await this.getAuthUrl();
+        return {
+          valid: false,
+          auth_required: true,
+          auth_url: authResponse.auth_url,
+          message: "App en modo desarrollo. Requiere nueva autorización."
+        };
+      }
+
+      if (this.credential.refresh_token) {
+        try {
+          await this.refreshAccessToken();
+          return { valid: true };
+        } catch (refreshError) {
+          logger.error("[MercadoLibreAdapter] Refresh falló:", refreshError.message);
+        }
+      }
+
+      const authResponse = await this.getAuthUrl();
+      return {
+        valid: false,
+        auth_required: true,
+        auth_url: authResponse.auth_url,
+        message: "Token expirado o inválido. Requiere reautorización."
+      };
+    }
+  }
+  /*async refreshAccessToken() {
     if (!this.credential.refresh_token) throw new Error("refresh_token_not_available");
     if (!this.credential.client_id || !this.credential.client_secret) throw new Error("client_credentials_missing");
 
@@ -571,8 +653,79 @@ class MercadoLibreAdapter extends BaseAdapter {
       }
       throw new Error(`refresh_failed: ${error.message}`);
     }
-  }
+  }*/
+async refreshAccessToken() {
+  // ✅ EXTRAER marketplace DE LA CREDENCIAL
+  const credential = this.credential;
+  const marketplace = credential?.marketplace || {};
+  logger.info(`credential value: ${JSON.stringify(credential)}`);
+  logger.info(`marketplace value: ${JSON.stringify(marketplace)}`);
+  // ✅ VALIDAR CON LOS CAMPOS CORRECTOS
+  if (!credential?.refresh_token) throw new Error("refresh_token_not_available");
+  if (!marketplace.client_id || !marketplace.client_secret) throw new Error("client_credentials_missing");
 
+  // ✅ URL SIN ESPACIOS
+  const oauthTokenUrl = "https://api.mercadolibre.com/oauth/token";
+  
+  const params = new URLSearchParams();
+  params.append("grant_type", "refresh_token");
+  params.append("client_id", marketplace.client_id);        // ← marketplace.client_id
+  params.append("client_secret", marketplace.client_secret); // ← marketplace.client_secret
+  params.append("refresh_token", credential.refresh_token);
+
+  try {
+    logger.info(`[MercadoLibreAdapter] Intentando refresh:`, {
+      client_id: marketplace.client_id?.substring(0, 10) + '...',
+      refresh_token: credential.refresh_token?.substring(0, 20) + '...'
+    });
+
+    const response = await axios.post(oauthTokenUrl, params, {
+      headers: { 
+        "Content-Type": "application/x-www-form-urlencoded", 
+        "Accept": "application/json" 
+      },
+      timeout: 10000,
+    });
+
+    logger.info(`[MercadoLibreAdapter] ✅ Refresh exitoso`);
+
+    const expiresAt = new Date(Date.now() + response.data.expires_in * 1000);
+    
+    await MarketplaceCredentialRepository.updatePartial(credential.id, {
+      access_token: response.data.access_token,
+      refresh_token: response.data.refresh_token || credential.refresh_token,
+      expires_at: expiresAt
+    });
+    
+    this.credential = { 
+      ...credential, 
+      access_token: response.data.access_token,
+      refresh_token: response.data.refresh_token || credential.refresh_token,
+      expires_at: expiresAt 
+    };
+    
+    return true;
+    
+  } catch (error) {
+    logger.error(`[MercadoLibreAdapter] ❌ Refresh falló:`, {
+      message: error.message,
+      status: error.response?.status,
+      data: error.response?.data
+    });
+
+    if (error.response?.status === 403) {
+      throw new Error("app_not_authorized_for_refresh");
+    }
+    if (error.response?.status === 400 && error.response?.data?.error === 'invalid_grant') {
+      throw new Error("refresh_token_expired");
+    }
+    if (error.response?.status === 401) {
+      throw new Error("invalid_client_credentials");
+    }
+    
+    throw new Error(`refresh_failed: ${error.message}`);
+  }
+}
   async predictCategory(title) {
     logger.info(`[MercadoLibreAdapter] Prediciendo categoría para título: ${title}`);
     if (!this.credential.access_token) {
@@ -785,7 +938,7 @@ class MercadoLibreAdapter extends BaseAdapter {
     }
   }
 
-  async getAuthUrl() {
+  /*async getAuthUrl() {
     let basicCred = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
       this.marketplaceId,
       this.userId
@@ -800,7 +953,50 @@ class MercadoLibreAdapter extends BaseAdapter {
     const authUrl = `https://auth.mercadolibre.cl/authorization?response_type=code&client_id=${encodeURIComponent(basicCred.client_id)}&redirect_uri=${encodeURIComponent(basicCred.redirect_uri)}&state=${encodeURIComponent(state)}&scope=${encodeURIComponent(requiredScopes)}`;
 
     return { auth_required: true, auth_url: authUrl, message: "Se requiere autorización en Mercado Libre" };
+  }*/
+ async getAuthUrl() {
+  let basicCred;
+  let marketplace;
+  
+  // ✅ NUEVO: Si hay credentialId específico, usarlo
+ if (this.credentialId) {
+    if (typeof this.credentialId === 'object' && this.credentialId !== null) {
+      // Ya es el objeto completo
+      basicCred = this.credentialId;
+      marketplace = basicCred.marketplace || {};
+      logger.info(`[MercadoLibreAdapter] Usando credential object para auth (ID: ${basicCred.id})`);
+    } else {
+      // Es un ID numérico, buscar en repositorio
+      basicCred = await MarketplaceCredentialRepository.findById(this.credentialId);
+      marketplace = basicCred?.marketplace || {};
+    }
+  } else {
+    // Fallback al comportamiento original
+    marketplace = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
+      this.marketplaceId,
+      this.userId
+    );
   }
+  
+  if (!basicCred || !marketplace.client_id || !marketplace.redirect_uri) {
+    return { success: false, error: "Credenciales incompletas para autenticación" };
+  }
+
+  const requiredScopes = "write offline_access urn:ml:mktp:publish-sync:/read-write";
+  
+  // ✅ NUEVO: Incluir credential_id en el state para el callback
+  const state = `${this.marketplaceId}_${this.userId}_${basicCred.id}`;
+  
+  // ✅ CORREGIDO: Eliminar espacios en URL
+  //const authUrl = `https://auth.mercadolibre.cl/authorization?response_type=code&client_id=${encodeURIComponent(marketplace.client_id)}&redirect_uri=${encodeURIComponent(marketplace.redirect_uri)}&state=${encodeURIComponent(state)}&scope=${encodeURIComponent(requiredScopes)}`;
+  const authUrl = `https://auth.mercadolibre.cl/authorization?response_type=code&client_id=${encodeURIComponent(marketplace.client_id)}&redirect_uri=${encodeURIComponent(marketplace.redirect_uri)}&state=${encodeURIComponent(state)}&scope=${encodeURIComponent(requiredScopes)}&prompt=login`;
+  return { 
+    auth_required: true, 
+    auth_url: authUrl, 
+    message: "Se requiere autorización en Mercado Libre",
+    credential_id: basicCred.id  // ← NUEVO: Para referencia del frontend
+  };
+}
 
   getSiteId() {
     const siteMap = {

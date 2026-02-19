@@ -24,295 +24,356 @@ const { getRequestMetadata } = require('../util/requestUtil');
 
 const ProductPublishingTaskController = {
   // 1. Registrar publicación (simula envío a API)
-  async warehouseMarketplaces(req, res) {
-    logger.info(`${req.user?.name || 'Unknown'} - Lista ruta combinada de almacenes y marketplaces`);
+ async warehouseMarketplaces(req, res) {
+  logger.info(`${req.user?.name || 'Unknown'} - Lista ruta combinada de almacenes y marketplaces`);
 
-    const { company_id, user_id: bodyUserId, status } = req.body;
-    let user_id = bodyUserId || getUserId;
+  const { company_id, user_id: bodyUserId, status } = req.body;
+  let user_id = bodyUserId || getUserId;
 
-    // Parsear IDs
-    const companyId = company_id ? Number(company_id) : undefined;
-    const userId = user_id ? Number(user_id) : undefined;
+  // Parsear IDs
+  const companyId = company_id ? Number(company_id) : undefined;
+  const userId = user_id ? Number(user_id) : undefined;
 
-    if (company_id) {
-      const company = await CompanyRepository.findById(company_id);
-      if (!company) {
-        logger.info(`WarehouseController->list: Compañía no encontrada con ID ${company_id}`);
-        return res.status(400).json({ success: false, message: "companyNotFound" });
-      }
+  if (company_id) {
+    const company = await CompanyRepository.findById(company_id);
+    if (!company) {
+      logger.info(`WarehouseController->list: Compañía no encontrada con ID ${company_id}`);
+      return res.status(400).json({ success: false, message: "companyNotFound" });
     }
+  }
 
-    try {
-      /*const mappedWarehouses = await WarehouseRepository.findFiltered({
-        companyId,
-        branchId: null,
-        userId: null,
-        status: null,
-        type: null,
-        include_products: false
-      });*/
+  try {
+    const pools = await PoolRepository.findFiltered({
+      companyId: company_id,
+      userId: user_id,
+      isActive: true
+    });
 
-      const pools = await PoolRepository.findFiltered({
-        companyId: company_id,
-        userId: user_id,
-        isActive: true
-      });
+    const credentials = await MarketplaceCredentialRepository.findByUser(user_id);
+   
+    // Transformar resultados
+    const marketplaces = credentials.map(credential => {
+      const mp = credential.marketplace;
 
-      const credentials = await MarketplaceCredentialRepository.findByUser(user_id);
-     
-      // Transformar resultados
-      const marketplaces = credentials.map(credential => {
-        const mp = credential.marketplace;
+      // Opcional: limpiar espacios en domain
+      if (typeof mp.domain === 'string') {
+        mp.domain = mp.domain.trim();
+      }
 
-        // Opcional: limpiar espacios en domain
-        if (typeof mp.domain === 'string') {
-          mp.domain = mp.domain.trim();
-        }
-
-        return {
-        ...mp,
+      return {
+        // ✅ ID PRINCIPAL: Usar credential_id como identificador único
+        id: credential.id,
+        
+        // ✅ NOMBRE PRINCIPAL: Usar nombre de la credencial
+        name: credential.name || `${mp.name} (${credential.seller_email || 'Sin nombre'})`,
+        
+        // ✅ DESCRIPCIÓN: Usar descripción del marketplace
+        description: mp.description || 'Integración con marketplace',
+        
+        // ✅ DATOS DEL MARKETPLACE (separados)
+        marketplace_id: mp.id,
+        marketplace_name: mp.name,
+        
+        // ✅ RESTO DE CAMPOS DEL MARKETPLACE
+        type: mp.type,
+        domain: mp.domain,
+        config: mp.config,
+        active: mp.active,
+        client_id: mp.client_id,
+        client_secret: mp.client_secret,
+        redirect_uri: mp.redirect_uri,
+        scopes: mp.scopes,
+        createdAt: mp.createdAt,
+        updatedAt: mp.updatedAt,
+        
+        // ✅ DATOS DE LA CREDENCIAL
         credential_id: credential.id,
-        access_token: credential ? 'Token existente' : null,
+        access_token: credential.access_token ? 'Token existente' : null,
         seller_id: credential.seller_id,
         seller_email: credential.seller_email,
         api_key: credential.api_key,
         expires_at: credential.expires_at,
         is_expired: credential.expires_at ? new Date(credential.expires_at) < new Date() : false,
+        country: credential.country
       };
-      });
+    });
 
-      const categories = await ProductCategoryRepository.findActive();
+    const categories = await ProductCategoryRepository.findActive();
 
-      res.status(200).json({ success: true, pools: pools, marketplaces: marketplaces, categories: categories });
-    } catch (error) {
-      logger.error('ProductCategoryController->warehouseMarketplaces: ' + error.message);
-      res.status(500).json({ success: false,  message: 'Error interno del servidor', details: error.message });
-    }
-  },
+    res.status(200).json({ 
+      success: true, 
+      pools: pools, 
+      marketplaces: marketplaces, 
+      categories: categories 
+    });
+  } catch (error) {
+    logger.error('ProductCategoryController->warehouseMarketplaces: ' + error.message);
+    res.status(500).json({ 
+      success: false,  
+      message: 'Error interno del servidor', 
+      details: error.message 
+    });
+  }
+},
   async store(req, res) {
-    logger.info(`${req.user?.name || 'Unknown'} - Publicación/Draft iniciado`);
-    logger.info('Datos recibidos:');
-    logger.info(JSON.stringify(req.body, null, 2));
+  logger.info(`${req.user?.name || 'Unknown'} - Publicación/Draft iniciado`);
+  logger.info('Datos recibidos:');
+  logger.info(JSON.stringify(req.body, null, 2));
 
-    const { products, marketplaces, pool, mode, draft_name } = req.body;
-    const user_id = req.user.id;
-    const company_id = req.user.company_id;
-    const metadata = getRequestMetadata(req);
+  const { products, marketplaces, pool, mode, draft_name } = req.body;
+  const user_id = req.user.id;
+  const company_id = req.user.company_id;
+  const metadata = getRequestMetadata(req);
 
-    // ✅ Validar modo
-    if (!['draft', 'publish', 'quick', 'advanced'].includes(mode)) {
-      return res.status(400).json({ 
-        success: false, 
-        msg: "mode_invalid",
-        details: "Modo debe ser 'draft', 'publish', 'quick' o 'advanced'"
-      });
-    }
+  // ✅ Validar modo
+  if (!['draft', 'publish', 'quick', 'advanced'].includes(mode)) {
+    return res.status(400).json({ 
+      success: false, 
+      msg: "mode_invalid",
+      details: "Modo debe ser 'draft', 'publish', 'quick' o 'advanced'"
+    });
+  }
 
-    // ✅ Determinar si es draft
-    const isDraft = mode === 'draft';
-    const actualMode = isDraft ? 'quick' : mode; // Para publicación usar quick/advanced
+  // ✅ Determinar si es draft
+  const isDraft = mode === 'draft';
+  const actualMode = isDraft ? 'quick' : mode;
 
-    // Extraer warehouse_ids y primary
-    const warehouse_ids = pool.warehouses.map(w => w.warehouse_id);
-    const primary_warehouse_id = pool.primary_warehouse.warehouse_id;
-    const primary_warehouse = pool.primary_warehouse;
+  // Extraer warehouse_ids y primary
+  const warehouse_ids = pool.warehouses.map(w => w.warehouse_id);
+  const primary_warehouse_id = pool.primary_warehouse.warehouse_id;
+  const primary_warehouse = pool.primary_warehouse;
 
-    // Validar marketplaces reales
-    const marketplaceIds = marketplaces.map(mp => Number(mp.id));
-    const validation = await MarketplaceRepository.findByIds(marketplaceIds);
-    if (!validation.valid) {
-      return res.status(400).json({ success: false, msg: "someMarketplacesNotFound" });
-    }
-    const validMarketplaces = validation.marketplaces;
+  // ✅ EXTRAER credential_ids Y marketplace_ids reales
+  // marketplaces[] contiene objetos con id = credential_id
+  const credentialIds = marketplaces.map(mp => Number(mp.id));
+  const marketplaceIds = [...new Set(marketplaces.map(mp => Number(mp.marketplace_id || mp.id)))];
 
-    // ✅ Generar batch_id para agrupar todas las publicaciones
-    const batch_id = uuidv4();
+  // Validar marketplaces reales (por marketplace_id, no credential_id)
+  const validation = await MarketplaceRepository.findByIds(marketplaceIds);
+  if (!validation.valid) {
+    return res.status(400).json({ success: false, msg: "someMarketplacesNotFound" });
+  }
+  const validMarketplaces = validation.marketplaces;
 
-    const successResults = [];
-    const errorResults = [];
-    const draftTasks = [];
+  // ✅ Generar batch_id
+  const batch_id = uuidv4();
 
-    // ✅ Si es DRAFT, guardar sin publicar
-    if (isDraft) {
-      try {
-        for (const mp of validMarketplaces) {
-          for (const product of products) {
-            // Transformar producto
-            const [transformed] = await MarketplaceTransformer.transformProducts(
-              [{ ...product, marketplace_id: mp.id }],
-              mp.id
-            );
+  const successResults = [];
+  const errorResults = [];
+  const draftTasks = [];
 
-            if (!transformed) {
-              logger.warn(`No se pudo transformar producto ${product.id} para marketplace ${mp.id}`);
-              errorResults.push({
-                product_id: product.id,
-                marketplace_id: mp.id,
-                error: 'transform_failed'
-              });
-              continue;
-            }
+  // ✅ Si es DRAFT, guardar sin publicar
+  if (isDraft) {
+    try {
+      // Iterar por CREDENCIALES seleccionadas
+      for (const mpConfig of marketplaces) {
+        const credentialId = Number(mpConfig.id);  // ← credential_id
+        const marketplaceId = Number(mpConfig.marketplace_id);  // ← marketplace_id real
+        
+        // Buscar el marketplace real
+        const mp = validMarketplaces.find(m => m.id === marketplaceId);
+        if (!mp) continue;
 
-            // Guardar como draft
-            const task = await ProductPublishingTaskRepository.create({
+        for (const product of products) {
+          // ✅ Transformar producto pasando credential_id para que use las claves correctas
+          const [transformed] = await MarketplaceTransformer.transformProducts(
+            [{ ...product, marketplace_id: marketplaceId, credential_id: credentialId }],
+            marketplaceId
+          );
+
+          if (!transformed) {
+            logger.warn(`No se pudo transformar producto ${product.id} para credential ${credentialId}`);
+            errorResults.push({
               product_id: product.id,
-              marketplace_id: mp.id,
-              warehouse_id: primary_warehouse_id,
-              branch_id: primary_warehouse.branch_id || null,
-              user_id: user_id,
-              company_id: company_id,
-              batch_id: batch_id,
-              status: 'draft',
-              draft_name: draft_name || `Draft ${new Date().toISOString()}`,
-              publishing_mode: actualMode,
-              date: new Date(),
-              payload: transformed,
-              attempt_count: 1
+              credential_id: credentialId,
+              marketplace_id: marketplaceId,
+              error: 'transform_failed'
             });
-
-            draftTasks.push({
-              id: task.id,
-              product_id: task.product_id,
-              marketplace_id: task.marketplace_id,
-              status: task.status,
-              draft_name: task.draft_name
-            });
+            continue;
           }
-        }
 
-        await LogRepository.create({
-          user_id: metadata.user_id,
-          action: 'publishing_task.draft_save',
-          description: `Borrador guardado: ${draftTasks.length} tareas`,
-          ip_address: metadata.ip_address,
-          user_agent: metadata.user_agent,
-          status: 'success',
-          meta: { 
-            batch_id,
-            marketplace_ids: marketplaceIds,
-            product_count: products.length,
-            draft_name
-          }
-        });
+          // Guardar como draft
+          const task = await ProductPublishingTaskRepository.create({
+            product_id: product.id,
+            marketplace_id: marketplaceId,
+            credential_id: credentialId,  // ← NUEVO: Guardar credential_id
+            warehouse_id: primary_warehouse_id,
+            branch_id: primary_warehouse.branch_id || null,
+            user_id: user_id,
+            company_id: company_id,
+            batch_id: batch_id,
+            status: 'draft',
+            draft_name: draft_name || `Draft ${new Date().toISOString()}`,
+            publishing_mode: actualMode,
+            date: new Date(),
+            payload: transformed,
+            attempt_count: 1
+          });
 
-        return res.status(201).json({
-          success: true,
-          message: "Borrador guardado exitosamente",
-          batch_id: batch_id,
-          tasks: draftTasks
-        });
-
-      } catch (error) {
-        logger.error('Error guardando draft:', error.message);
-        return res.status(500).json({ 
-          success: false, 
-          msg: "draft_save_failed",
-          error: error.message 
-        });
-      }
-    }
-
-    // ✅ Si NO es draft, publicar inmediatamente
-    for (const mp of validMarketplaces) {
-      const config = marketplaces.find(m => Number(m.id) === mp.id)?.publishing_config || {};
-      
-      try {
-        const result = await PublishingService.publishProducts(
-          products,
-          mp,
-          { id: primary_warehouse_id, company_id, branch_id: null },
-          user_id,
-          company_id,
-          actualMode,
-          config
-        );
-
-        if (result.auth_required) {
-          return res.status(401).json({ 
-            success: false,
-            msg: "auth_required", 
-            auth_url: result.auth_url 
+          draftTasks.push({
+            id: task.id,
+            product_id: task.product_id,
+            marketplace_id: task.marketplace_id,
+            credential_id: task.credential_id,
+            status: task.status,
+            draft_name: task.draft_name
           });
         }
+      }
 
-        // ✅ Procesar resultados exitosos
-        if (result.success && Array.isArray(result.success)) {
-          for (const successItem of result.success) {
-            successResults.push({
-              ...successItem,
-              marketplace_id: mp.id,
-              batch_id: batch_id
-            });
-          }
+      await LogRepository.create({
+        user_id: metadata.user_id,
+        action: 'publishing_task.draft_save',
+        description: `Borrador guardado: ${draftTasks.length} tareas`,
+        ip_address: metadata.ip_address,
+        user_agent: metadata.user_agent,
+        status: 'success',
+        meta: { 
+          batch_id,
+          credential_ids: credentialIds,
+          marketplace_ids: marketplaceIds,
+          product_count: products.length,
+          draft_name
         }
+      });
 
-        // ✅ Procesar errores
-        if (result.errors && Array.isArray(result.errors)) {
-          for (const errorItem of result.errors) {
-            errorResults.push({
-              ...errorItem,
-              marketplace_id: mp.id,
-              batch_id: batch_id
-            });
-          }
+      return res.status(201).json({
+        success: true,
+        message: "Borrador guardado exitosamente",
+        batch_id: batch_id,
+        tasks: draftTasks
+      });
+
+    } catch (error) {
+      logger.error('Error guardando draft:', error.message);
+      return res.status(500).json({ 
+        success: false, 
+        msg: "draft_save_failed",
+        error: error.message 
+      });
+    }
+  }
+
+  // ✅ Si NO es draft, publicar inmediatamente
+  // Iterar por CREDENCIALES seleccionadas
+  for (const mpConfig of marketplaces) {
+    const credentialId = Number(mpConfig.id);  // ← credential_id
+    const marketplaceId = Number(mpConfig.marketplace_id);  // ← marketplace_id real
+    const config = mpConfig.publishing_config || {};
+    
+    // Buscar el marketplace real
+    const mp = validMarketplaces.find(m => m.id === marketplaceId);
+    if (!mp) continue;
+    
+    try {
+      // ✅ Pasar credential_id al servicio de publicación
+      const result = await PublishingService.publishProducts(
+        products,
+        mp,
+        { id: primary_warehouse_id, company_id, branch_id: null },
+        user_id,
+        company_id,
+        actualMode,
+        config,
+        credentialId  // ← NUEVO: credential_id específico
+      );
+
+      if (result.auth_required) {
+        return res.status(401).json({ 
+          success: false,
+          msg: "auth_required", 
+          auth_url: result.auth_url,
+          credential_id: credentialId
+        });
+      }
+
+      // ✅ Procesar resultados exitosos
+      if (result.success && Array.isArray(result.success)) {
+        for (const successItem of result.success) {
+          successResults.push({
+            ...successItem,
+            credential_id: credentialId,
+            marketplace_id: marketplaceId,
+            batch_id: batch_id
+          });
         }
+      }
 
-      } catch (err) {
-        logger.error(`Error en marketplace ${mp.id}:`, err.message);
-        errorResults.push(...products.map(p => ({
-          product_id: p.id,
-          marketplace_id: mp.id,
-          batch_id: batch_id,
-          error: err.message || 'Error interno'
-        })));
+      // ✅ Procesar errores
+      if (result.errors && Array.isArray(result.errors)) {
+        for (const errorItem of result.errors) {
+          errorResults.push({
+            ...errorItem,
+            credential_id: credentialId,
+            marketplace_id: marketplaceId,
+            batch_id: batch_id
+          });
+        }
+      }
+
+    } catch (err) {
+      logger.error(`Error en credential ${credentialId} (marketplace ${marketplaceId}):`, err.message);
+      errorResults.push(...products.map(p => ({
+        product_id: p.id,
+        credential_id: credentialId,
+        marketplace_id: marketplaceId,
+        batch_id: batch_id,
+        error: err.message || 'Error interno'
+      })));
+    }
+  }
+
+  // ✅ Registrar log
+  await LogRepository.create({
+    user_id: metadata.user_id,
+    action: 'publishing_task.publish',
+    description: `Publicación: ${successResults.length} éxitos, ${errorResults.length} errores`,
+    ip_address: metadata.ip_address,
+    user_agent: metadata.user_agent,
+    status: errorResults.length === 0 ? 'success' : 'partial_success',
+    meta: { 
+      batch_id,
+      warehouse_id: primary_warehouse_id,
+      credential_ids: credentialIds,
+      marketplace_ids: marketplaceIds,
+      success_count: successResults.length,
+      error_count: errorResults.length,
+      mode: actualMode,
+      product_count: products.length
+    }
+  });
+
+  // ✅ Responder con resultados detallados
+  return res.status(200).json({
+    success: successResults.length > 0,
+    has_errors: errorResults.length > 0,
+    message: errorResults.length > 0 
+      ? "Algunos productos no se pudieron publicar"
+      : "Publicación completada exitosamente",
+    data: {
+      batch_id: batch_id,
+      success: successResults,
+      errors: errorResults,
+      summary: {
+        total: products.length * credentialIds.length,
+        published: successResults.length,
+        failed: errorResults.length,
+        marketplaces: marketplaces.map(mpConfig => {
+          const credId = Number(mpConfig.id);
+          const mpId = Number(mpConfig.marketplace_id);
+          const mp = validMarketplaces.find(m => m.id === mpId);
+          return {
+            credential_id: credId,
+            marketplace_id: mpId,
+            name: mp?.name || mpConfig.name,
+            published: successResults.filter(s => s.credential_id === credId).length,
+            failed: errorResults.filter(e => e.credential_id === credId).length
+          };
+        })
       }
     }
-
-    // ✅ Registrar log
-    await LogRepository.create({
-      user_id: metadata.user_id,
-      action: 'publishing_task.publish',
-      description: `Publicación: ${successResults.length} éxitos, ${errorResults.length} errores`,
-      ip_address: metadata.ip_address,
-      user_agent: metadata.user_agent,
-      status: errorResults.length === 0 ? 'success' : 'partial_success',
-      meta: { 
-        batch_id,
-        warehouse_id: primary_warehouse_id,
-        marketplace_ids: marketplaceIds,
-        success_count: successResults.length,
-        error_count: errorResults.length,
-        mode: actualMode,
-        product_count: products.length
-      }
-    });
-
-    // ✅ Responder con resultados detallados
-    return res.status(200).json({
-      success: successResults.length > 0,
-      has_errors: errorResults.length > 0,
-      message: errorResults.length > 0 
-        ? "Algunos productos no se pudieron publicar"
-        : "Publicación completada exitosamente",
-      data: {
-        batch_id: batch_id,
-        success: successResults,
-        errors: errorResults,
-        summary: {
-          total: products.length * validMarketplaces.length,
-          published: successResults.length,
-          failed: errorResults.length,
-          marketplaces: validMarketplaces.map(mp => ({
-            id: mp.id,
-            name: mp.name,
-            published: successResults.filter(s => s.marketplace_id === mp.id).length,
-            failed: errorResults.filter(e => e.marketplace_id === mp.id).length
-          }))
-        }
-      }
-    });
-  },
-
+  });
+},
     async publishDraft(req, res) {
     logger.info(`${req.user?.name || 'Unknown'} - Publicando draft`);
     logger.info(`Datos recibidos:\n ${JSON.stringify(req.body)}`);
@@ -359,7 +420,8 @@ const ProductPublishingTaskController = {
         { ...product.toJSON(), ...task.payload },
         marketplace,
         warehouse,
-        user_id
+        user_id,
+        task.credential_id || null
       );
 
       if (result.auth_required) {
@@ -530,6 +592,8 @@ const ProductPublishingTaskController = {
           product_id: draft.product_id,
           marketplace_id: draft.marketplace_id,
           marketplace_name: draft.marketplace?.name,
+          credential_id: draft.credential_id,
+          credential_name: draft.credential?.name,
           product_name: draft.product?.name,
           status: draft.status
         });
@@ -628,6 +692,8 @@ async updateStatus(req, res) {
         product_image: t.product?.images[0] || 'products/default.jpg',
         marketplace_id: t.marketplace_id,
         marketplace_name: t.marketplace?.name || 'N/A',
+        credential_id: t.credential_id,
+        credential_name: t.credential?.name || 'N/A',
         warehouse_id: t.warehouse_id,
         company_id: t.company_id,
         user_id: t.user_id,
@@ -738,7 +804,8 @@ async updateStatus(req, res) {
         { ...payloadToSend, id: task.product_id },
         marketplace,
         warehouse,
-        user_id
+        user_id,
+        task.credential_id || null
       );
 
       let updatedTask;

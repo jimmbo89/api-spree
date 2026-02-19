@@ -17,6 +17,13 @@ module.exports = {
         onUpdate: 'CASCADE',
         onDelete: 'CASCADE'
       },
+      user_id: {
+        type: Sequelize.BIGINT,
+        allowNull: false,
+        references: { model: 'users', key: 'id' },
+        onUpdate: 'CASCADE',
+        onDelete: 'CASCADE'
+      },
       company_id: {
         type: Sequelize.BIGINT,
         allowNull: true,

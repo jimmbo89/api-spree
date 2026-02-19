@@ -7,6 +7,15 @@ const Joi = require('joi');
 const storeSchema = Joi.object({
   marketplace_id: Joi.number().integer().positive().required(),
   // 🔑 Solo tokens
+  name: Joi.string().min(3).max(100).optional().messages({
+    'string.min': 'El nombre debe tener al menos 3 caracteres',
+    'string.max': 'El nombre debe tener máximo 100 caracteres'
+  }),
+  // ===== NUEVO =====
+  country: Joi.string().optional().allow(null, '').messages({
+    'string.length': 'El país debe ser un código ISO de 2 letras (ej: CL, PE)',
+    'string.pattern.base': 'El país debe contener solo letras (ej: CL, PE)'
+  }),
   access_token: Joi.string().required(), // requerido al crear
   refresh_token: Joi.string().optional().allow(null, ''),
   expires_at: Joi.date().optional().allow(null),
@@ -28,6 +37,15 @@ const storeSchema = Joi.object({
 
 const updateSchema = Joi.object({
   id: Joi.number().integer().positive().required(),
+  name: Joi.string().min(3).max(100).optional().messages({
+    'string.min': 'El nombre debe tener al menos 3 caracteres',
+    'string.max': 'El nombre debe tener máximo 100 caracteres'
+  }),
+  // ===== NUEVO =====
+  country: Joi.string().optional().allow(null, '').messages({
+    'string.length': 'El país debe ser un código ISO de 2 letras (ej: CL, PE)',
+    'string.pattern.base': 'El país debe contener solo letras (ej: CL, PE)'
+  }),
   access_token: Joi.string().optional(),
   refresh_token: Joi.string().optional().allow(null, ''),
   expires_at: Joi.date().optional().allow(null),

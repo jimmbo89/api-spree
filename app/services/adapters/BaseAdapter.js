@@ -1,10 +1,12 @@
 // src/services/adapters/BaseAdapter.js
 class BaseAdapter {
-  constructor(marketplaceId, companyId, branchId = null, userId) {
+    constructor(marketplaceId, companyId, branchId = null, userId, credentialId = null) {
     this.marketplaceId = marketplaceId;
     this.companyId = companyId;
     this.branchId = branchId;
     this.userId = userId;
+    this.credentialId = credentialId; // ← NUEVO: ID de credencial específica
+    this.credential = null;
   }
 
   /**
