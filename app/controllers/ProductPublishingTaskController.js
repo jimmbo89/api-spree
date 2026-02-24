@@ -413,32 +413,14 @@ async refreshExpiredTokens(credentials, userId) {
   // ✅ Responder con resultados detallados
   return res.status(200).json({
     success: successResults.length > 0,
-    has_errors: errorResults.length > 0,
-    message: errorResults.length > 0 
-      ? "Algunos productos no se pudieron publicar"
-      : "Publicación completada exitosamente",
-    data: {
-      batch_id: batch_id,
-      success: successResults,
-      errors: errorResults,
-      summary: {
-        total: products.length * credentialIds.length,
-        published: successResults.length,
-        failed: errorResults.length,
-        marketplaces: marketplaces.map(mpConfig => {
-          const credId = Number(mpConfig.id);
-          const mpId = Number(mpConfig.marketplace_id);
-          const mp = validMarketplaces.find(m => m.id === mpId);
-          return {
-            credential_id: credId,
-            marketplace_id: mpId,
-            name: mp?.name || mpConfig.name,
-            published: successResults.filter(s => s.credential_id === credId).length,
-            failed: errorResults.filter(e => e.credential_id === credId).length
-          };
-        })
-      }
-    }
+  has_errors: errorResults.length > 0,
+  message: errorResults.length > 0 
+    ? "Algunos productos no se pudieron publicar"
+    : "Publicación completada",
+  data: { // ✅ usa "data" para evitar colisión
+    success: successResults,
+    errors: errorResults
+  }
   });
 },
     async publishDraft(req, res) {
