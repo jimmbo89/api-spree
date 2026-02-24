@@ -70,7 +70,27 @@ class MercadoLibreAdapter extends BaseAdapter {
       __ml_has_variation_attributes: hasVariationAttributes,
       __ml_is_catalog_product: isCatalogProduct
     };
-
+    
+    if (productData.economic_config) {
+      const config = productData.economic_config;
+      
+      if (config.allow_price_adjustment && config.min_margin && config.commission_rate) {
+        const basePrice = Number(productData.price) || 0;
+        const commissionRate = Number(config.commission_rate) || 0;
+        const minMargin = Number(config.min_margin) / 100;
+        
+        const currentMargin = 1 - commissionRate;
+        
+        if (currentMargin < minMargin && basePrice > 0) {
+          const adjustedPrice = basePrice / (1 - commissionRate - minMargin);
+          const roundedPrice = Math.ceil(adjustedPrice / 10) * 10;
+          
+          prepared.price = roundedPrice;
+          
+          logger.info(`[ML Adapter] 💰 Precio ajustado: $${basePrice} → $${roundedPrice} (margen: ${(minMargin * 100)}%)`);
+        }
+      }
+    }
     // ✅ PASO 4: Aplicar family_name vs title según documentación oficial
     if (isCatalogProduct || hasVariationAttributes) {
       prepared.family_name = productData.name?.trim() || 'Producto sin nombre';
@@ -454,84 +474,6 @@ class MercadoLibreAdapter extends BaseAdapter {
       .trim()
       .replace(/\s+/g, ' ');
   }
-
-  // === MÉTODOS EXISTENTES (CORREGIDOS) ===
-  /*async ensureValidCredentials() {
-    this.credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
-      this.marketplaceId,
-      this.userId
-    );
-
-    if (!this.credential) {
-      logger.info(`[MercadoLibreAdapter] No existe credencial para marketplace ${this.marketplaceId} y user ${this.userId}`);
-      const authResponse = await this.getAuthUrl();
-      if (authResponse.auth_required) {
-        return {
-          valid: false,
-          auth_required: true,
-          auth_url: authResponse.auth_url,
-          message: authResponse.message
-        };
-      } else {
-        return {
-          valid: false,
-          error: "marketplace_credentials_incomplete"
-        };
-      }
-    }
-
-    if (!this.credential.access_token) {
-      logger.info("[MercadoLibreAdapter] No hay access_token disponible");
-      const authResponse = await this.getAuthUrl();
-      return {
-        valid: false,
-        auth_required: true,
-        auth_url: authResponse.auth_url,
-        message: authResponse.message
-      };
-    }
-
-    try {
-      // ✅ CORREGIDO: Eliminar espacios en URL
-      const tokenCheck = await axios.get("https://api.mercadolibre.com/users/me", {
-        headers: { Authorization: `Bearer ${this.credential.access_token}` },
-        timeout: 3000,
-      });
-      logger.info(`[MercadoLibreAdapter] ✅ Token válido para: ${tokenCheck.data.nickname}`);
-      return { valid: true };
-    } catch (error) {
-      logger.info(`[MercadoLibreAdapter] Token inválido: ${error.message}`);
-
-      if (error.response?.status === 403) {
-        logger.error("[MercadoLibreAdapter] Error 403 - App en modo Development. NO intentar refresh.");
-        const authResponse = await this.getAuthUrl();
-        return {
-          valid: false,
-          auth_required: true,
-          auth_url: authResponse.auth_url,
-          message: "App en modo desarrollo. Requiere nueva autorización."
-        };
-      }
-
-      if (this.credential.refresh_token) {
-        try {
-          await this.refreshAccessToken();
-          return { valid: true };
-        } catch (refreshError) {
-          logger.error("[MercadoLibreAdapter] Refresh falló:", refreshError.message);
-        }
-      }
-
-      const authResponse = await this.getAuthUrl();
-      return {
-        valid: false,
-        auth_required: true,
-        auth_url: authResponse.auth_url,
-        message: "Token expirado o inválido. Requiere reautorización."
-      };
-    }
-  }*/
-
       async ensureValidCredentials() {
     if (this.credentialId) {
     if (typeof this.credentialId === 'object' && this.credentialId !== null) {
@@ -614,47 +556,7 @@ class MercadoLibreAdapter extends BaseAdapter {
       };
     }
   }
-  /*async refreshAccessToken() {
-    if (!this.credential.refresh_token) throw new Error("refresh_token_not_available");
-    if (!this.credential.client_id || !this.credential.client_secret) throw new Error("client_credentials_missing");
-
-    // ✅ CORREGIDO: Eliminar espacios en URL
-    const oauthTokenUrl = "https://api.mercadolibre.com/oauth/token";
-    const params = new URLSearchParams();
-    params.append("grant_type", "refresh_token");
-    params.append("client_id", this.credential.client_id);
-    params.append("client_secret", this.credential.client_secret);
-    params.append("refresh_token", this.credential.refresh_token);
-
-    try {
-      const response = await axios.post(oauthTokenUrl, params, {
-        headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-        timeout: 10000,
-      });
-
-      const expiresAt = new Date(Date.now() + response.data.expires_in * 1000);
-      const newTokenData = {
-        id: this.credential.id,
-        access_token: response.data.access_token,
-        refresh_token: response.data.refresh_token || this.credential.refresh_token,
-        expires_at: expiresAt,
-        marketplace_id: this.marketplaceId,
-        user_id: this.userId
-      };
-
-      await MarketplaceCredentialRepository.createOrUpdate(newTokenData);
-      this.credential = { ...this.credential, ...newTokenData };
-      logger.info(`[MercadoLibreAdapter] Nuevo token expira: ${expiresAt.toISOString()}`);
-      return true;
-    } catch (error) {
-      if (error.response?.status === 403) {
-        logger.error("[MercadoLibreAdapter] ERROR 403 - La app NO está autorizada para refresh");
-        throw new Error("app_not_authorized_for_refresh");
-      }
-      throw new Error(`refresh_failed: ${error.message}`);
-    }
-  }*/
-async refreshAccessToken() {
+  async refreshAccessToken() {
   // ✅ EXTRAER marketplace DE LA CREDENCIAL
   const credential = this.credential;
   const marketplace = credential?.marketplace || {};
@@ -938,23 +840,7 @@ async refreshAccessToken() {
     }
   }
 
-  /*async getAuthUrl() {
-    let basicCred = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
-      this.marketplaceId,
-      this.userId
-    );
-    if (!basicCred || !basicCred.client_id || !basicCred.redirect_uri) {
-      return { success: false, error: "Credenciales incompletas para autenticación" };
-    }
-
-    const requiredScopes = "write offline_access urn:ml:mktp:publish-sync:/read-write";
-    const state = `${this.marketplaceId}_${this.userId}`;
-    // ✅ CORREGIDO: Eliminar espacios en URL
-    const authUrl = `https://auth.mercadolibre.cl/authorization?response_type=code&client_id=${encodeURIComponent(basicCred.client_id)}&redirect_uri=${encodeURIComponent(basicCred.redirect_uri)}&state=${encodeURIComponent(state)}&scope=${encodeURIComponent(requiredScopes)}`;
-
-    return { auth_required: true, auth_url: authUrl, message: "Se requiere autorización en Mercado Libre" };
-  }*/
- async getAuthUrl() {
+  async getAuthUrl() {
   let basicCred;
   let marketplace;
   

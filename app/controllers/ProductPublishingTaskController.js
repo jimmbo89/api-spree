@@ -184,7 +184,7 @@ async refreshExpiredTokens(credentials, userId) {
   logger.info('Datos recibidos:');
   logger.info(JSON.stringify(req.body, null, 2));
 
-  const { products, marketplaces, pool, mode, draft_name } = req.body;
+  const { products, marketplaces, pool, mode, draft_name, economic_config } = req.body;
   const user_id = req.user.id;
   const company_id = req.user.company_id;
   const metadata = getRequestMetadata(req);
@@ -270,7 +270,10 @@ async refreshExpiredTokens(credentials, userId) {
             draft_name: draft_name || `Draft ${new Date().toISOString()}`,
             publishing_mode: actualMode,
             date: new Date(),
-            payload: transformed,
+              payload: {
+              ...transformed,
+              economic_config: economic_config?.[credentialId] || null
+            },
             attempt_count: 1
           });
 

@@ -179,6 +179,26 @@ class PublishingService {
       }
 
       logger.error(`[PublishingService] ❌ Error del adapter: ${result.error || 'Desconocido'}`);
+      const failedTask = await ProductPublishingTaskRepository.create({
+        product_id: productData.id,
+        marketplace_id: marketplace.id,
+        credential_id: credentialId,
+        warehouse_id: warehouse.id,
+        user_id: userId,
+        date: new Date(),
+        status: 'failed',  // ← Error de publicación real
+        payload: transformed,  // ← Para editar y reintentar
+        error_message: result.error || 'Error desconocido en el adapter',
+        error_details: result.details || null,
+        api_response: result.status_code ? {
+          status_code: result.status_code,
+          payload: result.payload
+        } : null,
+        attempt_count: 1
+      });
+
+      logger.info(`[PublishingService] 📝 Tarea fallida guardada (ID: ${failedTask.id}) para reintentar`);
+
       return {
         success: false,
         error: result.error || 'unknown_error',
@@ -186,7 +206,8 @@ class PublishingService {
         status_code: result.status_code,
         payload: transformed,
         product_id: productData.id,
-        credential_id: credentialId  // ← NUEVO
+        credential_id: credentialId,
+        task_id: failedTask.id  // ← Para referencia en frontend
       };
 
     } catch (error) {

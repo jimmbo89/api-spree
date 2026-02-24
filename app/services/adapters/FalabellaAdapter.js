@@ -70,28 +70,28 @@ class FalabellaAdapter extends BaseAdapter {
   }
 
   // ✅ Extraer categoría de Falabella desde el campo correcto
-  getFalabellaCategory(productData) {
-    // ⚠️ ATENCIÓN: Aunque se llama "falabellas", para Falabella (marketplace_id=4) 
-    // los datos están almacenados aquí por diseño histórico del sistema
-    const falabellaData = productData.falabella?.[this.marketplaceId];
-    
-    if (falabellaData?.category?.category_id) {
-      return {
-        id: falabellaData.category.category_id,
-        name: falabellaData.category.category_name || ''
-      };
-    }
-    
-    // Fallback: buscar en otros campos si existe
-    if (productData.falabella?.[this.marketplaceId]?.category_id) {
-      return {
-        id: productData.falabella[this.marketplaceId].category_id,
-        name: productData.falabella[this.marketplaceId].category_name || ''
-      };
-    }
-    
-    return null;
+// ✅ CORREGIR: Usar this.credentialId para buscar los datos
+getFalabellaCategory(productData) {
+  // ✅ USAR credentialId (ej: 3) en lugar de marketplaceId (ej: 4)
+  const falabellaData = productData.falabella?.[this.credentialId];
+  
+  if (falabellaData?.category?.category_id) {
+    return {
+      id: falabellaData.category.category_id,
+      name: falabellaData.category.category_name || ''
+    };
   }
+  
+  // Fallback: buscar en otros campos si existe
+  if (productData.falabella?.[this.credentialId]?.category_id) {
+    return {
+      id: productData.falabella[this.credentialId].category_id,
+      name: productData.falabella[this.credentialId].category_name || ''
+    };
+  }
+  
+  return null;
+}
 
   // ✅ Preparar producto con datos específicos de Falabella
   async prepareProduct(productData) {
@@ -145,6 +145,30 @@ class FalabellaAdapter extends BaseAdapter {
     productId: productData.id,
     categoryName: category.name
   };
+
+  if (productData.economic_config) {
+    const config = productData.economic_config;
+    
+    if (config.allow_price_adjustment && config.min_margin && config.commission_rate) {
+      const basePrice = Number(prepared.price) || 0;
+      const commissionRate = Number(config.commission_rate) || 0;
+      const minMargin = Number(config.min_margin) / 100; // convertir a decimal
+      
+      // Calcular margen actual
+      const currentMargin = 1 - commissionRate;
+      
+      // Solo ajustar si el margen actual es menor al mínimo deseado
+      if (currentMargin < minMargin && basePrice > 0) {
+        // Fórmula: precio_ajustado = base / (1 - comisión - margen_mínimo)
+        const adjustedPrice = basePrice / (1 - commissionRate - minMargin);
+        const roundedPrice = Math.ceil(adjustedPrice / 10) * 10; // Redondear a múltiplo de 10
+        
+        prepared.price = roundedPrice;
+        
+        logger.info(`[Falabella Adapter] 💰 Precio ajustado: $${basePrice} → $${roundedPrice} (margen: ${(minMargin * 100)}%)`);
+      }
+    }
+  }
 
   logger.info(`[FalabellaAdapter] Producto preparado para publicación:\n ${JSON.stringify(prepared)}`);
 
