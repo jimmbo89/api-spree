@@ -6,6 +6,7 @@ const app = express();
 const { sequelize } = require('./models/index');
 const cors = require('cors');
 const logger = require('../config/logger');
+const JobBackgroundProcessor = require('./services/JobBackgroundProcessor');
 
 // // Sesión
 // app.use(session({
@@ -50,39 +51,62 @@ app.use(express.urlencoded({ extended: true }));
 // Rutas
 app.use('/api', require('./routes'));
 
-// Iniciar servidor
-const server = app.listen(process.env.PORT || 8081, '0.0.0.0', async () => {
+// === INICIAR SERVIDOR ===
+const server = app.listen(PORT, '0.0.0.0', async () => {
   try {
     logger.info(`🚀 Servidor escuchando en http://0.0.0.0:${PORT}/api`);
 
-    // ✅ Intentar conectar a la base de datos
+    // ✅ Conectar a la base de datos
     await sequelize.authenticate();
-    // ✅ Log opcional con tu logger (si existe)
-    if (logger && typeof logger.info === 'function') {
-      logger.info('✅ Conexión a la base de datos exitosa'); 
-    }
+    logger.info('✅ Conexión a la base de datos exitosa');
+
+    // ✅ INICIAR BACKGROUND PROCESSOR (solo después de que DB esté lista)
+    JobBackgroundProcessor.start();
+    logger.info('✅ JobBackgroundProcessor iniciado');
+
   } catch (error) {
-    logger.error('❌ Error al conectar a la base de datos:', error);
-    if (logger && typeof logger.error === 'function') {
-      logger.error('❌ Error al conectar a la base de datos:', error);
-    }
+    logger.error('❌ Error al iniciar servidor:', error);
     process.exit(1);
   }
 });
 
-
-// Cierre elegante
+// Ctrl+C en terminal
 process.on('SIGINT', async () => {
+  logger.info('🛑 SIGINT recibido (Ctrl+C), cerrando gracefulmente...');
+  await gracefulShutdown();
+});
+
+// Señal de cPanel para reiniciar/detener app
+process.on('SIGTERM', async () => {
+  logger.info('🛑 SIGTERM recibido (cPanel), cerrando gracefulmente...');
+  await gracefulShutdown();
+});
+
+// Función centralizada de shutdown
+async function gracefulShutdown() {
   try {
-    logger.info('CloseOperation: Cerrando conexión a la base de datos...');
+    // 1. Detener el background processor primero
+    JobBackgroundProcessor.stop();
+    logger.info('🔄 Background processor detenido');
+
+    // 2. Cerrar conexión a la base de datos
     await sequelize.close();
-    logger.info('CloseOperation: Conexión cerrada.');
+    logger.info('🔄 Conexión a BD cerrada');
+
+    // 3. Cerrar servidor HTTP
     server.close(() => {
-      logger.info('CloseOperation: Servidor detenido.');
+      logger.info('🔌 Servidor HTTP cerrado');
       process.exit(0);
     });
+
+    // Forzar salida si server.close() se cuelga (timeout 10s)
+    setTimeout(() => {
+      logger.warn('⚠️ Timeout en server.close(), forzando salida');
+      process.exit(1);
+    }, 10000);
+
   } catch (error) {
-    logger.error('CloseOperation: Error crítico:', error);
+    logger.error('❌ Error en shutdown:', error);
     process.exit(1);
   }
-});
+}

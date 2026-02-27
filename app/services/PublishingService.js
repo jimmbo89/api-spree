@@ -46,7 +46,7 @@ class PublishingService {
         } else {
           errors.push({
             product_id: productData.id,
-            marketplace_id: marketplace.id,
+            marketplace_id: marketplace.marketplace_id,
             credential_id: credentialId,  // ← NUEVO
             error: result.error || 'unknown_error'
           });
@@ -55,7 +55,7 @@ class PublishingService {
         logger.error(`Error al publicar producto ${productData.id}:`, err);
         errors.push({
           product_id: productData.id,
-          marketplace_id: marketplace.id,
+          marketplace_id: marketplace.marketplace_id,
           credential_id: credentialId,  // ← NUEVO
           error: err.message || 'internal_error'
         });
@@ -67,7 +67,7 @@ class PublishingService {
 
   static async publishProduct(productData, marketplace, warehouse, userId, credentialId = null) {
     // ← NUEVO: credentialId opcional
-    
+    //logger.info(`datos llegados al servicio: \n productsData:\n ${JSON.stringify(productData)} \n marketplace: \n ${JSON.stringify(marketplace)} \n warehouse: \n ${JSON.stringify(warehouse)} \n userId: ${userId} \n crdentialId: \n ${credentialId}`);
     // ✅ Pasar credentialId al adapter factory
     const adapter = PublishingAdapterFactory.getAdapter(
       marketplace,
@@ -86,8 +86,8 @@ class PublishingService {
       // === 1. Preparar producto (el adapter ya usa credentialId internamente) ===
       const preparedProduct = await adapter.prepareProduct(productData);
       
-      logger.info(`[PublishingService] Producto preparado para ${marketplace.name}`);
-      logger.info(`Preparado:\n ${JSON.stringify(preparedProduct, null, 2)}`);
+      //logger.info(`[PublishingService] Producto preparado para ${marketplace.name}`);
+      //logger.info(`Preparado:\n ${JSON.stringify(preparedProduct, null, 2)}`);
 
       // === 2. Transformar usando mapeos genéricos ===
       let transformer = MarketplaceTransformer;
@@ -98,7 +98,7 @@ class PublishingService {
 
       const [transformed] = await transformer.transformProducts(
         [preparedProduct],
-        marketplace.id
+        marketplace.marketplace_id
       );
 
       if (!transformed) {
@@ -112,8 +112,8 @@ class PublishingService {
         logger.warn(`[PublishingService] ⚠️ Sin family_name ni title → usando título fallback: "${transformed.title}"`);
       }
 
-      logger.info(`[PublishingService] Producto transformado`);
-      logger.info(`Transformado:\n ${JSON.stringify(transformed, null, 2)}`);
+      //logger.info(`[PublishingService] Producto transformado`);
+      //logger.info(`Transformado:\n ${JSON.stringify(transformed, null, 2)}`);
 
       // === 3. Validar antes de publicar ===
       const validation = adapter.validateProduct(transformed);
@@ -145,7 +145,7 @@ class PublishingService {
         // Guardar resultados
         const task = await ProductPublishingTaskRepository.create({
           product_id: productData.id,
-          marketplace_id: marketplace.id,
+          marketplace_id: marketplace.marketplace_id,
           credential_id: credentialId,  // ← NUEVO: Guardar credential_id
           warehouse_id: warehouse.id,
           user_id: userId,
@@ -158,7 +158,7 @@ class PublishingService {
 
         await ProductMarketplaceLinkRepository.upsert({
           product_id: productData.id,
-          marketplace_id: marketplace.id,
+          marketplace_id: marketplace.marketplace_id,
           credential_id: credentialId,  // ← NUEVO
           company_id: warehouse.company_id,
           branch_id: warehouse.branch_id,
@@ -181,7 +181,7 @@ class PublishingService {
       logger.error(`[PublishingService] ❌ Error del adapter: ${result.error || 'Desconocido'}`);
       const failedTask = await ProductPublishingTaskRepository.create({
         product_id: productData.id,
-        marketplace_id: marketplace.id,
+        marketplace_id: marketplace.marketplace_id,
         credential_id: credentialId,
         warehouse_id: warehouse.id,
         user_id: userId,

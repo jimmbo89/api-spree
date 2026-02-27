@@ -22,6 +22,11 @@ module.exports = (sequelize, DataTypes) => {
       Company.hasMany(models.FeatureFlag, { foreignKey: 'company_id', as: 'featureFlags', onDelete: 'CASCADE' });
       Company.hasMany(models.SiiCaf, {  foreignKey: 'company_id',  as: 'siiCafs',  onDelete: 'CASCADE'  });
       Company.hasMany(models.DTEDocument, {  foreignKey: 'company_id',  as: 'dteDocuments', onDelete: 'CASCADE' });
+      Company.hasMany(models.Job, { 
+          foreignKey: 'company_id', 
+          as: 'publishingJobs', 
+          onDelete: 'CASCADE' 
+        });
       //Company.hasMany(models.TenantLog, { foreignKey: 'company_id', as: 'tenantLogs', onDelete: 'CASCADE' });
       //Company.hasOne(models.NotificationSetting, { foreignKey: 'company_id', as: 'notificationSetting', onDelete: 'CASCADE' });
     }

@@ -270,6 +270,27 @@ async createForMultipleUsers({ company_id, user_ids, title, description, type, d
     throw new Error(`Error al crear notificaciones masivas: ${error.message}`);
   }
 },
+
+// src/repositories/NotificationRepository.js (agregar método)
+
+async getUnreadCount({ user_id, company_id }) {
+  try {
+    const where = {
+      user_id,
+      status: 0  // 0 = no leída
+    };
+    if (company_id) {
+      where.company_id = company_id;
+    }
+    
+    const count = await Notification.count({ where });
+    return count;
+    
+  } catch (error) {
+    logger.error('[NotificationRepository.getUnreadCount] Error:', error.message);
+    throw error;
+  }
+}
 };
 
 module.exports = NotificationRepository;

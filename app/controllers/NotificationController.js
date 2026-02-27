@@ -196,7 +196,39 @@ async getUserNotifications(req, res) {
       logger.error("NotificationController->markAsRead: " + err.message);
       return res.status(500).json({ success: false, message: "Error al marcar notificación", details: err.message });
     }
+  },
+
+  async getUnreadCount(req, res) {
+  try {
+    const user_id = req.user?.id;
+    const company_id = req.user?.company_id || req.query.company_id;
+    
+    if (!user_id) {
+      return res.status(401).json({ success: false, msg: 'unauthorized' });
+    }
+    
+    const count = await NotificationRepository.getUnreadCount({
+      user_id,
+      company_id
+    });
+    
+    return res.json({
+      success: true,
+       data: {
+        unread_count: count,
+        timestamp: new Date().toISOString()
+      }
+    });
+    
+  } catch (error) {
+    logger.error('[NotificationController.getUnreadCount] Error:', error.message);
+    return res.status(500).json({
+      success: false,
+      msg: 'count_fetch_failed',
+      error: error.message
+    });
   }
+},
 };
 
 module.exports = NotificationController;

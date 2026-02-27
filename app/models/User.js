@@ -18,6 +18,11 @@ module.exports = (sequelize, DataTypes) => {
       User.hasMany(models.MarketplaceCredential, { foreignKey: 'user_id', as: 'credentials', onDelete: 'CASCADE' });
       User.hasMany(models.Notification, { foreignKey: 'user_id', as: 'notifications', onDelete: 'SET NULL' });
       User.hasMany(models.UpgradeRequest, { foreignKey: 'user_id', as: 'upgradeRequests', onDelete: 'CASCADE' });
+      User.hasMany(models.Job, { 
+      foreignKey: 'user_id', 
+      as: 'publishingJobs', 
+      onDelete: 'SET NULL' 
+    });
     }
   }
 

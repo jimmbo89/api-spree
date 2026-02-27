@@ -15,7 +15,9 @@ const {
   MarketplaceCredentialRepository,
   ProductMarketplaceLinkRepository,
   PoolRepository,
-  ProductCategoryRepository
+  ProductCategoryRepository,
+  JobRepository,
+  JobProductRepository
 } = require('../repositories');
 const MercadoLibreAdapter = require('../services/adapters/MercadoLibreAdapter');
 const MarketplaceTransformer = require('../services/MarketplaceTransformer');
@@ -179,7 +181,7 @@ async refreshExpiredTokens(credentials, userId) {
   const results = await Promise.all(refreshPromises);
   return results;
 },
-  async store(req, res) {
+  /*async store(req, res) {
   logger.info(`${req.user?.name || 'Unknown'} - Publicación/Draft iniciado`);
   logger.info('Datos recibidos:');
   logger.info(JSON.stringify(req.body, null, 2));
@@ -422,8 +424,127 @@ async refreshExpiredTokens(credentials, userId) {
     errors: errorResults
   }
   });
+},*/
+async store(req, res) {
+  logger.info(`${req.user?.name || 'Unknown'} - Solicitud de publicación en ${req.body.mode} iniciada`);
+  logger.info(`Datos recibidos:\n ${JSON.stringify(req.body, null, 2)}`);
+  
+  const { products, marketplaces, pool, mode, draft_name, economic_config } = req.body;
+  const user_id = req.user.id;
+  const company_id = req.user.company_id;
+  const metadata = getRequestMetadata(req);
+
+   logger.info('🧪 [SIMULACIÓN] Modo testing activado - saltando lógica real de publicación');
+    
+    // IDs fijos para testing (los que proporcionaste)
+    const SIM_JOB_ID = 6;
+    const SIM_BATCH_ID = 'c5a4e469-5b04-4772-88e7-684d980c5122';
+
+  // === VALIDACIONES ===
+  if (!['draft', 'publish', 'quick', 'advanced'].includes(mode)) {
+    return res.status(400).json({ success: false, msg: "mode_invalid" });
+  }
+  if (!Array.isArray(products) || products.length === 0) {
+    return res.status(400).json({ success: false, msg: "products_required" });
+  }
+  if (!Array.isArray(marketplaces) || marketplaces.length === 0) {
+    return res.status(400).json({ success: false, msg: "marketplaces_required" });
+  }
+  
+  const batch_id = uuidv4();
+
+  // Validar marketplaces (solo para verificar que existen)
+  const marketplaceIds = [...new Set(marketplaces.map(mp => Number(mp.marketplace_id || mp.id)))];
+  const validation = await MarketplaceRepository.findByIds(marketplaceIds);
+  if (!validation.valid) {
+    return res.status(400).json({ success: false, msg: "someMarketplacesNotFound" });
+  }
+
+  // ✅ Determinar job_type según el modo
+  const isDraft = mode === 'draft';
+  const actualMode = isDraft ? 'quick' : mode;
+  const job_type = isDraft ? 'draft' : 'publish';
+
+  // ✅ Crear job padre
+  const jobRecord = await JobRepository.create({
+    user_id: req.user.id,
+    company_id: req.user.company_id,
+    job_type: job_type,
+    status: 'pending',
+    mode: actualMode,
+    batch_id: batch_id,
+    config: {
+      products: products,
+      marketplaces: marketplaces,
+      pool: pool,
+      economic_config: economic_config,
+      draft_name: draft_name
+    }
+  });
+
+  // 🔑 Extraer el ID (jobRecord es un objeto con propiedad 'id')
+  const jobId = jobRecord?.id;
+
+  // ✅ Validar que jobId sea válido
+  if (!jobId || isNaN(jobId)) {
+    logger.error('[Controller] jobId inválido:', { jobRecord });
+    return res.status(500).json({ 
+      success: false, 
+      msg: "job_creation_failed",
+      details: "No se pudo obtener el ID del job creado"
+    });
+  }
+
+  // ✅ Calcular total esperado para logging
+  const totalExpected = products.length * marketplaces.length;
+
+  // ✅ Crear JobProducts para cada combinación producto × credential
+  for (const product of products) {
+    for (const mpConfig of marketplaces) {
+      await JobProductRepository.create({
+        job_id: jobId,  // ← ✅ jobId ya es un número
+        product_id: product.id,
+        marketplace_id: mpConfig.marketplace_id,
+        credential_id: mpConfig.id,
+        product_payload: product ? JSON.parse(JSON.stringify(product)) : null,
+        marketplace_payload: mpConfig ? JSON.parse(JSON.stringify(mpConfig)) : null,
+        status: 'pending',
+        attempt_count: 0
+      });
+    }
+  }
+
+  // ✅ Log de creación
+  await LogRepository.create({
+    user_id: metadata.user_id,
+    action: 'publishing_job.created',
+    description: `Job creado: ${jobId} - ${products.length} productos × ${marketplaces.length} marketplaces`,
+    ip_address: metadata.ip_address,
+    user_agent: metadata.user_agent,
+    status: 'success',
+    meta: { 
+      job_id: jobId,
+      batch_id,
+      product_count: products.length,
+      marketplace_count: marketplaces.length,
+      mode: actualMode,
+      total_expected: totalExpected  // ← ✅ Variable definida correctamente
+    }
+  });
+
+  // ✅ Responder inmediatamente (background job)
+  return res.status(202).json({
+    success: true,
+    message: isDraft 
+      ? "Borrador guardado exitosamente" 
+      : "Publicación en proceso en segundo plano",
+    job_id: jobId,  // ← ✅ jobId es número, NO jobId.id
+    batch_id: batch_id,
+    tasks_count: totalExpected,
+    status: 'pending'
+  });
 },
-    async publishDraft(req, res) {
+async publishDraft(req, res) {
     logger.info(`${req.user?.name || 'Unknown'} - Publicando draft`);
     logger.info(`Datos recibidos:\n ${JSON.stringify(req.body)}`);
 

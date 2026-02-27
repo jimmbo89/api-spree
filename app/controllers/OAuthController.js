@@ -664,7 +664,7 @@ async mercadoLibreCallback(req, res) {
     });
   }
 },*/
-async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
+/*async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
   logger.info(`Datos recibidos para categorías sugeridas con atributos en MercadoLibre:\n ${JSON.stringify(req.body)}`);
 
   // ← CAMBIO: Recibir credential_id en lugar de marketplace_id
@@ -854,8 +854,250 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
       error: "Error interno al procesar categorías con atributos de MercadoLibre."
     });
   }
+},*/
+async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
+  logger.info(`Datos recibidos para categorías sugeridas con atributos y pricing en MercadoLibre:\n ${JSON.stringify(req.body)}`);
+
+  // ✅ CORRECCIÓN: NO extraer 'price' global, viene dentro de cada producto
+  const { credential_id, products, listing_type_id } = req.body;
+  const user_id = req.user?.id || req.body.user_id;
+
+  if (!credential_id) {
+    return res.status(400).json({ success: false, error: "credential_id es requerido" });
+  }
+
+  if (!Array.isArray(products) || products.length === 0) {
+    return res.status(400).json({
+      success: false,
+      error: "Se requiere un array no vacío de productos con 'id' y 'name'."
+    });
+  }
+
+  const listingType = listing_type_id || 'gold_special'; // Default a gold_special
+
+  try {
+    // === PASO 1: Rate Limit ===
+    try {
+      await marketplaceRateLimiter.consume(user_id);
+    } catch (rateLimitError) {
+      logger.warn(`Rate limit excedido para usuario ${user_id}`);
+      return res.status(429).json({
+        success: false,
+        error: "Demasiadas solicitudes. Por favor, espera un momento."
+      });
+    }
+
+    // === PASO 2: Obtener Credencial ===
+    const credential = await MarketplaceCredentialRepository.findById(credential_id);
+    if (!credential) {
+      return res.status(404).json({ success: false, error: "Credencial no encontrada" });
+    }
+
+    if (credential.user_id !== user_id) {
+      return res.status(403).json({ success: false, error: "No autorizado" });
+    }
+
+    const marketplace_id = credential.marketplace_id;
+    const site_id = getMercadoLibreSiteId(credential.marketplace?.domain);
+
+    const suggestions = [];
+    let cacheHits = 0;
+    let apiCalls = 0;
+    let pricingCalls = 0;
+
+    // === PROCESAR CADA PRODUCTO ===
+    for (const product of products) {
+      if (!product.id || !product.name) {
+        logger.warn(`Producto inválido omitido: ${JSON.stringify(product)}`);
+        continue;
+      }
+
+      const nameFixed = product.name.trim();
+      
+      // ✅ CORRECCIÓN CLAVE: Obtener price DE CADA PRODUCTO, no global
+      const productPrice = (product.price !== undefined && product.price !== null && !isNaN(product.price))
+        ? parseFloat(product.price)
+        : null;
+      
+      const cachedProductResult = getFromCache(`credential_${credential_id}`, `product_suggestion_${site_id}`, nameFixed);
+
+      if (cachedProductResult) {
+        logger.info(`[CACHE HIT] Producto "${nameFixed}" en credential ${credential_id}`);
+        cacheHits++;
+        
+        suggestions.push({
+          product_id: product.id,
+          credential_id: credential_id,
+          marketplace_id: marketplace_id,
+          categories: cachedProductResult
+        });
+        continue;
+      }
+
+      logger.info(`[CACHE MISS] Producto "${nameFixed}" en credential ${credential_id}`);
+      apiCalls++;
+
+      let categories = [];
+
+      // === Obtener categorías sugeridas ===
+      try {
+        const domainDiscoveryUrl = `https://api.mercadolibre.com/sites/${site_id}/domain_discovery/search`;
+        const catResponse = await axios.get(domainDiscoveryUrl, {
+          params: { q: nameFixed, limit: 3 },
+          timeout: 20000
+        });
+
+        const rawCategories = catResponse.data || [];
+        categories = rawCategories.map(cat => ({
+          category_id: cat.category_id,
+          category_name: cat.category_name,
+          domain_id: cat.domain_id,
+          domain_name: cat.domain_name,
+          path: cat.domain_name || ''
+        }));
+      } catch (catErr) {
+        logger.error(`Error al obtener categorías para "${nameFixed}": ${catErr.message}`);
+        continue;
+      }
+
+      const categoriesWithAttrs = [];
+      
+      for (const cat of categories) {
+        if (!cat.category_id) continue;
+
+        // === Cache de categoría con atributos ===
+        const cachedCategory = getFromCache(`credential_${credential_id}`, `category_attributes_${site_id}`, cat.category_id);
+
+        if (cachedCategory) {
+          logger.info(`[CACHE HIT] Categoría ${cat.category_id} en credential ${credential_id}`);
+          categoriesWithAttrs.push(cachedCategory);
+          continue;
+        }
+
+        logger.info(`[CACHE MISS] Categoría ${cat.category_id} en credential ${credential_id}`);
+
+        // === Obtener atributos de la categoría ===
+        let attributes = [];
+        try {
+          const attrUrl = `https://api.mercadolibre.com/categories/${cat.category_id}/attributes`;
+          const attrResponse = await axios.get(attrUrl, {
+            headers: { Authorization: `Bearer ${credential.access_token}` },
+            timeout: 20000
+          });
+          attributes = attrResponse.data || [];
+        } catch (attrErr) {
+          logger.error(`Error al cargar atributos para categoría ${cat.category_id}: ${attrErr.message}`);
+        }
+
+        // === 💰 NUEVO: Obtener pricing/comisiones usando productPrice ===
+        let pricing = null;
+        
+        // ✅ Calcular pricing SOLO si este producto tiene precio válido
+        if (productPrice !== null) {
+          const pricingCacheKey = `pricing_${cat.category_id}_${productPrice}_${listingType}`;
+          const cachedPricing = getFromCache(`credential_${credential_id}`, 'category_pricing', pricingCacheKey);
+
+          if (cachedPricing) {
+            logger.info(`[CACHE HIT PRICING] Categoría ${cat.category_id}`);
+            pricing = cachedPricing;
+          } else {
+            try {
+              pricingCalls++;
+              const pricingUrl = `https://api.mercadolibre.com/sites/${site_id}/listing_prices`;
+              const pricingResponse = await axios.get(pricingUrl, {
+                params: {
+                  price: productPrice,  // ✅ Usar price del producto
+                  category_id: cat.category_id,
+                  listing_type_id: listingType
+                },
+                headers: { Authorization: `Bearer ${credential.access_token}` },
+                timeout: 15000
+              });
+
+              const fees = pricingResponse.data || {};
+              
+              // ✅ Calcular monto neto y porcentaje correctamente
+              pricing = {
+                sale_fee_amount: fees.sale_fee_amount || 0,
+                listing_fee_amount: fees.listing_fee_amount || 0,
+                total_fee_amount: fees.total_fee_amount || 0,
+                listing_type_id: listingType,
+                input_price: productPrice,  // ✅ Precio del producto
+                net_amount: parseFloat((productPrice - (fees.sale_fee_amount || 0)).toFixed(2)),
+                // ✅ CORRECCIÓN: fee_percentage calculado con productPrice como denominador
+                fee_percentage: productPrice > 0 
+                  ? parseFloat((((fees.sale_fee_amount || 0) / productPrice) * 100).toFixed(2))
+                  : 0
+              };
+
+              // Guardar en cache (30 minutos)
+              saveToCache(`credential_${credential_id}`, 'category_pricing', pricingCacheKey, pricing, 1800);
+              
+            } catch (pricingErr) {
+              logger.warn(`No se pudo obtener pricing para categoría ${cat.category_id}: ${pricingErr.message}`);
+              pricing = {
+                error: 'No se pudo calcular',
+                message: pricingErr.message
+              };
+            }
+          }
+        }
+
+        // === Construir objeto de categoría completo ===
+        const categoryData = {
+          category_id: cat.category_id,
+          category_name: cat.category_name,
+          domain_id: cat.domain_id,
+          domain_name: cat.domain_name,
+          path: cat.path,
+          attributes,
+          // 💰 Incluir pricing SOLO si se calculó para este producto
+          ...(productPrice !== null && { pricing })
+        };
+
+        saveToCache(`credential_${credential_id}`, `category_attributes_${site_id}`, cat.category_id, categoryData);
+        categoriesWithAttrs.push(categoryData);
+      }
+
+      saveToCache(`credential_${credential_id}`, `product_suggestion_${site_id}`, nameFixed, categoriesWithAttrs);
+
+      suggestions.push({
+        product_id: product.id,
+        credential_id: credential_id,
+        marketplace_id: marketplace_id,
+        categories: categoriesWithAttrs
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      suggestions,
+      count: suggestions.length,
+      stats: {
+        total_products: products.length,
+        cache_hits: cacheHits,
+        api_calls: apiCalls,
+        pricing_calls: pricingCalls,
+        cache_hit_rate: products.length > 0 
+          ? ((cacheHits / products.length) * 100).toFixed(2) + '%'
+          : '0%',
+        // ✅ Indicar si al menos un producto tenía precio para pricing
+        pricing_requested: products.some(p => p.price !== undefined && p.price !== null)
+      }
+    });
+
+  } catch (error) {
+    logger.error(`❌ Error general en mercadoLibreSuggestedCategoriesWithAttributes: ${error.message}`, {
+      stack: error.stack,
+      body: req.body
+    });
+    return res.status(500).json({
+      success: false,
+      error: "Error interno al procesar categorías con atributos y pricing de MercadoLibre."
+    });
+  }
 },
-  async clearMercadoLibreCache(req, res) {
+async clearMercadoLibreCache(req, res) {
   const { marketplace_id } = req.params;
   
   try {
@@ -1270,7 +1512,7 @@ async getMercadoLibreCacheStats(req, res) {
       // Usar credential_id en la clave de caché para diferenciar
       const cachedProductResult = getFromCache(`credential_${credential_id}`, 'product_suggestion', nameFixed);
 
-      if (cachedProductResult) {
+      /*if (cachedProductResult) {
         logger.info(`[CACHE HIT] Producto "${nameFixed}" en credential ${credential_id}`);
         cacheHits++;
         
@@ -1281,7 +1523,7 @@ async getMercadoLibreCacheStats(req, res) {
           categories: cachedProductResult
         });
         continue;
-      }
+      }*/
 
       logger.info(`[CACHE MISS] Producto "${nameFixed}" en credential ${credential_id}`);
       apiCalls++;
@@ -1305,12 +1547,13 @@ async getMercadoLibreCacheStats(req, res) {
         crypto.createHmac("sha256", apiKey).update(canonicalQuerySuggest).digest("hex")
       );
       const urlSuggest = `${baseUrl}?${canonicalQuerySuggest}&Signature=${signatureSuggest}`;
-
+      
       let suggestionResponse;
       try {
-        suggestionResponse = await axios.get(urlSuggest, { timeout: 20000 });
+        suggestionResponse = await axios.get(urlSuggest);
+        logger.info(`Categorías sugeridas:\n ${JSON.stringify(suggestionResponse.data)}`);
       } catch (err) {
-        logger.error(`Error al obtener sugerencias para "${nameFixed}":`, err.message);
+        logger.error(`Error al obtener sugerencias para "${nameFixed}": ${JSON.stringify(err.message)}`);
         continue;
       }
 
@@ -1357,9 +1600,9 @@ async getMercadoLibreCacheStats(req, res) {
 
         let attributes = [];
         try {
-          const attrResponse = await axios.get(urlAttrs, { timeout: 20000 });
+          const attrResponse = await axios.get(urlAttrs);
           const attrData = attrResponse.data;
-
+          //logger.info(`Categoría obtenida: \n ${JSON.stringify(attrData)}`);
           if (attrData.SuccessResponse?.Body?.Attribute) {
             const rawAttrs = attrData.SuccessResponse.Body.Attribute;
             const attrList = Array.isArray(rawAttrs) ? rawAttrs : [rawAttrs];

@@ -11,7 +11,12 @@ module.exports = (sequelize, DataTypes) => {
       Product.hasMany(models.ProductVariant, { foreignKey: 'product_id', as: 'variants', onDelete: 'CASCADE' });
       Product.hasMany(models.WarehouseProduct, { foreignKey: 'product_id', as: 'warehouseProducts', onDelete: 'CASCADE' });
       Product.hasMany(models.ProductAttribute, { foreignKey: 'product_id', as: 'productAttributes', onDelete: 'CASCADE' });
-    }
+      Product.hasMany(models.JobProduct, { 
+      foreignKey: 'product_id', 
+      as: 'jobProducts', 
+      onDelete: 'SET NULL' 
+    });
+    } 
 
         // Método para verificar si SKU existe
     static async skuExists(sku, excludeId = null) {

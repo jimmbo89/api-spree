@@ -11,6 +11,12 @@ module.exports = (sequelize, DataTypes) => {
       ProductPublishingTask.belongsTo(models.Company, { foreignKey: 'company_id', as: 'company' });
       ProductPublishingTask.belongsTo(models.User, { foreignKey: 'user_id', as: 'user' });
       ProductPublishingTask.belongsTo(models.MarketplaceCredential, {  foreignKey: 'credential_id',  as: 'credential', onDelete: 'SET NULL' });
+      ProductPublishingTask.belongsTo(models.Job, { 
+        foreignKey: 'batch_id', 
+        targetKey: 'batch_id', 
+        as: 'job', 
+        onDelete: 'SET NULL' 
+      });
     }
   }
 

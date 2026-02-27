@@ -79,6 +79,7 @@ const DteDocumentController = require("./controllers/DteDocumentController.js");
 const { createCafSchema, updateCafSchema, listCafsSchema } = require("./middlewares/validations/siiCafValidation.js");
 const cafXmlUpload = require("./middlewares/siiCafUpload.js");
 const { createDteSchema, checkStatusSchema } = require("./middlewares/validations/dteDocumentValidation.js");
+const JobController = require("./controllers/JobController.js");
 const router = express.Router();
 
 
@@ -319,7 +320,7 @@ router.post("/publishing-task-delete", requireRoles(['Admin', 'Seller Manager'])
 router.post("/get-user-notifications", requireRoles(['Admin', 'Seller Manager', 'Editor', 'Viewer']), validateSchema(listNotificationsSchema), NotificationController.getUserNotifications);
 router.post("/notification-mark-as-read", requireRoles(['Admin', 'Seller Manager', 'Editor', 'Viewer']), validateSchema(markAsReadSchema), NotificationController.markAsRead);
 router.post("/notification-destroy", requireRoles(['Admin', 'Seller Manager', 'Editor', 'Viewer']), validateSchema(idNotificationSchema), NotificationController.destroy);
-
+router.get('/unread-count', requireRoles(['Admin', 'Seller Manager', 'Editor', 'Viewer']), NotificationController.getUnreadCount); 
 //Subcripciones
 router.post("/subscriptions", requireRoles(['Admin', 'Seller Manager']), validateSchema(listSubscriptionsSchema), SubscriptionController.index);
 router.post("/subscription", requireRoles(['Admin', 'Seller Manager']), validateSchema(storeSubscriptionSchema), SubscriptionController.store);
@@ -397,9 +398,13 @@ router.post('/dte-documents-list', requireRoles(['Admin', 'Seller Manager']), va
 );*/
 
 // Actualizar documento DTE
-router.post('/dte-document-update',  requireRoles(['Admin', 'Seller Manager']), validateSchema(createDteSchema), DteDocumentController.update );
+router.post('/dte-document-update', requireRoles(['Admin', 'Seller Manager']), validateSchema(createDteSchema), DteDocumentController.update );
 router.post('/dte-document-delete', requireRoles(['Admin', 'Seller Manager']), validateSchema(checkStatusSchema), DteDocumentController.destroy );
 router.post('/dte-document-status', requireRoles(['Admin', 'Seller Manager']), validateSchema(checkStatusSchema), DteDocumentController.checkStatus );
 
+
+//JobController y JobProductController
+router.post('/job-progress', requireRoles(['Admin', 'Seller Manager']), JobController.getJobProgress);
+router.post('/jobs-actives', requireRoles(['Admin', 'Seller Manager']), JobController.getActiveJobs);
 
 module.exports = router;

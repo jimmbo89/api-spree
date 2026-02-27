@@ -8,6 +8,11 @@ module.exports = (sequelize, DataTypes) => {
       MarketplaceCredential.belongsTo(models.Marketplace, { foreignKey: 'marketplace_id', as: 'marketplace' });
       MarketplaceCredential.belongsTo(models.User, { foreignKey: 'user_id', as: 'user', onDelete: 'CASCADE' });
       MarketplaceCredential.hasMany(models.ProductPublishingTask, { foreignKey: 'credential_id', as: 'credentials', onDelete: 'SET NULL' });
+      MarketplaceCredential.hasMany(models.JobProduct, { 
+        foreignKey: 'credential_id', 
+        as: 'jobProducts', 
+        onDelete: 'SET NULL' 
+      });
     }
   }
 

@@ -8,6 +8,8 @@ const DteDocumentRepository = require("./DteDocumentRepository");
 const FeatureFlagRepository = require("./FeatureFlagRepository");
 const InventoryMovementRepository = require("./InventoryMovementRepository");
 const InvitationRepository = require("./InvitationRepository");
+const JobProductRepository = require("./JobProductRepository");
+const JobRepository = require("./JobRepository");
 const LogRepository = require("./LogRepository");
 const MarketplaceCredentialRepository = require("./MarketplaceCredentialRepository");
 const MarketplaceRepository = require("./MarketplaceRepository");
@@ -79,5 +81,7 @@ module.exports = {
     FeatureFlagRepository,
     DteDocumentRepository,
     SiiCafRepository,
-    TenantLogRepository
+    TenantLogRepository,
+    JobProductRepository,
+    JobRepository
 };
