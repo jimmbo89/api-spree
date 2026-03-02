@@ -4,6 +4,7 @@ const qs = require("qs");
 const {
   MarketplaceCredentialRepository,
   LogRepository,
+  CategoryCommissionRepository,
 } = require("../repositories");
 const { getRequestMetadata } = require("../util/requestUtil");
 const { getUserId } = require("../../config/context");
@@ -1432,7 +1433,7 @@ async getMercadoLibreCacheStats(req, res) {
       });
     }
   },*/
-  async falabellaSuggestedCategoriesWithAttributes(req, res) {
+  /*async falabellaSuggestedCategoriesWithAttributes(req, res) {
   logger.info(`Datos recibidos para categorías sugeridas con atributos en Falabella:\n ${JSON.stringify(req.body)}`);
 
   // ← CAMBIO: Recibir credential_id en lugar de marketplace_id
@@ -1512,7 +1513,7 @@ async getMercadoLibreCacheStats(req, res) {
       // Usar credential_id en la clave de caché para diferenciar
       const cachedProductResult = getFromCache(`credential_${credential_id}`, 'product_suggestion', nameFixed);
 
-      /*if (cachedProductResult) {
+      if (cachedProductResult) {
         logger.info(`[CACHE HIT] Producto "${nameFixed}" en credential ${credential_id}`);
         cacheHits++;
         
@@ -1523,7 +1524,7 @@ async getMercadoLibreCacheStats(req, res) {
           categories: cachedProductResult
         });
         continue;
-      }*/
+      }
 
       logger.info(`[CACHE MISS] Producto "${nameFixed}" en credential ${credential_id}`);
       apiCalls++;
@@ -1704,8 +1705,357 @@ async getMercadoLibreCacheStats(req, res) {
       error: "Error interno al procesar categorías con atributos."
     });
   }
+},*/
+async falabellaSuggestedCategoriesWithAttributes(req, res) {
+  logger.info(`Datos recibidos para categorías sugeridas con atributos y pricing en Falabella:\n ${JSON.stringify(req.body)}`);
+
+  const { credential_id, products } = req.body;
+  const user_id = req.user?.id;
+
+  // === VALIDACIONES ===
+  if (!credential_id) {
+    return res.status(400).json({ success: false, error: "credential_id es requerido" });
+  }
+  if (!Array.isArray(products) || products.length === 0) {
+    return res.status(400).json({
+      success: false,
+      error: "Se requiere un array no vacío de productos con 'id' y 'name'."
+    });
+  }
+
+  try {
+    // === Rate Limit ===
+    try {
+      await marketplaceRateLimiter.consume(user_id);
+    } catch (rateLimitError) {
+      logger.warn(`Rate limit excedido para usuario ${user_id}`);
+      return res.status(429).json({ success: false, error: "Demasiadas solicitudes" });
+    }
+
+    // === Obtener Credencial ===
+    const credential = await MarketplaceCredentialRepository.findById(credential_id);
+    if (!credential) {
+      return res.status(404).json({ success: false, error: "Credencial no encontrada" });
+    }
+    if (credential.user_id !== user_id) {
+      return res.status(403).json({ success: false, error: "No autorizado" });
+    }
+
+    const marketplace_id = credential.marketplace_id;
+    const baseUrl = "https://sellercenter-api.falabella.com";
+    const userId = credential.seller_email;
+    const apiKey = credential.api_key;
+
+    if (!userId || !apiKey) {
+      return res.status(500).json({ success: false, error: "Faltan credenciales de Falabella" });
+    }
+
+    const suggestions = [];
+    let cacheHits = 0, apiCalls = 0, pricingCalls = 0, treeCalls = 0;
+
+    // === PROCESAR CADA PRODUCTO ===
+    for (const product of products) {
+      if (!product.id || !product.name) continue;
+
+      const nameFixed = product.name.trim();
+      const productPrice = (product.price !== undefined && product.price !== null && !isNaN(product.price))
+        ? parseFloat(product.price) : null;
+
+      // === Cache de producto ===
+      const cachedProductResult = getFromCache(`credential_${credential_id}`, 'product_suggestion', nameFixed);
+      if (cachedProductResult) {
+        cacheHits++;
+        suggestions.push({ product_id: product.id, credential_id, marketplace_id, categories: cachedProductResult });
+        continue;
+      }
+
+      apiCalls++;
+      const categories = [];
+
+      // === GetCategorySuggestion ===
+      const paramsSuggest = {
+        UserID: userId, Version: "1.0", Action: "GetCategorySuggestion", Format: "JSON",
+        Name: nameFixed, Timestamp: timestampMinus03(),
+      };
+      const keysSuggest = Object.keys(paramsSuggest).sort();
+      const canonicalQuerySuggest = keysSuggest
+        .map(k => `${rfc3986Encode(k)}=${rfc3986Encode(String(paramsSuggest[k]))}`)
+        .join("&");
+      const signatureSuggest = rfc3986Encode(
+        crypto.createHmac("sha256", apiKey).update(canonicalQuerySuggest).digest("hex")
+      );
+      const urlSuggest = `${baseUrl}?${canonicalQuerySuggest}&Signature=${signatureSuggest}`;
+
+      let suggestionResponse;
+      try {
+        suggestionResponse = await axios.get(urlSuggest);
+        logger.info(`categoría sugerida: \n ${JSON.stringify(suggestionResponse.data)}`);
+      } catch (err) {
+        logger.error(`Error GetCategorySuggestion para "${nameFixed}": ${err.message}`);
+        continue;
+      }
+
+      const dataSuggest = suggestionResponse.data;
+      let suggestedItems = [];
+      if (dataSuggest.SuccessResponse?.Body?.SuggestedCategory) {
+        const raw = dataSuggest.SuccessResponse.Body.SuggestedCategory;
+        suggestedItems = Array.isArray(raw) ? raw : [raw];
+      }
+
+      for (const item of suggestedItems) {
+        if (!item.CategoryId || !item.CategoryName) continue;
+        const categoryId = item.CategoryId.toString();
+
+        // === Cache de categoría ===
+        const cachedCategory = getFromCache(`credential_${credential_id}`, 'category_attributes', categoryId);
+        if (cachedCategory) {
+          categories.push(cachedCategory);
+          continue;
+        }
+
+        // === GetCategoryAttributes ===
+        const paramsAttrs = {
+          UserID: userId, Version: "1.0", Action: "GetCategoryAttributes", Format: "JSON",
+          PrimaryCategory: categoryId, Timestamp: timestampMinus03(),
+        };
+        const keysAttrs = Object.keys(paramsAttrs).sort();
+        const canonicalQueryAttrs = keysAttrs
+          .map(k => `${rfc3986Encode(k)}=${rfc3986Encode(String(paramsAttrs[k]))}`)
+          .join("&");
+        const signatureAttrs = rfc3986Encode(
+          crypto.createHmac("sha256", apiKey).update(canonicalQueryAttrs).digest("hex")
+        );
+        const urlAttrs = `${baseUrl}?${canonicalQueryAttrs}&Signature=${signatureAttrs}`;
+        let attributes = [];
+
+        try {
+          const attrResponse = await axios.get(urlAttrs);
+          const attrData = attrResponse.data;
+          if (attrData.SuccessResponse?.Body?.Attribute) {
+            const rawAttrs = attrData.SuccessResponse.Body.Attribute;
+            const attrList = Array.isArray(rawAttrs) ? rawAttrs : [rawAttrs];
+            attributes = attrList.filter(attr => attr.Name && attr.Label).map(attr => ({
+              id: attr.FeedName || attr.Name, name: attr.Label, label: attr.Label,
+              is_mandatory: attr.isMandatory === "1" || attr.isMandatory === true,
+              description: attr.Description || '', attribute_type: attr.AttributeType || 'string',
+              example_value: attr.ExampleValue || '',
+              value_type: ['option', 'multi_option'].includes(attr.AttributeType) ? 'list' :
+                         attr.AttributeType === 'numberfield' ? 'number' : 'string',
+              values: attr.Options?.Option
+                ? (Array.isArray(attr.Options.Option)
+                    ? attr.Options.Option.map(opt => ({ id: opt.id, name: opt.Name }))
+                    : [{ id: attr.Options.Option.id, name: attr.Options.Option.Name }])
+                : [],
+              tags: { required: attr.isMandatory === "1", catalog_required: attr.isMandatory === "1", hidden: false }
+            })).sort((a, b) => (a.is_mandatory ? 0 : 1) - (b.is_mandatory ? 0 : 1));
+          }
+        } catch (attrErr) {
+          logger.warn(`Error GetCategoryAttributes para ${categoryId}: ${attrErr.message}`);
+        }
+
+        // === 💰 NUEVO: Obtener pricing/comisión con auto-mapeo ===
+        let pricing = null;
+        if (productPrice !== null) {
+          const pricingCacheKey = `pricing_${categoryId}_${item.CategoryName}_${productPrice}`;
+          const cachedPricing = getFromCache(`credential_${credential_id}`, 'category_pricing', pricingCacheKey);
+
+          if (cachedPricing) {
+            pricing = cachedPricing;
+          } else {
+            try {
+              pricingCalls++;
+
+              // 🔹 Paso 1: Buscar comisión en BD por category_id o global_identifier
+              let commission = await CategoryCommissionRepository.findByCategory(
+                marketplace_id,
+                {
+                  categoryId: categoryId,
+                  globalIdentifier: item.SuggestedCategory
+                }
+              );
+
+              // 🔹 Paso 2: Si NO existe, consultar GetCategoryTree para auto-mapear
+              if (!commission) {
+                logger.info(`[AUTO-MAP] Categoría ${categoryId} no encontrada, consultando GetCategoryTree...`);
+                treeCalls++;
+
+                // Obtener árbol completo (se cachea en memoria si es necesario)
+                const treeData = await OAuthController.fetchFalabellaCategoryTree(baseUrl, userId, apiKey);
+
+                // 🔹 Paso 3: Normalizar nombres para coincidir con el formato de la BD
+                const treeMatch = await OAuthController.findCategoryInTree(treeData, categoryId);
+logger.info(`categoría encontrada desde el arbol: \n ${JSON.stringify(treeMatch)}`);
+
+// 🔹 Verificar que treeMatch exista y tenga propiedades válidas
+if (treeMatch && Object.keys(treeMatch).length > 0) {
+  logger.debug(`[AUTO-MAP] ✅ Encontrado en árbol: ${JSON.stringify(treeMatch)}`);
+  
+  // 🔹 Paso 3: Buscar en BD por ruta de niveles (level1-4)
+  const commissionByPath = await CategoryCommissionRepository.findByCategoryPathWithLevels(
+    marketplace_id,
+    {
+      level1: treeMatch.level1,
+      level2: treeMatch.level2,
+      level3: treeMatch.level3,
+      level4: treeMatch.level4
+    }
+  );
+logger.info(`comisión encontrada en la bd: \n ${JSON.stringify(commissionByPath)}`);
+  if (commissionByPath) {
+    // 🔹 Paso 4: Actualizar el registro con los identificadores de API
+    await CategoryCommissionRepository.updateCommissionIdentifiers(
+      commissionByPath.id,
+      {
+        category_id: categoryId,
+        global_identifier: item.SuggestedCategory,
+        category_name_api: item.CategoryName
+      }
+    );
+    
+    commission = commissionByPath;
+    logger.info(`[AUTO-MAP] ✅ Registro actualizado: ID=${commissionByPath.id}`);
+  } else {
+    logger.warn(`[AUTO-MAP] ⚠️ No se encontró comisión en BD para esta categoría`);
+  }
+} else {
+  logger.error(`[AUTO-MAP] ❌ treeMatch es null o undefined: ${treeMatch}`);
+}
+              }
+
+              // 🔹 Paso 5: Calcular pricing si hay comisión
+              if (commission) {
+                pricing = CategoryCommissionRepository.calculatePricing(commission, productPrice);
+                logger.debug(`[PRICING] Calculado para ${categoryId}: ${pricing.fee_percentage}%`);
+              } else {
+                // Fallback: sin comisión
+                pricing = {
+                  sale_fee_amount: null,
+                  listing_fee_amount: 0,
+                  total_fee_amount: null,
+                  fee_percentage: null,
+                  net_amount: null,
+                  currency: 'CLP',
+                  warning: `Comisión no configurada para "${item.CategoryName}"`,
+                  source: 'tabla_local'
+                };
+                logger.warn(`[PRICING] Sin comisión para ${categoryId}: ${item.CategoryName}`);
+              }
+
+              // 💾 Cache de pricing (24h)
+              saveToCache(`credential_${credential_id}`, 'category_pricing', pricingCacheKey, pricing, 86400);
+
+            } catch (pricingErr) {
+              logger.warn(`Error calculando pricing para ${categoryId}: ${pricingErr.message}`);
+              pricing = { error: 'Cálculo no disponible', sale_fee_amount: null, fee_percentage: null, currency: 'CLP' };
+            }
+          }
+        }
+
+        // === Construir categoryData ===
+        const categoryData = {
+          id: categoryId,
+          name: item.CategoryName,
+          path: item.SuggestedCategory || "",
+          search_term: item.Name || "",
+          attributes,
+          ...(productPrice !== null && { pricing })
+        };
+
+        saveToCache(`credential_${credential_id}`, 'category_attributes', categoryId, categoryData);
+        categories.push(categoryData);
+      }
+
+      saveToCache(`credential_${credential_id}`, 'product_suggestion', nameFixed, categories);
+      suggestions.push({ product_id: product.id, credential_id, marketplace_id, categories });
+    }
+
+    return res.status(200).json({
+      success: true,
+      suggestions,
+      count: suggestions.length,
+      stats: {
+        total_products: products.length,
+        cache_hits: cacheHits,
+        api_calls: apiCalls,
+        pricing_calls: pricingCalls,
+        tree_calls: treeCalls,
+        cache_hit_rate: products.length > 0 ? ((cacheHits / products.length) * 100).toFixed(2) + '%' : '0%',
+        pricing_requested: products.some(p => p.price !== undefined && p.price !== null)
+      }
+    });
+
+  } catch (error) {
+    logger.error(`❌ Error en falabellaSuggestedCategoriesWithAttributes: ${error.message}`);
+    if (error.response?.data?.ErrorResponse?.Head) {
+      const head = error.response.data.ErrorResponse.Head;
+      const errorCode = head.ErrorCode;
+      let errorMessage = head.ErrorMessage, statusCode = 500;
+      if (errorCode === "7") { errorMessage = "Firma inválida (E007)"; statusCode = 401; }
+      else if (errorCode === "9") { errorMessage = "Acceso denegado (E009)"; statusCode = 403; }
+      else if ([3, 4].includes(Number(errorCode))) { errorMessage = "Error de timestamp (E003/E004)"; statusCode = 400; }
+      return res.status(statusCode).json({ success: false, error: errorMessage });
+    }
+    return res.status(500).json({ success: false, error: "Error interno al procesar categorías con pricing de Falabella." });
+  }
 },
-  async falabellaCategories(req, res) {
+/**
+ * Obtiene el árbol completo de categorías de Falabella
+ * @returns {Object} Respuesta de GetCategoryTree
+ */
+async fetchFalabellaCategoryTree(baseUrl, userId, apiKey) {
+  const params = {
+    UserID: userId,
+    Version: "1.0",
+    Action: "GetCategoryTree",
+    Format: "JSON",
+    Timestamp: timestampMinus03(),
+  };
+  
+  const keys = Object.keys(params).sort();
+  const canonicalQuery = keys
+    .map(k => `${rfc3986Encode(k)}=${rfc3986Encode(String(params[k]))}`)
+    .join("&");
+  const signature = rfc3986Encode(
+    crypto.createHmac("sha256", apiKey).update(canonicalQuery).digest("hex")
+  );
+  const url = `${baseUrl}?${canonicalQuery}&Signature=${signature}`;
+  
+  const response = await axios.get(url);  
+  //logger.info(`Arbol de categorías: \n ${JSON.stringify(response.data)}`);
+  return response.data?.SuccessResponse?.Body?.Categories?.Category || [];
+},
+
+/**
+ * Busca recursivamente un CategoryId en el árbol de categorías
+ * @returns {Object|null} { level1, level2, level3, level4, api_name } o null
+ */
+async findCategoryInTree(nodes, targetCategoryId, path = []) {
+  const nodeList = Array.isArray(nodes) ? nodes : [nodes];
+  
+  for (const node of nodeList) {
+    const currentPath = [...path, node.Name];
+    
+    // Si coincide el CategoryId, retornar la ruta
+    if (node.CategoryId?.toString() === targetCategoryId) {
+      return {
+        level1: currentPath[0] || null,
+        level2: currentPath[1] || null,
+        level3: currentPath[2] || null,
+        level4: currentPath[3] || node.Name, // Último nivel disponible
+        api_name: node.Name
+      };
+    }
+    
+    // Recursividad para hijos
+    if (node.Children?.Category) {
+      const result = await OAuthController.findCategoryInTree(node.Children.Category, targetCategoryId, currentPath);
+      if (result) return result;
+    }
+  }
+  
+  return null;
+},
+async falabellaCategories(req, res) {
     logger.info(
       "Datos recibidos al obtener las categorías de un producto en falabella:",
     );

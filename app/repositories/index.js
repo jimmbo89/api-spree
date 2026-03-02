@@ -2,6 +2,7 @@ const AttributeRepository = require("./AttributeRepository");
 const BillingOrderRepository = require("./BillingOrderRepository");
 const BranchRepository = require("./BranchRepository");
 const BusinessTypeRepository = require("./BusinessTypeRepository");
+const CategoryCommissionRepository = require("./CategoryCommissionRepository");
 const CompanyPreferenceRepository = require("./CompanyPreferenceRepository");
 const CompanyRepository = require("./CompanyRepository");
 const DteDocumentRepository = require("./DteDocumentRepository");
@@ -83,5 +84,6 @@ module.exports = {
     SiiCafRepository,
     TenantLogRepository,
     JobProductRepository,
-    JobRepository
+    JobRepository,
+    CategoryCommissionRepository
 };
