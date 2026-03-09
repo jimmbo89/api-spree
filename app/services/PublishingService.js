@@ -65,10 +65,11 @@ class PublishingService {
     return { success, errors };
   }
 
-  static async publishProduct(productData, marketplace, warehouse, userId, credentialId = null) {
+  static async publishProduct(productData, marketplace, warehouse, userId, credentialId = null, options = {}) {
     // ← NUEVO: credentialId opcional
     //logger.info(`datos llegados al servicio: \n productsData:\n ${JSON.stringify(productData)} \n marketplace: \n ${JSON.stringify(marketplace)} \n warehouse: \n ${JSON.stringify(warehouse)} \n userId: ${userId} \n crdentialId: \n ${credentialId}`);
     // ✅ Pasar credentialId al adapter factory
+      const { batch_id, job_id } = options || {};
     const adapter = PublishingAdapterFactory.getAdapter(
       marketplace,
       warehouse.company_id,
@@ -142,18 +143,33 @@ class PublishingService {
       }
 
       if (result.success) {
-        // Guardar resultados
+         // ✅ Detectar si hay warnings
+        const hasWarnings = result.has_warnings === true || 
+                          (Array.isArray(result.warnings) && result.warnings.length > 0);
+        
+        // ✅ Preparar mensaje de warnings para UI
+        const warningMessage = hasWarnings
+          ? `Advertencias: ${result.warnings.map(w => `${w.field}: ${w.message}`).join('; ')}`
+          : null;
+        
         const task = await ProductPublishingTaskRepository.create({
           product_id: productData.id,
           marketplace_id: marketplace.marketplace_id,
-          credential_id: credentialId,  // ← NUEVO: Guardar credential_id
+          credential_id: credentialId,
           warehouse_id: warehouse.id,
           user_id: userId,
           date: new Date(),
-          status: 'published',
+          // ✅ Si hay warnings, usar status especial (o mantener 'published')
+          status: hasWarnings ? 'published_with_warnings' : 'published',
           payload: transformed,
           external_id: result.external_id || result.data?.id,
-          external_url: result.data?.permalink
+          external_url: result.data?.permalink,
+          // ✅ Guardar warnings como error_message para que aparezca en UI
+          error_message: hasWarnings ? warningMessage : null,
+          // ✅ Guardar detalles completos de warnings
+          error_details: hasWarnings ? { warnings: result.warnings } : null,
+          api_response: result.data,
+          batch_id: batch_id || null,
         });
 
         await ProductMarketplaceLinkRepository.upsert({
@@ -174,11 +190,11 @@ class PublishingService {
           task_id: task.id,
           external_id: result.external_id || result.data?.id,
           product_id: productData.id,
-          credential_id: credentialId  // ← NUEVO
+          credential_id: credentialId,  // ← NUEVO
+          has_warnings: hasWarnings
         };
       }
 
-      logger.error(`[PublishingService] ❌ Error del adapter: ${result.error || 'Desconocido'}`);
       const failedTask = await ProductPublishingTaskRepository.create({
         product_id: productData.id,
         marketplace_id: marketplace.marketplace_id,
@@ -194,7 +210,8 @@ class PublishingService {
           status_code: result.status_code,
           payload: result.payload
         } : null,
-        attempt_count: 1
+        attempt_count: 1,
+        batch_id: batch_id || null,
       });
 
       logger.info(`[PublishingService] 📝 Tarea fallida guardada (ID: ${failedTask.id}) para reintentar`);
@@ -231,6 +248,63 @@ class PublishingService {
       };
     }
   }
+
+  /**
+ * ✅ REPUBLICAR producto con payload YA construido
+ * NO transforma, NO prepara, publica directo
+ */
+static async republishProduct(task, marketplace, credential, userId) {
+  try {
+    // 1. Obtener adapter correcto
+    const adapter = PublishingAdapterFactory.getAdapter(
+      marketplace,
+      task.company_id,
+      task.branch_id,  // branch_id
+      userId,
+      credential
+    );
+    
+    if (!adapter) {
+      return { 
+        success: false, 
+        error: 'adapter_not_found',
+        marketplace_id: marketplace.marketplace_id
+      };
+    }
+    logger.info('antes de validar');
+    // 2. ✅ VALIDAR payload (opcional pero recomendado)
+    const validation = adapter.validateProduct(task.payload);
+    logger.info(`Errores de validación:\n ${JSON.stringify(validation)}`);
+    if (!validation.valid) {
+      return {
+        success: false,
+        error: 'validation_failed',
+        details: validation.errors
+      };
+    }
+
+    
+    // 3. ✅ PUBLICAR DIRECTO (SIN prepareProduct, SIN transformer)
+    const result = await adapter.publish(task.payload);
+    
+    return {
+      success: result.success,
+      external_id: result.external_id,
+      data: result.data,
+      error: result.error,
+      details: result.details,
+      auth_required: result.auth_required,
+      auth_url: result.auth_url
+    };
+    
+  } catch (error) {
+    logger.error(`[PublishingService] Error en republishProduct:`, error);
+    return {
+      success: false,
+      error: error.message || 'internal_error'
+    };
+  }
+}
 }
 
 module.exports = PublishingService;

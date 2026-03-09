@@ -311,8 +311,9 @@ router.post("/pool-destroy", requireRoles(['Admin', 'Seller Manager']), validate
 router.post("/marketplaces-pools", requireRoles(['Admin', 'Seller Manager']), validateSchema(listProductPublishingTaskSchema), ProductPublishingTaskController.warehouseMarketplaces);
 router.post("/publishing-task", requireRoles(['Admin', 'Seller Manager']), validateSchema(storeProductPublishingTaskSchema), ProductPublishingTaskController.store);
 router.post("/publishing-task-update-status", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateProductPublishingTaskStatusSchema), ProductPublishingTaskController.updateStatus);
+router.post("/publishing-task-update", requireRoles(['Admin', 'Seller Manager']), validateSchema(updateProductPublishingTaskStatusSchema), ProductPublishingTaskController.updatePayload);
 router.post("/publishing-tasks-list", requireRoles(['Admin', 'Seller Manager']), validateSchema(listProductPublishingTaskSchema), ProductPublishingTaskController.list);
-router.post("/publishing-task-retry", requireRoles(['Admin', 'Seller Manager']), validateSchema(retryProductPublishingTaskSchema), ProductPublishingTaskController.retry);
+router.post("/publishing-task-retry", requireRoles(['Admin', 'Seller Manager']), validateSchema(retryProductPublishingTaskSchema), ProductPublishingTaskController.retryBatch);
 router.post("/publishing-draft", requireRoles(['Admin', 'Seller Manager']), validateSchema(publishDraftSchema), ProductPublishingTaskController.publishDraft);
 router.post("/publishing-task-delete", requireRoles(['Admin', 'Seller Manager']), validateSchema(idCompanySchema), ProductPublishingTaskController.destroy);
 

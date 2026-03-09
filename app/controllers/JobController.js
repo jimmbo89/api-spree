@@ -43,45 +43,71 @@ async getJobProgress(req, res) {
     // 6. Obtener progreso por canal/marketplace (para las tarjetas)
     const channels = await JobProductRepository.getStatsByJobAndMarketplace(jobId);
 
-    // 7. Respuesta
-    const response = {
-      success: true,
-      data: {
-        job_id: job.id,
-        batch_id: job.batch_id,
-        status: jobStatus,                    // queued | processing | completed | completed_with_errors | failed
-        overall_progress: overallProgress,    // 0-100
-        stats: {
-          total: stats.total,
-          processed: stats.processed,
-          successful: stats.successful,
-          errors: stats.errors,
-          pending: stats.pending
-        },
-        channels: channels.map(ch => ({
-          credential_id: ch.credential_id,
-          marketplace_id: ch.marketplace_id,
-          marketplace_name: ch.marketplace_name,
-          marketplace_domain: ch.marketplace_domain,
-          credential_name: ch.credential_name,
-          total: ch.total,
-          processed: ch.processed,
-          published: ch.published,
-          failed: ch.failed,
-          pending: ch.pending,
-          percentage: ch.percentage,
-          status: ch.status  // queued | processing | completed | completed_with_errors
-        })),
-        // Opcional: productos individuales (solo si include_products=true)
-        products: include_products === 'true' 
-          ? await JobProductRepository.findAllByJob(jobId, { 
-              limit: 50, 
-              includePayloads: false,
-              includeDetails: true 
-            }) 
-          : undefined
-      }
-    };
+    // ✅ 7. Obtener errores detallados SOLO si el job terminó y se solicitan productos
+let errorsByChannel = {};
+if (['completed', 'completed_with_errors', 'failed'].includes(jobStatus) && include_products === 'true') {
+  const allErrors = await JobProductRepository.findAllErrorsByJob(job, {
+    includePayloads: true,
+    includeDetails: true,
+    limit: 200 // Límite para no sobrecargar la respuesta
+  });
+  
+  // Agrupar errores por credential_id para facilitar el mapeo en frontend
+  errorsByChannel = allErrors.reduce((acc, error) => {
+    const key = error.credential_id;
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(error);
+    return acc;
+  }, {});
+};
+
+    // 8. Respuesta
+const response = {
+  success: true,
+  data: {
+    job_id: job.id,
+    batch_id: job.batch_id,
+    status: jobStatus,
+    overall_progress: overallProgress,
+    stats: {
+      total: stats.total,
+      processed: stats.processed,
+      successful: stats.successful,
+      errors: stats.errors,
+      pending: stats.pending
+    },
+    channels: channels.map(ch => ({
+      credential_id: ch.credential_id,
+      marketplace_id: ch.marketplace_id,
+      marketplace_name: ch.marketplace_name,
+      marketplace_domain: ch.marketplace_domain,
+      credential_name: ch.credential_name,
+      total: ch.total,
+      processed: ch.processed,
+      published: ch.published,
+      failed: ch.failed,
+      pending: ch.pending,
+      percentage: ch.percentage,
+      status: ch.status,
+      // ✅ INCLUIR ERRORES DETALLADOS
+      errors: errorsByChannel[ch.credential_id] || []
+    })),
+    products: include_products === 'true' 
+      ? await JobProductRepository.findAllByJob(jobId, { 
+          limit: 50, 
+          includePayloads: false,
+          includeDetails: true 
+        }) 
+      : undefined
+  }
+};
+
+const sampleChannel = response.data.channels.find(ch => ch.errors?.length > 0);
+  if (sampleChannel?.errors?.[0]) {
+    //logger.info(`[getJobProgress] 🧪 Payload verification: ${ sampleChannel.errors[0].payload ? 
+       // Object.keys(sampleChannel.errors[0].payload) : []
+   // }`);
+  }
 
     return res.json(response);
 

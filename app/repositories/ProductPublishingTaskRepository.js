@@ -72,9 +72,10 @@ const ProductPublishingTaskRepository = {
     });
   },
 
-  async findAllByCompany(company_id) {
+  async findAllByCompany(company_id, user_id) {
+    const where = { company_id };
+  if (user_id) where.user_id = user_id;  // ← Filtro en BD
     return await ProductPublishingTask.findAll({
-      where: { company_id },
       include: [
         { model: Product, as: 'product' },
         { model: Marketplace, as: 'marketplace' },
@@ -122,7 +123,35 @@ const ProductPublishingTaskRepository = {
     logger.error(`Error en ProductPublishingTaskRepository->delete (ID: ${task.id}):`, error);
     throw new Error(`Error al eliminar publicación: ${error.message}`);
   }
-}
+},
+
+// === AGREGAR DESPUÉS DE updateTask ===
+
+  /**
+   * Actualiza únicamente el campo payload de una tarea de publicación
+   * @param {Object} task - Instancia de ProductPublishingTask
+   * @param {Object} payloadData - Nuevo payload a guardar (objeto completo o parcial)
+   * @param {Object} options - Opciones de Sequelize (transaction, etc.)
+   * @returns {Promise<ProductPublishingTask>} Tarea actualizada
+   */
+  async updatePayload(task, payloadData, options = {}) {
+    logger.info(`[REPO] Actualizando payload de tarea ID ${task.id}`);
+    try {
+      // Validar que payloadData sea un objeto válido
+      if (!payloadData || typeof payloadData !== 'object') {
+        throw new Error('payloadData debe ser un objeto válido');
+      }
+      
+      // Actualizar solo el campo payload (merge profundo si es necesario)
+      await task.update({ payload: payloadData }, options);
+      
+      logger.info(`[REPO] Payload actualizado exitosamente para tarea ID ${task.id}`);
+      return task;
+    } catch (error) {
+      logger.error(`[REPO] ERROR al actualizar payload:`, error.message);
+      throw error;
+    }
+  },
 };
 
 module.exports = ProductPublishingTaskRepository;

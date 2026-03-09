@@ -204,7 +204,11 @@ async _processProduct(jobProduct, parentJobId) {
       marketplace_payload,
       warehouse,
       userId,
-      credential_id
+      credential_id,
+      {
+    batch_id: job.batch_id,  // ← ✅ Pasar batch_id del job padre
+    job_id: parentJobId       // ← ✅ Pasar job_id del job padre
+  }
     );
 
     // === Manejar resultado: éxito o error, sin reintentos ===
@@ -221,13 +225,19 @@ async _processProduct(jobProduct, parentJobId) {
 
     // Éxito
     if (result?.success) {
-      await JobProductRepository.update(jobProduct, {
-        status: 'success',
-        external_id: result.external_id || null,
-        external_url: result.external_url || null
-      });
-      return { success: true };
-    }
+        // Si hay warnings, marcar como success pero guardar detalles
+        await JobProductRepository.update(jobProduct, {
+          status: 'success',  // ← ✅ Siempre success si result.success=true
+          external_id: result.external_id || null,
+          external_url: result.external_url || null,
+          // ✅ Guardar warnings como error_message para que aparezca en UI
+          error_message: result.has_warnings ? 
+            `Advertencias: ${result.warnings?.map(w => w.message).join(', ')}` : null,
+          // ✅ Guardar warnings completos en error_details
+          error_details: result.has_warnings ? { warnings: result.warnings } : null
+        });
+        return { success: true };
+      }
 
     // Error → marcar y terminar
     const errorMessage = result?.error || result?.message || 'unknown_error';

@@ -25,14 +25,35 @@ class MarketplaceTransformerFalabella {
       transformed.package_length = product.package_length || product.length_cm || product.length || 10;
       transformed.package_weight = product.package_weight || (product.weight_grams ? product.weight_grams / 1000 : 0.5);
 
+      // 🔑🔑 PRESERVAR ATRIBUTOS PROCESADOS (CORRECCIÓN CLAVE)
+      // Los atributos YA vienen procesados desde prepareProduct, solo copiarlos manteniendo estructura
+      if (Array.isArray(product.attributes) && product.attributes.length > 0) {
+        transformed.attributes = product.attributes.map(attr => ({
+          id: attr.id,
+          value_id: attr.value_id,
+          value_name: attr.value_name,
+          value: attr.value_name || attr.value_id, // Compatibilidad con legacy
+          example_value: attr.example_value || null
+        }));
+      } else {
+        // Si no hay atributos, mantener array vacío (nunca undefined)
+        transformed.attributes = [];
+      }
+
+      // 🔑🔑 PRESERVAR IMÁGENES (CORRECIÓN ADICIONAL)
+      if (Array.isArray(product.images) && product.images.length > 0) {
+        transformed.images = product.images;
+      }
+      // Fallback para otros nombres de campo
+      if (Array.isArray(product.pictures) && product.pictures.length > 0) {
+        transformed.images = transformed.images || product.pictures;
+      }
+
       // 🔑 Campos adicionales (opcionales pero útiles)
       if (product.categoryName) transformed.categoryName = product.categoryName;
       if (product.productId) transformed.productId = product.productId;
-      if (product.images) transformed.images = product.images;
-      if (product.pictures) transformed.pictures = product.pictures;
-      if (product.attributes) transformed.attributes = product.attributes;
 
-      // 🔑 Aplicar mapeos adicionales (solo si no existen ya)
+      // 🔑 Aplicar mapeos adicionales del repositorio (solo si no existen ya)
       for (const mapping of exportMappings) {
         if (transformed[mapping.external_field] !== undefined) continue;
         

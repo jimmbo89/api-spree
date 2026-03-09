@@ -1,5 +1,5 @@
 // src/repositories/JobProductRepository.js
-const { JobProduct, Job, Product, Marketplace, MarketplaceCredential } = require('../models');
+const { JobProduct, Job, Product, Marketplace, MarketplaceCredential, ProductPublishingTask } = require('../models');
 const { Op } = require('sequelize');
 const logger = require('../../config/logger');
 
@@ -134,9 +134,9 @@ const JobProductRepository = {
       }
 
       const includeOptions = includeDetails ? [
-        { model: Product, as: 'product', attributes: ['id', 'name', 'sku'] },
-        { model: Marketplace, as: 'marketplace', attributes: ['id', 'name', 'code'] },
-        { model: MarketplaceCredential, as: 'credential', attributes: ['id', 'name'] }
+        { model: Product, as: 'product' },
+        { model: Marketplace, as: 'marketplace' },
+        { model: MarketplaceCredential, as: 'credential'}
       ] : [];
 
       const jobProducts = await JobProduct.findAll({
@@ -600,7 +600,115 @@ const JobProductRepository = {
       logger.error(`Error en JobProductRepository->deleteByJob (Job: ${jobId}):`, error);
       throw new Error(`Error al eliminar productos: ${error.message}`);
     }
-  }
+  },
+
+async findAllErrorsByJob(job, options = {}) {
+  try {
+    const jobProducts = await JobProduct.findAll({
+      where: {
+        job_id: job.id,
+        // ✅ Filtrar solo productos con errores
+        [Op.or]: [
+          { status: { [Op.in]: ['error', 'failed'] } },
+          { 
+            status: 'success',
+            error_message: { [Op.ne]: null }  // ← Tiene warnings guardados
+          }
+        ]
+      },
+      include: [
+        { 
+          model: Product, 
+          as: 'product', 
+          required: false 
+        },
+        { 
+          model: Marketplace, 
+          as: 'marketplace', 
+          required: false 
+        },
+        { 
+          model: MarketplaceCredential, 
+          as: 'credential', 
+          required: false 
+        }
+      ],
+      // ✅ CORREGIDO: Usar nombres reales de campos en BD
+      attributes: {
+        include: options.includePayloads !== false 
+          ? ['product_payload', 'marketplace_payload', 'error_message', 'error_details'] 
+          : ['error_message']
+      },
+      order: [['createdAt', 'DESC']],
+      limit: options.limit || 100
+    });
+
+    // ✅ Mapear a formato plano para el frontend
+    // 2. Para cada job_product, obtener el payload transformado de ProductPublishingTask
+    const errors = [];
+    for (const jp of jobProducts) {
+     // (el más reciente para este producto + marketplace + credential)
+      const task = await ProductPublishingTask.findOne({
+        where: {
+          product_id: jp.product_id,
+          marketplace_id: jp.marketplace_id,
+          credential_id: jp.credential_id,
+          batch_id: job.batch_id
+        },
+        attributes: ['payload', 'id'],
+        order: [['createdAt', 'DESC']],
+        raw: true
+      });
+      //logger.info(`payload del producto enviado: \n ${JSON.stringify(task.payload)}`);
+      const data = jp.get({ plain: true });
+      let processedPayload = null;
+      if (options.includePayloads !== false && task?.payload) {
+        if (typeof task.payload === 'string') {
+          // 🔹 Es string: intentar parsear a JSON
+          try {
+            processedPayload = JSON.parse(task.payload);
+          } catch (e) {
+            // 🔹 Si falla el parseo, retornar el string original o null
+            logger.warn(`[findAllErrorsByJob] ⚠️ Payload no es JSON válido: ${e.message}`);
+            processedPayload = null;
+          }
+        } else if (typeof task.payload === 'object' && task.payload !== null) {
+          // 🔹 Ya es objeto JSON: usarlo directamente
+          processedPayload = task.payload;
+        } else {
+          // 🔹 Otro tipo (null, undefined, number, etc.)
+          processedPayload = null;
+        }
+      }
+      
+      errors.push({
+        task_id: task.id,
+        product_id: jp.product_id,
+        product_name: jp.product?.name || 'Producto sin nombre',
+        sku: jp.product?.sku || null,
+        product_image: jp.product?.image_url || null,
+        marketplace_id: jp.marketplace_id,
+        marketplace_name: jp.marketplace?.name || 'Marketplace',
+        marketplace_domain: jp.marketplace?.domain || null,
+        credential_id: jp.credential_id,
+        credential_name: jp.credential?.name || null,
+        status: jp.status,
+        error_message: jp.error_message,
+        error_details: options.includeDetails !== false ? jp.error_details : null,
+        // ✅ PAYLOAD PROCESADO: Siempre objeto JSON o null
+        payload: processedPayload,
+        created_at: jp.createdAt,
+        updated_at: jp.updatedAt
+      });
+    }
+    
+    return errors;
+
+      } catch (error) {
+        logger.error(`[JobProductRepository->findAllErrorsByJob] Error: ${error.message}`);
+        throw new Error(`Error al obtener errores del job: ${error.message}`);
+      }
+    },
 };
 
 module.exports = JobProductRepository;

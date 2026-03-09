@@ -434,7 +434,6 @@ async store(req, res) {
   const company_id = req.user.company_id;
   const metadata = getRequestMetadata(req);
 
-   logger.info('🧪 [SIMULACIÓN] Modo testing activado - saltando lógica real de publicación');
     
     // IDs fijos para testing (los que proporcionaste)
     const SIM_JOB_ID = 6;
@@ -691,54 +690,7 @@ async publishDraft(req, res) {
       });
     }
   },
-  // 2. Actualizar estado (para reintentos, sincronización, etc.)
-  async updateStatus(req, res) {
-    logger.info(`${req.user?.name || 'Unknown'} - Actualiza estado de tarea de publicación`);
-    const { id, status, error_message, external_id, external_url } = req.body;
-    const metadata = getRequestMetadata(req);
-
-    try {
-      const task = await ProductPublishingTaskRepository.findById(id);
-      if (!task) return res.status(404).json({ msg: "PublishingTaskNotFound" });
-
-      const updateData = {};
-      if (error_message !== undefined) updateData.error_message = error_message;
-      if (external_id !== undefined) updateData.external_id = external_id;
-      if (external_url !== undefined) updateData.external_url = external_url;
-
-      const updated = await ProductPublishingTaskRepository.updateStatus(
-        task,
-        status,
-        updateData
-      );
-
-      await LogRepository.create({
-        user_id: metadata.user_id,
-        action: 'publishing_task.update_status',
-        description: `Tarea ${id} actualizada a: ${status}`,
-        ip_address: metadata.ip_address,
-        user_agent: metadata.user_agent,
-        status: 'success',
-        meta: { id, status }
-      });
-
-      res.status(200).json({ message: "Estado actualizado", task: { id: updated.id, status: updated.status } });
-    } catch (error) {
-      await LogRepository.create({
-        user_id: metadata?.user_id,
-        action: 'publishing_task.update_status',
-        description: `Error: ${error.message}`,
-        ip_address: metadata?.ip_address,
-        user_agent: metadata?.user_agent,
-        status: 'error',
-        meta: null
-      });
-      logger.error('ProductPublishingTaskController->updateStatus: ' + error.message);
-      res.status(500).json({ error: 'ServerError' });
-    }
-  },
-
-    async listDrafts(req, res) {
+  async listDrafts(req, res) {
     logger.info(`${req.user?.name || 'Unknown'} - Listando drafts`);
     
     const { company_id, user_id } = req.body;
@@ -847,42 +799,37 @@ async updateStatus(req, res) {
       } else if (status) {
         tasks = await ProductPublishingTaskRepository.findByCompanyAndStatus(company_id, status);
       } else {
-        tasks = await ProductPublishingTaskRepository.findAllByCompany(company_id);
+        tasks = await ProductPublishingTaskRepository.findAllByCompany(company_id, user_id);
       }
 
-      // ✅ Filtrar por usuario si se especifica
-      if (user_id) {
-        tasks = tasks.filter(t => t.user_id === Number(user_id));
-      }
-
-      const mapped = tasks.map(t => ({
-        id: t.id,
-        product_id: t.product_id,
-        product_name: t.product?.name || 'N/A',
-        product_image: t.product?.images[0] || 'products/default.jpg',
-        marketplace_id: t.marketplace_id,
-        marketplace_name: t.marketplace?.name || 'N/A',
-        credential_id: t.credential_id,
-        credential_name: t.credential?.name || 'N/A',
-        warehouse_id: t.warehouse_id,
-        company_id: t.company_id,
-        user_id: t.user_id,
-        user_name: t.user?.name || 'N/A',
-        batch_id: t.batch_id,
-        status: t.status,
-        draft_name: t.draft_name,
-        payload: t.payload,
-        publishing_mode: t.publishing_mode,
-        error_message: t.error_message,
-        error_details: t.error_details,
-        api_response: t.api_response,
-        external_id: t.external_id,
-        external_url: t.external_url,
-        published_at: t.published_at,
-        attempt_count: t.attempt_count,
-        created_at: t.createdAt,
-        updated_at: t.updatedAt
-      }));
+       const mapped = tasks.map(t => ({
+      id: t.id,
+      product_id: t.product_id,
+      product_name: t.product?.name || 'N/A',
+      product_image: t.product?.images?.[0] || 'products/default.jpg',  // ← ✅ Safe access
+      marketplace_id: t.marketplace_id,
+      marketplace_name: t.marketplace?.name || 'N/A',
+      credential_id: t.credential_id,
+      credential_name: t.credential?.name || 'N/A',
+      warehouse_id: t.warehouse_id,
+      company_id: t.company_id,
+      user_id: t.user_id,
+      user_name: t.user?.name || 'N/A',
+      batch_id: t.batch_id,
+      status: t.status,
+      draft_name: t.draft_name,
+      payload: t.payload,
+      publishing_mode: t.publishing_mode,
+      error_message: t.error_message,
+      error_details: t.error_details,
+      api_response: t.api_response,
+      external_id: t.external_id,
+      external_url: t.external_url,
+      published_at: t.published_at,
+      attempt_count: t.attempt_count,
+      created_at: t.createdAt,
+      updated_at: t.updatedAt
+    }));
 
       // ✅ Agrupar por batch_id si existe
       const grouped = {};
@@ -924,166 +871,79 @@ async updateStatus(req, res) {
       });
     }
   },
-
-  // ✅ CORREGIDO: Reintentar publicación
-  async retry(req, res) {
-    logger.info(`${req.user?.name || 'Unknown'} - Reintenta publicación`);
-    logger.info('Datos recibidos:', JSON.stringify(req.body));
-
-    const { task_id, payload } = req.body;
-    const user_id = req.user.id;
-    const metadata = getRequestMetadata(req);
-
-    if (!task_id) {
-      return res.status(400).json({ success: false, msg: "task_id_required" });
-    }
-
-    let transaction;
+async retryBatch(req, res) {
+  const { tasks } = req.body;
+  const results = [];
+  
+  for (const { task_id, job_id } of tasks) {
     try {
+      // 1. Obtener task
       const task = await ProductPublishingTaskRepository.findById(task_id);
-      if (!task) return res.status(404).json({ success: false, msg: "task_not_found" });
-      
-      if (!['failed', 'draft'].includes(task.status)) {
-        return res.status(400).json({ 
-          success: false, 
-          msg: "task_not_retryable",
-          current_status: task.status
-        });
+      if (!task) {
+        results.push({ task_id, success: false, error: 'task_not_found' });
+        continue;
       }
-
-      // Validar entidades
+      
+      // 2. Obtener marketplace y credential
       const marketplace = await MarketplaceRepository.findById(task.marketplace_id);
-      const warehouse = await WarehouseRepository.findById(task.warehouse_id);
-      const user = await UserRepository.findById(user_id);
+      const credential = await MarketplaceCredentialRepository.findById(task.credential_id);
       
-      if (!marketplace || !warehouse || !user) {
-        return res.status(400).json({ success: false, msg: "related_entity_not_found" });
+      if (!marketplace || !credential) {
+        results.push({ task_id, success: false, error: 'marketplace_or_credential_not_found' });
+        continue;
       }
-
-      transaction = await sequelize.transaction();
-
-      // ✅ Incrementar attempt_count
-      const newAttemptCount = task.attempt_count + 1;
-      await ProductPublishingTaskRepository.updateStatus(task, 'processing', {
-        attempt_count: newAttemptCount
-      }, { transaction });
-
-      // ✅ Publicar con payload corregido o original
-      const payloadToSend = payload || task.payload;
-      const result = await PublishingService.publishProduct(
-        { ...payloadToSend, id: task.product_id },
+      
+      // 3. ✅ REPUBLICAR DIRECTO (SIN transformación)
+      const result = await PublishingService.republishProduct(
+        task,      // ← Payload editado por usuario
         marketplace,
-        warehouse,
-        user_id,
-        task.credential_id || null
+        credential,
+        task.user_id
       );
-
-      let updatedTask;
-      if (result.success) {
-        updatedTask = await ProductPublishingTaskRepository.updateStatus(task, 'published', {
-          payload: payloadToSend,
-          external_id: result.external_id,
-          external_url: result.external_url,
-          published_at: new Date(),
-          api_response: result.data || null,
-          error_message: null,
-          error_details: null
-        }, { transaction });
-
-        // ✅ Crear/Actualizar ProductMarketplaceLink
-        await ProductMarketplaceLinkRepository.upsert({
-          product_id: task.product_id,
-          marketplace_id: task.marketplace_id,
-          company_id: warehouse.company_id,
-          branch_id: warehouse.branch_id,
-          status: 'published',
-          external_id: result.external_id,
-          external_url: result.external_url,
-          last_synced_at: new Date()
-        }, { transaction });
-
-        await transaction.commit();
-
-        await LogRepository.create({
-          user_id: metadata.user_id,
-          action: 'publishing_task.retry_success',
-          description: `Reintento exitoso para tarea ${task_id}`,
-          ip_address: metadata.ip_address,
-          user_agent: metadata.user_agent,
-          status: 'success',
-          meta: { task_id, product_id: task.product_id, attempt: newAttemptCount }
-        });
-
-        return res.status(200).json({
-          success: true,
-          message: "Reintento exitoso",
-          data: {
-            task_id: updatedTask.id,
-            status: updatedTask.status,
-            external_id: updatedTask.external_id,
-            attempt_count: updatedTask.attempt_count
-          }
-        });
-
-      } else {
-        // ✅ Guardar errores detallados
-        updatedTask = await ProductPublishingTaskRepository.updateStatus(task, 'failed', {
-          payload: payloadToSend,
-          error_message: result.error || 'Error desconocido',
-          error_details: result.details || null,
-          api_response: result.api_response || null,
-          attempt_count: newAttemptCount
-        }, { transaction });
-
-        await transaction.commit();
-
-        await LogRepository.create({
-          user_id: metadata.user_id,
-          action: 'publishing_task.retry_failed',
-          description: `Reintento fallido para tarea ${task_id}: ${result.error}`,
-          ip_address: metadata.ip_address,
-          user_agent: metadata.user_agent,
-          status: 'error',
-          meta: { 
-            task_id, 
-            product_id: task.product_id,
-            attempt: newAttemptCount,
-            error: result.error
-          }
-        });
-
-        return res.status(200).json({
-          success: false,
-          message: "Reintento fallido",
-          data: {
-            task_id: updatedTask.id,
-            status: updatedTask.status,
-            error: updatedTask.error_message,
-            error_details: updatedTask.error_details,
-            attempt_count: updatedTask.attempt_count
-          }
-        });
-      }
-
+      
+      // 4. Actualizar task
+      await ProductPublishingTaskRepository.updateTask(task, {
+        status: result.success ? 'published' : 'failed',
+        error_message: result.success ? null : result.error,
+        error_details: result.success ? null : result.details,
+        external_id: result.success ? result.external_id : task.external_id,
+        external_url: result.success ? result.data?.permalink : task.external_url,
+        attempt_count: (task.attempt_count || 0) + 1,
+        last_attempt_at: new Date(),
+        api_response: result.data || task.api_response
+      });
+      
+      results.push({
+        task_id,
+        success: result.success,
+        external_id: result.external_id,
+        error: result.success ? null : result.error
+      });
+      
     } catch (error) {
-      if (transaction) await transaction.rollback();
-      logger.error('Error en retry:', error.message);
-      await LogRepository.create({
-        user_id: metadata?.user_id,
-        action: 'publishing_task.retry_error',
-        description: `Error: ${error.message}`,
-        ip_address: metadata?.ip_address,
-        user_agent: metadata?.user_agent,
-        status: 'error',
-        meta: { task_id }
+      logger.error(`[Controller] Error republicando task ${task_id}:`, error);
+      
+      await ProductPublishingTaskRepository.update(task_id, {
+        status: 'failed',
+        error_message: error.message,
+        attempt_count: ((await ProductPublishingTaskRepository.findById(task_id))?.attempt_count || 0) + 1,
+        last_attempt_at: new Date()
       });
-      return res.status(500).json({ 
-        success: false,
-        msg: "internal_error",
-        error: error.message 
-      });
+      
+      results.push({ task_id, success: false, error: error.message });
     }
-  },
+  }
+  
+  const successCount = results.filter(r => r.success).length;
+  
+  return res.json({
+    success: true,
+    total: results.length,
+    successful: successCount,
+    failed: results.length - successCount,
+    results
+  });
+},
 
   // Agregar método destroy al controlador
 async destroy(req, res) {
@@ -1113,7 +973,90 @@ async destroy(req, res) {
     logger.error("ProductPublishingTaskController->destroy: " + err.message);
     return res.status(500).json({ error: "ServerError", details: err.message });
   }
-}
+},
+
+/**
+ * Actualiza el payload de una tarea de publicación específica
+ * PUT /api/publishing-tasks/:id/payload
+ */
+async updatePayload(req, res) {
+  logger.info(`${req.user?.name || 'Unknown'} - Actualiza payload de tarea`);
+  const { payload, task_id } = req.body;
+  const metadata = getRequestMetadata(req);
+
+  try {
+    // ✅ Buscar tarea con relaciones
+    const task = await ProductPublishingTaskRepository.findById(task_id);
+    if (!task) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "task_not_found" 
+      });
+    }
+    // ✅ Validar que la tarea esté en estado editable
+    const editableStatuses = ['draft', 'failed', 'pending'];
+    if (!editableStatuses.includes(task.status)) {
+      return res.status(400).json({ 
+        success: false, 
+        msg: "invalid_status",
+        message: `No se puede editar el payload en estado: ${task.status}`
+      });
+    }
+
+    // ✅ Actualizar payload vía repository
+    const updatedTask = await ProductPublishingTaskRepository.updatePayload(
+      task,
+      payload
+    );
+
+    // ✅ Registrar auditoría
+    await LogRepository.create({
+      user_id: metadata.user_id,
+      action: 'publishing_task.update_payload',
+      description: `Payload actualizado para tarea ${task_id}`,
+      ip_address: metadata.ip_address,
+      user_agent: metadata.user_agent,
+      status: 'success',
+      meta: { 
+        task_id,
+        payload_keys: Object.keys(payload),
+        updated_at: updatedTask.updatedAt
+      }
+    });
+
+    // ✅ Respuesta exitosa (solo campos esenciales para no saturar)
+    return res.status(200).json({ 
+      success: true,
+      message: "Payload actualizado correctamente",
+      task: { 
+        task_id: updatedTask.id, 
+        status: updatedTask.status,
+        payload: updatedTask.payload,
+        updated_at: updatedTask.updatedAt
+      } 
+    });
+
+  } catch (error) {
+    logger.error(`Error actualizando payload:\n ${JSON.stringify(error.message)}`);
+    
+    // ✅ Registrar error en auditoría
+    await LogRepository.create({
+      user_id: metadata.user_id,
+      action: 'publishing_task.update_payload',
+      description: `Error al actualizar payload: ${error.message}`,
+      ip_address: metadata.ip_address,
+      user_agent: metadata.user_agent,
+      status: 'error',
+      meta: { task_id, error: error.message }
+    });
+
+    return res.status(500).json({ 
+      success: false,
+      msg: "internal_error",
+      error: error.message 
+    });
+  }
+},
 };
 
 module.exports = ProductPublishingTaskController;

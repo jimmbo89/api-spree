@@ -43,7 +43,8 @@ const storeSchema = Joi.object({
 }).unknown(true);
 
 const updateStatusSchema = Joi.object({
-  id: Joi.number().integer().positive().required(),
+  id: Joi.number().allow(null).empty('').optional(),
+  task_id: Joi.number().allow(null).empty('').optional(),
   status: Joi.string().valid('draft', 'pending', 'processing', 'published', 'failed', 'cancelled').required(), // ✅ Actualizado
   error_message: Joi.string().optional().allow(null),
   error_details: Joi.object().optional().allow(null), // ✅ Nuevo
@@ -63,6 +64,7 @@ const listSchema = Joi.object({
 
 const retrySchema = Joi.object({
   task_id: Joi.number().integer().positive().required(),
+  job_id: Joi.number().allow(null).empty('').optional(),
   payload: Joi.object().optional()
 });
 
