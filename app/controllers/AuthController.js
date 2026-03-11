@@ -1274,8 +1274,6 @@ const AuthController = {
       pools = pools.map(Number);
     }
 
-    logger.info("antes de validar");
-
     // 1. Validar entidades maestras (solo si hay cambios relevantes)
     try {
       // Validar rol si se envió

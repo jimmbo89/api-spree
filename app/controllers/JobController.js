@@ -1,7 +1,23 @@
+const { Op } = require("sequelize");
 const { getUserId } = require("../../config/context");
 const logger = require("../../config/logger");
 const { JobRepository, JobProductRepository, NotificationRepository } = require("../repositories");
+const checkIsError = (item) => {
+  if (!item) return false;
+  const isFailedStatus = item.status === 'error' || item.status === 'failed';
+  const hasMsgNoWarnings = item.error_message && !item.error_details?.warnings;
+  return isFailedStatus || hasMsgNoWarnings;
+};
 
+const checkIsWarning = (item) => {
+  if (!item) return false;
+  return Array.isArray(item.error_details?.warnings) && item.error_details.warnings.length > 0;
+};
+
+const checkCanEdit = (item) => {
+  if (!item) return false;
+  return !item.is_fixed && (checkIsError(item) || checkIsWarning(item));
+};
 const JobController = {  
 /**
  * GET /api/jobs/:jobId/progress
@@ -414,7 +430,444 @@ async getActiveJobs(req, res) {
         error: error.message
       });
     }
+  },
+
+async listFinishedJobs(req, res) {
+  try {
+    const {
+      company_id,
+      user_id,
+      status_filter = 'all',
+      channel_id,
+      date_range = '30d',
+      search,
+      page = 1,
+      limit = 20
+    } = req.body;
+
+    // Validaciones
+    if (!company_id) {
+      return res.status(400).json({ success: false, msg: 'company_id_required' });
+    }
+
+    // Mapeo de filtros de status
+    const statusMap = {
+      'all': ['completed', 'completed_with_errors', 'failed'],
+      'completed': ['completed'],
+      'completed_with_errors': ['completed_with_errors'],
+      'failed': ['failed'],
+      'requires_attention': ['completed_with_errors']
+    };
+    const statuses = statusMap[status_filter] || statusMap.all;
+
+    // Filtro de fecha
+    let date_from = null;
+    if (date_range !== 'all') {
+      const days = parseInt(date_range);
+      date_from = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    }
+
+    // ✅ 1. Obtener jobs desde Repository con paginación
+    const { count, rows: jobs } = await JobRepository.findAndCountFinished({
+      company_id,
+      user_id,
+      statuses,
+      date_from,
+      search_term: search,
+      limit: parseInt(limit),
+      offset: (parseInt(page) - 1) * parseInt(limit)
+    });
+
+    // ✅ 2. Enriquecer cada job con conteo de canales (usando JobProductRepository)
+    const enrichedJobs = await Promise.all(jobs.map(async (job) => {
+      const channelCount = await JobProductRepository.countDistinctChannelsByJob(job.id);
+      
+      return {
+        id: job.id,
+        batch_id: job.batch_id,
+        display_id: `J-${String(job.id).padStart(5, '0')}`,
+        status: job.status,
+        createdAt: job.completed_at || job.createdAt,
+        user_name: job.user?.name || 'N/A',
+        channelsCount: channelCount,
+        productsTotal: job.total_products,
+        publishedCount: job.successful,
+        errorCount: job.errors_count,
+        percentage: job.percentage,
+        draft_name: job.draft_name
+      };
+    }));
+
+    return res.json({
+      success: true,
+      data: {
+        jobs: enrichedJobs,
+        pagination: {
+          total: count,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          pages: Math.ceil(count / limit)
+        }
+      }
+    });
+
+  } catch (error) {
+    logger.error(`[JobController.listFinishedJobs] Error: ${error.message}`, { stack: error.stack });
+    return res.status(500).json({
+      success: false,
+      msg: 'fetch_finished_jobs_failed',
+      error: error.message
+    });
   }
+},
+async getJobDetail(req, res) {
+  try {
+    // ✅ 1. Desestructurar con nombre correcto: 'id' (no jobId)
+    const { id, company_id, tab = 'summary', error_filters = {} } = req.body;
+
+    if (!company_id || !id) {
+      return res.status(400).json({ success: false, msg: 'id_and_company_id_required' });
+    }
+
+    // ✅ 2. Obtener job desde Repository
+    const job = await JobRepository.findById(id, { includeUser: true });
+
+    if (!job || job.company_id !== company_id) {
+      return res.status(404).json({ success: false, msg: 'job_not_found' });
+    }
+
+    // ✅ 3. Validar estado finalizado
+    if (!['completed', 'completed_with_errors', 'failed'].includes(job.status)) {
+      return res.status(400).json({
+        success: false,
+        msg: 'job_not_finished',
+        hint: 'Los procesos en ejecución se consultan desde el wizard o navbar'
+      });
+    }
+
+    // ✅ 4. Inicializar baseResponse CON data siempre definido
+    const baseResponse = {
+      success: true,
+      data: {
+        job: {
+          id: job.id,
+          batch_id: job.batch_id,
+          display_id: `J-${String(job.id).padStart(5, '0')}`,
+          status: job.status,
+          createdAt: job.completed_at || job.createdAt,
+          user_name: job.user?.name || 'N/A',
+          total_products: job.total_products,
+          published: job.successful,
+          errors: job.errors_count,
+          percentage: job.percentage,
+          config: job.config || {},
+          error_summary: job.error_summary
+        }
+      }
+    };
+
+    // ✅ 5. Cargar datos según tab (usando 'id', no 'jobId')
+    switch (tab) {
+      case 'summary': {
+        const avgPrice = job.config?.avg_price || 0;
+        const avgCommission = job.config?.commission_rate || 0.17;
+        const estimatedSales = job.successful * avgPrice;
+        
+        // ✅ Validar que data existe antes de asignar
+        if (baseResponse.data) {
+          baseResponse.data.summary = {
+            estimated_sales: estimatedSales,
+            commissions: estimatedSales * avgCommission,
+            estimated_profit: estimatedSales * (1 - avgCommission),
+            note: 'Incluye costos de producto solo si existen. No incluye costos de envío.'
+          };
+        }
+        break;
+      }
+
+      case 'channels': {
+        // ✅ CORRECCIÓN: usar 'id' en lugar de 'jobId'
+        const channels = await JobProductRepository.getStatsByJobAndMarketplace(id);
+        
+        if (baseResponse.data) {
+          baseResponse.data.channels = channels.map(ch => ({
+            credential_id: ch.credential_id,
+            marketplace_id: ch.marketplace_id,
+            marketplace_name: ch.marketplace_name,
+            credential_name: ch.credential_name,
+            status: ch.status,
+            total: ch.total,
+            published: ch.published,
+            failed: ch.failed,
+            percentage: ch.percentage
+          }));
+        }
+        break;
+      }
+
+      case 'errors': {
+  const { status: errorStatus = 'all', search: errorSearch } = error_filters;
+  
+  // ✅ Obtener errores con payloads y detalles completos
+  const errors = await JobProductRepository.findAllErrorsByJob(job, {
+    includePayloads: true,
+    includeDetails: true,  // ← Incluye error_details con warnings
+    limit: 200
+  });
+
+  // Filtrar por estado
+  let filteredErrors = errors;
+  if (errorStatus === 'with_error') {
+    filteredErrors = errors.filter(e => !e.is_fixed && checkIsError(e));
+  } else if (errorStatus === 'fixed') {
+    filteredErrors = errors.filter(e => e.is_fixed);
+  }
+
+  // Búsqueda textual
+  if (errorSearch) {
+    const term = errorSearch.toLowerCase();
+    filteredErrors = filteredErrors.filter(e =>
+      e.product_name?.toLowerCase().includes(term) ||
+      e.sku?.toLowerCase().includes(term) ||
+      e.error_message?.toLowerCase().includes(term)
+    );
+  }
+
+  // Agrupar por marketplace
+  const groupedByMarketplace = filteredErrors.reduce((acc, error) => {
+    const key = error.credential_id;
+    if (!acc[key]) {
+      acc[key] = {
+        credential_id: error.credential_id,
+        marketplace_name: error.marketplace_name,
+        marketplace_domain: error.marketplace_domain,
+        items: []
+      };
+    }
+    acc[key].items.push({
+      task_id: error.task_id,        // ✅ ID de ProductPublishingTask
+      product_id: error.product_id,
+      product_name: error.product_name,
+      sku: error.sku,
+      product_image: error.product_image,
+      marketplace_id: error.marketplace_id,
+      credential_id: error.credential_id,
+      marketplace_name: error.marketplace_name,
+      error_message: error.error_message,
+      error_details: error.error_details,  // ✅ Incluye warnings array
+      payload: error.payload,              // ✅ Payload desde ProductPublishingTask
+      is_fixed: error.is_fixed || false,
+      fixed_payload: error.fixed_payload || null,
+      status: error.status,
+      created_at: error.created_at
+    });
+    return acc;
+  }, {});
+
+  const fixedCount = filteredErrors.filter(e => e.is_fixed).length;
+  const totalCount = filteredErrors.length;
+
+  baseResponse.data.errors = {
+    total: totalCount,
+    fixed: fixedCount,
+    pending: totalCount - fixedCount,
+    grouped: Object.values(groupedByMarketplace),
+    can_republish: fixedCount > 0
+  };
+  break;
+}
+      
+      // ✅ Caso por defecto para tabs no reconocidos
+      default: {
+        logger.warn(`[getJobDetail] Tab no reconocido: ${tab}, usando 'summary' por defecto`);
+        // No hacer nada, retornar solo el job base
+      }
+    }
+
+    return res.json(baseResponse);
+
+  } catch (error) {
+    logger.error(`[JobController.getJobDetail] Error: ${error.message}`, { 
+      stack: error.stack,
+      body: req.body  // 🔹 Para debug: ver qué se recibió
+    });
+    return res.status(500).json({
+      success: false,
+      msg: 'fetch_job_detail_failed',
+      error: error.message
+    });
+  }
+},
+
+async updateTaskPayload(req, res) {
+  try {
+    const { taskId } = req.params;
+    const { company_id, user_id, payload } = req.body;
+
+    if (!company_id || !user_id || !payload) {
+      return res.status(400).json({ success: false, msg: 'missing_required_fields' });
+    }
+
+    // 1. Buscar la tarea en ProductPublishingTask
+    const task = await ProductPublishingTask.findByPk(taskId, {
+      include: [{ model: Job, as: 'job', attributes: ['id', 'company_id', 'status'] }]
+    });
+
+    if (!task || task.company_id !== company_id) {
+      return res.status(404).json({ success: false, msg: 'task_not_found' });
+    }
+
+    // 2. Validar que el job esté finalizado (solo se puede corregir post-ejecución)
+    if (!['completed', 'completed_with_errors', 'failed'].includes(task.job?.status)) {
+      return res.status(400).json({
+        success: false,
+        msg: 'job_not_finished',
+        hint: 'Las correcciones solo aplican a procesos finalizados'
+      });
+    }
+
+    // 3. Actualizar payload (NO republica, solo guarda la corrección)
+    //    Marcamos el registro como "corregido" para UI
+    const updated = await task.update({
+      payload: payload,                    // ✅ Nuevo payload corregido
+      error_message: null,                 // ✅ Limpiar error visual
+      is_fixed: true,                      // ✅ Flag para UI (campo nuevo sugerido)
+      fixed_at: new Date(),
+      fixed_by: user_id
+    });
+
+    // 4. Logging
+    logger.info(`[JobController.updateTaskPayload] Payload corregido: Task ${taskId} por User ${user_id}`, {
+      batch_id: task.batch_id,
+      product_id: task.product_id,
+      marketplace_id: task.marketplace_id
+    });
+
+    return res.json({
+      success: true,
+      message: 'Corrección guardada. Pendiente de republicar.',
+      data: {
+        task_id: updated.id,
+        is_fixed: true,
+        updated_at: updated.updatedAt
+      }
+    });
+
+  } catch (error) {
+    logger.error(`[JobController.updateTaskPayload] Error: ${error.message}`, { stack: error.stack });
+    return res.status(500).json({
+      success: false,
+      msg: 'update_payload_failed',
+      error: error.message
+    });
+  }
+},
+async republishFromJob(req, res) {
+  try {
+    const { jobId } = req.params;
+    const { company_id, user_id, task_ids = [] } = req.body;
+
+    if (!company_id || !user_id || !task_ids.length) {
+      return res.status(400).json({ success: false, msg: 'missing_required_fields' });
+    }
+
+    // 1. Verificar job original
+    const originalJob = await Job.findByPk(jobId);
+    if (!originalJob || originalJob.company_id !== company_id) {
+      return res.status(404).json({ success: false, msg: 'job_not_found' });
+    }
+
+    // 2. Obtener tareas a republicar con sus datos completos
+    const tasksToRepublish = await ProductPublishingTask.findAll({
+      where: {
+        id: { [Op.in]: task_ids },
+        batch_id: originalJob.batch_id,
+        company_id
+      },
+      include: [
+        { model: Product, as: 'product' },
+        { model: Marketplace, as: 'marketplace' },
+        { model: MarketplaceCredential, as: 'credential' }
+      ]
+    });
+
+    if (tasksToRepublish.length === 0) {
+      return res.status(400).json({ success: false, msg: 'no_valid_tasks_to_republish' });
+    }
+
+    // 3. Crear NUEVO job padre para la republicación (no modificar el original)
+    const newBatchId = `BATCH-REPUB-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    
+    const newJob = await Job.create({
+      user_id,
+      company_id,
+      batch_id: newBatchId,
+      job_type: 'publish',
+      mode: 'republish',                    // ✅ Diferenciar de publicación inicial
+      draft_name: `Repubicación desde Job #${originalJob.id}`,
+      status: 'pending',
+      total_products: tasksToRepublish.length,
+      processed: 0,
+      successful: 0,
+      errors_count: 0,
+      percentage: 0,
+      config: {
+        ...originalJob.config,
+        republished_from: originalJob.id,   // ✅ Trazabilidad
+        republished_tasks: task_ids
+      },
+      error_summary: null,
+      started_at: null,
+      completed_at: null
+    });
+
+    // 4. Crear JobProduct entries para el nuevo job (con payloads corregidos)
+    const jobProductsData = tasksToRepublish.map(task => ({
+      job_id: newJob.id,
+      product_id: task.product_id,
+      marketplace_id: task.marketplace_id,
+      credential_id: task.credential_id,
+      status: 'pending',
+      product_payload: task.payload,        // ✅ Usar payload corregido
+      marketplace_payload: null,            // Se generará en el proceso
+      attempt_count: 0
+    }));
+
+    await JobProduct.bulkCreate(jobProductsData);
+
+    // 5. Disparar proceso en background (ej: mediante cola o worker)
+    //    Aquí puedes integrar con tu sistema de colas (Bull, Bee-Queue, etc.)
+    //    Ejemplo: await publishingQueue.add('publish', { jobId: newJob.id });
+
+    // 6. Logging y respuesta
+    logger.info(`[JobController.republishFromJob] Nuevo job de republicación creado: ${newJob.id}`, {
+      original_job: originalJob.id,
+      batch_id: newBatchId,
+      tasks_count: tasksToRepublish.length,
+      user_id
+    });
+
+    return res.json({
+      success: true,
+      message: `Republicación iniciada para ${tasksToRepublish.length} productos`,
+      data: {
+        new_job_id: newJob.id,
+        batch_id: newBatchId,
+        tasks_republished: tasksToRepublish.length,
+        // Opcional: redirigir al nuevo job
+        redirect_url: `/publications/jobs/${newJob.id}?tab=summary`
+      }
+    });
+
+  } catch (error) {
+    logger.error(`[JobController.republishFromJob] Error: ${error.message}`, { stack: error.stack });
+    return res.status(500).json({
+      success: false,
+      msg: 'republish_failed',
+      error: error.message
+    });
+  }
+}
 };
 
 module.exports = JobController

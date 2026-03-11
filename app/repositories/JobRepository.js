@@ -2,6 +2,7 @@
 const { Job, JobProduct, User, Company } = require('../models');
 const { Op } = require('sequelize');
 const logger = require('../../config/logger');
+const JobProductRepository = require('./JobProductRepository');
 
 const JobRepository = {
 // Agregar este método en JobRepository.js
@@ -104,50 +105,70 @@ async findByBatchIdWithStats(batch_id, company_id) {
   /**
    * Obtiene un job por ID con datos completos
    */
-  async findById(id, includeProducts = false) {
-    try {
-      if (!id) {
-        throw new Error('El ID del job es requerido');
-      }
+// src/repositories/JobRepository.js
 
-      const includeOptions = includeProducts ? [
-        {
-          model: JobProduct,
-          as: 'jobProducts',
-          attributes: [
-            'id', 'product_id', 'marketplace_id', 'credential_id',
-            'status', 'external_id', 'error_message', 'attempt_count',
-            'createdAt'
-          ],
-          order: [['createdAt', 'ASC']]
-        }
-      ] : [];
-
-      const job = await Job.findByPk(id, {
-        attributes: [
-          'id', 'user_id', 'company_id', 'batch_id',
-          'job_type', 'mode', 'draft_name',
-          'status', 'total_products', 'processed', 'successful',
-          'errors_count', 'percentage',
-          'config', 'error_summary',
-          'started_at', 'completed_at',
-          'createdAt', 'updatedAt'
-        ],
-        include: includeOptions
-      });
-
-      if (!job) {
-        return null;
-      }
-
-      return job.get({ plain: true });
-
-    } catch (error) {
-      logger.error(`Error en JobRepository->findById (ID: ${id}):`, error);
-      throw new Error(`Error al obtener el job: ${error.message}`);
+/**
+ * Obtiene un job por ID con datos completos
+ * @param {Number} id - ID del job
+ * @param {Object} options - { includeUser: boolean, includeProducts: boolean }
+ */
+async findById(id, options = {}) {
+  try {
+    if (!id) {
+      throw new Error('El ID del job es requerido');
     }
-  },
 
+    const { includeUser = false, includeProducts = false } = options;
+
+    const includeOptions = [];
+
+    // ✅ Incluir User si se solicita
+    if (includeUser) {
+      includeOptions.push({
+        model: User,
+        as: 'user',
+        attributes: ['id', 'name', 'email']
+      });
+    }
+
+    // ✅ Incluir JobProducts si se solicita
+    if (includeProducts) {
+      includeOptions.push({
+        model: JobProduct,
+        as: 'jobProducts',
+        attributes: [
+          'id', 'product_id', 'marketplace_id', 'credential_id',
+          'status', 'external_id', 'error_message', 'attempt_count',
+          'createdAt'
+        ],
+        order: [['createdAt', 'ASC']]
+      });
+    }
+
+    const job = await Job.findByPk(id, {
+      attributes: [
+        'id', 'user_id', 'company_id', 'batch_id',
+        'job_type', 'mode', 'draft_name',
+        'status', 'total_products', 'processed', 'successful',
+        'errors_count', 'percentage',
+        'config', 'error_summary',
+        'started_at', 'completed_at',
+        'createdAt', 'updatedAt'
+      ],
+      include: includeOptions
+    });
+
+    if (!job) {
+      return null;
+    }
+
+    return job.get({ plain: true });
+
+  } catch (error) {
+    logger.error(`Error en JobRepository->findById (ID: ${id}):`, error);
+    throw new Error(`Error al obtener el job: ${error.message}`);
+  }
+},
   /**
    * Obtiene un job por batch_id (puede haber varios por batch)
    */
@@ -328,26 +349,25 @@ async findByBatchIdWithStats(batch_id, company_id) {
   /**
    * Marca el job como completado
    */
-  async complete(jobId, { successful, errors_count, error_summary = null }) {
-    try {
-      const job = await Job.findByPk(jobId);
-      if (!job) {
-        throw new Error(`Job no encontrado (ID: ${jobId})`);
-      }
-
-      return await this.update(job, {
-        status: 'completed',
-        successful: successful !== undefined ? successful : job.successful,
-        errors_count: errors_count !== undefined ? errors_count : job.errors_count,
-        error_summary: error_summary || job.error_summary,
-        completed_at: new Date()
-      });
-
-    } catch (error) {
-      logger.error(`Error en JobRepository->complete (ID: ${jobId}):`, error);
-      throw new Error(`Error al completar job: ${error.message}`);
-    }
-  },
+  // Cuando se complete un job, verificar si hay errores
+async complete(jobId, { successful, errors_count, error_summary = null }) {
+  const job = await Job.findByPk(jobId);
+  
+  // ✅ Determinar estado correcto según errores
+  const finalStatus = errors_count > 0 
+    ? 'completed_with_errors'  // Tiene errores
+    : 'completed';              // Sin errores
+  
+  await job.update({
+    status: finalStatus,  // ← Usar estado dinámico
+    successful,
+    errors_count,
+    error_summary,
+    completed_at: new Date()
+  });
+  
+  return job.get({ plain: true });
+},
 
   /**
    * Marca el job como fallido
@@ -704,7 +724,159 @@ async getActiveAndCompletedJobs(userId, company_id, options = {}) {
     logger.error(`Error en JobRepository->getActiveAndCompletedJobs (User: ${userId}):`, error);
     throw new Error(`Error al obtener jobs activos y completados: ${error.message}`);
   }
-}
+},
+
+/**
+ * GET /api/jobs/finished
+ * Lista jobs finalizados con filtros y paginación
+ * body: { company_id, user_id, status_filter, channel_id, date_range, search, page, limit }
+ */
+async listFinishedJobs(req, res) {
+  try {
+    const {
+      company_id,
+      user_id,
+      status_filter = 'all',
+      channel_id,
+      date_range = '30d',
+      search,
+      page = 1,
+      limit = 20
+    } = req.body;
+
+    // Validaciones
+    if (!company_id) {
+      return res.status(400).json({ success: false, msg: 'company_id_required' });
+    }
+
+    // Mapeo de filtros de status
+    const statusMap = {
+      'all': ['completed', 'completed_with_errors', 'failed'],
+      'completed': ['completed'],
+      'completed_with_errors': ['completed_with_errors'],
+      'failed': ['failed'],
+      'requires_attention': ['completed_with_errors']
+    };
+    const statuses = statusMap[status_filter] || statusMap.all;
+
+    // Filtro de fecha
+    let date_from = null;
+    if (date_range !== 'all') {
+      const days = parseInt(date_range);
+      date_from = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    }
+
+    // ✅ 1. Obtener jobs desde Repository con paginación
+    const { count, rows: jobs } = await JobRepository.findAndCountFinished({
+      company_id,
+      user_id,
+      statuses,
+      date_from,
+      search_term: search,
+      limit: parseInt(limit),
+      offset: (parseInt(page) - 1) * parseInt(limit)
+    });
+
+    // ✅ 2. Enriquecer cada job con conteo de canales (usando JobProductRepository)
+    const enrichedJobs = await Promise.all(jobs.map(async (job) => {
+      const channelCount = await JobProductRepository.countDistinctChannelsByJob(job.id);
+      
+      return {
+        id: job.id,
+        batch_id: job.batch_id,
+        display_id: `J-${String(job.id).padStart(5, '0')}`,
+        status: job.status,
+        createdAt: job.completed_at || job.createdAt,
+        user_name: job.user?.name || 'N/A',
+        channelsCount: channelCount,
+        productsTotal: job.total_products,
+        publishedCount: job.successful,
+        errorCount: job.errors_count,
+        percentage: job.percentage,
+        draft_name: job.draft_name
+      };
+    }));
+
+    return res.json({
+      success: true,
+      data: {
+        jobs: enrichedJobs,
+        pagination: {
+          total: count,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          pages: Math.ceil(count / limit)
+        }
+      }
+    });
+
+  } catch (error) {
+    logger.error(`[JobController.listFinishedJobs] Error: ${error.message}`, { stack: error.stack });
+    return res.status(500).json({
+      success: false,
+      msg: 'fetch_finished_jobs_failed',
+      error: error.message
+    });
+  }
+},
+
+/**
+ * Obtiene jobs finalizados con filtros y paginación
+ */
+async findAndCountFinished(filters) {
+  try {
+    const {
+      company_id,
+      user_id,
+      statuses = ['completed', 'completed_with_errors', 'failed'],
+      date_from,
+      search_term,
+      limit = 20,
+      offset = 0
+    } = filters;
+
+    const { Op } = require('sequelize');
+    
+    const where = {
+      company_id,
+      job_type: 'publish',
+      status: { [Op.in]: statuses },
+      completed_at: { [Op.ne]: null }
+    };
+
+    if (user_id) where.user_id = user_id;
+    if (date_from) where.completed_at = { ...where.completed_at, [Op.gte]: date_from };
+
+    if (search_term) {
+      where[Op.or] = [
+        { batch_id: { [Op.like]: `%${search_term}%` } },
+        { draft_name: { [Op.like]: `%${search_term}%` } }
+      ];
+    }
+
+    return await Job.findAndCountAll({
+      where,
+      attributes: [
+        'id', 'batch_id', 'job_type', 'mode', 'draft_name',
+        'status', 'total_products', 'processed', 'successful',
+        'errors_count', 'percentage',
+        'started_at', 'completed_at', 'createdAt'
+      ],
+      include: [{
+        model: User,
+        as: 'user',
+        attributes: ['id', 'name']
+      }],
+      order: [['completed_at', 'DESC']],
+      limit: parseInt(limit),
+      offset: parseInt(offset),
+      raw: false
+    });
+  } catch (error) {
+    logger.error('Error en JobRepository->findAndCountFinished:', error);
+    throw new Error(`Error al obtener jobs finalizados: ${error.message}`);
+  }
+},
 };
 
 module.exports = JobRepository;

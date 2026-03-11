@@ -174,41 +174,52 @@ const JobProductRepository = {
    * Obtiene un producto de job por ID
    * ✅ Ahora incluye marketplace_payload
    */
-  async findById(id) {
-    try {
-      if (!id) throw new Error('El ID es requerido');
-
-      const jobProduct = await JobProduct.findByPk(id, {
-        attributes: [
-          'id', 'job_id', 'product_id', 'marketplace_id', 'credential_id',
-          'status', 'external_id', 'external_url',
-          'error_message', 'error_details', 'attempt_count',
-          'product_payload', 'marketplace_payload',  // ← NUEVO
-          'createdAt', 'updatedAt'
-        ],
-        include: [
-          { model: Job, as: 'job', attributes: ['id', 'batch_id', 'status', 'config'] }
-        ],
-        raw: false
+async findById(id, options = {}) {
+  try {
+    if (!id) throw new Error('El ID del job es requerido');
+    
+    const { includeUser = false, includeProducts = false } = options;
+    
+    const includeOptions = [];
+    
+    if (includeUser) {
+      includeOptions.push({
+        model: User,
+        as: 'user',
+        attributes: ['id', 'name', 'email']
       });
-
-      if (!jobProduct) return null;
-
-      const data = jobProduct.get({ plain: true });
-      // Fallback de parseo manual para compatibilidad
-      if (typeof data.product_payload === 'string') {
-        try { data.product_payload = JSON.parse(data.product_payload); } catch (e) { data.product_payload = null; }
-      }
-      if (typeof data.marketplace_payload === 'string') {
-        try { data.marketplace_payload = JSON.parse(data.marketplace_payload); } catch (e) { data.marketplace_payload = null; }
-      }
-      return data;
-
-    } catch (error) {
-      logger.error(`Error en JobProductRepository->findById (ID: ${id}):`, error);
-      throw new Error(`Error al obtener producto de job: ${error.message}`);
     }
-  },
+    
+    if (includeProducts) {
+      includeOptions.push({
+        model: JobProduct,
+        as: 'jobProducts',
+        attributes: ['id', 'product_id', 'marketplace_id', 'credential_id', 'status'],
+        order: [['createdAt', 'ASC']]
+      });
+    }
+
+    const job = await Job.findByPk(id, {
+      attributes: [
+        'id', 'user_id', 'company_id', 'batch_id',
+        'job_type', 'mode', 'draft_name',
+        'status', 'total_products', 'processed', 'successful',
+        'errors_count', 'percentage',
+        'config', 'error_summary',
+        'started_at', 'completed_at',
+        'createdAt', 'updatedAt'
+      ],
+      include: includeOptions
+    });
+
+    if (!job) return null;
+    return job.get({ plain: true });
+    
+  } catch (error) {
+    logger.error(`Error en JobRepository->findById (ID: ${id}):`, error);
+    throw new Error(`Error al obtener el job: ${error.message}`);
+  }
+},
 
   /**
    * Busca un producto específico dentro de un job
@@ -604,36 +615,28 @@ const JobProductRepository = {
 
 async findAllErrorsByJob(job, options = {}) {
   try {
+    // ✅ 1. Validar que job tenga los datos necesarios
+    if (!job || !job.id || !job.batch_id) {
+      logger.warn('[findAllErrorsByJob] Job inválido:', { job });
+      return []; // Retornar array vacío en lugar de lanzar error
+    }
+
     const jobProducts = await JobProduct.findAll({
       where: {
         job_id: job.id,
-        // ✅ Filtrar solo productos con errores
         [Op.or]: [
           { status: { [Op.in]: ['error', 'failed'] } },
           { 
             status: 'success',
-            error_message: { [Op.ne]: null }  // ← Tiene warnings guardados
+            error_message: { [Op.ne]: null }
           }
         ]
       },
       include: [
-        { 
-          model: Product, 
-          as: 'product', 
-          required: false 
-        },
-        { 
-          model: Marketplace, 
-          as: 'marketplace', 
-          required: false 
-        },
-        { 
-          model: MarketplaceCredential, 
-          as: 'credential', 
-          required: false 
-        }
+        { model: Product, as: 'product', required: false },
+        { model: Marketplace, as: 'marketplace', required: false },
+        { model: MarketplaceCredential, as: 'credential', required: false }
       ],
-      // ✅ CORREGIDO: Usar nombres reales de campos en BD
       attributes: {
         include: options.includePayloads !== false 
           ? ['product_payload', 'marketplace_payload', 'error_message', 'error_details'] 
@@ -643,46 +646,41 @@ async findAllErrorsByJob(job, options = {}) {
       limit: options.limit || 100
     });
 
-    // ✅ Mapear a formato plano para el frontend
-    // 2. Para cada job_product, obtener el payload transformado de ProductPublishingTask
     const errors = [];
     for (const jp of jobProducts) {
-     // (el más reciente para este producto + marketplace + credential)
+      // ✅ 2. Buscar task con validación de null
       const task = await ProductPublishingTask.findOne({
         where: {
           product_id: jp.product_id,
           marketplace_id: jp.marketplace_id,
           credential_id: jp.credential_id,
-          batch_id: job.batch_id
+          batch_id: job.batch_id  // ✅ job.batch_id ya validado arriba
         },
         attributes: ['payload', 'id'],
         order: [['createdAt', 'DESC']],
         raw: true
       });
-      //logger.info(`payload del producto enviado: \n ${JSON.stringify(task.payload)}`);
+
       const data = jp.get({ plain: true });
+      
+      // ✅ 3. Procesar payload solo si task existe
       let processedPayload = null;
       if (options.includePayloads !== false && task?.payload) {
         if (typeof task.payload === 'string') {
-          // 🔹 Es string: intentar parsear a JSON
           try {
             processedPayload = JSON.parse(task.payload);
           } catch (e) {
-            // 🔹 Si falla el parseo, retornar el string original o null
             logger.warn(`[findAllErrorsByJob] ⚠️ Payload no es JSON válido: ${e.message}`);
             processedPayload = null;
           }
         } else if (typeof task.payload === 'object' && task.payload !== null) {
-          // 🔹 Ya es objeto JSON: usarlo directamente
           processedPayload = task.payload;
-        } else {
-          // 🔹 Otro tipo (null, undefined, number, etc.)
-          processedPayload = null;
         }
       }
       
+      // ✅ 4. Push con task_id opcional (null si no se encontró task)
       errors.push({
-        task_id: task.id,
+        task_id: task?.id || null,  // ✅ CLAVE: usar optional chaining
         product_id: jp.product_id,
         product_name: jp.product?.name || 'Producto sin nombre',
         sku: jp.product?.sku || null,
@@ -695,7 +693,6 @@ async findAllErrorsByJob(job, options = {}) {
         status: jp.status,
         error_message: jp.error_message,
         error_details: options.includeDetails !== false ? jp.error_details : null,
-        // ✅ PAYLOAD PROCESADO: Siempre objeto JSON o null
         payload: processedPayload,
         created_at: jp.createdAt,
         updated_at: jp.updatedAt
@@ -704,11 +701,33 @@ async findAllErrorsByJob(job, options = {}) {
     
     return errors;
 
-      } catch (error) {
-        logger.error(`[JobProductRepository->findAllErrorsByJob] Error: ${error.message}`);
-        throw new Error(`Error al obtener errores del job: ${error.message}`);
-      }
-    },
+  } catch (error) {
+    logger.error(`[JobProductRepository->findAllErrorsByJob] Error: ${error.message}`);
+    throw new Error(`Error al obtener errores del job: ${error.message}`);
+  }
+},
+
+/**
+ * Cuenta canales únicos (credential_id) para un job
+ */
+async countDistinctChannelsByJob(jobId) {
+  try {
+    if (!jobId) throw new Error('job_id es requerido');
+    
+    const { fn, col } = require('sequelize');
+    
+    const result = await JobProduct.findOne({
+      attributes: [[fn('COUNT', fn('DISTINCT', col('credential_id'))), 'channel_count']],
+      where: { job_id: jobId },
+      raw: true
+    });
+    
+    return parseInt(result?.channel_count) || 0;
+  } catch (error) {
+    logger.error(`Error en JobProductRepository->countDistinctChannelsByJob:`, error);
+    throw new Error(`Error al contar canales: ${error.message}`);
+  }
+},
 };
 
 module.exports = JobProductRepository;

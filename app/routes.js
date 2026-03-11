@@ -407,5 +407,7 @@ router.post('/dte-document-status', requireRoles(['Admin', 'Seller Manager']), v
 //JobController y JobProductController
 router.post('/job-progress', requireRoles(['Admin', 'Seller Manager']), JobController.getJobProgress);
 router.post('/jobs-actives', requireRoles(['Admin', 'Seller Manager']), JobController.getActiveJobs);
+router.post('/jobs-finished-list', requireRoles(['Admin', 'Seller Manager']), JobController.listFinishedJobs);
+router.post('/jobs-detail', requireRoles(['Admin', 'Seller Manager']), JobController.getJobDetail);
 
 module.exports = router;

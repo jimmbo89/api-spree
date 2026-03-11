@@ -160,7 +160,7 @@ class PublishingService {
           user_id: userId,
           date: new Date(),
           // ✅ Si hay warnings, usar status especial (o mantener 'published')
-          status: hasWarnings ? 'published_with_warnings' : 'published',
+          status: hasWarnings ? 'failed' : 'published',
           payload: transformed,
           external_id: result.external_id || result.data?.id,
           external_url: result.data?.permalink,
@@ -271,7 +271,6 @@ static async republishProduct(task, marketplace, credential, userId) {
         marketplace_id: marketplace.marketplace_id
       };
     }
-    logger.info('antes de validar');
     // 2. ✅ VALIDAR payload (opcional pero recomendado)
     const validation = adapter.validateProduct(task.payload);
     logger.info(`Errores de validación:\n ${JSON.stringify(validation)}`);
