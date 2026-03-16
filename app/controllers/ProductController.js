@@ -19,6 +19,7 @@ const MarketplaceTransformer = require("../services/MarketplaceTransformer");
 const { detectChanges } = require("../util/auditUtils");
 const { getRequestMetadata } = require("../util/requestUtil");
 const FileService = require("../services/FileService");
+const { imageUrl } = require("../util/imageCacheUtils");
 const DEFAULT_IMAGE = "products/default.jpg";
 
 // Campos auditables (sin base_price, status, branch_id)

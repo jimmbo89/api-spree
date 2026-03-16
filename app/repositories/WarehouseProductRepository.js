@@ -2,6 +2,10 @@ const { Op, fn, col, where, and, or, literal } = require('sequelize');
 const { WarehouseProduct, Product, ProductVariant, WarehouseProductVariant, ProductCategory, ProductAttribute, Attribute, Branch, Company, Warehouse, sequelize } = require('../models');
 const ImageService = require('../services/ImageService');
 const logger = require('../../config/logger');
+const path = require('path');
+const fs = require('fs');
+const { generateImageVersion } = require('../util/imageCacheUtils');
+const { UPLOAD_BASE_PATH } = require('../../config/upload');
 
 const WarehouseProductRepository = {
 async findFiltered({ companyId, userId, branchId, warehouseId }) {
@@ -65,8 +69,9 @@ async findFiltered({ companyId, userId, branchId, warehouseId }) {
 
     // Procesar imágenes y atributos del producto
     let productImages = [];
+    let productImagesWithVersion = [];
     let productAttributes = [];
-    
+
     if (product) {
       try {
         // Imágenes
@@ -77,7 +82,26 @@ async findFiltered({ companyId, userId, branchId, warehouseId }) {
             productImages = product.images;
           }
         }
-        
+
+        // Imágenes con versión para caché
+        productImagesWithVersion = productImages.map(img => {
+          try {
+            const filename = path.basename(img);
+            const filepath = path.join(UPLOAD_BASE_PATH, 'products', filename);
+            const version = fs.existsSync(filepath)
+              ? generateImageVersion(filename, filepath)
+              : Date.now().toString();
+            return {
+              url: img,
+              version: version,
+              fullUrl: `/images/products/${filename}?v=${version}`
+            };
+          } catch (e) {
+            logger.warn(`Error generando versión para imagen ${img}:`, e.message);
+            return { url: img, version: null, fullUrl: `/images/products/${img}` };
+          }
+        });
+
         // Atributos
       if (Array.isArray(product.productAttributes)) {
         for (const pa of product.productAttributes) {
@@ -143,19 +167,22 @@ async findFiltered({ companyId, userId, branchId, warehouseId }) {
       width_cm: product?.width_cm || null,
       height_cm: product?.height_cm || null,
       product_images: productImages,
+      product_images_with_version: productImagesWithVersion,
       product_image: productImages[0] || null,
+      product_image_url: productImagesWithVersion[0]?.fullUrl || null,
+      image_version: productImagesWithVersion[0]?.version || null,
       product_attributes: productAttributes,
 
       // Variantes con stock/precio
       variants: variantsWithStock,
-      
+
       // Stock total para facilitar acceso
       stock: totalStock
     };
-   
+
     return result;
   });
-},  
+},
 
 async getProductWarehousesWithStock({ productIds, companyId, branchId }) {
   if (!productIds || productIds.length === 0) {
@@ -313,13 +340,25 @@ async findProductsNotInWarehouse({ warehouseId, companyId, specificProductId = n
     return products.map(product => {
       // Procesar imágenes
       let firstImage = null;
+      let firstImageWithVersion = null;
+      let imageVersion = null;
+      
       if (product.images) {
         try {
-          const images = typeof product.images === 'string' 
-            ? JSON.parse(product.images) 
+          const images = typeof product.images === 'string'
+            ? JSON.parse(product.images)
             : product.images;
           if (Array.isArray(images) && images.length > 0) {
             firstImage = images[0];
+            
+            // Generar versión para la primera imagen
+            const filename = path.basename(firstImage);
+            const filepath = path.join(UPLOAD_BASE_PATH, 'products', filename);
+            imageVersion = fs.existsSync(filepath)
+              ? generateImageVersion(filename, filepath)
+              : Date.now().toString();
+            
+            firstImageWithVersion = `/images/products/${filename}?v=${imageVersion}`;
           }
         } catch (error) {
           console.warn(`Error parsing images for product ${product.id}:`, error);
@@ -358,6 +397,8 @@ async findProductsNotInWarehouse({ warehouseId, companyId, specificProductId = n
         base_price: product.base_price || 0,
         status: product.status || 1,
         image: firstImage,
+        image_url: firstImageWithVersion,
+        image_version: imageVersion,
         attributes: attributes,
         variants: product.variants || [],
         // Información adicional para el autocomplete
@@ -418,11 +459,32 @@ async findProductsByWarehouseIds({ companyId, warehouseIds }) {
     if (!productMap.has(productId)) {
       // Parsear imágenes y atributos una sola vez
       let images = [];
+      let imagesWithVersion = [];
+      
       if (productData.images) {
         try {
           images = typeof productData.images === 'string'
             ? JSON.parse(productData.images)
             : productData.images;
+          
+          // Generar versiones para las imágenes
+          imagesWithVersion = images.map(img => {
+            try {
+              const filename = path.basename(img);
+              const filepath = path.join(UPLOAD_BASE_PATH, 'products', filename);
+              const version = fs.existsSync(filepath)
+                ? generateImageVersion(filename, filepath)
+                : Date.now().toString();
+              return {
+                url: img,
+                version: version,
+                fullUrl: `/images/products/${filename}?v=${version}`
+              };
+            } catch (e) {
+              logger.warn(`Error generando versión para imagen ${img}:`, e.message);
+              return { url: img, version: null, fullUrl: `/images/products/${img}` };
+            }
+          });
         } catch (e) {
           logger.warn(`Error parsing images for product ${productId}:`, e.message);
         }
@@ -458,6 +520,8 @@ async findProductsByWarehouseIds({ companyId, warehouseIds }) {
         width_cm: productData.width_cm,
         height_cm: productData.height_cm,
         images: images,
+        images_with_version: imagesWithVersion,
+        image_version: imagesWithVersion[0]?.version || null,
         attributes: attributes,
         variants: new Map(), // usaremos variant_id como clave
         totalStock: 0
@@ -554,6 +618,63 @@ async countUniqueProductsByCompanyId(companyId) {
   return parseInt(result[0].count, 10) || 0;
 },
 
+async getTotalsByCompanyId(companyId) {
+  const query = `
+    SELECT
+      COUNT(DISTINCT wp.product_id) AS total_products,
+      COUNT(DISTINCT wp.id) AS total_warehouse_products,
+      COALESCE(SUM(wpv.stock), 0) AS total_stock
+    FROM warehouse_products wp
+    LEFT JOIN warehouses w ON wp.warehouse_id = w.id
+    LEFT JOIN branches b ON w.branch_id = b.id
+    LEFT JOIN warehouse_product_variants wpv ON wpv.warehouse_product_id = wp.id
+    WHERE wp.company_id = :companyId
+       OR (b.company_id = :companyId AND wp.company_id IS NULL)
+  `;
+  const result = await sequelize.query(query, {
+    replacements: { companyId },
+    type: sequelize.QueryTypes.SELECT
+  });
+  const row = result[0] || {};
+  return {
+    totalProducts: parseInt(row.total_products, 10) || 0,
+    totalWarehouseProducts: parseInt(row.total_warehouse_products, 10) || 0,
+    totalStock: parseInt(row.total_stock, 10) || 0
+  };
+},
+
+async getTotalsByCompanyByWarehouseId(companyId) {
+  const query = `
+    SELECT
+      wp.warehouse_id,
+      COUNT(DISTINCT wp.product_id) AS total_products,
+      COUNT(DISTINCT wp.id) AS total_warehouse_products,
+      COALESCE(SUM(wpv.stock), 0) AS total_stock
+    FROM warehouse_products wp
+    LEFT JOIN warehouses w ON wp.warehouse_id = w.id
+    LEFT JOIN branches b ON w.branch_id = b.id
+    LEFT JOIN warehouse_product_variants wpv ON wpv.warehouse_product_id = wp.id
+    WHERE wp.company_id = :companyId
+       OR (b.company_id = :companyId AND wp.company_id IS NULL)
+    GROUP BY wp.warehouse_id
+  `;
+  const result = await sequelize.query(query, {
+    replacements: { companyId },
+    type: sequelize.QueryTypes.SELECT
+  });
+
+  const totalsByWarehouse = {};
+  result.forEach(row => {
+    totalsByWarehouse[row.warehouse_id] = {
+      totalProducts: parseInt(row.total_products, 10) || 0,
+      totalWarehouseProducts: parseInt(row.total_warehouse_products, 10) || 0,
+      totalStock: parseInt(row.total_stock, 10) || 0
+    };
+  });
+
+  return totalsByWarehouse;
+},
+
 // Verifica si un producto YA está asociado a una compañía
 async isProductAssociatedWithCompany(productId, companyId) {
   const query = `
@@ -570,6 +691,83 @@ async isProductAssociatedWithCompany(productId, companyId) {
     type: sequelize.QueryTypes.SELECT
   });
   return result.length > 0;
+},
+
+/**
+ * Obtiene resumen de productos y stock por empresa:
+ * - Totales generales consolidados
+ * - Desglose por almacén en formato array []
+ * 
+ * @param {number} companyId - ID de la empresa
+ * @returns {Promise<Object>}
+ */
+async getWarehouseSummaryByCompanyId(companyId) {
+
+  const query = `
+    SELECT
+      wp.warehouse_id,
+      w.name AS warehouse_name,
+      COUNT(DISTINCT wp.product_id) AS total_products,
+      COUNT(DISTINCT wp.id) AS total_warehouse_products,
+      COALESCE(SUM(wpv.stock), 0) AS total_stock
+    FROM warehouse_products wp
+    LEFT JOIN warehouses w ON wp.warehouse_id = w.id
+    LEFT JOIN branches b ON w.branch_id = b.id
+    LEFT JOIN warehouse_product_variants wpv ON wpv.warehouse_product_id = wp.id
+    WHERE wp.company_id = :companyId
+       OR (b.company_id = :companyId AND wp.company_id IS NULL)
+    GROUP BY wp.warehouse_id, w.name
+    ORDER BY w.name ASC
+  `;
+
+  const result = await sequelize.query(query, {
+    replacements: { companyId },
+    type: sequelize.QueryTypes.SELECT
+  });
+
+  // 📦 Transformar resultado a array de objetos
+  const productsByWarehouse = result.map(row => ({
+    warehouse_id: row.warehouse_id,
+    warehouse_name: row.warehouse_name || 'Sin nombre',
+    totalProducts: parseInt(row.total_products, 10) || 0,
+    totalWarehouseProducts: parseInt(row.total_warehouse_products, 10) || 0,
+    totalStock: parseInt(row.total_stock, 10) || 0
+  }));
+
+  // Calcular totales generales a partir del desglose
+  const totals = productsByWarehouse.reduce((acc, curr) => ({
+    totalProducts: acc.totalProducts + curr.totalProducts,
+    totalWarehouseProducts: acc.totalWarehouseProducts + curr.totalWarehouseProducts,
+    totalStock: acc.totalStock + curr.totalStock
+  }), {
+    totalProducts: 0,
+    totalWarehouseProducts: 0,
+    totalStock: 0
+  });
+
+  // ⚠️ Ajuste crítico: totalProducts NO debe sumarse por almacén
+  // porque un producto en 2 almacenes se contaría 2 veces
+  // Necesitamos recalcular productos únicos a nivel empresa
+  const uniqueProductsQuery = `
+    SELECT COUNT(DISTINCT wp.product_id) AS unique_products
+    FROM warehouse_products wp
+    LEFT JOIN warehouses w ON wp.warehouse_id = w.id
+    LEFT JOIN branches b ON w.branch_id = b.id
+    WHERE wp.company_id = :companyId
+       OR (b.company_id = :companyId AND wp.company_id IS NULL)
+  `;
+  
+  const [uniqueResult] = await sequelize.query(uniqueProductsQuery, {
+    replacements: { companyId },
+    type: sequelize.QueryTypes.SELECT
+  });
+  
+  totals.totalProducts = parseInt(uniqueResult?.unique_products, 10) || 0;
+
+  return {
+    summary: totals,
+    productsByWarehouse
+  };
 },
 
   async create(body, options = {}) {
@@ -649,3 +847,4 @@ async isProductAssociatedWithCompany(productId, companyId) {
 };
 
 module.exports = WarehouseProductRepository;
+

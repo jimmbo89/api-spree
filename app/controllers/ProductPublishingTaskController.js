@@ -499,7 +499,7 @@ async store(req, res) {
   logger.info(`${req.user?.name || 'Unknown'} - Solicitud de publicación en ${req.body.mode} iniciada`);
   logger.info(`Datos recibidos:\n ${JSON.stringify(req.body, null, 2)}`);
   
-  const { products, marketplaces, pool, mode, draft_name, economic_config } = req.body;
+  const { products, marketplaces, pool: rawPool, mode, draft_name, economic_config } = req.body;
   const user_id = req.user.id;
   const company_id = req.user.company_id;
   const metadata = getRequestMetadata(req);
@@ -521,6 +521,37 @@ async store(req, res) {
   }
   
   const batch_id = uuidv4();
+
+  // === Normalizar pool seleccionado ===
+  let pool = rawPool || null;
+  if (pool && !pool.primary_warehouse && Array.isArray(pool.warehouses) && pool.warehouses.length > 0) {
+    pool.primary_warehouse = pool.warehouses[0];
+  }
+
+  const poolId = pool?.id || pool?.pool_id || null;
+
+  if (!pool || !pool.primary_warehouse) {
+    // Fallback: buscar un almacén activo de la empresa
+    const activeWarehouses = await WarehouseRepository.getActiveWarehouses(company_id, null);
+    if (!Array.isArray(activeWarehouses) || activeWarehouses.length === 0) {
+      return res.status(400).json({
+        success: false,
+        msg: "pool_required",
+        details: "Debe seleccionar un pool con primary_warehouse o tener un almacén activo disponible"
+      });
+    }
+
+    const fallback = activeWarehouses[0];
+    pool = {
+      primary_warehouse: {
+        warehouse_id: fallback.id,
+        branch_id: null
+      },
+      warehouses: [
+        { warehouse_id: fallback.id, branch_id: null }
+      ]
+    };
+  }
 
   // Validar marketplaces (solo para verificar que existen)
   const marketplaceIds = [...new Set(marketplaces.map(mp => Number(mp.marketplace_id || mp.id)))];
@@ -546,6 +577,7 @@ async store(req, res) {
       products: products,
       marketplaces: marketplaces,
       pool: pool,
+      pool_id: poolId,
       economic_config: economic_config,
       draft_name: draft_name
     }

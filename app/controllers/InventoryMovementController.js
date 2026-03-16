@@ -8,7 +8,7 @@ const InventoryMovementController = {
     const requesterId = req.user?.id || null;
 
     logger.info(`${requesterName} - Solicita movimientos de inventario`);
-    logger.info("Datos recibidos:", JSON.stringify(req.body));
+    logger.info(`Datos recibidos:\n ${JSON.stringify(req.body)}`);
 
     const ip = req.ip || 'unknown';
     const userAgent = req.get('User-Agent') || null;
@@ -34,8 +34,8 @@ const InventoryMovementController = {
       if (company_id != null) filters.company_id = company_id;
       if (branch_id != null) filters.branch_id = branch_id;
       if (reference_id != null) filters.reference_id = reference_id;
-      if (start_date) filters.startDate = start_date;
-      if (end_date) filters.endDate = end_date;
+      if (start_date) filters.start_date = start_date;
+      if (end_date) filters.end_date = end_date;
 
       // Ejecutar consulta
       const movements = await InventoryMovementRepository.findWithFilters(filters);

@@ -492,6 +492,147 @@ async findByMLUserId(marketplaceId, userId, mlUserId, excludeId = null) {
   return matched.get({ plain: true });
 },
 
+  /**
+   * Busca credencial activa por ml_user_id (global), con tokens descifrados.
+   * @param {number|string} mlUserId - ID de usuario en MercadoLibre
+   * @returns {Promise<object|null>} - Credencial combinada o null
+   */
+  async findByMLUserIdGlobal(mlUserId) {
+    const credentials = await MarketplaceCredential.findAll({
+      where: { active: true },
+      include: [
+        {
+          model: Marketplace,
+          as: 'marketplace'
+        }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+
+    const targetId = mlUserId != null ? String(mlUserId) : null;
+    if (!targetId) return null;
+
+    const extractMlUserId = (additionalData) => {
+      if (!additionalData) return null;
+      if (typeof additionalData === 'object') return additionalData.ml_user_id;
+      try {
+        const parsed = JSON.parse(additionalData);
+        return parsed?.ml_user_id;
+      } catch (e) {
+        return null;
+      }
+    };
+
+    let match = null;
+    for (const cred of credentials) {
+      const plain = cred.get({ plain: true });
+      const domain = plain.marketplace?.domain || '';
+      if (!domain.includes('mercadolibre')) continue;
+
+      const stored = extractMlUserId(plain.additional_data);
+      if (stored != null && String(stored) === targetId) {
+        match = plain;
+        break;
+      }
+    }
+
+    if (!match) return null;
+
+    if (match.access_token) {
+      match.access_token = EncryptionService.decrypt(match.access_token);
+    }
+    if (match.refresh_token) {
+      match.refresh_token = EncryptionService.decrypt(match.refresh_token);
+    }
+    if (match.api_key) {
+      match.api_key = EncryptionService.decrypt(match.api_key);
+    }
+    if (match.marketplace?.client_secret) {
+      match.marketplace.client_secret = EncryptionService.decrypt(match.marketplace.client_secret);
+    }
+
+    return match;
+  },
+
+  /**
+   * Busca credencial activa de Falabella por seller_id o seller_email.
+   * @param {object} params
+   * @param {string|null} params.sellerId
+   * @param {string|null} params.sellerEmail
+   * @returns {Promise<object|null>}
+   */
+  async findActiveFalabellaBySellerIdOrEmail({ sellerId = null, sellerEmail = null }) {
+    if (!sellerId && !sellerEmail) return null;
+
+    const where = { active: true };
+    if (sellerId && sellerEmail) {
+      where[Op.or] = [
+        { seller_id: sellerId },
+        { seller_email: sellerEmail }
+      ];
+    } else if (sellerId) {
+      where.seller_id = sellerId;
+    } else if (sellerEmail) {
+      where.seller_email = sellerEmail;
+    }
+
+    const record = await MarketplaceCredential.findOne({
+      where,
+      include: [
+        {
+          model: Marketplace,
+          as: 'marketplace',
+          where: { domain: { [Op.like]: '%falabella%' } },
+          required: true
+        }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+
+    if (!record) return null;
+
+    const plain = record.get({ plain: true });
+    if (plain.api_key) {
+      plain.api_key = EncryptionService.decrypt(plain.api_key);
+    }
+    if (plain.marketplace?.client_secret) {
+      plain.marketplace.client_secret = EncryptionService.decrypt(plain.marketplace.client_secret);
+    }
+
+    return plain;
+  },
+
+  /**
+   * Busca una credencial activa de Falabella si hay una sola disponible.
+   * @returns {Promise<object|null>}
+   */
+  async findSingleActiveFalabella() {
+    const record = await MarketplaceCredential.findOne({
+      where: { active: true },
+      include: [
+        {
+          model: Marketplace,
+          as: 'marketplace',
+          where: { domain: { [Op.like]: '%falabella%' } },
+          required: true
+        }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+
+    if (!record) return null;
+
+    const plain = record.get({ plain: true });
+    if (plain.api_key) {
+      plain.api_key = EncryptionService.decrypt(plain.api_key);
+    }
+    if (plain.marketplace?.client_secret) {
+      plain.marketplace.client_secret = EncryptionService.decrypt(plain.marketplace.client_secret);
+    }
+
+    return plain;
+  },
+
   async delete(record) {
     return await record.destroy();
   },

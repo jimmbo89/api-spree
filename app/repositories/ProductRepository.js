@@ -3,7 +3,11 @@ const { Op } = require("sequelize");
 const logger = require("../../config/logger");
 const WarehouseProductRepository = require("./WarehouseProductRepository");
 const FileService = require("../services/FileService");
+const { generateImageVersion } = require("../util/imageCacheUtils");
 const DEFAULT_IMAGE = "products/default.jpg";
+const path = require("path");
+const fs = require("fs");
+const { UPLOAD_BASE_PATH } = require("../../config/upload");
 
 const ProductRepository = {
   async findFiltered({ companyId, userId, branchId, categoryId, brand, state, hasGtin, productId }) {
@@ -119,7 +123,31 @@ const ProductRepository = {
         }
       }
     }
-    
+
+    // Procesar imágenes con versión para caché
+    const images = Array.isArray(product.images) ? product.images : JSON.parse(product.images || "[]");
+    const imagesWithVersion = images.map(img => {
+      try {
+        // Construir ruta completa del archivo
+        const filename = path.basename(img);
+        const filepath = path.join(UPLOAD_BASE_PATH, 'products', filename);
+        
+        // Generar versión basada en mtime del archivo
+        const version = fs.existsSync(filepath) 
+          ? generateImageVersion(filename, filepath)
+          : Date.now().toString();
+        
+        return {
+          url: img,
+          version: version,
+          fullUrl: `/images/products/${filename}?v=${version}`
+        };
+      } catch (e) {
+        logger.warn(`Error generando versión para imagen ${img}:`, e.message);
+        return { url: img, version: null, fullUrl: `/images/products/${img}` };
+      }
+    });
+
       return {
         id: product.id,
         sku: product.sku,
@@ -142,7 +170,9 @@ const ProductRepository = {
         length_cm: product.length_cm,
         width_cm: product.width_cm,
         height_cm: product.height_cm,
-        images: Array.isArray(product.images) ? product.images : JSON.parse(product.images || "[]"),
+        images: images,
+        images_with_version: imagesWithVersion,
+        image_version: imagesWithVersion[0]?.version || null, // Versión de la primera imagen
         sync_meta: product.sync_meta || {},
         variants: processedVariants,
         warehouses: productToWarehousesMap[product.id] || []

@@ -21,6 +21,7 @@ const { v4: uuidv4 } = require('uuid');
 const WarehouseProductController = {
   async list(req, res) {
     logger.info(`${req.user?.name || "Unknown"} - Lista warehouse_products`);
+    logger.info(`Datos recibidos: \n ${JSON.stringify(req.body)}`);
     const { company_id, user_id, branch_id, warehouse_id } = req.body;
 
     if (company_id && !(await CompanyRepository.findById(company_id))) {
@@ -43,7 +44,9 @@ const WarehouseProductController = {
         branchId: branch_id,
         warehouseId: warehouse_id,
       });
-      res.status(200).json({ warehouse_products: records });
+        logger.info(`company_id: ${company_id}`);
+      const sumary = await WarehouseProductRepository.getWarehouseSummaryByCompanyId(company_id);
+      res.status(200).json({ warehouse_products: records, sumary });
     } catch (error) {
       logger.error("WarehouseProductController->list: " + error.message);
       res.status(500).json({ error: "ServerError", details: error.message });

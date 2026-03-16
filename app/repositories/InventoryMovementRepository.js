@@ -6,6 +6,7 @@ const WarehouseRepository = require("./WarehouseRepository");
 const WarehouseProductRepository = require("./WarehouseProductRepository");
 const WarehouseProductVariantRepository = require("./WarehouseProductVariantRepository");
 const ProductRepository = require("./ProductRepository");
+const { getDateRange } = require("../util/dateUtils");
 
 /**
  * Mapea un registro de InventoryMovement a un objeto plano con relaciones.
@@ -157,8 +158,14 @@ const InventoryMovementRepository = {
     }
   },
 
-  async findWithFilters(filters = {}, options = {}) {
+async findWithFilters(filters = {}, options = {}) {
   try {
+    // ✅ EXTRAER fechas desde filters (o options, según tu convención)
+    const { start_date, end_date } = filters;
+    
+    // ✅ Obtener rango seguro usando tu helper existente
+    const dates = getDateRange(start_date, end_date);
+    
     const where = {};
 
     if (filters.warehouse_id != null) {
@@ -174,16 +181,11 @@ const InventoryMovementRepository = {
     if (filters.branch_id != null) where.branch_id = filters.branch_id;
     if (filters.reference_id != null) where.reference_id = filters.reference_id;
 
-    // Fechas: si no se envían, usar hoy
-    const today = new Date();
-    const start = filters.startDate 
-      ? new Date(new Date(filters.startDate).setHours(0,0,0,0))
-      : new Date(today.getFullYear(), today.getMonth(), today.getDate());
-    const end = filters.endDate
-      ? new Date(new Date(filters.endDate).setHours(23,59,59,999))
-      : new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
-
-    where.createdAt = { [Op.gte]: start, [Op.lte]: end };
+    // ✅ Aplicar filtro de fecha usando las fechas procesadas
+    where.createdAt = { 
+      [Op.gte]: `${dates.start_date} 00:00:00`, 
+      [Op.lte]: `${dates.end_date} 23:59:59.999` 
+    };
 
     const movements = await InventoryMovement.findAll({
       where,

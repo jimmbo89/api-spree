@@ -114,6 +114,26 @@ const ProductPublishingTaskRepository = {
     });
   },
 
+  async findLatestByExternalId(marketplaceId, externalId) {
+    return await ProductPublishingTask.findOne({
+      where: {
+        marketplace_id: marketplaceId,
+        external_id: externalId
+      },
+      order: [['createdAt', 'DESC']]
+    });
+  },
+
+  async findLatestByProductAndMarketplace(productId, marketplaceId) {
+    return await ProductPublishingTask.findOne({
+      where: {
+        product_id: productId,
+        marketplace_id: marketplaceId
+      },
+      order: [['createdAt', 'DESC']]
+    });
+  },
+
   async delete(task) {
   try {
     await task.destroy();

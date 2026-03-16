@@ -15,6 +15,13 @@ const ProductVariantRepository = {
     return await ProductVariant.findByPk(id);
   },
 
+  async findBySku(sku) {
+    if (!sku) return null;
+    return await ProductVariant.findOne({
+      where: { sku }
+    });
+  },
+
   async create(variantData, options = {}) {
     logger.info('Creando variante:', JSON.stringify(variantData));
     

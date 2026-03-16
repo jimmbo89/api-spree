@@ -33,6 +33,20 @@ const ProductMarketplaceLinkRepository = {
     if (branchId) where.branch_id = branchId;
 
     return await ProductMarketplaceLink.findAll({ where });
+  },
+
+  async findByMarketplaceExternalId(marketplaceId, externalId, companyId, branchId) {
+    const where = { marketplace_id: marketplaceId, external_id: externalId };
+    if (companyId) where.company_id = companyId;
+    if (branchId) where.branch_id = branchId;
+    return await ProductMarketplaceLink.findOne({ where });
+  },
+
+  async findByProduct(productId, companyId, branchId) {
+    const where = { product_id: productId };
+    if (companyId) where.company_id = companyId;
+    if (branchId) where.branch_id = branchId;
+    return await ProductMarketplaceLink.findAll({ where });
   }
 };
 
