@@ -93,6 +93,12 @@ module.exports = (sequelize, DataTypes) => {
     notes: {
       type: DataTypes.TEXT,
       allowNull: true
+    },
+    meta: {
+      type: DataTypes.JSON,
+      allowNull: true,
+      defaultValue: {},
+      comment: 'Metadatos adicionales del movimiento (ej: cálculo FIFO, lotes usados)'
     }
   }, {
     sequelize,

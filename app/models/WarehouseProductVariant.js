@@ -47,11 +47,18 @@ module.exports = (sequelize, DataTypes) => {
     },
     price: {
       type: DataTypes.DECIMAL(16, 2),
-      allowNull: false
+      allowNull: false,
+      comment: 'Precio de venta unitario'
     },
     promotional_price: {
       type: DataTypes.DECIMAL(16, 2),
       allowNull: true
+    },
+    purchase_price: {
+      type: DataTypes.DECIMAL(16, 2),
+      allowNull: false,
+      defaultValue: 0,
+      comment: 'Precio de compra unitario del lote'
     },
     stock: {
       type: DataTypes.INTEGER,

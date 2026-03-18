@@ -1,5 +1,5 @@
 // repositories/MarketplaceCredentialRepository.js
-const { MarketplaceCredential, Marketplace, User } = require('../models');
+const { MarketplaceCredential, Marketplace, User, ProductFieldMapping } = require('../models');
 const EncryptionService = require('../services/EncryptionService');
 const logger = require('../../config/logger');
 const { Op } = require('sequelize');
@@ -108,6 +108,13 @@ async findByUserDecifrado(userId, marketplaceId = null) {
       {
         model: Marketplace,
         as: 'marketplace',
+        include: [
+          {
+            model: ProductFieldMapping,
+            as: 'fieldMappings',
+            attributes: ['id', 'internal_field', 'external_field', 'required', 'data_type', 'direction', 'default_value', 'validation_rules']
+          }
+        ]
       }
     ],
     order: [['createdAt', 'DESC']]
@@ -117,6 +124,7 @@ async findByUserDecifrado(userId, marketplaceId = null) {
   return records.map(record => {
     const credential = record.get({ plain: true });
     const mp = credential.marketplace || {};
+    const fieldMappings = mp.fieldMappings || [];
 
     // === 🔐 DECIFRAR CAMPOS DEL MARKETPLACE ===
     let mp_client_secret = mp.client_secret;
@@ -194,7 +202,8 @@ async findByUserDecifrado(userId, marketplaceId = null) {
       marketplace: {
         ...mp,
         client_secret: mp_client_secret || null  // ✅ Asegurar que también esté decifrado aquí
-      }
+      },
+      fieldMappings
     };
   });
 },

@@ -1,7 +1,7 @@
 // repositories/InventoryMovementRepository.js
 const { InventoryMovement, Warehouse, Product, ProductVariant, User, Company, Branch } = require("../models");
 const logger = require("../../config/logger");
-const { Op, col, fn } = require("sequelize");
+const { Op, col, fn, literal } = require("sequelize");
 const WarehouseRepository = require("./WarehouseRepository");
 const WarehouseProductRepository = require("./WarehouseProductRepository");
 const WarehouseProductVariantRepository = require("./WarehouseProductVariantRepository");
@@ -161,11 +161,11 @@ const InventoryMovementRepository = {
 async findWithFilters(filters = {}, options = {}) {
   try {
     // ✅ EXTRAER fechas desde filters (o options, según tu convención)
-    const { start_date, end_date } = filters;
-    
+    const { start_date, end_date, company_id, branch_id } = filters;
+
     // ✅ Obtener rango seguro usando tu helper existente
     const dates = getDateRange(start_date, end_date);
-    
+
     const where = {};
 
     if (filters.warehouse_id != null) {
@@ -177,14 +177,36 @@ async findWithFilters(filters = {}, options = {}) {
     };
     if (filters.product_id != null) where.product_id = filters.product_id;
     if (filters.variant_id != null) where.variant_id = filters.variant_id;
-    if (filters.company_id != null) where.company_id = filters.company_id;
-    if (filters.branch_id != null) where.branch_id = filters.branch_id;
+    
+    // ⭐ IMPORTANTE: Si hay company_id Y branch_id, incluir ambos
+    // Si hay solo company_id, incluir movimientos de la company Y de sus branches
+    if (company_id != null) {
+      if (branch_id != null) {
+        // Si hay ambos, usar branch_id específico (prioridad)
+        where.branch_id = branch_id;
+        // También incluir movimientos directos de la company si existen
+        where[Op.or] = [
+          { company_id: company_id },
+          { branch_id: branch_id }
+        ];
+      } else {
+        // Si solo hay company_id, incluir movimientos de la company Y de sus branches
+        where[Op.or] = [
+          { company_id: company_id },
+          { branch_id: { [Op.in]: literal(`(SELECT id FROM branches WHERE company_id = ${company_id})`) } }
+        ];
+      }
+    } else if (branch_id != null) {
+      // Si solo hay branch_id (sin company_id), filtrar por branch_id
+      where.branch_id = branch_id;
+    }
+    
     if (filters.reference_id != null) where.reference_id = filters.reference_id;
 
     // ✅ Aplicar filtro de fecha usando las fechas procesadas
-    where.createdAt = { 
-      [Op.gte]: `${dates.start_date} 00:00:00`, 
-      [Op.lte]: `${dates.end_date} 23:59:59.999` 
+    where.createdAt = {
+      [Op.gte]: `${dates.start_date} 00:00:00`,
+      [Op.lte]: `${dates.end_date} 23:59:59.999`
     };
 
     const movements = await InventoryMovement.findAll({

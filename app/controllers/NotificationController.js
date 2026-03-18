@@ -16,7 +16,7 @@ const NotificationController = {
   },
 
 async getUserNotifications(req, res) {
-  logger.info(`${req.user?.name || 'Anonymous'} - Obteniendo notificaciones`);
+  //logger.info(`${req.user?.name || 'Anonymous'} - Obteniendo notificaciones`);
 
   try {
 

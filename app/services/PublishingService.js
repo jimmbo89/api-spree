@@ -285,22 +285,48 @@ static async republishProduct(task, marketplace, credential, userId) {
     
     // 3. ✅ PUBLICAR DIRECTO (SIN prepareProduct, SIN transformer)
     const result = await adapter.publish(task.payload);
-    
+
+    // ✅ Detectar si hay warnings
+    const hasWarnings = result.has_warnings === true ||
+                       (Array.isArray(result.warnings) && result.warnings.length > 0);
+
+    // ✅ Preparar mensaje de warnings para UI
+    const warningMessage = hasWarnings
+      ? `Advertencias: ${result.warnings?.map(w => `${w.field}: ${w.message}`).join('; ')}`
+      : null;
+
+    // ✅ Si hay warnings, actualizar la tarea con el estado correspondiente
+    if (hasWarnings) {
+      await ProductPublishingTaskRepository.updateTask(task, {
+        status: 'failed',  // ← Status especial para warnings (el producto SÍ se publicó)
+        error_message: warningMessage,
+        error_details: { warnings: result.warnings },
+        external_id: result.external_id,
+        external_url: result.data?.permalink,
+        api_response: result.data
+      });
+    }
+
     return {
       success: result.success,
+      task_id: task.id,  // ← Agregar para tracking
       external_id: result.external_id,
       data: result.data,
       error: result.error,
       details: result.details,
       auth_required: result.auth_required,
-      auth_url: result.auth_url
+      auth_url: result.auth_url,
+      has_warnings: hasWarnings,
+      warnings: result.warnings
     };
-    
+
   } catch (error) {
     logger.error(`[PublishingService] Error en republishProduct:`, error);
     return {
       success: false,
-      error: error.message || 'internal_error'
+      task_id: task.id,
+      error: error.message || 'internal_error',
+      error_details: error.response?.data || null
     };
   }
 }

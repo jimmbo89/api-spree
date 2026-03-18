@@ -80,6 +80,7 @@ const { createCafSchema, updateCafSchema, listCafsSchema } = require("./middlewa
 const cafXmlUpload = require("./middlewares/siiCafUpload.js");
 const { createDteSchema, checkStatusSchema } = require("./middlewares/validations/dteDocumentValidation.js");
 const JobController = require("./controllers/JobController.js");
+const MarketplaceWebhookController = require("./controllers/MarketplaceWebhookController.js");
 const router = express.Router();
 
 
@@ -95,6 +96,8 @@ router.get('/validate-requests/:id/approve', UserCompanyController.handleMembers
 router.get('/validate-requests/:id/reject', UserCompanyController.handleMembershipRequest);
 
 router.post('/ml-callback', OAuthController.mercadoLibreCallback);
+router.post('/webhooks-mercadolibre', MarketplaceWebhookController.mercadoLibre);
+router.post('/webhooks/falabella', MarketplaceWebhookController.falabella);
 router.get("/images/:foldername/:filename", (req, res) => {
   const { foldername, filename } = req.params;
   const safeFoldername = path.basename(foldername); // prevención de path traversal
@@ -106,12 +109,32 @@ router.get("/images/:foldername/:filename", (req, res) => {
   }
 
   const contentType = getMimeTypeFromExtension(safeFile);
+  const stats = fs.statSync(imagePath);
+
+  // Headers de caché HTTP (1 año para imágenes estáticas)
+  res.writeHead(200, {
+    "Content-Type": contentType,
+    "Cache-Control": "public, max-age=31536000, immutable",
+    "ETag": `"${stats.mtimeMs}-${stats.size}"`,
+    "Last-Modified": stats.mtime.toUTCString()
+  });
+
+  // Soporte para validación de caché (304 Not Modified)
+  const ifNoneMatch = req.headers["if-none-match"];
+  const ifModifiedSince = req.headers["if-modified-since"];
+  
+  if (ifNoneMatch && ifNoneMatch === `"${stats.mtimeMs}-${stats.size}"`) {
+    return res.writeHead(304).end();
+  }
+  
+  if (ifModifiedSince && new Date(ifModifiedSince) >= stats.mtime) {
+    return res.writeHead(304).end();
+  }
 
   fs.readFile(imagePath, (err, file) => {
     if (err) {
       return res.status(500).send("Error al leer la imagen");
     }
-    res.writeHead(200, { "Content-Type": contentType });
     res.end(file);
   });
 });
@@ -128,13 +151,33 @@ router.get("/images-protect/:foldername/:filename", (req, res) => {
     return res.status(404).send("Imagen no encontrada");
   }
 
- const contentType = getMimeTypeFromExtension(safeFile);
+  const contentType = getMimeTypeFromExtension(safeFile);
+  const stats = fs.statSync(imagePath);
+
+  // Headers de caché HTTP (1 año para imágenes estáticas)
+  res.writeHead(200, {
+    "Content-Type": contentType,
+    "Cache-Control": "public, max-age=31536000, immutable",
+    "ETag": `"${stats.mtimeMs}-${stats.size}"`,
+    "Last-Modified": stats.mtime.toUTCString()
+  });
+
+  // Soporte para validación de caché (304 Not Modified)
+  const ifNoneMatch = req.headers["if-none-match"];
+  const ifModifiedSince = req.headers["if-modified-since"];
+  
+  if (ifNoneMatch && ifNoneMatch === `"${stats.mtimeMs}-${stats.size}"`) {
+    return res.writeHead(304).end();
+  }
+  
+  if (ifModifiedSince && new Date(ifModifiedSince) >= stats.mtime) {
+    return res.writeHead(304).end();
+  }
 
   fs.readFile(imagePath, (err, file) => {
     if (err) {
       return res.status(500).send("Error al leer la imagen");
     }
-    res.writeHead(200, { "Content-Type": contentType });
     res.end(file);
   });
 });

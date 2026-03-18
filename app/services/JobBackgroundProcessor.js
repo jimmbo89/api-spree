@@ -82,7 +82,7 @@ const JobBackgroundProcessor = {
 
     if (jobs.length === 0) return;
 
-    logger.debug(`[JobProcessor] ${jobs.length} jobs encontrados para procesar`);
+    //logger.debug(`[JobProcessor] ${jobs.length} jobs encontrados para procesar`);
 
     for (const job of jobs) {
       // Verificar timeout para jobs colgados
@@ -112,7 +112,7 @@ const JobBackgroundProcessor = {
       // Si está pending, marcar como processing
       if (job.status === 'pending') {
         await JobRepository.startProcessing(jobId);
-        logger.info(`[JobProcessor] Job ${jobId} iniciado`);
+        //logger.info(`[JobProcessor] Job ${jobId} iniciado`);
       }
 
       // 🔑 CRÍTICO: Agregar includePayloads: true para recuperar product_payload y marketplace_payload
@@ -128,7 +128,7 @@ const JobBackgroundProcessor = {
         return;
       }
 
-      logger.debug(`[JobProcessor] Job ${jobId}: procesando ${pendingProducts.length} productos`);
+      //logger.debug(`[JobProcessor] Job ${jobId}: procesando ${pendingProducts.length} productos`);
 
       // Procesar productos en paralelo limitado
       const results = await Promise.allSettled(
@@ -477,7 +477,7 @@ async _processProduct(jobProduct, parentJobId) {
         successful: stats.successful,
         errors_count: stats.errors
       });
-      logger.info(`[JobProcessor] 🏁 Job ${jobId} completado: ${stats.successful}/${stats.total}`);
+      //logger.info(`[JobProcessor] 🏁 Job ${jobId} completado: ${stats.successful}/${stats.total}`);
       return true;
     }
     return false;

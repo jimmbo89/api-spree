@@ -55,7 +55,7 @@ const NotificationRepository = {
  * @returns {Promise<{ notifications: Array, hasMore: boolean, nextCursor: string|null }>}
  */
 async getUserNotifications({ user_id, company_id, limit = 10, cursor = null }) {
-  logger.info(`"Datos recibidos reposiotry:", ${JSON.stringify({user_id, company_id, limit, cursor})}`);
+  //logger.info(`"Datos recibidos reposiotry:", ${JSON.stringify({user_id, company_id, limit, cursor})}`);
   
   try {
     const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100);

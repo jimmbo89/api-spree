@@ -89,7 +89,8 @@ const ProductPublishingTaskController = {
         api_key: credential.api_key,
         expires_at: credential.expires_at,
         is_expired: credential.expires_at ? new Date(credential.expires_at) < new Date() : false,
-        country: credential.country
+        country: credential.country,
+        fieldMappings: credential.fieldMappings
       };
     });
 
@@ -1199,11 +1200,11 @@ async store(req, res) {
 async retryBatch(req, res) {
   logger.info(`${req.user?.name || 'Unknown'} - Republicando productos`);
   logger.info(`Datos recibidos: \n ${JSON.stringify(req.body)}`);
-  
+
   const { tasks } = req.body;
   const user_id = req.user.id;
   const results = [];
-  
+
   for (const { task_id, job_id } of tasks) {
     try {
       // 1. Obtener task
@@ -1212,16 +1213,16 @@ async retryBatch(req, res) {
         results.push({ task_id, success: false, error: 'task_not_found' });
         continue;
       }
-      
+
       // 2. Obtener marketplace y credential
       const marketplace = await MarketplaceRepository.findById(task.marketplace_id);
       let credential = await MarketplaceCredentialRepository.findById(task.credential_id);
-      
+
       if (!marketplace || !credential) {
         results.push({ task_id, success: false, error: 'marketplace_or_credential_not_found' });
         continue;
       }
-      
+
       // 3. ✅ RENOVAR TOKEN SI ES NECESARIO
       try {
         credential = await ProductPublishingTaskController.refreshSingleCredential(
@@ -1231,14 +1232,17 @@ async retryBatch(req, res) {
         );
       } catch (refreshError) {
         logger.warn(`[retryBatch] No se pudo renovar token para task ${task_id}: ${refreshError.message}`);
-        results.push({ 
-          task_id, 
-          success: false, 
-          error: refreshError.message.startsWith('auth_required') ? 'auth_required' : refreshError.message 
+        results.push({
+          task_id,
+          success: false,
+          error: refreshError.message.startsWith('auth_required') ? 'auth_required' : refreshError.message,
+          error_details: refreshError.message.startsWith('auth_required') 
+            ? { auth_url: refreshError.message.split(':')[1] } 
+            : null
         });
         continue; // Continuar con el siguiente task
       }
-      
+
       // 4. ✅ REPUBLICAR con credencial actualizada
       const result = await PublishingService.republishProduct(
         task,
@@ -1246,29 +1250,34 @@ async retryBatch(req, res) {
         credential,
         user_id
       );
-      
-      // 5. Actualizar task
-      await ProductPublishingTaskRepository.updateTask(task, {
-        status: result.success ? 'published' : 'failed',
-        error_message: result.success ? null : result.error,
-        error_details: result.success ? null : result.details,
-        external_id: result.success ? result.external_id : task.external_id,
-        external_url: result.success ? result.data?.permalink : task.external_url,
-        attempt_count: (task.attempt_count || 0) + 1,
-        last_attempt_at: new Date(),
-        api_response: result.data || task.api_response
-      });
-      
+
+      // 5. Actualizar task (solo si NO hay warnings, ya que el servicio ya lo actualizó)
+      if (!result.has_warnings) {
+        await ProductPublishingTaskRepository.updateTask(task, {
+          status: result.success ? 'published' : 'failed',
+          error_message: result.success ? null : result.error,
+          error_details: result.success ? null : result.details,
+          external_id: result.success ? result.external_id : task.external_id,
+          external_url: result.success ? result.data?.permalink : task.external_url,
+          attempt_count: (task.attempt_count || 0) + 1,
+          last_attempt_at: new Date(),
+          api_response: result.data || task.api_response
+        });
+      }
+
       results.push({
         task_id,
         success: result.success,
         external_id: result.external_id,
-        error: result.success ? null : result.error
+        error: result.success ? null : result.error,
+        error_details: result.success ? null : (result.error_details || result.details),
+        has_warnings: result.has_warnings || false,
+        warnings: result.warnings || null
       });
-      
+
     } catch (error) {
       logger.error(`[retryBatch] Error republicando task ${task_id}:`, error);
-      
+
       const currentTask = await ProductPublishingTaskRepository.findById(task_id);
       await ProductPublishingTaskRepository.updateTask(currentTask || { id: task_id }, {
         status: 'failed',
@@ -1276,13 +1285,18 @@ async retryBatch(req, res) {
         attempt_count: ((currentTask?.attempt_count) || 0) + 1,
         last_attempt_at: new Date()
       });
-      
-      results.push({ task_id, success: false, error: error.message });
+
+      results.push({ 
+        task_id, 
+        success: false, 
+        error: error.message,
+        error_details: error.response?.data || null
+      });
     }
   }
-  
+
   const successCount = results.filter(r => r.success).length;
-  
+
   return res.json({
     success: true,
     total: results.length,

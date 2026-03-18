@@ -8,7 +8,7 @@ const { generateImageVersion } = require('../util/imageCacheUtils');
 const { UPLOAD_BASE_PATH } = require('../../config/upload');
 
 const WarehouseProductRepository = {
-async findFiltered({ companyId, userId, branchId, warehouseId }) {
+/*async findFiltered({ companyId, userId, branchId, warehouseId }) {
   const where = {};
 
   if (companyId !== undefined) where.company_id = companyId;
@@ -54,6 +54,12 @@ async findFiltered({ companyId, userId, branchId, warehouseId }) {
       {
         model: WarehouseProductVariant,
         as: 'warehouseVariants', // Según tus logs, el alias es 'variants'
+        attributes: [
+          'id', 'warehouse_product_id', 'variant_id',
+          'active', 'published', 'local_sku',
+          'price', 'promotional_price', 'purchase_price', 'stock', // ⭐ AGREGADO purchase_price
+          'createdAt' // ⭐ AGREGADO para FIFO reference
+        ],
         include: [{
           model: ProductVariant,
           as: 'variant',
@@ -123,8 +129,8 @@ async findFiltered({ companyId, userId, branchId, warehouseId }) {
     // Procesar variantes del almacén
     // IMPORTANTE: Según tus logs, el alias es 'variants' (no 'warehouseVariants')
     const warehouseVariants = wpJson.warehouseVariants || [];
-    
-    const variantsWithStock = warehouseVariants.map(wpv => {      
+
+    const variantsWithStock = warehouseVariants.map(wpv => {
       return {
         id: wpv.id,
         variant_id: wpv.variant_id,
@@ -134,7 +140,10 @@ async findFiltered({ companyId, userId, branchId, warehouseId }) {
         published: wpv.published || false,
         local_sku: wpv.local_sku || '',
         price: parseFloat(wpv.price) || 0,
-        stock: parseInt(wpv.stock) || 0
+        purchase_price: parseFloat(wpv.purchase_price) || 0, // ⭐ AGREGADO
+        promotional_price: wpv.promotional_price ? parseFloat(wpv.promotional_price) : null, // ⭐ AGREGADO
+        stock: parseInt(wpv.stock) || 0,
+        createdAt: wpv.createdAt || null // ⭐ AGREGADO para referencia FIFO
       };
     });
 
@@ -147,6 +156,228 @@ async findFiltered({ companyId, userId, branchId, warehouseId }) {
       warehouse_id: wpJson.warehouse_id,
       active: wpJson.active !== false,
       code: wpJson.code || wpJson.code || null, // Ambos nombres
+      company_id: wpJson.company_id,
+      branch_id: wpJson.branch_id,
+      user_id: wpJson.user_id,
+
+      // Datos del producto global
+      sku: product?.sku || '',
+      name: product?.name || '',
+      brand: product?.brand || '',
+      model: product?.model || '',
+      condition: product?.condition || '',
+      gtin: product?.gtin || '',
+      mpn: product?.mpn || '',
+      description: product?.description || '',
+      warranty_months: product?.warranty_months || null,
+      warranty_text: product?.warranty_text || '',
+      weight_grams: product?.weight_grams || null,
+      length_cm: product?.length_cm || null,
+      width_cm: product?.width_cm || null,
+      height_cm: product?.height_cm || null,
+      product_images: productImages,
+      product_images_with_version: productImagesWithVersion,
+      product_image: productImages[0] || null,
+      product_image_url: productImagesWithVersion[0]?.fullUrl || null,
+      image_version: productImagesWithVersion[0]?.version || null,
+      product_attributes: productAttributes,
+
+      // Variantes con stock/precio
+      variants: variantsWithStock,
+
+      // Stock total para facilitar acceso
+      stock: totalStock
+    };
+
+    return result;
+  });
+},*/
+
+async findFiltered({ companyId, userId, branchId, warehouseId }) {
+  const where = {};
+  const include = [];
+
+  // 🎯 CASO ESPECIAL: companyId sin branchId específico
+  // Incluir productos vinculados directamente O vía branch del warehouse
+  if (companyId != null && companyId !== 0 && (branchId == null || branchId === 0)) {
+    
+    // Incluir relación con warehouse y su branch para poder filtrar por branch.company_id
+    include.push({
+      model: Warehouse,
+      as: 'warehouse',
+      attributes: ['id', 'company_id', 'branch_id'],
+      required: false,
+      include: [{
+        model: Branch,
+        as: 'branch',
+        attributes: ['id', 'company_id'],
+        required: false
+      }]
+    });
+
+    // Filtro OR: company_id directo O company_id del branch asociado al warehouse
+    where[Op.or] = [
+      { company_id: companyId },
+      { 
+        '$warehouse.branch.company_id$': companyId 
+      }
+    ];
+
+  } else {
+    // 🎯 Caso normal: filtros directos
+    if (companyId != null && companyId !== 0) where.company_id = companyId;
+    if (branchId != null && branchId !== 0) where.branch_id = branchId;
+  }
+
+  // Otros filtros
+  if (userId != null && userId !== 0) where.user_id = userId;
+  
+  // Manejar warehouseId como array o número
+  if (warehouseId !== undefined) {
+    if (Array.isArray(warehouseId)) {
+      where.warehouse_id = { [Op.in]: warehouseId };
+    } else {
+      where.warehouse_id = warehouseId;
+    }
+  }
+
+  const records = await WarehouseProduct.findAll({
+    where,
+    include: [
+      ...include,
+      {
+        model: Product,
+        as: 'product',
+        attributes: [
+          'id', 'sku', 'name', 'description', 'brand', 'model', 
+          'condition', 'gtin', 'mpn', 'attributes', 'warranty_months', 
+          'warranty_text', 'weight_grams', 'length_cm', 'width_cm', 
+          'height_cm', 'images', 'category_id', 'user_id', 'company_id'
+        ],
+        include: [
+          { 
+            model: ProductVariant, 
+            as: 'variants',
+            attributes: ['id', 'sku', 'attributes']
+          },
+          {
+            model: ProductAttribute,
+            as: 'productAttributes',
+            attributes: ['id', 'attribute_id', 'value'],
+            include: [{
+              model: Attribute,
+              as: 'attribute',
+              attributes: ['id', 'name']
+            }]
+          }
+        ]
+      },
+      {
+        model: WarehouseProductVariant,
+        as: 'warehouseVariants',
+        attributes: [
+          'id', 'warehouse_product_id', 'variant_id',
+          'active', 'published', 'local_sku',
+          'price', 'promotional_price', 'purchase_price', 'stock',
+          'createdAt'
+        ],
+        include: [{
+          model: ProductVariant,
+          as: 'variant',
+          attributes: ['id', 'sku', 'attributes']
+        }]
+      }
+    ],
+    distinct: true,
+    subQuery: false
+  });
+
+  return records.map(wp => {
+    const wpJson = wp.toJSON ? wp.toJSON() : wp;
+    const product = wpJson.product;
+
+    // Procesar imágenes y atributos del producto
+    let productImages = [];
+    let productImagesWithVersion = [];
+    let productAttributes = [];
+
+    if (product) {
+      try {
+        // Imágenes
+        if (product.images) {
+          if (typeof product.images === 'string') {
+            productImages = JSON.parse(product.images);
+          } else if (Array.isArray(product.images)) {
+            productImages = product.images;
+          }
+        }
+
+        // Imágenes con versión para caché
+        productImagesWithVersion = productImages.map(img => {
+          try {
+            const filename = path.basename(img);
+            const filepath = path.join(UPLOAD_BASE_PATH, 'products', filename);
+            const version = fs.existsSync(filepath)
+              ? generateImageVersion(filename, filepath)
+              : Date.now().toString();
+            return {
+              url: img,
+              version: version,
+              fullUrl: `/images/products/${filename}?v=${version}`
+            };
+          } catch (e) {
+            logger.warn(`Error generando versión para imagen ${img}:`, e.message);
+            return { url: img, version: null, fullUrl: `/images/products/${img}` };
+          }
+        });
+
+        // Atributos
+        if (Array.isArray(product.productAttributes)) {
+          for (const pa of product.productAttributes) {
+            if (pa.attribute) {
+              productAttributes.push({
+                id: pa.id,
+                attribute_id: pa.attribute.id,
+                name: pa.attribute.name,
+                value: pa.value
+              });
+            }
+          }
+        }
+      } catch (e) {
+        logger.error('Error parsing product ', JSON.stringify(e));
+      }
+    }
+
+    // Procesar variantes del almacén
+    const warehouseVariants = wpJson.warehouseVariants || [];
+
+    const variantsWithStock = warehouseVariants.map(wpv => {
+      return {
+        id: wpv.id,
+        variant_id: wpv.variant_id,
+        sku: wpv.variant?.sku || '',
+        attributes: wpv.variant?.attributes || {},
+        active: wpv.active !== false,
+        published: wpv.published || false,
+        local_sku: wpv.local_sku || '',
+        price: parseFloat(wpv.price) || 0,
+        purchase_price: parseFloat(wpv.purchase_price) || 0,
+        promotional_price: wpv.promotional_price ? parseFloat(wpv.promotional_price) : null,
+        stock: parseInt(wpv.stock) || 0,
+        createdAt: wpv.createdAt || null
+      };
+    });
+
+    // Calcular stock total
+    const totalStock = variantsWithStock.reduce((sum, v) => sum + (v.stock || 0), 0);
+
+    const result = {
+      id: wpJson.id,
+      product_id: wpJson.product_id,
+      warehouse_id: wpJson.warehouse_id,
+      active: wpJson.active !== false,
+      code: wpJson.code || null,
       company_id: wpJson.company_id,
       branch_id: wpJson.branch_id,
       user_id: wpJson.user_id,
@@ -534,19 +765,28 @@ async findProductsByWarehouseIds({ companyId, warehouseIds }) {
     for (const wv of (wp.warehouseVariants || [])) {
       const variantId = wv.variant_id;
       const stock = parseInt(wv.stock) || 0;
+      const price = parseFloat(wv.price) || 0;
+      const purchasePrice = parseFloat(wv.purchase_price) || 0; // ⭐ AGREGADO
 
       if (!consolidated.variants.has(variantId)) {
         consolidated.variants.set(variantId, {
           id: variantId,
           sku: wv.variant?.sku || '',
           attributes: wv.variant?.attributes || {},
-          price: parseInt(wv.price) || 0,
+          price: price,
+          purchase_price: purchasePrice, // ⭐ AGREGADO
           totalStock: 0
         });
       }
 
-      consolidated.variants.get(variantId).totalStock += stock;
+      const variant = consolidated.variants.get(variantId);
+      variant.totalStock += stock;
       consolidated.totalStock += stock;
+      
+      // Actualizar price y purchase_price con el promedio ponderado si hay múltiples lotes
+      if (variant.totalStock > 0) {
+        variant.purchase_price = ((variant.totalStock - stock) * variant.purchase_price + stock * purchasePrice) / variant.totalStock;
+      }
     }
   }
 
@@ -623,7 +863,8 @@ async getTotalsByCompanyId(companyId) {
     SELECT
       COUNT(DISTINCT wp.product_id) AS total_products,
       COUNT(DISTINCT wp.id) AS total_warehouse_products,
-      COALESCE(SUM(wpv.stock), 0) AS total_stock
+      COALESCE(SUM(wpv.stock), 0) AS total_stock,
+      COALESCE(SUM(wpv.stock * wpv.purchase_price), 0) AS total_inventory_value -- ⭐ NUEVO
     FROM warehouse_products wp
     LEFT JOIN warehouses w ON wp.warehouse_id = w.id
     LEFT JOIN branches b ON w.branch_id = b.id
@@ -639,7 +880,8 @@ async getTotalsByCompanyId(companyId) {
   return {
     totalProducts: parseInt(row.total_products, 10) || 0,
     totalWarehouseProducts: parseInt(row.total_warehouse_products, 10) || 0,
-    totalStock: parseInt(row.total_stock, 10) || 0
+    totalStock: parseInt(row.total_stock, 10) || 0,
+    totalInventoryValue: parseFloat(row.total_inventory_value) || 0 // ⭐ NUEVO: Valor total del inventario
   };
 },
 
@@ -649,7 +891,8 @@ async getTotalsByCompanyByWarehouseId(companyId) {
       wp.warehouse_id,
       COUNT(DISTINCT wp.product_id) AS total_products,
       COUNT(DISTINCT wp.id) AS total_warehouse_products,
-      COALESCE(SUM(wpv.stock), 0) AS total_stock
+      COALESCE(SUM(wpv.stock), 0) AS total_stock,
+      COALESCE(SUM(wpv.stock * wpv.purchase_price), 0) AS total_inventory_value -- ⭐ NUEVO
     FROM warehouse_products wp
     LEFT JOIN warehouses w ON wp.warehouse_id = w.id
     LEFT JOIN branches b ON w.branch_id = b.id
@@ -668,7 +911,8 @@ async getTotalsByCompanyByWarehouseId(companyId) {
     totalsByWarehouse[row.warehouse_id] = {
       totalProducts: parseInt(row.total_products, 10) || 0,
       totalWarehouseProducts: parseInt(row.total_warehouse_products, 10) || 0,
-      totalStock: parseInt(row.total_stock, 10) || 0
+      totalStock: parseInt(row.total_stock, 10) || 0,
+      totalInventoryValue: parseFloat(row.total_inventory_value) || 0 // ⭐ NUEVO
     };
   });
 
@@ -697,31 +941,53 @@ async isProductAssociatedWithCompany(productId, companyId) {
  * Obtiene resumen de productos y stock por empresa:
  * - Totales generales consolidados
  * - Desglose por almacén en formato array []
- * 
+ *
  * @param {number} companyId - ID de la empresa
  * @returns {Promise<Object>}
  */
 async getWarehouseSummaryByCompanyId(companyId) {
+  // Primero obtener los IDs de almacenes que pertenecen a la compañía
+  // (directos o a través de branches)
+  const warehousesResult = await sequelize.query(`
+    SELECT DISTINCT w.id
+    FROM warehouses w
+    LEFT JOIN branches b ON w.branch_id = b.id
+    WHERE w.company_id = :companyId
+       OR b.company_id = :companyId
+  `, {
+    replacements: { companyId },
+    type: sequelize.QueryTypes.SELECT
+  });
 
+  const warehouseIds = warehousesResult.map(r => r.id);
+
+  if (warehouseIds.length === 0) {
+    return {
+      summary: { totalProducts: 0, totalWarehouseProducts: 0, totalStock: 0 },
+      productsByWarehouse: []
+    };
+  }
+
+  // Ahora usar esos IDs para obtener el resumen (misma lógica que getCountsByWarehouse)
   const query = `
     SELECT
       wp.warehouse_id,
       w.name AS warehouse_name,
       COUNT(DISTINCT wp.product_id) AS total_products,
       COUNT(DISTINCT wp.id) AS total_warehouse_products,
-      COALESCE(SUM(wpv.stock), 0) AS total_stock
+      COALESCE(SUM(wpv.stock), 0) AS total_stock,
+      COALESCE(SUM(wpv.stock * wpv.purchase_price), 0) AS total_inventory_value,
+      COALESCE(AVG(wpv.purchase_price), 0) AS avg_purchase_price
     FROM warehouse_products wp
-    LEFT JOIN warehouses w ON wp.warehouse_id = w.id
-    LEFT JOIN branches b ON w.branch_id = b.id
-    LEFT JOIN warehouse_product_variants wpv ON wpv.warehouse_product_id = wp.id
-    WHERE wp.company_id = :companyId
-       OR (b.company_id = :companyId AND wp.company_id IS NULL)
+    INNER JOIN warehouses w ON wp.warehouse_id = w.id
+    INNER JOIN warehouse_product_variants wpv ON wpv.warehouse_product_id = wp.id
+    WHERE wp.warehouse_id IN (:warehouseIds)
     GROUP BY wp.warehouse_id, w.name
     ORDER BY w.name ASC
   `;
 
   const result = await sequelize.query(query, {
-    replacements: { companyId },
+    replacements: { warehouseIds },
     type: sequelize.QueryTypes.SELECT
   });
 
@@ -731,7 +997,9 @@ async getWarehouseSummaryByCompanyId(companyId) {
     warehouse_name: row.warehouse_name || 'Sin nombre',
     totalProducts: parseInt(row.total_products, 10) || 0,
     totalWarehouseProducts: parseInt(row.total_warehouse_products, 10) || 0,
-    totalStock: parseInt(row.total_stock, 10) || 0
+    totalStock: parseInt(row.total_stock, 10) || 0,
+    totalInventoryValue: parseFloat(row.total_inventory_value) || 0, // ⭐ NUEVO
+    avgPurchasePrice: parseFloat(row.avg_purchase_price) || 0 // ⭐ NUEVO
   }));
 
   // Calcular totales generales a partir del desglose

@@ -11,6 +11,17 @@ const ProductVariantRepository = {
     });
   },
 
+  /**
+   * NUEVO: Obtiene la primera variante de un producto (para usar como default)
+   */
+  async findOneByProductId(productId) {
+    return await ProductVariant.findOne({
+      where: { product_id: productId },
+      order: [['id', 'ASC']], // Retorna la más antigua
+      attributes: ['id', 'product_id', 'sku', 'internal_code', 'attributes', 'image']
+    });
+  },
+
   async findById(id) {
     return await ProductVariant.findByPk(id);
   },

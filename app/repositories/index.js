@@ -12,6 +12,7 @@ const InvitationRepository = require("./InvitationRepository");
 const JobProductRepository = require("./JobProductRepository");
 const JobRepository = require("./JobRepository");
 const LogRepository = require("./LogRepository");
+const MarketplaceWebhookEventRepository = require("./MarketplaceWebhookEventRepository");
 const MarketplaceCredentialRepository = require("./MarketplaceCredentialRepository");
 const MarketplaceRepository = require("./MarketplaceRepository");
 const NotificationRepository = require("./NotificationRepository");
@@ -47,6 +48,7 @@ module.exports = {
     UserRepository,
     UserTokenRepository,
     LogRepository,
+    MarketplaceWebhookEventRepository,
     InvitationRepository,
     CompanyRepository,
     BranchRepository,

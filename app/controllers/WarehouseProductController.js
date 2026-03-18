@@ -541,7 +541,7 @@ const WarehouseProductController = {
   },
   async createMovement(req, res) {
   logger.info(`${req.user?.name || "Unknown"} - Crea movimiento de inventario`);
-  logger.info("Datos recibidos:", JSON.stringify(req.body));
+  logger.info(`Datos recibidos: ${JSON.stringify(req.body)}`);
 
   const {
     movement_type,           // 'entry', 'exit', 'transfer'
@@ -637,13 +637,14 @@ const WarehouseProductController = {
 
     // === Procesar cada variante ===
     for (const variantData of variants) {
-      const { 
-        variant_id, 
+      const {
+        variant_id,
         quantity,
         // Campos solo para 'entry'
-        local_sku, 
-        price, 
-        promotional_price 
+        local_sku,
+        price,
+        purchase_price,  // ⭐ NUEVO: Campo separado para precio de compra
+        promotional_price
       } = variantData;
 
       if (!Number.isInteger(quantity) || quantity <= 0) {
@@ -676,6 +677,28 @@ const WarehouseProductController = {
 
       // === PROCESAR SEGÚN EL TIPO ===
       if (movement_type === 'entry') {
+        // === OBTENER O CREAR VARIANTE SI NO EXISTE ===
+        // Si no se especifica variant_id, usar/crear la variante por defecto del producto
+        let actualVariantId = variant_id;
+        
+        if (!actualVariantId) {
+          // Buscar variante por defecto del producto
+          const defaultVariant = await ProductVariantRepository.findOneByProductId(product.id);
+          
+          if (defaultVariant) {
+            actualVariantId = defaultVariant.id;
+          } else {
+            // Crear variante por defecto si no existe
+            const newVariant = await ProductVariantRepository.create({
+              product_id: product.id,
+              sku: product.sku,
+              attributes: {}
+            }, { transaction });
+            actualVariantId = newVariant.id;
+            logger.info(`Variante por defecto creada: ${newVariant.id} para producto ${product.id}`);
+          }
+        }
+        
         const originCompanyId = await _resolveCompanyFromWarehouse(origin_warehouse_id);
 
         const alreadyAssociated = await WarehouseProductRepository.isProductAssociatedWithCompany(
@@ -705,80 +728,126 @@ const WarehouseProductController = {
       });
     }
   }
-        // --- ENTRADA: crear o actualizar variante en el MISMO almacén ---
-        let wpVariant = await WarehouseProductVariantRepository.findByVariantAndWarehouseProduct(
-          variant_id,
-          originWp.id
-        );
+        // --- ENTRADA: CREAR NUEVO LOTE CON SU PRECIO DE COMPRA ---
+        // IMPORTANTE: Siempre se crea un nuevo lote para mantener el precio de compra original
+        // Esto permite calcular la ganancia real por cada venta basada en el costo del lote vendido
+        
+        // Si el frontend envía purchase_price, usarlo. Si no, usar price como fallback
+        const actualPurchasePrice = parseFloat(purchase_price) || parseFloat(price) || 0;
+        const salePrice = parseFloat(price) || 0;
+        
+        // Crear nuevo lote con su precio de compra específico
+        const newStock = quantity;
+        const createdLot = await WarehouseProductVariantRepository.create({
+          warehouse_product_id: originWp.id,
+          variant_id: actualVariantId,  // ✅ Usar variant_id válido
+          stock: newStock,
+          local_sku: local_sku || product.sku,
+          price: salePrice,              // Precio de venta
+          purchase_price: actualPurchasePrice, // 💰 PRECIO DE COMPRA DEL LOTE (nuevo campo)
+          promotional_price: promotional_price || null,
+          active: true,
+          published: false
+        }, { transaction });
 
-        let newStock, oldStock = 0;
-        if (wpVariant) {
-          // Ya existe: aumentar stock
-          oldStock = wpVariant.stock;
-          newStock = oldStock + quantity;
-          await WarehouseProductVariantRepository.update(wpVariant, {
-            stock: newStock,
-            // Solo actualizar precio/SKU si se envían (para edición)
-            ...(local_sku !== undefined && { local_sku }),
-            ...(price !== undefined && { price }),
-            ...(promotional_price !== undefined && { promotional_price }),
-            active: true
-          }, { transaction });
-        } else {
-          // No existe: crear nueva
-          newStock = quantity;
-          await WarehouseProductVariantRepository.create({
-            warehouse_product_id: originWp.id,
-            variant_id,
-            stock: newStock,
-            local_sku: local_sku || product.sku,
-            price: price || product.base_price || 0,
-            promotional_price: promotional_price || null,
-            active: true,
-            published: false
-          }, { transaction });
-        }
-
-        // Registrar movimiento de entrada
+        // Registrar movimiento de entrada con el precio de compra
         await InventoryMovementRepository.create({
           warehouse_id: origin_warehouse_id,
           product_id,
-          variant_id,
+          variant_id: actualVariantId,  // ✅ Usar variant_id válido
           company_id: originWarehouse.company_id,
           branch_id: originWarehouse.branch_id,
           movement_type: 'entry',
           quantity,
-          stock_before: oldStock,
+          stock_before: 0,
           stock_after: newStock,
-          unit_price: price || product.base_price || 0,
-          total_value: (price || product.base_price || 0) * quantity,
+          unit_price: actualPurchasePrice,      // Precio de compra unitario
+          total_value: actualPurchasePrice * quantity, // Valor total de la compra
           reference_type: 'manual',
           reference_id: referenceId,
           reason: reason.trim(),
           notes: notes?.trim() || null,
-          user_id: currentUserId
+          user_id: currentUserId,
+          meta: {  // ⭐ AGREGADO: Información del lote creado
+            lot_created: true,
+            lot_id: createdLot.id,
+            purchase_price: actualPurchasePrice,
+            sale_price: salePrice
+          }
         }, { transaction });
 
       } else if (movement_type === 'exit') {
-        // --- SALIDA: reducir stock en el MISMO almacén ---
-        const newStock = originalStockOrigin - quantity;
-        const updateData = { stock: newStock };
-
-        if (newStock === 0) {
-          updateData.price = null;
-          updateData.promotional_price = null;
-          updateData.local_sku = null;
-          updateData.active = false;
-          updateData.published = false;
-        }
-
-        await WarehouseProductVariantRepository.update(
-          originVariant,
-          updateData,
-          { transaction }
+        // --- SALIDA: IMPLEMENTAR FIFO PARA CALCULAR COSTO REAL ---
+        // Se obtienen todos los lotes activos ordenados por fecha (más antiguo primero)
+        // y se descuenta el stock comenzando por el lote más antiguo (FIFO)
+        
+        const lots = await WarehouseProductVariantRepository.findAllLotsByVariantAndWarehouse(
+          variant_id,
+          originWp.id
         );
 
-        // Registrar movimiento de salida
+        if (!lots || lots.length === 0) {
+          await transaction.rollback();
+          return res.status(400).json({ 
+            success: false, 
+            message: `No hay stock disponible para la variante ${variant_id}` 
+          });
+        }
+
+        // Calcular stock total disponible (suma de todos los lotes)
+        const totalAvailableStock = lots.reduce((sum, lot) => sum + lot.stock, 0);
+        
+        if (totalAvailableStock < quantity) {
+          await transaction.rollback();
+          return res.status(400).json({ 
+            success: false, 
+            message: `Stock insuficiente. Disponible: ${totalAvailableStock}, Solicitado: ${quantity}` 
+          });
+        }
+
+        // === APLICAR FIFO: Descontar de los lotes más antiguos primero ===
+        let remainingToSell = quantity;
+        let totalCost = 0; // Costo total de la venta (para calcular ganancia)
+        let totalStockBefore = totalAvailableStock;
+        const lotsToUpdate = [];
+
+        for (const lot of lots) {
+          if (remainingToSell <= 0) break;
+
+          const takeFromLot = Math.min(lot.stock, remainingToSell);
+          const lotCost = takeFromLot * parseFloat(lot.purchase_price);
+          
+          totalCost += lotCost;
+          lotsToUpdate.push({
+            lotId: lot.id,
+            oldStock: lot.stock,
+            newStock: lot.stock - takeFromLot,
+            purchasePrice: lot.purchase_price
+          });
+
+          remainingToSell -= takeFromLot;
+        }
+
+        // Actualizar cada lote afectado
+        for (const lotData of lotsToUpdate) {
+          const updateData = { stock: lotData.newStock };
+          
+          // Si el lote se queda sin stock, desactivarlo
+          if (lotData.newStock === 0) {
+            updateData.active = false;
+            updateData.published = false;
+          }
+
+          const lot = await WarehouseProductVariantRepository.findLotById(lotData.lotId);
+          if (lot) {
+            await WarehouseProductVariantRepository.update(lot, updateData, { transaction });
+          }
+        }
+
+        // Calcular precio de costo promedio para el registro del movimiento
+        const avgCostPerUnit = totalCost / quantity;
+
+        // Registrar movimiento de salida con el costo real calculado
         await InventoryMovementRepository.create({
           warehouse_id: origin_warehouse_id,
           product_id,
@@ -787,67 +856,136 @@ const WarehouseProductController = {
           branch_id: originWarehouse.branch_id,
           movement_type: 'exit',
           quantity,
-          stock_before: originalStockOrigin,
-          stock_after: newStock,
-          unit_price: originVariant.price,
-          total_value: originVariant.price ? originVariant.price * quantity : null,
+          stock_before: totalStockBefore,
+          stock_after: totalStockBefore - quantity,
+          unit_price: avgCostPerUnit,        // 💰 COSTO PROMEDIO (FIFO)
+          total_value: totalCost,             // 💰 COSTO TOTAL REAL PARA CÁLCULO DE GANANCIA
           reference_type: 'manual',
           reference_id: referenceId,
           reason: reason.trim(),
           notes: notes?.trim() || null,
-          user_id: currentUserId
+          user_id: currentUserId,
+          meta: JSON.stringify({
+            fifo_calculation: true,
+            lots_used: lotsToUpdate,
+            total_purchase_cost: totalCost
+          })
         }, { transaction });
 
       } else if (movement_type === 'transfer') {
-        // --- TRANSFERENCIA: mover entre almacenes (tu lógica actual) ---
-        const newStockOrigin = originalStockOrigin - quantity;
-        const updateDataOrigin = { stock: newStockOrigin };
-
-        if (newStockOrigin === 0) {
-          updateDataOrigin.price = null;
-          updateDataOrigin.promotional_price = null;
-          updateDataOrigin.local_sku = null;
-          updateDataOrigin.active = false;
-          updateDataOrigin.published = false;
-        }
-
-        await WarehouseProductVariantRepository.update(
-          originVariant,
-          updateDataOrigin,
-          { transaction }
+        // --- TRANSFERENCIA: FIFO en origen, mantener purchase_price en destino ---
+        // El purchase_price original se mantiene en el almacén destino para preservar
+        // el costo real del producto transferido
+        
+        // 1. Obtener lotes del origen con FIFO
+        const originLots = await WarehouseProductVariantRepository.findAllLotsByVariantAndWarehouse(
+          variant_id,
+          originWp.id
         );
 
-        // Actualizar/crear en destino
-        let destWpVariant = await WarehouseProductVariantRepository.findByVariantAndWarehouseProduct(
+        if (!originLots || originLots.length === 0) {
+          await transaction.rollback();
+          return res.status(400).json({ 
+            success: false, 
+            message: `No hay stock disponible en origen para la variante ${variant_id}` 
+          });
+        }
+
+        const totalAvailableStock = originLots.reduce((sum, lot) => sum + lot.stock, 0);
+        
+        if (totalAvailableStock < quantity) {
+          await transaction.rollback();
+          return res.status(400).json({ 
+            success: false, 
+            message: `Stock insuficiente en origen. Disponible: ${totalAvailableStock}, Solicitado: ${quantity}` 
+          });
+        }
+
+        // 2. Aplicar FIFO en origen (igual que exit)
+        let remainingToTransfer = quantity;
+        let totalCost = 0;
+        let totalStockBeforeOrigin = totalAvailableStock;
+        const originLotsToUpdate = [];
+        let weightedAvgPurchasePrice = 0;
+
+        for (const lot of originLots) {
+          if (remainingToTransfer <= 0) break;
+
+          const takeFromLot = Math.min(lot.stock, remainingToTransfer);
+          const lotCost = takeFromLot * parseFloat(lot.purchase_price);
+          
+          totalCost += lotCost;
+          originLotsToUpdate.push({
+            lotId: lot.id,
+            oldStock: lot.stock,
+            newStock: lot.stock - takeFromLot,
+            purchasePrice: lot.purchase_price,
+            quantityTransferred: takeFromLot
+          });
+
+          remainingToTransfer -= takeFromLot;
+        }
+
+        // Calcular precio de compra promedio ponderado para el destino
+        weightedAvgPurchasePrice = totalCost / quantity;
+
+        // 3. Actualizar lotes en origen
+        for (const lotData of originLotsToUpdate) {
+          const updateData = { stock: lotData.newStock };
+          
+          if (lotData.newStock === 0) {
+            updateData.active = false;
+            updateData.published = false;
+          }
+
+          const lot = await WarehouseProductVariantRepository.findLotById(lotData.lotId);
+          if (lot) {
+            await WarehouseProductVariantRepository.update(lot, updateData, { transaction });
+          }
+        }
+
+        // 4. Crear/actualizar lote en destino con el purchase_price original
+        // Obtener lotes existentes en destino (si los hay)
+        const destLots = await WarehouseProductVariantRepository.findAllLotsByVariantAndWarehouse(
           variant_id,
           destWp.id
         );
-        let oldStockDest = 0, newStockDest = 0;
 
-        if (destWpVariant) {
-          oldStockDest = destWpVariant.stock;
-          newStockDest = oldStockDest + quantity;
-          await WarehouseProductVariantRepository.update(
-            destWpVariant,
-            { stock: newStockDest },
-            { transaction }
+        // Buscar un lote en destino con el mismo purchase_price (para consolidar)
+        let destLotConsolidated = null;
+        if (destLots && destLots.length > 0) {
+          // Buscar lote con purchase_price similar (margen de 0.01 para decimales)
+          destLotConsolidated = destLots.find(lot => 
+            Math.abs(parseFloat(lot.purchase_price) - weightedAvgPurchasePrice) < 0.01
           );
+        }
+
+        let totalStockBeforeDest = 0;
+        if (destLotConsolidated) {
+          // Consolidar con lote existente del mismo precio
+          totalStockBeforeDest = destLotConsolidated.stock;
+          const newStock = destLotConsolidated.stock + quantity;
+          
+          await WarehouseProductVariantRepository.update(destLotConsolidated, {
+            stock: newStock
+          }, { transaction });
         } else {
-          oldStockDest = 0;
-          newStockDest = quantity;
+          // Crear nuevo lote en destino con el purchase_price promedio de la transferencia
+          totalStockBeforeDest = 0;
           await WarehouseProductVariantRepository.create({
             warehouse_product_id: destWp.id,
             variant_id,
             active: true,
             published: false,
-            local_sku: originVariant.local_sku || null,
-            price: originVariant.price || 0,
-            promotional_price: originVariant.promotional_price,
-            stock: newStockDest
+            local_sku: originLots[0]?.local_sku || null,
+            price: originLots[0]?.price || 0,
+            promotional_price: originLots[0]?.promotional_price,
+            purchase_price: weightedAvgPurchasePrice, // 💰 MANTIENE EL COSTO ORIGINAL
+            stock: quantity
           }, { transaction });
         }
 
-        // Movimientos de transferencia
+        // 5. Registrar movimientos de transferencia con el costo real
         const baseMovement = {
           product_id,
           variant_id,
@@ -867,10 +1005,15 @@ const WarehouseProductController = {
           branch_id: originWarehouse.branch_id,
           movement_type: 'transfer_exit',
           quantity,
-          stock_before: originalStockOrigin,
-          stock_after: newStockOrigin,
-          unit_price: originVariant.price,
-          total_value: originVariant.price ? originVariant.price * quantity : null
+          stock_before: totalStockBeforeOrigin,
+          stock_after: totalStockBeforeOrigin - quantity,
+          unit_price: weightedAvgPurchasePrice,
+          total_value: totalCost,
+          meta: JSON.stringify({
+            transfer_type: 'fifo',
+            lots_used: originLotsToUpdate,
+            total_purchase_cost: totalCost
+          })
         }, { transaction });
 
         await InventoryMovementRepository.create({
@@ -880,10 +1023,14 @@ const WarehouseProductController = {
           branch_id: destWarehouse.branch_id,
           movement_type: 'transfer_entry',
           quantity,
-          stock_before: oldStockDest,
-          stock_after: newStockDest,
-          unit_price: originVariant.price,
-          total_value: originVariant.price ? originVariant.price * quantity : null
+          stock_before: totalStockBeforeDest,
+          stock_after: totalStockBeforeDest + quantity,
+          unit_price: weightedAvgPurchasePrice,
+          total_value: totalCost,
+          meta: JSON.stringify({
+            transfer_type: 'fifo',
+            purchase_price_preserved: weightedAvgPurchasePrice
+          })
         }, { transaction });
       }
     }
@@ -1195,17 +1342,15 @@ async function _processVariantMovement({
     throw new Error(`Cantidad inválida para variante ${variant_id}`);
   }
 
-  let originVariant = null;
-  let originalStockOrigin = 0;
-
+  // Para exit/transfer, validar que haya stock (la validación detallada se hace en _processExit/_processTransfer)
   if (movement_type === 'exit' || movement_type === 'transfer') {
-    originVariant = originVariantMap.get(variant_id);
-    if (!originVariant) {
-      throw new Error(`Variante ${variant_id} no encontrada en almacén de origen`);
-    }
-    originalStockOrigin = originVariant.stock;
-    if (originalStockOrigin < quantity) {
-      throw new Error(`Stock insuficiente para variante ${variant_id}`);
+    const totalStock = await WarehouseProductVariantRepository.getTotalStockByVariantAndWarehouse(
+      variant_id,
+      originWp.id
+    );
+    
+    if (totalStock.total_stock < quantity) {
+      throw new Error(`Stock insuficiente para variante ${variant_id}. Disponible: ${totalStock.total_stock}`);
     }
   }
 
@@ -1227,12 +1372,11 @@ async function _processVariantMovement({
     });
   } else if (movement_type === 'exit') {
     await _processExit({
-      originVariant,
+      originWp,
+      variant_id,
       quantity,
-      originalStockOrigin,
       originWarehouse,
       product_id: product.id,
-      variant_id,
       reason,
       notes,
       currentUserId,
@@ -1241,14 +1385,13 @@ async function _processVariantMovement({
     });
   } else if (movement_type === 'transfer') {
     await _processTransfer({
-      originVariant,
+      originWp,
       destWp,
+      variant_id,
       quantity,
-      originalStockOrigin,
       originWarehouse,
       destWarehouse,
       product_id: product.id,
-      variant_id,
       reason,
       notes,
       currentUserId,
@@ -1258,13 +1401,14 @@ async function _processVariantMovement({
   }
 };
 
-// --- ENTRADA ---
+// --- ENTRADA (actualizado para lotes) ---
 async function _processEntry({
   originWp,
   variant_id,
   quantity,
   local_sku,
   price,
+  purchase_price,  // ⭐ NUEVO
   promotional_price,
   product,
   originWarehouse,
@@ -1274,82 +1418,136 @@ async function _processEntry({
   referenceId,
   transaction
 }) {
-  const wpVariant = await WarehouseProductVariantRepository.findByVariantAndWarehouseProduct(
-    variant_id,
-    originWp.id
-  );
-
-  let newStock, oldStock = 0;
-  if (wpVariant) {
-    oldStock = wpVariant.stock;
-    newStock = oldStock + quantity;
-    await WarehouseProductVariantRepository.update(wpVariant, {
-      stock: newStock,
-      ...(local_sku !== undefined && { local_sku }),
-      ...(price !== undefined && { price }),
-      ...(promotional_price !== undefined && { promotional_price }),
-      active: true
-    }, { transaction });
-  } else {
-    newStock = quantity;
-    await WarehouseProductVariantRepository.create({
-      warehouse_product_id: originWp.id,
-      variant_id,
-      stock: newStock,
-      local_sku: local_sku || product.sku,
-      price: price || product.base_price || 0,
-      promotional_price: promotional_price || null,
-      active: true,
-      published: false
-    }, { transaction });
+  // === OBTENER O CREAR VARIANTE SI NO EXISTE ===
+  let actualVariantId = variant_id;
+  
+  if (!actualVariantId) {
+    const defaultVariant = await ProductVariantRepository.findOneByProductId(product.id);
+    
+    if (defaultVariant) {
+      actualVariantId = defaultVariant.id;
+    } else {
+      const newVariant = await ProductVariantRepository.create({
+        product_id: product.id,
+        sku: product.sku,
+        attributes: {}
+      }, { transaction });
+      actualVariantId = newVariant.id;
+    }
   }
+
+  // Si el frontend envía purchase_price, usarlo. Si no, usar price como fallback
+  const actualPurchasePrice = parseFloat(purchase_price) || parseFloat(price) || 0;
+  const salePrice = parseFloat(price) || 0;
+
+  // Crear nuevo lote con su precio de compra específico
+  const newStock = quantity;
+  const createdLot = await WarehouseProductVariantRepository.create({
+    warehouse_product_id: originWp.id,
+    variant_id: actualVariantId,  // ✅ Usar variant_id válido
+    stock: newStock,
+    local_sku: local_sku || product.sku,
+    price: salePrice,
+    purchase_price: actualPurchasePrice, // 💰 PRECIO DE COMPRA DEL LOTE
+    promotional_price: promotional_price || null,
+    active: true,
+    published: false
+  }, { transaction });
 
   await InventoryMovementRepository.create({
     warehouse_id: originWarehouse.id,
     product_id: product.id,
-    variant_id,
+    variant_id: actualVariantId,  // ✅ Usar variant_id válido
     company_id: originWarehouse.company_id,
     branch_id: originWarehouse.branch_id,
     movement_type: 'entry',
     quantity,
-    stock_before: oldStock,
+    stock_before: 0,
     stock_after: newStock,
-    unit_price: price || product.base_price || 0,
-    total_value: (price || product.base_price || 0) * quantity,
+    unit_price: actualPurchasePrice,
+    total_value: actualPurchasePrice * quantity,
     reference_type: 'manual',
     reference_id: referenceId,
     reason: reason.trim(),
     notes: notes?.trim() || null,
-    user_id: currentUserId
+    user_id: currentUserId,
+    meta: {  // ⭐ AGREGADO: Información del lote creado
+      lot_created: true,
+      lot_id: createdLot.id,
+      purchase_price: actualPurchasePrice,
+      sale_price: salePrice
+    }
   }, { transaction });
 };
 
-// --- SALIDA ---
+// --- SALIDA (con FIFO para costo real) ---
 async function _processExit({
-  originVariant,
+  originWp,
+  variant_id,
   quantity,
-  originalStockOrigin,
   originWarehouse,
   product_id,
-  variant_id,
   reason,
   notes,
   currentUserId,
   referenceId,
   transaction
 }) {
-  const newStock = originalStockOrigin - quantity;
-  const updateData = { stock: newStock };
+  // Obtener lotes con FIFO
+  const lots = await WarehouseProductVariantRepository.findAllLotsByVariantAndWarehouse(
+    variant_id,
+    originWp.id
+  );
 
-  if (newStock === 0) {
-    updateData.price = null;
-    updateData.promotional_price = null;
-    updateData.local_sku = null;
-    updateData.active = false;
-    updateData.published = false;
+  if (!lots || lots.length === 0) {
+    throw new Error(`No hay stock disponible para la variante ${variant_id}`);
   }
 
-  await WarehouseProductVariantRepository.update(originVariant, updateData, { transaction });
+  const totalAvailableStock = lots.reduce((sum, lot) => sum + lot.stock, 0);
+  
+  if (totalAvailableStock < quantity) {
+    throw new Error(`Stock insuficiente. Disponible: ${totalAvailableStock}, Solicitado: ${quantity}`);
+  }
+
+  // Aplicar FIFO
+  let remainingToSell = quantity;
+  let totalCost = 0;
+  let totalStockBefore = totalAvailableStock;
+  const lotsToUpdate = [];
+
+  for (const lot of lots) {
+    if (remainingToSell <= 0) break;
+
+    const takeFromLot = Math.min(lot.stock, remainingToSell);
+    const lotCost = takeFromLot * parseFloat(lot.purchase_price);
+    
+    totalCost += lotCost;
+    lotsToUpdate.push({
+      lotId: lot.id,
+      oldStock: lot.stock,
+      newStock: lot.stock - takeFromLot,
+      purchasePrice: lot.purchase_price
+    });
+
+    remainingToSell -= takeFromLot;
+  }
+
+  // Actualizar lotes
+  for (const lotData of lotsToUpdate) {
+    const updateData = { stock: lotData.newStock };
+    
+    if (lotData.newStock === 0) {
+      updateData.active = false;
+      updateData.published = false;
+    }
+
+    const lot = await WarehouseProductVariantRepository.findLotById(lotData.lotId);
+    if (lot) {
+      await WarehouseProductVariantRepository.update(lot, updateData, { transaction });
+    }
+  }
+
+  const avgCostPerUnit = totalCost / quantity;
 
   await InventoryMovementRepository.create({
     warehouse_id: originWarehouse.id,
@@ -1359,70 +1557,132 @@ async function _processExit({
     branch_id: originWarehouse.branch_id,
     movement_type: 'exit',
     quantity,
-    stock_before: originalStockOrigin,
-    stock_after: newStock,
-    unit_price: originVariant.price,
-    total_value: originVariant.price ? originVariant.price * quantity : null,
+    stock_before: totalStockBefore,
+    stock_after: totalStockBefore - quantity,
+    unit_price: avgCostPerUnit,
+    total_value: totalCost,
     reference_type: 'manual',
     reference_id: referenceId,
     reason: reason.trim(),
     notes: notes?.trim() || null,
-    user_id: currentUserId
+    user_id: currentUserId,
+    meta: JSON.stringify({
+      fifo_calculation: true,
+      lots_used: lotsToUpdate,
+      total_purchase_cost: totalCost
+    })
   }, { transaction });
 };
 
-// --- TRANSFERENCIA ---
+// --- TRANSFERENCIA (con FIFO y mantenimiento de purchase_price) ---
 async function _processTransfer({
-  originVariant,
+  originWp,
   destWp,
+  variant_id,
   quantity,
-  originalStockOrigin,
   originWarehouse,
   destWarehouse,
   product_id,
-  variant_id,
   reason,
   notes,
   currentUserId,
   referenceId,
   transaction
 }) {
-  const newStockOrigin = originalStockOrigin - quantity;
-  const updateDataOrigin = { stock: newStockOrigin };
-  if (newStockOrigin === 0) {
-    updateDataOrigin.price = null;
-    updateDataOrigin.promotional_price = null;
-    updateDataOrigin.local_sku = null;
-    updateDataOrigin.active = false;
-    updateDataOrigin.published = false;
-  }
-  await WarehouseProductVariantRepository.update(originVariant, updateDataOrigin, { transaction });
+  // 1. Obtener lotes del origen con FIFO
+  const originLots = await WarehouseProductVariantRepository.findAllLotsByVariantAndWarehouse(
+    variant_id,
+    originWp.id
+  );
 
-  let destWpVariant = await WarehouseProductVariantRepository.findByVariantAndWarehouseProduct(
+  if (!originLots || originLots.length === 0) {
+    throw new Error(`No hay stock disponible en origen para la variante ${variant_id}`);
+  }
+
+  const totalAvailableStock = originLots.reduce((sum, lot) => sum + lot.stock, 0);
+  
+  if (totalAvailableStock < quantity) {
+    throw new Error(`Stock insuficiente en origen. Disponible: ${totalAvailableStock}, Solicitado: ${quantity}`);
+  }
+
+  // 2. Aplicar FIFO en origen
+  let remainingToTransfer = quantity;
+  let totalCost = 0;
+  let totalStockBeforeOrigin = totalAvailableStock;
+  const originLotsToUpdate = [];
+
+  for (const lot of originLots) {
+    if (remainingToTransfer <= 0) break;
+
+    const takeFromLot = Math.min(lot.stock, remainingToTransfer);
+    const lotCost = takeFromLot * parseFloat(lot.purchase_price);
+    
+    totalCost += lotCost;
+    originLotsToUpdate.push({
+      lotId: lot.id,
+      oldStock: lot.stock,
+      newStock: lot.stock - takeFromLot,
+      purchasePrice: lot.purchase_price,
+      quantityTransferred: takeFromLot
+    });
+
+    remainingToTransfer -= takeFromLot;
+  }
+
+  const weightedAvgPurchasePrice = totalCost / quantity;
+
+  // 3. Actualizar lotes en origen
+  for (const lotData of originLotsToUpdate) {
+    const updateData = { stock: lotData.newStock };
+    
+    if (lotData.newStock === 0) {
+      updateData.active = false;
+      updateData.published = false;
+    }
+
+    const lot = await WarehouseProductVariantRepository.findLotById(lotData.lotId);
+    if (lot) {
+      await WarehouseProductVariantRepository.update(lot, updateData, { transaction });
+    }
+  }
+
+  // 4. Crear/actualizar lote en destino con el purchase_price original
+  const destLots = await WarehouseProductVariantRepository.findAllLotsByVariantAndWarehouse(
     variant_id,
     destWp.id
   );
-  let oldStockDest = 0, newStockDest = 0;
 
-  if (destWpVariant) {
-    oldStockDest = destWpVariant.stock;
-    newStockDest = oldStockDest + quantity;
-    await WarehouseProductVariantRepository.update(destWpVariant, { stock: newStockDest }, { transaction });
+  let destLotConsolidated = null;
+  if (destLots && destLots.length > 0) {
+    destLotConsolidated = destLots.find(lot => 
+      Math.abs(parseFloat(lot.purchase_price) - weightedAvgPurchasePrice) < 0.01
+    );
+  }
+
+  let totalStockBeforeDest = 0;
+  if (destLotConsolidated) {
+    totalStockBeforeDest = destLotConsolidated.stock;
+    const newStock = destLotConsolidated.stock + quantity;
+    
+    await WarehouseProductVariantRepository.update(destLotConsolidated, {
+      stock: newStock
+    }, { transaction });
   } else {
-    oldStockDest = 0;
-    newStockDest = quantity;
+    totalStockBeforeDest = 0;
     await WarehouseProductVariantRepository.create({
       warehouse_product_id: destWp.id,
       variant_id,
       active: true,
       published: false,
-      local_sku: originVariant.local_sku || null,
-      price: originVariant.price || 0,
-      promotional_price: originVariant.promotional_price,
-      stock: newStockDest
+      local_sku: originLots[0]?.local_sku || null,
+      price: originLots[0]?.price || 0,
+      promotional_price: originLots[0]?.promotional_price,
+      purchase_price: weightedAvgPurchasePrice,
+      stock: quantity
     }, { transaction });
   }
 
+  // 5. Registrar movimientos
   const baseMovement = {
     product_id,
     variant_id,
@@ -1442,10 +1702,15 @@ async function _processTransfer({
     branch_id: originWarehouse.branch_id,
     movement_type: 'transfer_exit',
     quantity,
-    stock_before: originalStockOrigin,
-    stock_after: newStockOrigin,
-    unit_price: originVariant.price,
-    total_value: originVariant.price ? originVariant.price * quantity : null
+    stock_before: totalStockBeforeOrigin,
+    stock_after: totalStockBeforeOrigin - quantity,
+    unit_price: weightedAvgPurchasePrice,
+    total_value: totalCost,
+    meta: JSON.stringify({
+      transfer_type: 'fifo',
+      lots_used: originLotsToUpdate,
+      total_purchase_cost: totalCost
+    })
   }, { transaction });
 
   await InventoryMovementRepository.create({
@@ -1455,10 +1720,14 @@ async function _processTransfer({
     branch_id: destWarehouse.branch_id,
     movement_type: 'transfer_entry',
     quantity,
-    stock_before: oldStockDest,
-    stock_after: newStockDest,
-    unit_price: originVariant.price,
-    total_value: originVariant.price ? originVariant.price * quantity : null
+    stock_before: totalStockBeforeDest,
+    stock_after: totalStockBeforeDest + quantity,
+    unit_price: weightedAvgPurchasePrice,
+    total_value: totalCost,
+    meta: JSON.stringify({
+      transfer_type: 'fifo',
+      purchase_price_preserved: weightedAvgPurchasePrice
+    })
   }, { transaction });
 }
 
