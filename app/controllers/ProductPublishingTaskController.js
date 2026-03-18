@@ -566,14 +566,17 @@ async store(req, res) {
   const actualMode = isDraft ? 'quick' : mode;
   const job_type = isDraft ? 'draft' : 'publish';
 
+  // ✅ Calcular total de productos × marketplaces para el job
+  const totalExpected = products.length * marketplaces.length;
+
   // ✅ Crear job padre
   const jobRecord = await JobRepository.create({
     user_id: req.user.id,
     company_id: req.user.company_id,
     job_type: job_type,
-    status: 'pending',
     mode: actualMode,
     batch_id: batch_id,
+    total_products: totalExpected,  // ← ✅ Pasar total esperado
     config: {
       products: products,
       marketplaces: marketplaces,
@@ -590,15 +593,12 @@ async store(req, res) {
   // ✅ Validar que jobId sea válido
   if (!jobId || isNaN(jobId)) {
     logger.error('[Controller] jobId inválido:', { jobRecord });
-    return res.status(500).json({ 
-      success: false, 
+    return res.status(500).json({
+      success: false,
       msg: "job_creation_failed",
       details: "No se pudo obtener el ID del job creado"
     });
   }
-
-  // ✅ Calcular total esperado para logging
-  const totalExpected = products.length * marketplaces.length;
 
   // ✅ Crear JobProducts para cada combinación producto × credential
   for (const product of products) {
@@ -624,13 +624,13 @@ async store(req, res) {
     ip_address: metadata.ip_address,
     user_agent: metadata.user_agent,
     status: 'success',
-    meta: { 
+    meta: {
       job_id: jobId,
       batch_id,
       product_count: products.length,
       marketplace_count: marketplaces.length,
       mode: actualMode,
-      total_expected: totalExpected  // ← ✅ Variable definida correctamente
+      total_expected: totalExpected
     }
   });
 
@@ -1079,7 +1079,11 @@ async store(req, res) {
       published_at: t.published_at,
       attempt_count: t.attempt_count,
       created_at: t.createdAt,
-      updated_at: t.updatedAt
+      updated_at: t.updatedAt,
+      // ✅ Campo calculado para identificar warnings fácilmente
+      has_warnings: t.status === 'published_with_warnings' || 
+                    (t.error_details && typeof t.error_details === 'object' && t.error_details.has_warnings === true) ||
+                    (Array.isArray(t.error_details?.warnings) && t.error_details.warnings.length > 0)
     }));
 
       // ✅ Agrupar por batch_id si existe
@@ -1092,6 +1096,7 @@ async store(req, res) {
             summary: {
               total: 0,
               published: 0,
+              published_with_warnings: 0,  // ✅ Nuevo contador para warnings
               failed: 0,
               draft: 0,
               pending: 0
@@ -1100,9 +1105,12 @@ async store(req, res) {
         }
         grouped[task.batch_id].tasks.push(task);
         grouped[task.batch_id].summary.total++;
-        
+
         switch(task.status) {
           case 'published': grouped[task.batch_id].summary.published++; break;
+          case 'published_with_warnings': 
+            grouped[task.batch_id].summary.published_with_warnings++; 
+            break;
           case 'failed': grouped[task.batch_id].summary.failed++; break;
           case 'draft': grouped[task.batch_id].summary.draft++; break;
           case 'pending': grouped[task.batch_id].summary.pending++; break;
@@ -1251,19 +1259,8 @@ async retryBatch(req, res) {
         user_id
       );
 
-      // 5. Actualizar task (solo si NO hay warnings, ya que el servicio ya lo actualizó)
-      if (!result.has_warnings) {
-        await ProductPublishingTaskRepository.updateTask(task, {
-          status: result.success ? 'published' : 'failed',
-          error_message: result.success ? null : result.error,
-          error_details: result.success ? null : result.details,
-          external_id: result.success ? result.external_id : task.external_id,
-          external_url: result.success ? result.data?.permalink : task.external_url,
-          attempt_count: (task.attempt_count || 0) + 1,
-          last_attempt_at: new Date(),
-          api_response: result.data || task.api_response
-        });
-      }
+      // 5. ✅ La tarea YA fue actualizada por el servicio (incluyendo warnings)
+      // No es necesario actualizarla aquí nuevamente
 
       results.push({
         task_id,
@@ -1272,7 +1269,8 @@ async retryBatch(req, res) {
         error: result.success ? null : result.error,
         error_details: result.success ? null : (result.error_details || result.details),
         has_warnings: result.has_warnings || false,
-        warnings: result.warnings || null
+        warnings: result.warnings || null,
+        status: result.status  // ← ✅ Incluir status para que el front sepa el estado real
       });
 
     } catch (error) {
@@ -1349,16 +1347,17 @@ async updatePayload(req, res) {
     // ✅ Buscar tarea con relaciones
     const task = await ProductPublishingTaskRepository.findById(task_id);
     if (!task) {
-      return res.status(404).json({ 
-        success: false, 
-        message: "task_not_found" 
+      return res.status(404).json({
+        success: false,
+        message: "task_not_found"
       });
     }
     // ✅ Validar que la tarea esté en estado editable
-    const editableStatuses = ['draft', 'failed', 'pending'];
+    // ✅ published_with_warnings es editable para permitir corregir warnings y republicar
+    const editableStatuses = ['draft', 'failed', 'pending', 'published_with_warnings'];
     if (!editableStatuses.includes(task.status)) {
-      return res.status(400).json({ 
-        success: false, 
+      return res.status(400).json({
+        success: false,
         msg: "invalid_status",
         message: `No se puede editar el payload en estado: ${task.status}`
       });

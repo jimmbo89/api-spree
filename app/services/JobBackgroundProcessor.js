@@ -124,6 +124,7 @@ const JobBackgroundProcessor = {
 
       if (pendingProducts.length === 0) {
         // Verificar si el job ya completó todos sus productos
+        logger.info(`[JobProcessor] Job ${jobId}: no hay productos pendientes, verificando completado`);
         await this._checkJobCompletion(jobId);
         return;
       }
@@ -471,13 +472,15 @@ async _processProduct(jobProduct, parentJobId) {
    */
   async _checkJobCompletion(jobId) {
     const stats = await JobProductRepository.getStatsByJob(jobId);
-    
+
+    logger.info(`[JobProcessor] Verificando completado job ${jobId}: ${stats.processed}/${stats.total} procesados, ${stats.successful} éxitos, ${stats.errors} errores`);
+
     if (stats.processed >= stats.total && stats.total > 0) {
       await JobRepository.complete(jobId, {
         successful: stats.successful,
         errors_count: stats.errors
       });
-      //logger.info(`[JobProcessor] 🏁 Job ${jobId} completado: ${stats.successful}/${stats.total}`);
+      logger.info(`[JobProcessor] 🏁 Job ${jobId} completado: ${stats.successful}/${stats.total}`);
       return true;
     }
     return false;

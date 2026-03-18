@@ -98,7 +98,14 @@ module.exports = (sequelize, DataTypes) => {
     
     // Estado del job
     status: {
-      type: DataTypes.ENUM('pending', 'processing', 'completed', 'failed', 'cancelled'),
+      type: DataTypes.ENUM(
+        'pending',
+        'processing',
+        'completed',
+        'completed_with_errors',  // ✅ Agregado para diferenciar jobs con errores
+        'failed',
+        'cancelled'
+      ),
       allowNull: false,
       defaultValue: 'pending'
     },

@@ -352,20 +352,21 @@ async findById(id, options = {}) {
   // Cuando se complete un job, verificar si hay errores
 async complete(jobId, { successful, errors_count, error_summary = null }) {
   const job = await Job.findByPk(jobId);
-  
+
   // ✅ Determinar estado correcto según errores
-  const finalStatus = errors_count > 0 
-    ? 'completed_with_errors'  // Tiene errores
-    : 'completed';              // Sin errores
-  
+  // ✅ Usamos 'completed_with_errors' si hubo errores, 'completed' si fue exitoso
+  const finalStatus = errors_count > 0 ? 'completed_with_errors' : 'completed';
+
   await job.update({
-    status: finalStatus,  // ← Usar estado dinámico
+    status: finalStatus,
     successful,
     errors_count,
     error_summary,
     completed_at: new Date()
   });
-  
+
+  logger.info(`[JobRepository] Job ${jobId} completado: ${successful} éxitos, ${errors_count} errores`);
+
   return job.get({ plain: true });
 },
 

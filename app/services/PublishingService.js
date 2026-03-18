@@ -143,15 +143,35 @@ class PublishingService {
       }
 
       if (result.success) {
-         // ✅ Detectar si hay warnings
-        const hasWarnings = result.has_warnings === true || 
+        // ✅ Detectar si hay warnings
+        const hasWarnings = result.has_warnings === true ||
                           (Array.isArray(result.warnings) && result.warnings.length > 0);
-        
-        // ✅ Preparar mensaje de warnings para UI
+
+        // ✅ Determinar status según si hay warnings
+        // Los warnings NO son errores, el producto SÍ se publicó
+        const status = hasWarnings ? 'published_with_warnings' : 'published';
+
+        // ✅ Preparar mensaje de warnings para UI (claro y entendible)
         const warningMessage = hasWarnings
-          ? `Advertencias: ${result.warnings.map(w => `${w.field}: ${w.message}`).join('; ')}`
+          ? `Advertencias del marketplace: ${result.warnings.map(w => {
+              const field = w.field ? `${w.field}` : '';
+              const message = w.message || 'Sin detalle';
+              return field ? `${field}: ${message}` : message;
+            }).join('; ')}`
           : null;
-        
+
+        // ✅ Estructura de warnings para guardar (más clara para el front)
+        const warningsData = hasWarnings ? {
+          has_warnings: true,
+          warnings: result.warnings.map(w => ({
+            field: w.field || 'unknown',
+            message: w.message || 'Sin detalle',
+            value: w.value || null
+          })),
+          // ✅ Flag para que el front sepa que aunque hay warnings, la publicación fue exitosa
+          published_successfully: true
+        } : null;
+
         const task = await ProductPublishingTaskRepository.create({
           product_id: productData.id,
           marketplace_id: marketplace.marketplace_id,
@@ -159,15 +179,14 @@ class PublishingService {
           warehouse_id: warehouse.id,
           user_id: userId,
           date: new Date(),
-          // ✅ Si hay warnings, usar status especial (o mantener 'published')
-          status: hasWarnings ? 'failed' : 'published',
+          status: status,
           payload: transformed,
           external_id: result.external_id || result.data?.id,
           external_url: result.data?.permalink,
-          // ✅ Guardar warnings como error_message para que aparezca en UI
+          // ✅ Guardar warnings como error_message para compatibilidad con el front
           error_message: hasWarnings ? warningMessage : null,
-          // ✅ Guardar detalles completos de warnings
-          error_details: hasWarnings ? { warnings: result.warnings } : null,
+          // ✅ Guardar warnings estructurados en error_details
+          error_details: warningsData,
           api_response: result.data,
           batch_id: batch_id || null,
         });
@@ -175,23 +194,25 @@ class PublishingService {
         await ProductMarketplaceLinkRepository.upsert({
           product_id: productData.id,
           marketplace_id: marketplace.marketplace_id,
-          credential_id: credentialId,  // ← NUEVO
+          credential_id: credentialId,
           company_id: warehouse.company_id,
           branch_id: warehouse.branch_id,
-          status: 'published',
+          status: status,
           external_id: result.external_id || result.data?.id,
           external_url: result.data?.permalink,
           last_synced_at: new Date()
         });
 
-        logger.info(`[PublishingService] ✅ Producto publicado exitosamente`);
+        logger.info(`[PublishingService] ✅ Producto publicado ${hasWarnings ? 'con advertencias' : 'exitosamente'}`);
         return {
           success: true,
           task_id: task.id,
           external_id: result.external_id || result.data?.id,
           product_id: productData.id,
-          credential_id: credentialId,  // ← NUEVO
-          has_warnings: hasWarnings
+          credential_id: credentialId,
+          has_warnings: hasWarnings,
+          warnings: hasWarnings ? result.warnings : null,
+          status: status
         };
       }
 
@@ -263,10 +284,10 @@ static async republishProduct(task, marketplace, credential, userId) {
       userId,
       credential
     );
-    
+
     if (!adapter) {
-      return { 
-        success: false, 
+      return {
+        success: false,
         error: 'adapter_not_found',
         marketplace_id: marketplace.marketplace_id
       };
@@ -282,7 +303,7 @@ static async republishProduct(task, marketplace, credential, userId) {
       };
     }
 
-    
+
     // 3. ✅ PUBLICAR DIRECTO (SIN prepareProduct, SIN transformer)
     const result = await adapter.publish(task.payload);
 
@@ -290,26 +311,62 @@ static async republishProduct(task, marketplace, credential, userId) {
     const hasWarnings = result.has_warnings === true ||
                        (Array.isArray(result.warnings) && result.warnings.length > 0);
 
-    // ✅ Preparar mensaje de warnings para UI
+    // ✅ Determinar status según si hay warnings
+    const status = hasWarnings ? 'published_with_warnings' : (result.success ? 'published' : 'failed');
+
+    // ✅ Preparar mensaje de warnings para UI (claro y entendible)
     const warningMessage = hasWarnings
-      ? `Advertencias: ${result.warnings?.map(w => `${w.field}: ${w.message}`).join('; ')}`
+      ? `Advertencias del marketplace: ${result.warnings?.map(w => {
+          const field = w.field ? `${w.field}` : '';
+          const message = w.message || 'Sin detalle';
+          return field ? `${field}: ${message}` : message;
+        }).join('; ')}`
       : null;
+
+    // ✅ Estructura de warnings para guardar
+    const warningsData = hasWarnings ? {
+      has_warnings: true,
+      warnings: result.warnings?.map(w => ({
+        field: w.field || 'unknown',
+        message: w.message || 'Sin detalle',
+        value: w.value || null
+      })) || [],
+      published_successfully: true
+    } : null;
 
     // ✅ Si hay warnings, actualizar la tarea con el estado correspondiente
     if (hasWarnings) {
       await ProductPublishingTaskRepository.updateTask(task, {
-        status: 'failed',  // ← Status especial para warnings (el producto SÍ se publicó)
+        status: status,  // ← 'published_with_warnings'
         error_message: warningMessage,
-        error_details: { warnings: result.warnings },
+        error_details: warningsData,
         external_id: result.external_id,
         external_url: result.data?.permalink,
+        api_response: result.data
+      });
+    } else if (result.success) {
+      // ✅ Éxito sin warnings
+      await ProductPublishingTaskRepository.updateTask(task, {
+        status: 'published',
+        error_message: null,
+        error_details: null,
+        external_id: result.external_id,
+        external_url: result.data?.permalink,
+        api_response: result.data
+      });
+    } else {
+      // ✅ Error real de publicación
+      await ProductPublishingTaskRepository.updateTask(task, {
+        status: 'failed',
+        error_message: result.error || 'Error desconocido',
+        error_details: result.details || null,
         api_response: result.data
       });
     }
 
     return {
       success: result.success,
-      task_id: task.id,  // ← Agregar para tracking
+      task_id: task.id,
       external_id: result.external_id,
       data: result.data,
       error: result.error,
@@ -317,7 +374,8 @@ static async republishProduct(task, marketplace, credential, userId) {
       auth_required: result.auth_required,
       auth_url: result.auth_url,
       has_warnings: hasWarnings,
-      warnings: result.warnings
+      warnings: hasWarnings ? result.warnings : null,
+      status: status
     };
 
   } catch (error) {
