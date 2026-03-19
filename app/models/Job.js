@@ -64,6 +64,30 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.STRING,
       allowNull: true
     },
+    
+    // === NUEVO CAMPO: publication_step ===
+    // Guarda el último paso completado en el flujo de publicación
+    // 0=Pool, 1=Productos, 2=Marketplaces, 3=Resumen, 4=Progreso, 5=Resultado
+    publication_step: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+      allowNull: true,
+      validate: {
+        min: {
+          args: [0],
+          msg: 'publication_step debe ser mayor o igual a 0'
+        },
+        max: {
+          args: [5],
+          msg: 'publication_step debe ser menor o igual a 5'
+        },
+        isInt: {
+          msg: 'publication_step debe ser un número entero'
+        }
+      },
+      comment: 'Paso del flujo de publicación (0=Pool, 1=Productos, 2=Marketplaces, 3=Resumen, 4=Progreso, 5=Resultado)'
+    },
+    
     draft_name: {
       type: DataTypes.STRING,
       allowNull: true

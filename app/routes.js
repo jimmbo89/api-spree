@@ -32,7 +32,7 @@ const { storeMarketplaceSchema, updateMarketplaceSchema, idMarketplaceSchema } =
 const MarketplaceController = require("./controllers/MarketplaceController.js");
 const { createProductFieldMappingSchema, updateProductFieldMappingSchema, idProductFieldMappingSchema, listProductFieldMappingSchema, bulkCreateProductFieldMappingSchema } = require("./middlewares/validations/productFieldMappingValidations.js");
 const ProductFieldMappingController = require("./controllers/ProductFieldMappingController.js");
-const { storeProductPublishingTaskSchema, updateProductPublishingTaskStatusSchema, listProductPublishingTaskSchema, retryProductPublishingTaskSchema, publishDraftSchema } = require("./middlewares/validations/productPublishingTaskValidations.js");
+const { storeProductPublishingTaskSchema, updateProductPublishingTaskStatusSchema, listProductPublishingTaskSchema, retryProductPublishingTaskSchema, publishDraftSchema, listDraftsByUserSchema } = require("./middlewares/validations/productPublishingTaskValidations.js");
 const ProductPublishingTaskController = require("./controllers/ProductPublishingTaskController.js");
 const { storeMarketplaceCredentialSchema, findByMarketplaceCredentialSchema, updateMarketplaceCredentialSchema, idMarketplaceCredentialSchema } = require("./middlewares/validations/marketplaceCredentialValidations.js");
 const MarketplaceCredentialController = require("./controllers/MarketplaceCredentialController.js");
@@ -358,6 +358,13 @@ router.post("/publishing-task-update", requireRoles([ 'Backoffice', 'Admin', 'Se
 router.post("/publishing-tasks-list", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(listProductPublishingTaskSchema), ProductPublishingTaskController.list);
 router.post("/publishing-task-retry", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(retryProductPublishingTaskSchema), ProductPublishingTaskController.retryBatch);
 router.post("/publishing-draft", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(publishDraftSchema), ProductPublishingTaskController.publishDraft);
+
+// === NUEVA RUTA: Obtener borrador para edición ===
+router.post("/publishing-draft-get", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), ProductPublishingTaskController.getDraft);
+
+// === NUEVA RUTA: Listar borradores por usuario/empresa ===
+router.post("/publishing-draft-list", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(listDraftsByUserSchema), ProductPublishingTaskController.listDraftsByUser);
+
 router.post("/publishing-task-delete", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(idCompanySchema), ProductPublishingTaskController.destroy);
 
 // Notificaciones

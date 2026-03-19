@@ -192,6 +192,38 @@ const ProductRepository = {
     });
   },
 
+  /**
+   * Obtiene múltiples productos por sus IDs
+   * @param {Array} ids - Array de IDs de productos
+   * @returns {Array} Lista de productos encontrados
+   */
+  async findByIds(ids) {
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return [];
+    }
+
+    return await Product.findAll({
+      where: {
+        id: { [Op.in]: ids }
+      },
+      attributes: [
+        'id', 'sku', 'name', 'description',
+        'category_id', 'user_id', 'company_id',
+        'brand', 'model', 'condition', 'gtin', 'mpn',
+        'attributes', 'warranty_months', 'warranty_text',
+        'weight_grams', 'length_cm', 'width_cm', 'height_cm',
+        'images', 'sync_meta', 'state'
+      ],
+      include: [
+        {
+          model: ProductVariant,
+          as: 'variants',
+          attributes: ['id', 'sku', 'attributes', 'image']
+        }
+      ]
+    });
+  },
+
   async create(body, files = [], options = {}) {
     try {
       const productData = {

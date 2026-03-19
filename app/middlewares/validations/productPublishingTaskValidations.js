@@ -39,6 +39,7 @@ const storeSchema = Joi.object({
   // ✅ Nuevos campos para drafts
   draft_name: Joi.string().max(255).optional(), // Nombre del borrador
   batch_id: Joi.string().guid({ version: ['uuidv4'] }).optional(), // UUID para agrupar
+  publication_step: Joi.number().integer().min(0).max(5).optional(), // Paso de la publicación (0-5)
   meta: Joi.object().optional()
 }).unknown(true);
 
@@ -62,6 +63,12 @@ const listSchema = Joi.object({
   batch_id: Joi.string().guid().optional() // ✅ Nuevo
 });
 
+// ✅ Nuevo schema para listar borradores por usuario/empresa
+const listDraftsByUserSchema = Joi.object({
+  company_id: Joi.number().integer().positive().optional(), // Si no se pasa, usa req.user.company_id
+  user_id: Joi.number().integer().optional() // Si no se pasa, usa req.user.id
+});
+
 const retrySchema = Joi.object({
   task_id: Joi.number().integer().positive().required(),
   job_id: Joi.number().allow(null).empty('').optional(),
@@ -78,6 +85,7 @@ module.exports = {
   storeProductPublishingTaskSchema: storeSchema,
   updateProductPublishingTaskStatusSchema: updateStatusSchema,
   listProductPublishingTaskSchema: listSchema,
+  listDraftsByUserSchema: listDraftsByUserSchema, // ✅ Nuevo
   retryProductPublishingTaskSchema: retrySchema,
   publishDraftSchema: publishDraftSchema // ✅ Nuevo
 };

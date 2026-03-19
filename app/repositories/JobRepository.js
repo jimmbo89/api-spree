@@ -23,7 +23,7 @@ async findByBatchIdWithStats(batch_id, company_id) {
       where: { batch_id, company_id },
       attributes: [
         'id', 'batch_id', 'job_type', 'mode', 'draft_name',
-        'status', 'total_products', 'processed', 'successful',
+        'publication_step', 'status', 'total_products', 'processed', 'successful',
         'errors_count', 'percentage',
         'config', 'error_summary',
         'started_at', 'completed_at',
@@ -83,8 +83,9 @@ async findByBatchIdWithStats(batch_id, company_id) {
         where,
         attributes: [
           'id', 'batch_id', 'job_type', 'mode', 'draft_name',
-          'status', 'total_products', 'processed', 'successful', 
-          'errors_count', 'percentage', 'started_at', 'completed_at',
+          'publication_step', 'status', 'total_products', 'processed', 'successful',
+          'errors_count', 'percentage', 'config',  // ← Agregar config
+          'started_at', 'completed_at',
           'createdAt', 'updatedAt'
         ],
         include: includeOptions,
@@ -99,6 +100,68 @@ async findByBatchIdWithStats(batch_id, company_id) {
     } catch (error) {
       logger.error('Error en JobRepository->findAll:', error);
       throw new Error(`Error al obtener jobs: ${error.message}`);
+    }
+  },
+
+  /**
+   * Obtiene un único job con filtros
+   * @param {Object} filters - { where: { ... }, attributes: [...] }
+   * @returns {Object|null} Job encontrado o null
+   */
+  async findOne(filters = {}) {
+    try {
+      const { where = {}, attributes = null } = filters;
+
+      if (!where || Object.keys(where).length === 0) {
+        throw new Error('Debe especificar al menos un filtro en where');
+      }
+
+      const job = await Job.findOne({
+        where,
+        attributes: attributes || [
+          'id', 'batch_id', 'job_type', 'mode', 'draft_name',
+          'publication_step', 'status', 'total_products', 'processed',
+          'successful', 'errors_count', 'percentage',
+          'config', 'error_summary',
+          'started_at', 'completed_at',
+          'createdAt', 'updatedAt'
+        ]
+      });
+
+      if (!job) {
+        return null;
+      }
+
+      return job.get({ plain: true });
+
+    } catch (error) {
+      logger.error('Error en JobRepository->findOne:', error);
+      throw new Error(`Error al obtener job: ${error.message}`);
+    }
+  },
+
+  /**
+   * Obtiene un job por batch_id
+   * @param {String} batch_id - UUID del batch
+   * @param {Number} company_id - ID de la empresa para validación
+   * @returns {Object|null} Job encontrado o null
+   */
+  async findByBatchId(batch_id, company_id) {
+    try {
+      if (!batch_id) {
+        throw new Error('batch_id es requerido');
+      }
+
+      const where = { batch_id };
+      if (company_id) {
+        where.company_id = company_id;
+      }
+
+      return await this.findOne({ where });
+
+    } catch (error) {
+      logger.error(`Error en JobRepository->findByBatchId (Batch: ${batch_id}):`, error);
+      throw new Error(`Error al obtener job por batch: ${error.message}`);
     }
   },
 
@@ -169,34 +232,6 @@ async findById(id, options = {}) {
     throw new Error(`Error al obtener el job: ${error.message}`);
   }
 },
-  /**
-   * Obtiene un job por batch_id (puede haber varios por batch)
-   */
-  async findByBatchId(batch_id, limit = 10) {
-    try {
-      if (!batch_id) {
-        throw new Error('El batch_id es requerido');
-      }
-
-      const jobs = await Job.findAll({
-        where: { batch_id },
-        attributes: [
-          'id', 'job_type', 'mode', 'status',
-          'total_products', 'processed', 'successful',
-          'errors_count', 'percentage',
-          'createdAt'
-        ],
-        order: [['createdAt', 'DESC']],
-        limit: parseInt(limit)
-      });
-
-      return jobs.map(job => job.get({ plain: true }));
-
-    } catch (error) {
-      logger.error(`Error en JobRepository->findByBatchId (Batch: ${batch_id}):`, error);
-      throw new Error(`Error al obtener jobs por batch: ${error.message}`);
-    }
-  },
 
   /**
    * Crea un nuevo job padre
@@ -210,6 +245,7 @@ async findById(id, options = {}) {
         job_type,
         mode,
         draft_name,
+        publication_step,
         config = {},
         total_products = 0
       } = data;
@@ -232,6 +268,7 @@ async findById(id, options = {}) {
         job_type,
         mode: mode || null,
         draft_name: draft_name || null,
+        publication_step: publication_step !== undefined ? parseInt(publication_step) : 0,
         status: 'pending',
         total_products: parseInt(total_products) || 0,
         processed: 0,

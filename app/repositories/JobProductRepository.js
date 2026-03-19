@@ -171,6 +171,48 @@ const JobProductRepository = {
   },
 
   /**
+   * Obtiene todos los job_products con filtros opcionales
+   * @param {Object} filters - { where: {...}, attributes: [...], limit, offset }
+   * @returns {Array} Lista de job_products encontrados
+   */
+  async findAll(filters = {}) {
+    try {
+      const {
+        where = {},
+        attributes = [
+          'id', 'job_id', 'product_id', 'marketplace_id', 'credential_id',
+          'status', 'external_id', 'external_url',
+          'error_message', 'error_details', 'attempt_count', 'last_attempt_at',
+          'product_payload', 'marketplace_payload',
+          'createdAt', 'updatedAt'
+        ],
+        include = [],
+        order = [['createdAt', 'ASC']],
+        limit,
+        offset
+      } = filters;
+
+      const queryOptions = {
+        where,
+        attributes,
+        include,
+        order
+      };
+
+      if (limit) queryOptions.limit = parseInt(limit);
+      if (offset) queryOptions.offset = parseInt(offset);
+
+      const jobProducts = await JobProduct.findAll(queryOptions);
+
+      return jobProducts.map(item => item.get({ plain: true }));
+
+    } catch (error) {
+      logger.error('Error en JobProductRepository->findAll:', error);
+      throw new Error(`Error al obtener job_products: ${error.message}`);
+    }
+  },
+
+  /**
    * Obtiene un producto de job por ID
    * ✅ Ahora incluye marketplace_payload
    */
@@ -446,6 +488,106 @@ async findById(id, options = {}) {
     } catch (error) {
       logger.error(`Error en JobProductRepository->update:`, error);
       throw new Error(`Error al actualizar: ${error.message}`);
+    }
+  },
+
+  // ========================================================================
+  // 📦 MÉTODOS DE ACTUALIZACIÓN MASIVA
+  // ========================================================================
+
+  /**
+   * Obtiene el conteo de job_products por status para un job
+   * @param {Number} jobId - ID del job
+   * @returns {Object} { total, statusCounts }
+   */
+  async getStatusCounts(jobId) {
+    try {
+      const { JobProduct } = require('../models');
+      
+      const jobProducts = await JobProduct.findAll({
+        where: { job_id: jobId },
+        attributes: ['status'],
+        raw: true
+      });
+
+      const total = jobProducts.length;
+      const statusCounts = jobProducts.reduce((acc, jp) => {
+        acc[jp.status] = (acc[jp.status] || 0) + 1;
+        return acc;
+      }, {});
+
+      return { total, statusCounts };
+
+    } catch (error) {
+      logger.error(`Error en JobProductRepository->getStatusCounts:`, error);
+      throw new Error(`Error al obtener conteo de job_products: ${error.message}`);
+    }
+  },
+
+  /**
+   * Actualiza múltiples job_products que coincidan con los filtros
+   * @param {Object} where - Filtros de búsqueda
+   * @param {Object} data - Datos a actualizar
+   * @returns {Object} { count: número de registros actualizados }
+   */
+  async updateMany(where, data) {
+    try {
+      if (!where || Object.keys(where).length === 0) {
+        throw new Error('Debe especificar filtros where');
+      }
+
+      const allowedFields = [
+        'status', 'external_id', 'external_url',
+        'error_message', 'error_details',
+        'attempt_count', 'last_attempt_at',
+        'product_payload', 'marketplace_payload'
+      ];
+
+      const updateData = {};
+      for (const field of allowedFields) {
+        if (data[field] !== undefined) {
+          if (['product_payload', 'marketplace_payload'].includes(field) && typeof data[field] === 'object') {
+            updateData[field] = JSON.parse(JSON.stringify(data[field]));
+          } else {
+            updateData[field] = data[field];
+          }
+        }
+      }
+
+      if (Object.keys(updateData).length === 0) {
+        return { count: 0 };
+      }
+
+      const [count] = await JobProduct.update(updateData, { where });
+
+      logger.info(`JobProducts actualizados en masa: ${count} registros`);
+      return { count };
+
+    } catch (error) {
+      logger.error('Error en JobProductRepository->updateMany:', error);
+      throw new Error(`Error al actualizar job_products en masa: ${error.message}`);
+    }
+  },
+
+  /**
+   * Elimina múltiples job_products que coincidan con los filtros
+   * @param {Object} where - Filtros de búsqueda
+   * @returns {Object} { count: número de registros eliminados }
+   */
+  async deleteMany(where) {
+    try {
+      if (!where || Object.keys(where).length === 0) {
+        throw new Error('Debe especificar filtros where');
+      }
+
+      const { count } = await JobProduct.destroy({ where });
+
+      logger.info(`JobProducts eliminados en masa: ${count} registros`);
+      return { count };
+
+    } catch (error) {
+      logger.error('Error en JobProductRepository->deleteMany:', error);
+      throw new Error(`Error al eliminar job_products en masa: ${error.message}`);
     }
   },
 

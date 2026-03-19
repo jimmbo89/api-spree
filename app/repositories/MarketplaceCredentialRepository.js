@@ -288,6 +288,43 @@ async deleteById(id) {
   return plain;
 },
 
+  /**
+   * Obtiene múltiples credenciales por sus IDs
+   * @param {Array} ids - Array de IDs de credenciales
+   * @returns {Array} Lista de credenciales encontradas
+   */
+  async findByIds(ids) {
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return [];
+    }
+
+    const records = await MarketplaceCredential.findAll({
+      where: {
+        id: { [Op.in]: ids }
+      },
+      include: [
+        {
+          model: Marketplace,
+          as: 'marketplace'
+        }
+      ]
+    });
+
+    return records.map(record => {
+      const plain = record.get({ plain: true });
+      
+      // Desencriptar campos sensibles
+      if (plain.access_token) plain.access_token = EncryptionService.decrypt(plain.access_token);
+      if (plain.refresh_token) plain.refresh_token = EncryptionService.decrypt(plain.refresh_token);
+      if (plain.api_key) plain.api_key = EncryptionService.decrypt(plain.api_key);
+      if (plain.marketplace?.client_secret) {
+        plain.marketplace.client_secret = EncryptionService.decrypt(plain.marketplace.client_secret);
+      }
+      
+      return plain;
+    });
+  },
+
   async findByDelete(id) {
     return await MarketplaceCredential.findByPk(id, {
       include: [

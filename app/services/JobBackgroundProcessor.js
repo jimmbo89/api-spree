@@ -108,6 +108,12 @@ const JobBackgroundProcessor = {
   async _processJob(job) {
     const jobId = job.id;
 
+    // === NUEVO: Ignorar jobs tipo 'draft' ===
+    if (job.job_type === 'draft') {
+      logger.debug(`[JobProcessor] Ignorando job ${jobId} porque es draft (job_type='draft')`);
+      return;
+    }
+
     try {
       // Si está pending, marcar como processing
       if (job.status === 'pending') {

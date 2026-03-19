@@ -252,260 +252,16 @@ async refreshSingleCredential(credential, marketplace, userId) {
     throw error; // Propagar error para que el endpoint lo maneje
   }
 },
-  /*async store(req, res) {
-  logger.info(`${req.user?.name || 'Unknown'} - Publicación/Draft iniciado`);
-  logger.info('Datos recibidos:');
-  logger.info(JSON.stringify(req.body, null, 2));
-
-  const { products, marketplaces, pool, mode, draft_name, economic_config } = req.body;
-  const user_id = req.user.id;
-  const company_id = req.user.company_id;
-  const metadata = getRequestMetadata(req);
-
-  // ✅ Validar modo
-  if (!['draft', 'publish', 'quick', 'advanced'].includes(mode)) {
-    return res.status(400).json({ 
-      success: false, 
-      msg: "mode_invalid",
-      details: "Modo debe ser 'draft', 'publish', 'quick' o 'advanced'"
-    });
-  }
-
-  // ✅ Determinar si es draft
-  const isDraft = mode === 'draft';
-  const actualMode = isDraft ? 'quick' : mode;
-
-  // Extraer warehouse_ids y primary
-  const warehouse_ids = pool.warehouses.map(w => w.warehouse_id);
-  const primary_warehouse_id = pool.primary_warehouse.warehouse_id;
-  const primary_warehouse = pool.primary_warehouse;
-
-  // ✅ EXTRAER credential_ids Y marketplace_ids reales
-  // marketplaces[] contiene objetos con id = credential_id
-  const credentialIds = marketplaces.map(mp => Number(mp.id));
-  const marketplaceIds = [...new Set(marketplaces.map(mp => Number(mp.marketplace_id || mp.id)))];
-
-  // Validar marketplaces reales (por marketplace_id, no credential_id)
-  const validation = await MarketplaceRepository.findByIds(marketplaceIds);
-  if (!validation.valid) {
-    return res.status(400).json({ success: false, msg: "someMarketplacesNotFound" });
-  }
-  const validMarketplaces = validation.marketplaces;
-
-  // ✅ Generar batch_id
-  const batch_id = uuidv4();
-
-  const successResults = [];
-  const errorResults = [];
-  const draftTasks = [];
-
-  // ✅ Si es DRAFT, guardar sin publicar
-  if (isDraft) {
-    try {
-      // Iterar por CREDENCIALES seleccionadas
-      for (const mpConfig of marketplaces) {
-        const credentialId = Number(mpConfig.id);  // ← credential_id
-        const marketplaceId = Number(mpConfig.marketplace_id);  // ← marketplace_id real
-        
-        // Buscar el marketplace real
-        const mp = validMarketplaces.find(m => m.id === marketplaceId);
-        if (!mp) continue;
-
-        for (const product of products) {
-          // ✅ Transformar producto pasando credential_id para que use las claves correctas
-          const [transformed] = await MarketplaceTransformer.transformProducts(
-            [{ ...product, marketplace_id: marketplaceId, credential_id: credentialId }],
-            marketplaceId
-          );
-
-          if (!transformed) {
-            logger.warn(`No se pudo transformar producto ${product.id} para credential ${credentialId}`);
-            errorResults.push({
-              product_id: product.id,
-              credential_id: credentialId,
-              marketplace_id: marketplaceId,
-              error: 'transform_failed'
-            });
-            continue;
-          }
-
-          // Guardar como draft
-          const task = await ProductPublishingTaskRepository.create({
-            product_id: product.id,
-            marketplace_id: marketplaceId,
-            credential_id: credentialId,  // ← NUEVO: Guardar credential_id
-            warehouse_id: primary_warehouse_id,
-            branch_id: primary_warehouse.branch_id || null,
-            user_id: user_id,
-            company_id: company_id,
-            batch_id: batch_id,
-            status: 'draft',
-            draft_name: draft_name || `Draft ${new Date().toISOString()}`,
-            publishing_mode: actualMode,
-            date: new Date(),
-              payload: {
-              ...transformed,
-              economic_config: economic_config?.[credentialId] || null
-            },
-            attempt_count: 1
-          });
-
-          draftTasks.push({
-            id: task.id,
-            product_id: task.product_id,
-            marketplace_id: task.marketplace_id,
-            credential_id: task.credential_id,
-            status: task.status,
-            draft_name: task.draft_name
-          });
-        }
-      }
-
-      await LogRepository.create({
-        user_id: metadata.user_id,
-        action: 'publishing_task.draft_save',
-        description: `Borrador guardado: ${draftTasks.length} tareas`,
-        ip_address: metadata.ip_address,
-        user_agent: metadata.user_agent,
-        status: 'success',
-        meta: { 
-          batch_id,
-          credential_ids: credentialIds,
-          marketplace_ids: marketplaceIds,
-          product_count: products.length,
-          draft_name
-        }
-      });
-
-      return res.status(201).json({
-        success: true,
-        message: "Borrador guardado exitosamente",
-        batch_id: batch_id,
-        tasks: draftTasks
-      });
-
-    } catch (error) {
-      logger.error('Error guardando draft:', error.message);
-      return res.status(500).json({ 
-        success: false, 
-        msg: "draft_save_failed",
-        error: error.message 
-      });
-    }
-  }
-
-  // ✅ Si NO es draft, publicar inmediatamente
-  // Iterar por CREDENCIALES seleccionadas
-  for (const mpConfig of marketplaces) {
-    const credentialId = Number(mpConfig.id);  // ← credential_id
-    const marketplaceId = Number(mpConfig.marketplace_id);  // ← marketplace_id real
-    const config = mpConfig.publishing_config || {};
-    
-    // Buscar el marketplace real
-    const mp = validMarketplaces.find(m => m.id === marketplaceId);
-    if (!mp) continue;
-    
-    try {
-      // ✅ Pasar credential_id al servicio de publicación
-      const result = await PublishingService.publishProducts(
-        products,
-        mp,
-        { id: primary_warehouse_id, company_id, branch_id: null },
-        user_id,
-        company_id,
-        actualMode,
-        config,
-        credentialId  // ← NUEVO: credential_id específico
-      );
-
-      if (result.auth_required) {
-        return res.status(401).json({ 
-          success: false,
-          msg: "auth_required", 
-          auth_url: result.auth_url,
-          credential_id: credentialId
-        });
-      }
-
-      // ✅ Procesar resultados exitosos
-      if (result.success && Array.isArray(result.success)) {
-        for (const successItem of result.success) {
-          successResults.push({
-            ...successItem,
-            credential_id: credentialId,
-            marketplace_id: marketplaceId,
-            batch_id: batch_id
-          });
-        }
-      }
-
-      // ✅ Procesar errores
-      if (result.errors && Array.isArray(result.errors)) {
-        for (const errorItem of result.errors) {
-          errorResults.push({
-            ...errorItem,
-            credential_id: credentialId,
-            marketplace_id: marketplaceId,
-            batch_id: batch_id
-          });
-        }
-      }
-
-    } catch (err) {
-      logger.error(`Error en credential ${credentialId} (marketplace ${marketplaceId}):`, err.message);
-      errorResults.push(...products.map(p => ({
-        product_id: p.id,
-        credential_id: credentialId,
-        marketplace_id: marketplaceId,
-        batch_id: batch_id,
-        error: err.message || 'Error interno'
-      })));
-    }
-  }
-
-  // ✅ Registrar log
-  await LogRepository.create({
-    user_id: metadata.user_id,
-    action: 'publishing_task.publish',
-    description: `Publicación: ${successResults.length} éxitos, ${errorResults.length} errores`,
-    ip_address: metadata.ip_address,
-    user_agent: metadata.user_agent,
-    status: errorResults.length === 0 ? 'success' : 'partial_success',
-    meta: { 
-      batch_id,
-      warehouse_id: primary_warehouse_id,
-      credential_ids: credentialIds,
-      marketplace_ids: marketplaceIds,
-      success_count: successResults.length,
-      error_count: errorResults.length,
-      mode: actualMode,
-      product_count: products.length
-    }
-  });
-
-  // ✅ Responder con resultados detallados
-  return res.status(200).json({
-    success: successResults.length > 0,
-  has_errors: errorResults.length > 0,
-  message: errorResults.length > 0 
-    ? "Algunos productos no se pudieron publicar"
-    : "Publicación completada",
-  data: { // ✅ usa "data" para evitar colisión
-    success: successResults,
-    errors: errorResults
-  }
-  });
-},*/
 async store(req, res) {
   logger.info(`${req.user?.name || 'Unknown'} - Solicitud de publicación en ${req.body.mode} iniciada`);
   logger.info(`Datos recibidos:\n ${JSON.stringify(req.body, null, 2)}`);
-  
-  const { products, marketplaces, pool: rawPool, mode, draft_name, economic_config } = req.body;
+
+  const { products, marketplaces, pool: rawPool, mode, draft_name, economic_config, publication_step } = req.body;
   const user_id = req.user.id;
   const company_id = req.user.company_id;
   const metadata = getRequestMetadata(req);
 
-    
+
     // IDs fijos para testing (los que proporcionaste)
     const SIM_JOB_ID = 6;
     const SIM_BATCH_ID = 'c5a4e469-5b04-4772-88e7-684d980c5122';
@@ -519,6 +275,16 @@ async store(req, res) {
   }
   if (!Array.isArray(marketplaces) || marketplaces.length === 0) {
     return res.status(400).json({ success: false, msg: "marketplaces_required" });
+  }
+
+  // === NUEVO: Validar publication_step ===
+  const step = publication_step !== undefined ? parseInt(publication_step) : 3; // Default: 3 (Resumen completado)
+  if (!Number.isInteger(step) || step < 0 || step > 5) {
+    return res.status(400).json({ 
+      success: false, 
+      msg: "publication_step_invalid",
+      details: "El paso debe ser un entero entre 0 y 5"
+    });
   }
   
   const batch_id = uuidv4();
@@ -570,20 +336,23 @@ async store(req, res) {
   const totalExpected = products.length * marketplaces.length;
 
   // ✅ Crear job padre
+  // 🔑 IMPORTANTE: Guardar TODOS los datos originales del frontend + campos calculados
   const jobRecord = await JobRepository.create({
     user_id: req.user.id,
     company_id: req.user.company_id,
     job_type: job_type,
     mode: actualMode,
     batch_id: batch_id,
+    publication_step: step,  // ← NUEVO: Guardar paso de la publicación
     total_products: totalExpected,  // ← ✅ Pasar total esperado
     config: {
-      products: products,
-      marketplaces: marketplaces,
-      pool: pool,
-      pool_id: poolId,
-      economic_config: economic_config,
-      draft_name: draft_name
+      // 🔑 GUARDAR DATOS ORIGINALES DEL FRONTEND (exactamente como llegan)
+      ...req.body,  // ← Esto incluye: products, marketplaces, pool, mode, economic_config, draft_name, publication_step, etc.
+      
+      // 🔑 CAMPOS CALCULADOS/ADICIONALES (para uso interno)
+      pool_id: poolId,  // ← ID del pool calculado
+      _processed_at: new Date().toISOString(),  // ← Timestamp de procesamiento
+      _total_expected: totalExpected  // ← Total calculado
     }
   });
 
@@ -830,10 +599,289 @@ async store(req, res) {
 
     } catch (error) {
       logger.error('Error listando drafts:', error.message);
-      return res.status(500).json({ 
-        success: false, 
+      return res.status(500).json({
+        success: false,
         msg: "internal_error",
-        error: error.message 
+        error: error.message
+      });
+    }
+  },
+
+  /**
+   * Obtiene un borrador por batch_id o job_id para edición
+   * POST /api/publishing-draft-get
+   * Body: { batch_id: 'uuid', job_id: 123 } (al menos uno)
+   */
+  async getDraft(req, res) {
+    const { batch_id, job_id } = req.body;
+    const { company_id } = req.user;
+    const metadata = getRequestMetadata(req);
+
+    try {
+      // 1. Validar que al menos un identificador sea proporcionado
+      if (!batch_id && !job_id) {
+        return res.status(400).json({
+          success: false,
+          msg: "missing_identifier",
+          details: "Debe proporcionar batch_id o job_id"
+        });
+      }
+
+      // 2. Obtener job usando batch_id (PRIORITARIO) o job_id
+      let job;
+      if (batch_id) {
+        job = await JobRepository.findByBatchId(batch_id, company_id);
+      } else {
+        job = await JobRepository.findById(job_id);
+        
+        // Validar que pertenece a la empresa
+        if (job && job.company_id !== company_id) {
+          job = null;
+        }
+      }
+      
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          msg: "draft_not_found"
+        });
+      }
+
+      // 3. Validar que es un draft
+      if (job.job_type !== 'draft') {
+        return res.status(400).json({
+          success: false,
+          msg: "not_a_draft",
+          details: "El job no es un borrador"
+        });
+      }
+
+      // 4. Validar integridad de datos (productos existen)
+      const productIds = job.config?.products?.map(p => p.id) || [];
+      if (productIds.length > 0) {
+        const existingProducts = await ProductRepository.findByIds(productIds);
+        
+        if (existingProducts.length !== productIds.length) {
+          const missingIds = productIds.filter(id => 
+            !existingProducts.find(p => p.id === id)
+          );
+          
+          logger.warn(`[getDraft] Productos faltantes en borrador ${job.id}:`, missingIds);
+          
+          // Retornar warning al frontend
+          return res.status(200).json({
+            success: true,
+            data: {
+              job_id: job.id,
+              batch_id: job.batch_id,
+              draft_name: job.draft_name,
+              mode: job.mode,
+              publication_step: job.publication_step,
+              pool: job.config?.pool,
+              products: [],
+              marketplaces: [],
+              economic_config: job.config?.economic_config,
+              created_at: job.createdAt,
+              updated_at: job.updatedAt
+            },
+            warnings: {
+              missing_products: missingIds,
+              message: `Algunos productos ya no existen (${missingIds.length}). Se recomienda revisar.`
+            }
+          });
+        }
+      }
+
+      // 5. Validar que las credenciales siguen activas
+      const credentialIds = job.config?.marketplaces?.map(m => m.id) || [];
+      if (credentialIds.length > 0) {
+        const existingCredentials = await MarketplaceCredentialRepository.findByIds(credentialIds);
+        
+        if (existingCredentials.length !== credentialIds.length) {
+          const missingCreds = credentialIds.filter(id => 
+            !existingCredentials.find(c => c.id === id)
+          );
+          
+          logger.warn(`[getDraft] Credenciales faltantes en borrador ${job.id}:`, missingCreds);
+        }
+      }
+
+      // 6. Obtener job_products relacionados
+      const jobProducts = await JobProductRepository.findAll({
+        where: { job_id: job.id }
+      });
+
+      // 7. Reconstruir datos para el frontend
+      // 🔑 IMPORTANTE: Devolver el config COMPLETO tal cual se guardó + datos enriquecidos
+      const draftData = {
+        job_id: job.id,
+        batch_id: job.batch_id,
+        draft_name: job.draft_name,
+        mode: job.mode,
+        publication_step: job.publication_step,
+        created_at: job.createdAt,
+        updated_at: job.updatedAt,
+        
+        // 🔑 CONFIG COMPLETO (datos originales del frontend)
+        config: job.config,  // ← Contiene TODOS los datos originales: products, marketplaces, pool, economic_config, etc.
+        
+        // 🔑 DATOS ENRIQUECIDOS (para conveniencia del frontend)
+        products: jobProducts.map(jp => ({
+          id: jp.product_id,
+          ...jp.product_payload
+        })),
+        marketplaces: jobProducts
+          .map(jp => jp.marketplace_payload)
+          .filter((mp, index, self) =>
+            index === self.findIndex(m => m.id === m.id)
+          ),
+        total_products: jobProducts.length
+      };
+
+      // 8. Registrar log de acceso
+      await LogRepository.create({
+        user_id: metadata.user_id,
+        action: 'publishing_draft.loaded',
+        description: `Borrador ${job.id} cargado para edición`,
+        ip_address: metadata.ip_address,
+        user_agent: metadata.user_agent,
+        status: 'success',
+        meta: {
+          job_id: job.id,
+          batch_id: job.batch_id,
+          publication_step: job.publication_step
+        }
+      });
+
+      return res.status(200).json({
+        success: true,
+        data: draftData
+      });
+
+    } catch (error) {
+      logger.error('[Controller] Error al obtener borrador:', error);
+      return res.status(500).json({
+        success: false,
+        msg: "error_fetching_draft",
+        error: error.message
+      });
+    }
+  },
+
+  /**
+   * Lista todos los borradores de un usuario/empresa
+   * POST /api/publishing-draft-list
+   * Body: { company_id, user_id } (user_id es opcional, si no se pasa usa req.user.id)
+   */
+  async listDraftsByUser(req, res) {
+    const { company_id, user_id } = req.body;
+    const userId = user_id || req.user.id;
+    const companyId = company_id || req.user.company_id;
+    const metadata = getRequestMetadata(req);
+
+    try {
+      // 1. Validar que se proporcione company_id
+      if (!companyId) {
+        return res.status(400).json({
+          success: false,
+          msg: "company_id_required",
+          details: "Debe proporcionar company_id"
+        });
+      }
+
+      // 2. Obtener jobs tipo draft del usuario/empresa
+      const drafts = await JobRepository.findAll({
+        company_id: companyId,
+        user_id: userId,
+        job_type: 'draft',
+        status: 'pending',
+        limit: 100,
+        includeDetails: true
+      });
+
+      // 3. Enriquecer con información adicional
+      const enrichedDrafts = await Promise.all(
+        drafts.map(async (draft) => {
+          // 🔑 USAR REPOSITORIOS: Obtener conteo de job_products
+          const { total: totalProducts, statusCounts } = await JobProductRepository.getStatusCounts(draft.id);
+
+          // 🔑 USAR REPOSITORIOS: Obtener nombres de productos y marketplaces
+          const productIds = draft.config?.products?.map(p => p.id) || [];
+          const products = productIds.length > 0 
+            ? await ProductRepository.findByIds(productIds)
+            : [];
+          
+          const marketplaceIds = draft.config?.marketplaces?.map(m => m.id) || [];
+          const marketplaces = marketplaceIds.length > 0
+            ? await MarketplaceCredentialRepository.findByIds(marketplaceIds)
+            : [];
+
+          return {
+            job_id: draft.id,
+            batch_id: draft.batch_id,
+            draft_name: draft.draft_name,
+            mode: draft.mode,
+            publication_step: draft.publication_step,
+            created_at: draft.createdAt,
+            updated_at: draft.updatedAt,
+            
+            // 🔑 CONFIG COMPLETO (datos originales del frontend)
+            config: draft.config,  // ← Contiene TODOS los datos originales
+            
+            // 🔑 DATOS ENRIQUECIDOS (para conveniencia del frontend)
+            products: {
+              total: products.length,
+              items: products.map(p => ({
+                id: p.id,
+                name: p.name,
+                sku: p.sku
+              }))
+            },
+            marketplaces: {
+              total: marketplaces.length,
+              items: marketplaces.map(m => ({
+                id: m.id,
+                name: m.name || m.seller_email,
+                marketplace_name: m.marketplace?.name || 'Marketplace'
+              }))
+            },
+            stats: {
+              total_products: totalProducts,
+              pending: statusCounts['pending'] || 0,
+              success: statusCounts['success'] || 0,
+              error: statusCounts['error'] || 0
+            }
+          };
+        })
+      );
+
+      // 4. Registrar log
+      await LogRepository.create({
+        user_id: metadata.user_id,
+        action: 'publishing_draft.list',
+        description: `Listado de borradores: ${enrichedDrafts.length} encontrados`,
+        ip_address: metadata.ip_address,
+        user_agent: metadata.user_agent,
+        status: 'success',
+        meta: {
+          company_id: companyId,
+          user_id: userId,
+          draft_count: enrichedDrafts.length
+        }
+      });
+
+      return res.status(200).json({
+        success: true,
+        drafts: enrichedDrafts,
+        count: enrichedDrafts.length
+      });
+
+    } catch (error) {
+      logger.error('[Controller] Error al listar borradores:', error);
+      return res.status(500).json({
+        success: false,
+        msg: "error_listing_drafts",
+        error: error.message
       });
     }
   },
