@@ -11,16 +11,22 @@ module.exports = (sequelize, DataTypes) => {
       Product.hasMany(models.ProductVariant, { foreignKey: 'product_id', as: 'variants', onDelete: 'CASCADE' });
       Product.hasMany(models.WarehouseProduct, { foreignKey: 'product_id', as: 'warehouseProducts', onDelete: 'CASCADE' });
       Product.hasMany(models.ProductAttribute, { foreignKey: 'product_id', as: 'productAttributes', onDelete: 'CASCADE' });
-      Product.hasMany(models.JobProduct, { 
-      foreignKey: 'product_id', 
-      as: 'jobProducts', 
-      onDelete: 'SET NULL' 
+      Product.hasMany(models.JobProduct, {
+      foreignKey: 'product_id',
+      as: 'jobProducts',
+      onDelete: 'SET NULL'
     });
-    } 
+    }
 
-        // Método para verificar si SKU existe
-    static async skuExists(sku, excludeId = null) {
+        // Método para verificar si SKU existe dentro de una empresa
+    static async skuExists(sku, companyId = null, excludeId = null) {
       const where = { sku };
+      
+      // ✅ Si hay company_id, filtrar por empresa (SKU único por empresa)
+      if (companyId) {
+        where.company_id = companyId;
+      }
+      
       if (excludeId) {
         where.id = { [Op.ne]: excludeId };
       }
@@ -30,7 +36,7 @@ module.exports = (sequelize, DataTypes) => {
   }
 
   Product.init({
-    sku: { type: DataTypes.STRING, allowNull: false, unique: true },
+    sku: { type: DataTypes.STRING, allowNull: false },  // ✅ unique: true eliminado (ahora es por company_id)
     name: { type: DataTypes.STRING, allowNull: false },
     description: { type: DataTypes.TEXT, allowNull: true },
     brand: { type: DataTypes.STRING, allowNull: false, defaultValue: 'Generico' },

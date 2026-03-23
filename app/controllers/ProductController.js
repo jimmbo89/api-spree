@@ -99,22 +99,32 @@ const ProductController = {
     const { company_id, branch_id, user_id, state, type } = req.body;
 
     try {
-      const categories = await ProductCategoryRepository.findActive();
+      // ✅ Obtener categorías activas de la empresa O globales (company_id NULL)
+      const categories = await ProductCategoryRepository.findActive({
+        companyId: company_id || null
+      });
+      
       const conditions = [
         { id: "new", name: "Nuevo" },
         { id: "used", name: "Usado" },
         { id: "refurbished", name: "Reacondicionado" },
         { id: "not_specified", name: "No especificado" },
       ];
+      
       const warehouses = await WarehouseRepository.findFiltered({
-        company_id,
-        branch_id,
-        user_id,
-        state,
+        companyId: company_id,
+        branchId: branch_id,
+        userId: user_id,
+        status: state,
         type,
+        includeProducts: false
       });
 
-      const attributes = await AttributeRepository.findAll();
+      // ✅ Obtener atributos de la empresa O globales (company_id NULL)
+      const attributes = await AttributeRepository.findAll({
+        companyId: company_id || null,
+        withUsageCount: false
+      });
 
       return res.status(200).json({
         productcategories: categories,
@@ -195,10 +205,11 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
       });
     }
 
-    if (await ProductRepository.existsBySku(sku)) {
+    // ✅ Validar SKU único por empresa
+    if (await ProductRepository.existsBySku(sku, company_id)) {
       return res.status(400).json({
         success: false,
-        msg: `El SKU "${sku}" ya está registrado en el sistema`,
+        msg: `El SKU "${sku}" ya está registrado en tu empresa`,
       });
     }
 
@@ -673,10 +684,11 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
         if (!category) return res.status(400).json({ msg: "categoryNotFound" });
       }
       if (req.body.sku && req.body.sku !== product.sku) {
-        if (await ProductRepository.existsBySku(req.body.sku, product.id)) {
+        // ✅ Validar SKU único por empresa (excluyendo el producto actual)
+        if (await ProductRepository.existsBySku(req.body.sku, product.company_id, product.id)) {
           return res.status(400).json({
             success: false,
-            msg: `El SKU "${req.body.sku}" ya está registrado en otro producto`,
+            msg: `El SKU "${req.body.sku}" ya está registrado en otro producto de tu empresa`,
           });
         }
       }

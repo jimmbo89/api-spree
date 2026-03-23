@@ -5,8 +5,19 @@ const { Model } = require('sequelize');
 module.exports = (sequelize, DataTypes) => {
   class Attribute extends Model {
     static associate(models) {
-      // Puedes agregar relaciones aquí si decides usar product_attributes después
-      Attribute.hasMany(models.ProductAttribute, { foreignKey: 'attribute_id', as: 'productAttributes', onDelete: 'CASCADE' });
+      // Relación: atributo pertenece a una empresa (puede ser NULL = global)
+      Attribute.belongsTo(models.Company, { 
+        foreignKey: 'company_id', 
+        as: 'company',
+        onDelete: 'SET NULL'
+      });
+      
+      // Relación: un atributo tiene muchos product_attributes
+      Attribute.hasMany(models.ProductAttribute, { 
+        foreignKey: 'attribute_id', 
+        as: 'productAttributes', 
+        onDelete: 'CASCADE' 
+      });
     }
   }
 
@@ -17,16 +28,21 @@ module.exports = (sequelize, DataTypes) => {
       primaryKey: true,
       comment: 'ID autoincremental del atributo'
     },
+    company_id: {
+      type: DataTypes.BIGINT,
+      allowNull: true,
+      comment: 'ID de la empresa propietaria (NULL = atributo global)'
+    },
     name: {
       type: DataTypes.STRING,
       allowNull: false,
-      unique: true,
+      // ✅ unique: true eliminado - ahora puede haber atributos con mismo nombre en diferentes empresas
       validate: {
         notEmpty: {
           msg: 'El nombre del atributo no puede estar vacío'
         }
       },
-      comment: 'Nombre único del atributo (obligatorio)'
+      comment: 'Nombre del atributo (único por empresa si company_id no es NULL)'
     },
     type: {
       type: DataTypes.STRING,

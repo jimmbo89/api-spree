@@ -20,7 +20,7 @@ const { listBranchesSchema, storeBranchSchema, updateBranchSchema, idBranchSchem
 const { listWarehouseSchema, storeWarehouseSchema, updateWarehouseSchema, idWarehouseSchema } = require("./middlewares/validations/warehouseValidations.js");
 const { businessTypeSchema, updateBusinessTypeSchema, idBusinessTypeSchema } = require("./middlewares/validations/businessTypeValidations.js");
 const ProductCategoryController = require("./controllers/ProductCategoryController.js");
-const { productCategorySchema, updateProductCategorySchema, idProductCategorySchema } = require("./middlewares/validations/productCategoryValidations.js");
+const { productCategorySchema, updateProductCategorySchema, listProductCategorySchema, idProductCategorySchema } = require("./middlewares/validations/productCategoryValidations.js");
 const { listProductsSchema, storeProductSchema, updateProductSchema, idProductSchema, listByWarehouseIdsSchema, assignWarehouseSchema } = require("./middlewares/validations/productValidations.js");
 const ProductController = require("./controllers/ProductController.js");
 const { listWarehouseProductSchema, storeWarehouseProductSchema, updateWarehouseProductSchema, idWarehouseProductSchema, transferSchema, bulkUploadSchema, bulkTransferSchema } = require("./middlewares/validations/warehouseProductValidations.js");
@@ -55,7 +55,7 @@ const { createUserCompanySchema, updateUserCompanyStatusSchema, userCompanyIdSch
 const UserAclScopeController = require("./controllers/UserAclScopeController.js");
 const { createUserAclScopeSchema, userAclScopeIdSchema, userAclScopesByUserAndCompanySchema } = require("./middlewares/validations/userAclScopeValidation.js");
 const AttributeController = require("./controllers/AttributeController.js");
-const { attributeSchema, updateAttributeSchema, idAttributeSchema } = require("./middlewares/validations/attributeValidation.js");
+const { attributeSchema, updateAttributeSchema, listAttributeSchema, idAttributeSchema } = require("./middlewares/validations/attributeValidation.js");
 const { checkPlanLimit } = require("./policies/PlanLimitsPolicity.js");
 const { storeUpgradeRequestSchema, listUpgradeRequestsSchema, updateUpgradeRequestSchema, idUpgradeRequestSchema } = require("./middlewares/validations/upgradeRequestValidation.js");
 const UpgradeRequestController = require("./controllers/UpgradeRequestController.js");
@@ -264,13 +264,13 @@ router.post("/warehouse-destroy", requireRoles([ 'Backoffice', 'Admin', 'Seller 
 router.post("/warehouse-metadata", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), WarehouseController.getWarehouseMetadata);
 
 //Rutas de categoria de productos
-router.get("/product-category", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), ProductCategoryController.index);
+router.post("/product-categories", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(listProductCategorySchema), ProductCategoryController.index);
 router.post("/product-category", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(productCategorySchema), ProductCategoryController.store);
 router.post("/product-category-update", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(updateProductCategorySchema), ProductCategoryController.update);
 router.post("/product-category-destroy", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(idProductCategorySchema), ProductCategoryController.destroy);
 
 // Rutas de atributos de productos
-router.post("/attributes", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), AttributeController.index);
+router.post("/attributes", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(listAttributeSchema), AttributeController.index);
 router.post("/attribute", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(attributeSchema), AttributeController.store);
 router.post("/attribute-update", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(updateAttributeSchema), AttributeController.update);
 router.post("/attribute-destroy", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(idAttributeSchema), AttributeController.destroy);

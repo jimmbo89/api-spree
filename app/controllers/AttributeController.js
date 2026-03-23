@@ -1,14 +1,17 @@
 const logger = require("../../config/logger");
-const { AttributeRepository } = require("../repositories");
+const { AttributeRepository, CompanyRepository } = require("../repositories");
 
 const AttributeController = {
   async index(req, res) {
     const userName = req.user?.name || 'Anonymous';
+    const { company_id, usage } = req.body;
     logger.info(`${userName} - Solicita listado de atributos`);
-    const { usage } = req.body;
-    let  withUsageCount = usage || false;
+    let withUsageCount = usage || false;
     try {
-      const attributes = await AttributeRepository.findAll({ withUsageCount });
+      const attributes = await AttributeRepository.findAll({ 
+        companyId: company_id || null,
+        withUsageCount 
+      });
       return attributes.length === 0
         ? res.status(204).json({ msg: "NoAttributesFound", attributes: [] })
         : res.status(200).json({ attributes: attributes });
@@ -24,12 +27,30 @@ const AttributeController = {
     logger.info("Datos recibidos (body):");
     logger.info(JSON.stringify(req.body));
 
-    const { name, type, cant } = req.body;
-    const attributeData = { name, type, cant };
-    let  withUsageCount = true;
+    const { name, company_id, type, cant } = req.body;
+    const attributeData = { name, company_id, type, cant };
+    let withUsageCount = true;
     try {
+      // Validar company_id si se proporciona
+      if (company_id) {
+        const company = await CompanyRepository.findById(company_id);
+        if (!company) {
+          return res.status(400).json({ error: "CompanyNotFound", message: "La empresa especificada no existe" });
+        }
+      }
+
+      // ✅ Validar que el nombre no exista en la misma empresa (o global si company_id es null)
+      const existingAttribute = await AttributeRepository.findByName(name, company_id);
+      if (existingAttribute) {
+        const scope = company_id ? `en la empresa ${company_id}` : 'como atributo global';
+        return res.status(409).json({
+          error: "DuplicateName",
+          message: `Ya existe un atributo con el nombre "${name}" ${scope}`
+        });
+      }
+
       await AttributeRepository.create(attributeData);
-      const attributes = await AttributeRepository.findAll({ withUsageCount });
+      const attributes = await AttributeRepository.findAll({ companyId: company_id || null, withUsageCount });
       return res.status(201).json({ attributes: attributes, msg: "Atributo creado correctamente" });
     } catch (err) {
       logger.error("AttributeController->store: " + err.message);
@@ -44,14 +65,35 @@ const AttributeController = {
     logger.info("Datos recibidos (params + body):");
     logger.info(JSON.stringify({ params: req.params, body: req.body }));
 
-    const { name, type, cant } = req.body;
-    let  withUsageCount = true;
+    const { name, company_id, type, cant } = req.body;
+    let withUsageCount = true;
     try {
       const attribute = await AttributeRepository.findById(attributeId);
       if (!attribute) return res.status(404).json({ msg: "AttributeNotFound" });
 
-      const updatedAttribute = await AttributeRepository.update(attribute, { name, type, cant });
-      const attributes = await AttributeRepository.findAll({ withUsageCount });
+      // Validar company_id si se proporciona y es diferente
+      if (company_id && company_id !== attribute.company_id) {
+        const company = await CompanyRepository.findById(company_id);
+        if (!company) {
+          return res.status(400).json({ error: "CompanyNotFound", message: "La empresa especificada no existe" });
+        }
+      }
+
+      // ✅ Validar que el nombre no exista en la misma empresa (excluyendo el atributo actual)
+      if (name && name !== attribute.name) {
+        const targetCompanyId = company_id !== undefined ? company_id : attribute.company_id;
+        const existingAttribute = await AttributeRepository.findByNameExcludingId(name, targetCompanyId, attributeId);
+        if (existingAttribute) {
+          const scope = targetCompanyId ? `en la empresa ${targetCompanyId}` : 'como atributo global';
+          return res.status(409).json({
+            error: "DuplicateName",
+            message: `Ya existe un atributo con el nombre "${name}" ${scope}`
+          });
+        }
+      }
+
+      const updatedAttribute = await AttributeRepository.update(attribute, { name, company_id, type, cant });
+      const attributes = await AttributeRepository.findAll({ companyId: company_id || attribute.company_id, withUsageCount });
       return res.status(200).json({ attributes: attributes, msg: "Atributo editado correctamente" });
     } catch (err) {
       logger.error("AttributeController->update: " + err.message);
@@ -65,13 +107,13 @@ const AttributeController = {
     logger.info(`${userName} - Elimina atributo ID ${attributeId}`);
     logger.info("Datos recibidos (params):");
     logger.info(JSON.stringify({ params: req.params, body: req.body }));
-    let  withUsageCount = true;
+    let withUsageCount = true;
     try {
       const attribute = await AttributeRepository.findById(attributeId);
       if (!attribute) return res.status(404).json({ msg: "AttributeNotFound" });
 
       await AttributeRepository.delete(attribute);
-      const attributes = await AttributeRepository.findAll({ withUsageCount });
+      const attributes = await AttributeRepository.findAll({ companyId: attribute.company_id, withUsageCount });
       return res.status(200).json({ msg: "Atributo eliminado correctamente", attributes: attributes });
     } catch (err) {
       logger.error("AttributeController->destroy: " + err.message);

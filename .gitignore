@@ -10,6 +10,9 @@ node_modules/
 # Logs
 logs/
 
+#Docs
+docs/
+
 #vnm
 .nvmrc
 public/

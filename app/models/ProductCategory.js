@@ -5,8 +5,19 @@ const { Model } = require('sequelize');
 module.exports = (sequelize, DataTypes) => {
   class ProductCategory extends Model {
     static associate(models) {
-      // Ejemplo de relación futura (opcional):
-      ProductCategory.hasMany(models.Product, { foreignKey: 'category_id', as: 'products' });
+      // Relación: categoría pertenece a una empresa (puede ser NULL = global)
+      ProductCategory.belongsTo(models.Company, { 
+        foreignKey: 'company_id', 
+        as: 'company',
+        onDelete: 'SET NULL'
+      });
+      
+      // Relación: una categoría tiene muchos productos
+      ProductCategory.hasMany(models.Product, { 
+        foreignKey: 'category_id', 
+        as: 'products',
+        onDelete: 'SET NULL'
+      });
     }
   }
 
@@ -17,16 +28,21 @@ module.exports = (sequelize, DataTypes) => {
       primaryKey: true,
       comment: 'ID autoincremental de la categoría de producto'
     },
+    company_id: {
+      type: DataTypes.BIGINT,
+      allowNull: true,
+      comment: 'ID de la empresa propietaria (NULL = categoría global)'
+    },
     name: {
       type: DataTypes.STRING,
       allowNull: false,
-      unique: true,
+      // ✅ unique: true eliminado - ahora puede haber categorías con mismo nombre en diferentes empresas
       validate: {
         notEmpty: {
           msg: 'El nombre de la categoría no puede estar vacío'
         }
       },
-      comment: 'Nombre único y obligatorio de la categoría'
+      comment: 'Nombre de la categoría (único por empresa si company_id no es NULL)'
     },
     status: {
       type: DataTypes.BOOLEAN,
@@ -44,8 +60,6 @@ module.exports = (sequelize, DataTypes) => {
     modelName: 'ProductCategory',
     tableName: 'product_categories',
     timestamps: true,
-    // Opcional: asegura que los nombres de tablas no se pluralicen incorrectamente
-    // (aunque ya usas tableName, es redundante pero seguro)
   });
 
   return ProductCategory;

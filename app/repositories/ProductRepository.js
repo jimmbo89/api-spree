@@ -12,6 +12,12 @@ const { UPLOAD_BASE_PATH } = require("../../config/upload");
 const ProductRepository = {
   async findFiltered({ companyId, userId, branchId, categoryId, brand, state, hasGtin, productId }) {
     const where = { };
+    
+    // ✅ FILTRAR POR EMPRESA (obligatorio para seguridad)
+    if (companyId !== undefined && companyId !== null) {
+      where.company_id = companyId;
+    }
+    
     if (categoryId !== undefined) where.category_id = categoryId;
     if (brand !== undefined && brand !== '') where.brand = brand;
     if (state !== undefined) where.state = state;
@@ -349,33 +355,41 @@ const ProductRepository = {
     await product.update({state: state});
   },
 
-async existsBySku(sku, excludeId = null) {
-  try {    
+async existsBySku(sku, companyId = null, excludeId = null) {
+  try {
     if (!sku || typeof sku !== 'string' || sku.trim() === '') {
       console.log('SKU inválido o vacío');
       return false;
     }
-    
+
     const cleanSku = sku.trim();
-    
-    // Usar el método estático del modelo
-    const exists = await Product.skuExists(cleanSku, excludeId);
-    
+
+    // ✅ Usar el método estático del modelo con company_id
+    const exists = await Product.skuExists(cleanSku, companyId, excludeId);
+
     return exists;
-    
+
   } catch (error) {
     console.error('Error en existsBySku:', error);
-    
+
     // Fallback: consulta directa más simple
     try {
+      const whereConditions = ['sku = ?'];
+      const replacements = [sku];
+      
+      if (companyId) {
+        whereConditions.push('company_id = ?');
+        replacements.push(companyId);
+      }
+      
       const count = await sequelize.query(
-        'SELECT COUNT(*) as count FROM products WHERE sku = ?',
+        `SELECT COUNT(*) as count FROM products WHERE ${whereConditions.join(' AND ')}`,
         {
-          replacements: [sku],
+          replacements,
           type: sequelize.QueryTypes.SELECT
         }
       );
-      
+
       return count[0].count > 0;
     } catch (fallbackError) {
       console.error('Error en fallback query:', fallbackError);

@@ -1,13 +1,24 @@
-const { ProductCategory, Product } = require("../models");
+const { ProductCategory, Product, Company } = require("../models");
 const logger = require("../../config/logger");
-const { fn, col } = require("sequelize");
+const { fn, col, Op } = require("sequelize");
 
 const ProductCategoryRepository = {
-async findAll() {
+async findAll({ companyId = null } = {}) {
   try {
+    // Construir where: si hay companyId, traer categorías globales (NULL) O de la empresa
+    const where = {};
+    if (companyId != null && companyId !== 0) {
+      where[Op.or] = [
+        { company_id: companyId },
+        { company_id: { [Op.is]: null } } // Categorías globales
+      ];
+    }
+
     const categories = await ProductCategory.findAll({
+      where,
       attributes: [
         "id",
+        "company_id",
         "name",
         "status",
         "description",
@@ -19,8 +30,13 @@ async findAll() {
       include: [{
         model: Product,
         as: 'products',
-        attributes: [], // No necesitamos traer los campos del producto, solo contarlos
-        required: false // LEFT JOIN (incluye categorías sin productos)
+        attributes: [],
+        required: false
+      }, {
+        model: Company,
+        as: 'company',
+        attributes: ['id', 'name', 'image'],
+        required: false
       }],
       group: ['ProductCategory.id'],
       order: [['id', 'ASC']]
@@ -33,12 +49,28 @@ async findAll() {
   }
 },
 
-  // En ProductCategoryRepository.js
-async findActive() {
+  // Filtrar categorías activas (globales O de la empresa)
+async findActive({ companyId = null } = {}) {
   try {
+    const where = { status: 1 };
+    
+    // Si hay companyId, traer categorías globales (NULL) O de la empresa
+    if (companyId != null && companyId !== 0) {
+      where[Op.or] = [
+        { company_id: companyId },
+        { company_id: { [Op.is]: null } }
+      ];
+    }
+
     const categories = await ProductCategory.findAll({
-      where: { status: 1 }, // o `active: true` si usas boolean
-      attributes: ["id", "name", "status", "description"],
+      where,
+      attributes: ["id", "company_id", "name", "status", "description"],
+      include: [{
+        model: Company,
+        as: 'company',
+        attributes: ['id', 'name', 'image'],
+        required: false
+      }],
       order: [["name", "ASC"]]
     });
     return categories;
@@ -51,7 +83,13 @@ async findActive() {
   async findById(id) {
     try {
       const category = await ProductCategory.findByPk(id, {
-        attributes: ["id", "name", "status", "description"]
+        attributes: ["id", "company_id", "name", "status", "description"],
+        include: [{
+          model: Company,
+          as: 'company',
+          attributes: ['id', 'name', 'image'],
+          required: false
+        }]
       });
       return category;
     } catch (error) {
@@ -60,10 +98,29 @@ async findActive() {
     }
   },
 
-  async findByName(name) {
+  async findByName(name, companyId = null) {
     try {
       if (!name) throw new Error("El nombre no puede estar vacío");
-      const category = await ProductCategory.findOne({ where: { name } });
+      
+      const where = { name };
+      
+      // Si hay companyId, buscar en categorías de la empresa O globales
+      if (companyId != null && companyId !== 0) {
+        where[Op.or] = [
+          { company_id: companyId },
+          { company_id: { [Op.is]: null } }
+        ];
+      }
+      
+      const category = await ProductCategory.findOne({ 
+        where,
+        include: [{
+          model: Company,
+          as: 'company',
+          attributes: ['id', 'name', 'image'],
+          required: false
+        }]
+      });
       return category;
     } catch (error) {
       logger.error(`Error en ProductCategoryRepository->findByName (Name: ${name}):`, error);
@@ -71,15 +128,52 @@ async findActive() {
     }
   },
 
+  // ✅ Buscar categoría por nombre excluyendo un ID específico (para validación en update)
+  async findByNameExcludingId(name, companyId = null, excludeId = null) {
+    try {
+      if (!name) throw new Error("El nombre no puede estar vacío");
+      
+      const where = { name };
+      
+      // Excluir el ID especificado
+      if (excludeId) {
+        where.id = { [Op.ne]: excludeId };
+      }
+      
+      // Si hay companyId, buscar en categorías de la empresa O globales
+      if (companyId != null && companyId !== 0) {
+        where[Op.or] = [
+          { company_id: companyId },
+          { company_id: { [Op.is]: null } }
+        ];
+      }
+      
+      const category = await ProductCategory.findOne({ 
+        where,
+        include: [{
+          model: Company,
+          as: 'company',
+          attributes: ['id', 'name', 'image'],
+          required: false
+        }]
+      });
+      return category;
+    } catch (error) {
+      logger.error(`Error en ProductCategoryRepository->findByNameExcludingId (Name: ${name}):`, error);
+      throw new Error(`Error al buscar categoría por nombre excluyendo ID: ${error.message}`);
+    }
+  },
+
   async create(data) {
     try {
-      const { name, status, description } = data;
+      const { name, company_id, status, description } = data;
       const category = await ProductCategory.create({
         name,
+        company_id: company_id || null, // NULL = categoría global
         status: status !== undefined ? status : true,
         description: description || null
       });
-      logger.info(`Nueva categoría creada: ID ${category.id}, nombre: ${category.name}`);
+      logger.info(`Nueva categoría creada: ID ${category.id}, nombre: ${category.name}, company_id: ${company_id || 'NULL (global)'}`);
       return category;
     } catch (error) {
       logger.error("Error en ProductCategoryRepository->create:", error);
@@ -89,9 +183,10 @@ async findActive() {
 
   async update(category, data) {
     try {
-      const { name, status, description } = data;
+      const { name, company_id, status, description } = data;
       const updateData = {};
       if (name !== undefined) updateData.name = name;
+      if (company_id !== undefined) updateData.company_id = company_id;
       if (status !== undefined) updateData.status = status;
       if (description !== undefined) updateData.description = description;
 

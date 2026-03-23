@@ -5,77 +5,90 @@ const WarehouseProductRepository = require('./WarehouseProductRepository');
   const { Op, Sequelize } = require('sequelize');
 
 const WarehouseRepository = {
-  async findFiltered({ 
-  companyId, 
-  branchId, 
-  userId, 
-  status, 
-  type, 
-  includeProducts = true // ← Valor por defecto true
+  async findFiltered({
+  companyId,
+  branchId,
+  userId,
+  status,
+  type,
+  includeProducts = true
 }) {
   const where = {};
   const include = [];
 
-  // Caso especial: se filtra por companyId y NO por branchId específico
-  if (companyId != null && companyId !== 0 && (branchId == null || branchId === 0)) {
-    // Incluimos relaciones para poder filtrar por branch.company_id
-    include.push(
-      {
-        model: Company,
-        as: 'company',
-        attributes: ['id', 'name', 'image'],
-        required: false
-      },
-      {
+  // ✅ FILTRAR por companyId y/o branchId
+  if (companyId != null && companyId !== 0) {
+    if (branchId != null && branchId !== 0) {
+      // ✅ Ambos companyId y branchId especificados
+      // Verificar que la branch pertenezca a la company
+      const branch = await Branch.findByPk(branchId);
+      if (!branch || branch.company_id !== companyId) {
+        return []; // Branch no pertenece a la company
+      }
+      // Filtrar solo almacenes de esta branch específica
+      where.branch_id = branchId;
+    } else {
+      // ✅ Solo companyId especificado
+      // Estrategia: Obtener IDs de branches válidas y filtrar por ellas
+      
+      // 1. Obtener branches que pertenecen a la company
+      const companyBranches = await Branch.findAll({
+        where: { company_id: companyId },
+        attributes: ['id'],
+        raw: true
+      });
+      
+      const validBranchIds = companyBranches.map(b => b.id);
+      
+      // 2. Construir filtro para almacenes:
+      // - Almacenes directos de la company (company_id = companyId, branch_id null/0)
+      // - Almacenes de branches de la company (branch_id IN validBranchIds)
+      const branchCondition = validBranchIds.length > 0
+        ? { branch_id: { [Op.in]: validBranchIds } }
+        : { branch_id: { [Op.eq]: 0 } }; // Si no hay branches, usar condición falsa
+      
+      where[Op.or] = [
+        {
+          company_id: companyId,
+          branch_id: { [Op.or]: [{ [Op.is]: null }, { [Op.eq]: 0 }] }
+        },
+        branchCondition
+      ];
+      
+      // 3. Incluir branch para obtener sus datos (sin filtrar por company_id aquí)
+      include.push({
         model: Branch,
         as: 'branch',
-        attributes: ['id', 'name', 'image'],
-        include: [{
-          model: Company,
-          as: 'company',
-          attributes: ['id', 'name', 'image'] // necesitas el id al menos para join
-        }],
+        attributes: ['id', 'name', 'image', 'company_id'],
         required: false
-      }
-    );
-
-    // Filtrar: almacenes propios de la compañía O almacenes de sus sucursales
-    where[Op.or] = [
-      { company_id: companyId },
-      { '$branch.company_id$': companyId } // Sequelize usa $...$ para columnas anidadas en where
-    ];
-
-  } else {
-    // Caso normal: filtrado directo
-    if (companyId != null && companyId !== 0) where.company_id = companyId;
-    if (branchId != null && branchId !== 0) where.branch_id = branchId;
-
-    include.push(
-      {
-        model: Branch,
-        as: 'branch',
-        attributes: ['id', 'name', 'image'],
-        required: false
-      },
-      {
-        model: Company,
-        as: 'company',
-        attributes: ['id', 'name', 'image'],
-        required: false
-      }
-    );
+      });
+    }
+  } else if (branchId != null && branchId !== 0) {
+    // ✅ Solo branchId especificado (sin companyId)
+    where.branch_id = branchId;
   }
+  // Si no hay companyId ni branchId, no filtrar (trae todos)
 
-  // Otros filtros
+  // ✅ Otros filtros opcionales
   if (userId != null && userId !== 0) where.user_id = userId;
   if (status != null && status !== 0) where.status = status;
   if (type != null && type !== 0) where.type = type;
+
+  // ✅ Incluir relaciones
+  include.push(
+    {
+      model: Company,
+      as: 'company',
+      attributes: ['id', 'name', 'image'],
+      required: false
+    }
+  );
 
   // Consulta
   const warehouses = await Warehouse.findAll({
     where,
     attributes: [
-      'id', 'code', 'user_id', 'company_id', 'branch_id', 
+      'id', 'code', 'user_id', 'company_id', 'branch_id',
       'name', 'description', 'type', 'address', 'city',
       'region', 'country', 'latitude', 'longitude',
       'capacity_max_units', 'allow_mermas', 'rotation_policy',
@@ -85,8 +98,37 @@ const WarehouseRepository = {
     order: [['name', 'ASC']],
     distinct: true,
   });
-  // Obtener IDs de almacenes
-  const warehouseIds = warehouses.map(wh => wh.id);
+
+  // ✅ FILTRADO MANUAL (capa adicional de seguridad)
+  // Obtener branches válidas de la company para verificar
+  let validBranchIds = new Set();
+  if (companyId != null && companyId !== 0) {
+    const branches = await Branch.findAll({
+      where: { company_id: companyId },
+      attributes: ['id'],
+      raw: true
+    });
+    validBranchIds = new Set(branches.map(b => b.id));
+  }
+
+  const filteredWarehouses = warehouses.filter(wh => {
+    if (companyId != null && companyId !== 0) {
+      // Caso 1: Almacén directo de la company
+      if (wh.company_id === companyId && (wh.branch_id === null || wh.branch_id === 0)) {
+        return true;
+      }
+      // Caso 2: Almacén de branch → verificar que branch_id esté en validBranchIds
+      if (wh.branch_id !== null && wh.branch_id !== 0 && validBranchIds.has(wh.branch_id)) {
+        return true;
+      }
+      // ❌ Excluir: huérfanos, otras companies, branches no válidas
+      return false;
+    }
+    return true;
+  });
+
+  // Obtener IDs de almacenes válidos
+  const warehouseIds = filteredWarehouses.map(wh => wh.id);
   
   // Obtener conteos de productos
   let productCounts = {};
@@ -113,8 +155,8 @@ const WarehouseRepository = {
     }
   }
 
-  // Transformar los resultados
-  return warehouses.map(wh => {
+  // Transformar los resultados (usando filteredWarehouses, no warehouses)
+  return filteredWarehouses.map(wh => {
     // Determinar la compañía correcta
     let companyName = null;
     let companyImage = null;
