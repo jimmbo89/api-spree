@@ -540,7 +540,7 @@ async create(userData, file, transaction = null) {
       where: { email },
       attributes: [
         'id', 'name', 'email', 'status', 'image',
-        'email_verified_at', 'remember_token', 'external_id', 'external_auth', 'registration_date', 'user'
+        'email_verified_at', 'remember_token', 'external_id', 'external_auth', 'registration_date', 'user', 'reset_token', 'reset_expire'
       ]
     };
     
