@@ -384,6 +384,85 @@ async findById(id, options = {}) {
   },
 
   /**
+   * ✅ Recalcula el progreso de un job basándose en los JobProduct
+   * Actualiza: processed, successful, errors_count, percentage
+   * @param {Number} jobId - ID del job
+   * @returns {Object} Job actualizado
+   */
+  async recalculateProgress(jobId) {
+    try {
+      const job = await Job.findByPk(jobId);
+      if (!job) {
+        throw new Error(`Job no encontrado (ID: ${jobId})`);
+      }
+
+      // Contar JobProduct por estado
+      const { JobProduct } = require('../models');
+      const { fn, col } = require('sequelize');
+
+      const stats = await JobProduct.findAll({
+        attributes: [
+          'status',
+          [fn('COUNT', col('JobProduct.id')), 'count']
+        ],
+        where: { job_id: jobId },
+        group: ['JobProduct.status'],
+        raw: true
+      });
+
+      // Calcular totales
+      let processed = 0;
+      let successful = 0;
+      let errors_count = 0;
+
+      stats.forEach(row => {
+        const count = parseInt(row.count) || 0;
+        if (['success', 'error'].includes(row.status)) {
+          processed += count;
+        }
+        if (row.status === 'success') {
+          successful += count;
+        }
+        if (row.status === 'error') {
+          errors_count += count;
+        }
+      });
+
+      const total = job.total_products || 0;
+      const percentage = total > 0
+        ? Math.min(100, Math.round((processed / total) * 100))
+        : 0;
+
+      // Determinar estado del job según progreso
+      let status = job.status;
+      if (processed >= total && total > 0) {
+        status = errors_count > 0 ? 'completed_with_errors' : 'completed';
+      } else if (processed > 0) {
+        status = 'processing';
+      } else if (job.status === 'pending') {
+        status = 'processing'; // Si hay al menos un producto procesado, el job está en proceso
+      }
+
+      // Actualizar job
+      await this.update(job, {
+        status,
+        processed,
+        successful,
+        errors_count,
+        percentage
+      });
+
+      logger.info(`[JobRepository] Job ${jobId} recalculado: ${processed}/${total} procesados, ${successful} éxitos, ${errors_count} errores (${percentage}%)`);
+
+      return job.get({ plain: true });
+
+    } catch (error) {
+      logger.error(`Error en JobRepository->recalculateProgress (ID: ${jobId}):`, error);
+      throw new Error(`Error al recalcular progreso: ${error.message}`);
+    }
+  },
+
+  /**
    * Marca el job como completado
    */
   // Cuando se complete un job, verificar si hay errores

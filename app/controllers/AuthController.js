@@ -349,6 +349,25 @@ const AuthController = {
         status: "success",
       });
 
+      // Formatear memberships con permisos
+      const memberships = (user.memberships || []).filter(m => m.status === 1).map(m => ({
+        id: m.id,
+        company_id: m.company_id,
+        role_id: m.role_id,
+        status: m.status,
+        company: {
+          id: m.company.id,
+          name: m.company.name,
+          image: m.company.image,
+          plan: m.company.plan
+        },
+        role: {
+          id: m.role.id,
+          name: m.role.name,
+          permissions: m.role.permissions || []
+        }
+      }));
+
       return res.status(200).json({
         id: userNew.id,
         name: userNew.name,
@@ -356,7 +375,7 @@ const AuthController = {
         email: userNew.email,
         image: userNew.image,
         token,
-        memberships: user.memberships || [],
+        memberships,
       });
     } catch (error) {
       const errorMsg = error.details
@@ -857,7 +876,7 @@ const AuthController = {
   },
   async verifyCode(req, res) {
     try {
-      const { email } = req.body;
+      const { email, code } = req.body;
       const user = await UserRepository.findByEmailWithTransaction(email, null);
 
       if (!user) {

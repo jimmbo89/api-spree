@@ -1068,8 +1068,8 @@ async retryBatch(req, res) {
           task_id,
           success: false,
           error: refreshError.message.startsWith('auth_required') ? 'auth_required' : refreshError.message,
-          error_details: refreshError.message.startsWith('auth_required') 
-            ? { auth_url: refreshError.message.split(':')[1] } 
+          error_details: refreshError.message.startsWith('auth_required')
+            ? { auth_url: refreshError.message.split(':')[1] }
             : null
         });
         continue; // Continuar con el siguiente task
@@ -1083,8 +1083,46 @@ async retryBatch(req, res) {
         user_id
       );
 
-      // 5. ✅ La tarea YA fue actualizada por el servicio (incluyendo warnings)
-      // No es necesario actualizarla aquí nuevamente
+      // 5. ✅ Actualizar JobProduct si hay job_id
+      if (job_id) {
+        try {
+          // Buscar JobProduct por job_id + product_id + marketplace_id + credential_id
+          const jobProduct = await JobProductRepository.findByProductAndMarketplace(
+            job_id,
+            task.product_id,
+            task.marketplace_id,
+            task.credential_id
+          );
+
+          if (jobProduct) {
+            // Determinar status para JobProduct (mapeo desde ProductPublishingTask)
+            const jobProductStatus = result.status === 'published' || result.status === 'published_with_warnings'
+              ? 'success'
+              : result.status === 'failed'
+                ? 'error'
+                : jobProduct.status;
+
+            await JobProductRepository.update(jobProduct, {
+              status: jobProductStatus,
+              external_id: result.external_id || jobProduct.external_id,
+              external_url: result.external_url || jobProduct.external_url,
+              error_message: result.success ? null : (result.error || jobProduct.error_message),
+              error_details: result.success ? null : (result.error_details || result.details || jobProduct.error_details),
+              attempt_count: (jobProduct.attempt_count || 0) + 1,
+              last_attempt_at: new Date()
+            });
+
+            logger.info(`[retryBatch] JobProduct ${jobProduct.id} actualizado: ${jobProductStatus}`);
+          }
+
+          // 6. ✅ Actualizar progreso del Job
+          await JobRepository.recalculateProgress(job_id);
+
+        } catch (jobError) {
+          logger.warn(`[retryBatch] Error actualizando Job/JobProduct: ${jobError.message}`);
+          // No bloquear el flujo, continuar
+        }
+      }
 
       results.push({
         task_id,
@@ -1108,9 +1146,34 @@ async retryBatch(req, res) {
         last_attempt_at: new Date()
       });
 
-      results.push({ 
-        task_id, 
-        success: false, 
+      // ✅ Actualizar JobProduct en caso de error
+      if (job_id) {
+        try {
+          const jobProduct = await JobProductRepository.findByProductAndMarketplace(
+            job_id,
+            currentTask?.product_id || task.product_id,
+            currentTask?.marketplace_id || task.marketplace_id,
+            currentTask?.credential_id || task.credential_id
+          );
+
+          if (jobProduct) {
+            await JobProductRepository.update(jobProduct, {
+              status: 'error',
+              error_message: error.message,
+              attempt_count: (jobProduct.attempt_count || 0) + 1,
+              last_attempt_at: new Date()
+            });
+
+            await JobRepository.recalculateProgress(job_id);
+          }
+        } catch (jobError) {
+          logger.warn(`[retryBatch] Error actualizando JobProduct en error: ${jobError.message}`);
+        }
+      }
+
+      results.push({
+        task_id,
+        success: false,
         error: error.message,
         error_details: error.response?.data || null
       });

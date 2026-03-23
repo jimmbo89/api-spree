@@ -62,6 +62,7 @@ const assignWarehouseSchema = Joi.object({
           active: Joi.boolean().optional().default(true),
           local_sku: Joi.string().max(100).optional().allow(null, ''),
           price: Joi.number().precision(2).min(0).required(),
+          purchase_price: Joi.number().precision(2).min(0).optional().default(0),
           stock: Joi.number().integer().min(0).required()
         })
       ).required()

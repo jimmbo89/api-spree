@@ -220,6 +220,10 @@ const CompanyController = {
           },
           transaction
         );
+
+      // Obtener permisos del rol Admin con include
+      const adminRoleWithPermissions = await RoleRepository.findByNameWithPermissions("Admin");
+
        // ✅ Usar el nuevo método del repositorio
       //const hasPrincipal = await WarehouseRepository.existsPrincipalByEntity({ companyId: company.id }, transaction);
       await transaction.commit();
@@ -240,7 +244,7 @@ const CompanyController = {
             name: company.name,
             plan: plan
           },
-          role: adminRole
+          role: adminRoleWithPermissions
         }
    });
     } catch (error) {
@@ -503,8 +507,12 @@ const CompanyController = {
     await transaction.commit();
 
     logger.info(`Invitación aceptada: usuario ${user.email}`);
+
+    // Obtener permisos del rol aceptado
+    const roleWithPermissions = await RoleRepository.findByNameWithPermissions(pendingMembership.role.name);
+
     res.status(201).json({success: true,
-      message: "Compañía creada correctamente",
+      message: "Invitación aceptada correctamente",
         company: {
           id: pendingMembership.company_id,
           name: pendingMembership.company.name,
@@ -520,7 +528,7 @@ const CompanyController = {
             name: pendingMembership.company.name,
             plan: pendingMembership.company.plan
           },
-          role: pendingMembership.role
+          role: roleWithPermissions
         }
    });
 

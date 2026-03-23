@@ -11,6 +11,7 @@ const {
   WarehouseRepository,
   WarehouseProductRepository,
   WarehouseProductVariantRepository,
+  InventoryMovementRepository,
   AttributeRepository,
   ProductAttributeRepository,
 } = require("../repositories");
@@ -197,7 +198,7 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
     if (await ProductRepository.existsBySku(sku)) {
       return res.status(400).json({
         success: false,
-        msg: "skuAlreadyExists",
+        msg: `El SKU "${sku}" ya está registrado en el sistema`,
       });
     }
 
@@ -388,13 +389,14 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
               const variant = createdVariants[i];
 
               if (variant) {
-                await WarehouseProductVariantRepository.create(
+                const wpv = await WarehouseProductVariantRepository.create(
                   {
                     warehouse_product_id: wp.id,
                     variant_id: variant.id,
                     active: variantConfig.active !== false,
                     local_sku: variantConfig.local_sku || null,
                     price: parseFloat(variantConfig.price) || 0,
+                    purchase_price: parseFloat(variantConfig.purchase_price) || 0,
                     stock: parseInt(variantConfig.stock) || 0,
                   },
                   { transaction }
@@ -403,6 +405,31 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
                 logger.info(
                   `WarehouseProductVariant creado: variante ${variant.sku} (ID: ${variant.id}) para almacén ${warehouse.name}`
                 );
+
+                // Registrar movimiento de inventario inicial
+                const stockQty = parseInt(variantConfig.stock) || 0;
+                const purchasePrice = parseFloat(variantConfig.purchase_price) || 0;
+                await InventoryMovementRepository.create({
+                  warehouse_id: warehouse.id,
+                  product_id: product.id,
+                  variant_id: variant.id,
+                  company_id: warehouse.company_id,
+                  branch_id: warehouse.branch_id,
+                  user_id,
+                  movement_type: 'initial_stock',
+                  quantity: stockQty,
+                  stock_before: 0,
+                  stock_after: stockQty,
+                  unit_price: purchasePrice,
+                  total_value: purchasePrice * stockQty,
+                  reference_type: 'product_creation',
+                  reference_id: product.id.toString(),
+                  reason: 'Stock inicial al crear producto',
+                  meta: {
+                    warehouse_product_id: wp.id,
+                    warehouse_product_variant_id: wpv.id
+                  }
+                }, { transaction });
               } else {
                 logger.warn(
                   `No se encontró variante para índice ${i} en almacén ${warehouse.name}`
@@ -418,19 +445,45 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
                   { transaction }
                 );
 
-                await WarehouseProductVariantRepository.create(
+                const wpv = await WarehouseProductVariantRepository.create(
                   {
                     warehouse_product_id: wp.id,
                     variant_id: missingVariant.id,
                     active: variantConfig.active !== false,
                     local_sku: variantConfig.local_sku || null,
                     price: parseFloat(variantConfig.price) || 0,
+                    purchase_price: parseFloat(variantConfig.purchase_price) || 0,
                     stock: parseInt(variantConfig.stock) || 0,
                   },
                   { transaction }
                 );
 
                 logger.info(`Variante faltante creada: ${missingVariant.sku}`);
+
+                // Registrar movimiento de inventario inicial
+                const stockQty = parseInt(variantConfig.stock) || 0;
+                const purchasePrice = parseFloat(variantConfig.purchase_price) || 0;
+                await InventoryMovementRepository.create({
+                  warehouse_id: warehouse.id,
+                  product_id: product.id,
+                  variant_id: missingVariant.id,
+                  company_id: warehouse.company_id,
+                  branch_id: warehouse.branch_id,
+                  user_id,
+                  movement_type: 'initial_stock',
+                  quantity: stockQty,
+                  stock_before: 0,
+                  stock_after: stockQty,
+                  unit_price: purchasePrice,
+                  total_value: purchasePrice * stockQty,
+                  reference_type: 'product_creation',
+                  reference_id: product.id.toString(),
+                  reason: 'Stock inicial al crear producto',
+                  meta: {
+                    warehouse_product_id: wp.id,
+                    warehouse_product_variant_id: wpv.id
+                  }
+                }, { transaction });
               }
             }
           } else {
@@ -441,13 +494,14 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
             // Si no hay variantes configuradas, usar la primera variante por defecto
             if (createdVariants.length > 0) {
               const defaultVariant = createdVariants[0];
-              await WarehouseProductVariantRepository.create(
+              const wpv = await WarehouseProductVariantRepository.create(
                 {
                   warehouse_product_id: wp.id,
                   variant_id: defaultVariant.id,
                   active: true,
                   local_sku: null,
                   price: 0,
+                  purchase_price: 0,
                   stock: 0,
                 },
                 { transaction }
@@ -456,6 +510,29 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
               logger.info(
                 `Usando variante por defecto ${defaultVariant.sku} para almacén ${warehouse.name}`
               );
+
+              // Registrar movimiento de inventario inicial (stock 0)
+              await InventoryMovementRepository.create({
+                warehouse_id: warehouse.id,
+                product_id: product.id,
+                variant_id: defaultVariant.id,
+                company_id: warehouse.company_id,
+                branch_id: warehouse.branch_id,
+                user_id,
+                movement_type: 'initial_stock',
+                quantity: 0,
+                stock_before: 0,
+                stock_after: 0,
+                unit_price: 0,
+                total_value: 0,
+                reference_type: 'product_creation',
+                reference_id: product.id.toString(),
+                reason: 'Stock inicial al crear producto (sin configuración de variantes)',
+                meta: {
+                  warehouse_product_id: wp.id,
+                  warehouse_product_variant_id: wpv.id
+                }
+              }, { transaction });
             }
           }
         }
@@ -597,7 +674,10 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
       }
       if (req.body.sku && req.body.sku !== product.sku) {
         if (await ProductRepository.existsBySku(req.body.sku, product.id)) {
-          return res.status(400).json({ msg: "skuAlreadyExists" });
+          return res.status(400).json({
+            success: false,
+            msg: `El SKU "${req.body.sku}" ya está registrado en otro producto`,
+          });
         }
       }
 
@@ -853,6 +933,7 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
             active: variantConfig.active !== false,
             local_sku: variantConfig.local_sku || null,
             price: parseFloat(variantConfig.price) || 0,
+            purchase_price: parseFloat(variantConfig.purchase_price) || 0,
             stock: parseInt(variantConfig.stock) || 0,
           };
 

@@ -84,6 +84,32 @@ const RoleRepository = {
   }
 },
 
+  async findByNameWithPermissions(name) {
+  try {
+    if (!name) {
+      throw new Error("El nombre del rol no puede estar vacío");
+    }
+
+    const role = await Role.findOne({
+      where: { name },
+      attributes: ["id", "name", "status", "description"],
+      include: [
+        {
+          model: Permission,
+          as: 'permissions',
+          attributes: ['id', 'name', 'description'],
+          through: { attributes: [] }
+        }
+      ]
+    });
+
+    return role; // Retorna el rol con permisos o null si no se encuentra
+  } catch (error) {
+    logger.error(`Error en RoleRepository->findByNameWithPermissions (Name: ${name}):`, error);
+    throw new Error(`Error al obtener el rol por nombre con permisos: ${error.message}`);
+  }
+},
+
   async create(data) {
     try {
       const { name, status, description } = data;
