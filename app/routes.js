@@ -88,7 +88,10 @@ router.get("/", (req, res) => res.json({ hello: "World" }));
 
 router.post("/user-register", validateSchema(registerSchema), AuthController.register);
 router.post("/sign-in", validateSchema(loginSchema), AuthController.signIn);
-router.get("/verific-invitation", AuthController.verifyInvitation);
+
+// === Rutas de invitación (InvitationController) ===
+router.post("/verific-invitation", InvitationController.verificInvitation); // Verificar y aceptar invitación
+
 router.post('/forgot-password', AuthController.forgotPassword);
 router.post('/verify-code-password', AuthController.verifyCode);
 router.post('/reset-password', AuthController.resetPassword);

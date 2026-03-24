@@ -1,110 +1,218 @@
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
-const { sequelize } = require("../models")
-const authConfig = require('../../config/auth'); 
+const { sequelize } = require("../models");
+const authConfig = require('../../config/auth');
+const bcrypt = require('bcrypt');
 const logger = require("../../config/logger");
-const { InvitationRepository, LogRepository } = require('../repositories');
+const { InvitationRepository, LogRepository, CompanyRepository, UserRepository, UserCompanyRepository, RoleRepository } = require('../repositories');
 const { sendEmail } = require('../services/EmailService');
 
+// 📨 Plantilla de correo de invitación (consistente en toda la app)
+function buildInvitationEmailHtml({ inviterName, companyName, inviteLink }) {
+  return `
+    <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9f9f9;">
+      <div style="background-color: white; padding: 30px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);">
+        <h2 style="color: #006064; margin-top: 0;">👋 ¡Hola!</h2>
+        <p style="font-size: 16px; line-height: 1.6; color: #333;">
+          Has sido invitado por <strong>${inviterName}</strong> a unirte al equipo de
+          <strong>${companyName}</strong> en <strong>Spree</strong>.
+        </p>
+        <p style="font-size: 16px; line-height: 1.6; color: #333;">
+          Al aceptar esta invitación, podrás colaborar con su organización directamente desde la plataforma.
+        </p>
+        <div style="text-align: center; margin: 32px 0;">
+          <a href="${inviteLink}"
+             style="display: inline-block; padding: 14px 32px; background-color: #006064; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; transition: background-color 0.2s;">
+            Aceptar invitación
+          </a>
+        </div>
+        <p style="font-size: 14px; color: #555; text-align: center; margin-bottom: 0;">
+          🔒 Este enlace es válido durante <strong>24 horas</strong> por seguridad.
+        </p>
+        <hr style="border: 0; border-top: 1px solid #eee; margin: 28px 0;">
+        <p style="font-size: 13px; color: #777; margin-top: 24px; text-align: center;">
+          Si no reconoces esta invitación o no esperabas unirte a <strong>${companyName}</strong>,
+          por favor ignórala.
+        </p>
+      </div>
+      <p style="font-size: 12px; color: #999; text-align: center; margin-top: 20px;">
+        © ${new Date().getFullYear()} Spree. Todos los derechos reservados.
+      </p>
+    </div>
+  `;
+}
 
 const InvitationController = {
+/**
+ * ✅ Enviar/reenviar invitación a usuario (existente o nuevo)
+ * Guarda el token en user_companies (tabla principal)
+ */
 async sendInvitation(req, res) {
-const { email, company_id } = req.body;
+  const { email, company_id, role_id = 3 } = req.body; // role_id 3 = Viewer por defecto
   const invitedBy = req.user.id;
   const inviterName = req.user.name;
 
-    logger.info(`${inviterName} - Hace invitación a correo: ${email}`);
-    logger.info("Datos recibidos:");
-    logger.info(JSON.stringify(req.body ));
+  logger.info(`${inviterName} - Envía invitación a correo: ${email}`);
+  logger.info("Datos recibidos:");
+  logger.info(JSON.stringify(req.body));
 
-    const ip = req.ip || 'unknown';
-    const userAgent = req.get('User-Agent') || null;
-    // 1. Validar dominio
-    
-    // Lista de dominios permitidos (mejor en .env)
-    const ALLOWED_EMAIL_DOMAINS = (process.env.ALLOWED_EMAIL_DOMAINS || 'klint.cl').split(',');
-    const domain = email.split('@')[1];
-    if (!ALLOWED_EMAIL_DOMAINS.includes(domain)) {
-        await LogRepository.create({
-        user_id: invitedBy,
-        action: 'user.invite',
-        description: `Dominio no permitido: ${domain || 'desconocido'} para ${email}`,
-        ip_address: ip,
-        user_agent: userAgent,
-        status: 'error'
-        });
-      return res.status(400).json({ error: `El dominio ${domain} no está autorizado.` });
-    }
-
-    const transaction = await sequelize.transaction();
+  const ip = req.ip || 'unknown';
+  const userAgent = req.get('User-Agent') || null;
+  
+  // ✅ Obtener nombre de la empresa
+  let companyName = 'Spree';
   try {
-
-    // 2. Invalidar invitaciones pendientes anteriores (para este email)
-    await InvitationRepository.invalidatePendingByEmail(email, { transaction });
-
-    // 3. Generar token JWT
-    /*const payload = { email, invitedBy, type: 'invitation' };
-    const token = jwt.sign(payload, authConfig.secret, { expiresIn: authConfig.expireInvitation });
-    const decoded = jwt.decode(token);
-    const expiresAt = new Date(decoded.exp * 1000);*/
-
-    const token = uuidv4(); // ej: "a1b2c3d4-..."
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
-
-    // 4. Guardar en DB
-    await InvitationRepository.createInvitation({
-      token,
-      email,
-      invitedBy,
-      expiresAt
-    }, { transaction });
-
-    // 5. Enviar email con enlace seguro
-    const inviteLink = `${process.env.FRONTEND_URL}/join?token=${encodeURIComponent(token)}&company_id=${company_id}`;
-
-    const emailHtml = `
-      <p>👋 ¡Hola!</p>
-      <p>Has sido invitado por <strong>${inviterName}</strong> a unirte al equipo de <strong>Spree</strong>.</p>
-      
-      <div style="text-align: center; margin: 24px 0;">
-        <a href="${inviteLink}" 
-           style="display: inline-block; padding: 12px 24px; background-color: #006064; color: white; text-decoration: none; border-radius: 8px; font-weight: bold;">
-          Aceptar invitación
-        </a>
-      </div>
-
-      <p>🔒 Este enlace es válido por <strong>24 horas</strong>.</p>
-      <p style="font-size: 13px; color: #666; margin-top: 24px;">
-        Si no reconoces esta invitación, por favor ignórala.
-      </p>
-    `;
-
-   await sendEmail({
-      to: email,
-      subject: "📬 Únete a Spree Invitación de equipo",
-      text: `Invitación de ${inviterName}. Enlace: ${inviteLink}`,
-      html: emailHtml
-    });
-    
-    // 6. Registrar en logs
+    const company = await CompanyRepository.findById(company_id);
+    if (company) {
+      companyName = company.name;
+    }
+  } catch (error) {
+    logger.warn(`No se pudo obtener el nombre de la empresa ${company_id}: ${error.message}`);
+  }
+  
+  // 1. Validar dominio
+  const ALLOWED_EMAIL_DOMAINS = (process.env.ALLOWED_EMAIL_DOMAINS || 'klint.cl').split(',');
+  const domain = email.split('@')[1];
+  if (!ALLOWED_EMAIL_DOMAINS.includes(domain)) {
     await LogRepository.create({
       user_id: invitedBy,
       action: 'user.invite',
-      description: `Invitó al correo ${email}`,
+      description: `Dominio no permitido: ${domain || 'desconocido'} para ${email}`,
+      ip_address: ip,
+      user_agent: userAgent,
+      status: 'error'
+    });
+    return res.status(400).json({ 
+      success: false,
+      error: `El dominio ${domain} no está autorizado.` 
+    });
+  }
+
+  const transaction = await sequelize.transaction();
+  
+  try {
+    // 2. Buscar o crear usuario
+    let user = await UserRepository.findByEmail(email);
+    let userId;
+    
+    if (!user) {
+      // Crear usuario con status inactivo hasta que acepte
+      const userName = email.split('@')[0];
+      user = await UserRepository.create({
+        name: userName,
+        email: email,
+        password: '', // Sin contraseña hasta que acepte
+        user: userName,
+        status: 0, // Inactivo hasta aceptar invitación
+      }, null, transaction);
+      userId = user.id;
+    } else {
+      userId = user.id;
+      
+      // Verificar si ya tiene membresía activa en esta empresa
+      const existingMembership = await UserCompanyRepository.findByUserIdAndCompanyId(userId, company_id);
+      if (existingMembership && existingMembership.status === 1) {
+        await transaction.rollback();
+        return res.status(400).json({
+          success: false,
+          message: `El usuario ${email} ya es miembro activo de esta empresa`
+        });
+      }
+    }
+    
+    // 3. Generar token de invitación
+    const invitationToken = uuidv4();
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
+    const hashedToken = bcrypt.hashSync(invitationToken, 10);
+    
+    // 4. Crear o actualizar membresía en user_companies
+    let membership = await UserCompanyRepository.findByUserIdAndCompanyId(userId, company_id);
+    
+    if (membership) {
+      // Actualizar membresía existente
+      await UserCompanyRepository.update(membership, {
+        role_id,
+        status: -1, // Pendiente
+        invited_by: invitedBy,
+        invitation_token: hashedToken,
+        expires_at: expiresAt,
+        joined_at: null
+      }, transaction);
+    } else {
+      // Crear nueva membresía
+      membership = await UserCompanyRepository.create({
+        user_id: userId,
+        company_id,
+        role_id,
+        status: -1, // Pendiente
+        invited_by: invitedBy,
+        invitation_token: hashedToken,
+        expires_at: expiresAt,
+        joined_at: null
+      }, transaction);
+    }
+    
+    // 5. Opcional: Guardar en invitations para auditoría histórica
+    try {
+      await InvitationRepository.invalidatePendingByEmail(email, { transaction });
+      await InvitationRepository.createInvitation({
+        token: hashedToken,
+        email,
+        invitedBy,
+        expiresAt,
+        status: 'pending'
+      }, { transaction });
+    } catch (auditError) {
+      logger.warn(`No se pudo guardar auditoría en invitations: ${auditError.message}`);
+      // No fallamos la operación principal
+    }
+
+    // 6. Enviar email con enlace seguro (apunta al FRONTEND)
+    // El frontend debe tener una ruta que maneje la invitación, ej: /invitacion o /login
+    const inviteLink = `${process.env.FRONTEND_URL}/login?token=${encodeURIComponent(invitationToken)}&company_id=${company_id}`;
+    
+    const emailHtml = buildInvitationEmailHtml({
+      inviterName,
+      companyName,
+      inviteLink
+    });
+
+    await sendEmail({
+      to: email,
+      subject: `📬 Únete a ${companyName} en Spree Invitación de ${inviterName}`,
+      text: `Invitación de ${inviterName}. Enlace: ${inviteLink}`,
+      html: emailHtml
+    });
+
+    // 7. Registrar en logs
+    await LogRepository.create({
+      user_id: invitedBy,
+      company_id,
+      action: 'user.invite',
+      description: `Invitó al correo ${email} a la empresa ${companyName}`,
       ip_address: ip,
       user_agent: userAgent,
       status: 'success'
     });
-     // Confirmar transacción
+    
     await transaction.commit();
-    return res.status(201).json({ message: 'Invitación enviada', email, status: 'pending' });
+    
+    return res.status(201).json({ 
+      success: true,
+      message: 'Invitación enviada correctamente',
+      data: {
+        email,
+        company_id,
+        user_id: userId,
+        membership_id: membership.id,
+        status: 'pending'
+      }
+    });
 
   } catch (error) {
-    // Revertir cambios en DB
     await transaction.rollback();
-
-    // Registrar error
     logger.error(`Error en sendInvitation: ${error.message}`, error);
+    
     await LogRepository.create({
       user_id: invitedBy,
       action: 'user.invite',
@@ -113,44 +221,149 @@ const { email, company_id } = req.body;
       user_agent: userAgent,
       status: 'error'
     });
-    return res.status(500).json({ error: 'Error al enviar invitación' });
+    
+    return res.status(500).json({ 
+      success: false,
+      error: 'Error al enviar invitación',
+      details: error.message 
+    });
   }
 },
 
-async verificInvitation(req, res){
-const { token, company_id } = req.query;
-    logger.info(`Aceptando invitación:`);
-    logger.info("Token recibido:");
-    logger.info(JSON.stringify(token ));
+/**
+ * ✅ Verificar y aceptar invitación
+ * Valida token y actualiza status a 1 en user_companies
+ */
+async verificInvitation(req, res) {
+  const { token, company_id } = req.body;
+  const ip = req.ip || 'unknown';
+  const userAgent = req.get('User-Agent') || null;
+  
+  logger.info(`Verificando invitación: company_id=${company_id}`);
 
-  if (!token) {
-    return res.status(400).json({ msg: 'Token no proporcionado' });
+  if (!token || !company_id) {
+    return res.status(400).json({ 
+      success: false,
+      message: 'Token y company_id son requeridos' 
+    });
   }
 
+  const transaction = await sequelize.transaction();
+  
   try {
-    // 1. Buscar en DB (estado + expiración física)
-    const invitation = await InvitationRepository.findByToken(token);
-    if (!invitation) {
-      return res.status(401).json({ msg: 'Token inválido, expirado o ya utilizado' });
-    }
-
-    // 2. Verificar firma JWT
-    /*jwt.verify(token, authConfig.secret, (err, decoded) => {
-      if (err) {
-        return res.status(401).json({ msg: 'Token no válido' });
-      }*/
-        await InvitationRepository.markAsUsed(invitation.token, null);
-      // Todo OK: devolver datos para formulario de registro
-      return res.json({
-        valid: true,
-        email: invitation.email,
-        token // lo usarás en el registro final
+    // 1. Buscar membresías pendientes en esta empresa
+    const memberships = await UserCompanyRepository.findAll({
+      company_id,
+      status: -1 // Solo pendientes
+    });
+    
+    if (!memberships || memberships.length === 0) {
+      await transaction.rollback();
+      return res.status(404).json({ 
+        success: false,
+        message: 'No hay invitaciones pendientes para esta empresa',
+        code: 'INVITATION_NOT_FOUND'
       });
+    }
+    
+    // 2. Buscar la membresía con token válido
+    let validMembership = null;
+    for (const membership of memberships) {
+      if (membership.invitation_token) {
+        const isMatch = await bcrypt.compare(token, membership.invitation_token);
+        if (isMatch) {
+          // Verificar expiración
+          if (membership.expires_at && new Date(membership.expires_at) < new Date()) {
+            await transaction.rollback();
+            return res.status(401).json({ 
+              success: false,
+              message: 'Invitación expirada',
+              code: 'INVITATION_EXPIRED'
+            });
+          }
+          validMembership = membership;
+          break;
+        }
+      }
+    }
+    
+    if (!validMembership) {
+      await transaction.rollback();
+      return res.status(401).json({ 
+        success: false,
+        message: 'Token inválido o ya utilizado',
+        code: 'INVALID_TOKEN'
+      });
+    }
+    
+    // 3. Obtener datos del usuario y empresa
+    const user = await UserRepository.findById(validMembership.user_id, transaction);
+    const company = await CompanyRepository.findById(company_id, transaction);
+    const role = await RoleRepository.findById(validMembership.role_id, transaction);
+    
+    // 4. Activar membresía
+    await UserCompanyRepository.update(validMembership, {
+      status: 1, // Activo
+      joined_at: new Date(),
+      invitation_token: null, // Limpiar token
+      expires_at: null
+    }, transaction);
+    
+    // 5. Actualizar usuario a activo si estaba inactivo
+    if (user && user.status === 0) {
+      await UserRepository.update(user, { status: 1 }, transaction);
+    }
+    
+    // 6. Opcional: Actualizar invitations para auditoría
+    try {
+      await InvitationRepository.update(
+        { email: user.email, status: 'accepted' },
+        { token: validMembership.invitation_token },
+        transaction
+      );
+    } catch (auditError) {
+      logger.warn(`No se pudo actualizar auditoría: ${auditError.message}`);
+    }
+    
+    // 7. Registrar log
+    await LogRepository.create({
+      user_id: validMembership.user_id,
+      company_id: validMembership.company_id,
+      action: 'user.invite.accept',
+      description: `Usuario ${user.email} aceptó invitación a la empresa`,
+      ip_address: ip,
+      user_agent: userAgent,
+      status: 'success'
+    });
+    
+    await transaction.commit();
+    
+    return res.status(200).json({
+      success: true,
+      message: `¡Bienvenido a ${company.name}! Tu invitación ha sido aceptada correctamente.`,
+      data: {
+        user_id: user.id,
+        email: user.email,
+        company_id: company.id,
+        company_name: company.name,
+        role_id: role.id,
+        role_name: role.name,
+        membership_id: validMembership.id
+      }
+    });
 
   } catch (error) {
-    return res.status(500).json({ msg: 'Error interno', error: error.message });
+    await transaction.rollback();
+    logger.error(`Error en verificInvitation: ${error.message}`, error);
+    
+    return res.status(500).json({ 
+      success: false,
+      message: 'Error interno al procesar invitación',
+      details: error.message 
+    });
   }
-},
+}
+
 };
 
 module.exports = InvitationController;

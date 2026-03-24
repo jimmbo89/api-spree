@@ -295,6 +295,19 @@ const UserRepository = {
   }
 },
 
+  // ✅ Buscar usuario por email (simple, sin includes)
+  async findByEmail(email) {
+    try {
+      return await User.findOne({
+        where: { email },
+        attributes: ['id', 'name', 'email', 'status', 'user']
+      });
+    } catch (error) {
+      logger.error(`Error al buscar usuario por email (${email}):`, error);
+      throw new Error(`Error al buscar usuario: ${error.message}`);
+    }
+  },
+
 // app/repositories/UserRepository.js
 async findByEmailWithCompanyContext(identifier, companyId = null) {
   try {

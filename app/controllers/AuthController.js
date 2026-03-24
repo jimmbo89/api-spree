@@ -18,6 +18,42 @@ const {
   RolePermissionRepository,
 } = require("../repositories");
 const { sendEmail } = require("../services/EmailService");
+
+// 📨 Plantilla de correo de invitación (consistente en toda la app)
+function buildInvitationEmailHtml({ inviterName, companyName, inviteLink }) {
+  return `
+    <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9f9f9;">
+      <div style="background-color: white; padding: 30px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);">
+        <h2 style="color: #006064; margin-top: 0;">👋 ¡Hola!</h2>
+        <p style="font-size: 16px; line-height: 1.6; color: #333;">
+          Has sido invitado por <strong>${inviterName}</strong> a unirte al equipo de
+          <strong>${companyName}</strong> en <strong>Spree</strong>.
+        </p>
+        <p style="font-size: 16px; line-height: 1.6; color: #333;">
+          Al aceptar esta invitación, podrás colaborar con su organización directamente desde la plataforma.
+        </p>
+        <div style="text-align: center; margin: 32px 0;">
+          <a href="${inviteLink}"
+             style="display: inline-block; padding: 14px 32px; background-color: #006064; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; transition: background-color 0.2s;">
+            Aceptar invitación
+          </a>
+        </div>
+        <p style="font-size: 14px; color: #555; text-align: center; margin-bottom: 0;">
+          🔒 Este enlace es válido durante <strong>24 horas</strong> por seguridad.
+        </p>
+        <hr style="border: 0; border-top: 1px solid #eee; margin: 28px 0;">
+        <p style="font-size: 13px; color: #777; margin-top: 24px; text-align: center;">
+          Si no reconoces esta invitación o no esperabas unirte a <strong>${companyName}</strong>,
+          por favor ignórala.
+        </p>
+      </div>
+      <p style="font-size: 12px; color: #999; text-align: center; margin-top: 20px;">
+        © ${new Date().getFullYear()} Spree. Todos los derechos reservados.
+      </p>
+    </div>
+  `;
+}
+
 // 📨 Método independiente para enviar correo de invitación
 async function sendInvitationEmail({
   to,
@@ -29,37 +65,7 @@ async function sendInvitationEmail({
   userAgent,
   invitedByUserId,
 }) {
-  const emailHtml = `
-    <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9f9f9;">
-      <div style="background-color: white; padding: 30px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);">
-        <h2 style="color: #006064; margin-top: 0;">👋 ¡Hola!</h2>
-        <p style="font-size: 16px; line-height: 1.6; color: #333;">
-          Has sido invitado por <strong>${inviterName}</strong> a unirte al equipo de 
-          <strong>${companyName}</strong> en <strong>Spree</strong>.
-        </p>
-        <p style="font-size: 16px; line-height: 1.6; color: #333;">
-          Al aceptar esta invitación, podrás colaborar con su organización directamente desde la plataforma.
-        </p>
-        <div style="text-align: center; margin: 32px 0;">
-          <a href="${inviteLink}" 
-             style="display: inline-block; padding: 14px 32px; background-color: #006064; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; transition: background-color 0.2s;">
-            Aceptar invitación
-          </a>
-        </div>
-        <p style="font-size: 14px; color: #555; text-align: center; margin-bottom: 0;">
-          🔒 Este enlace es válido durante <strong>24 horas</strong> por seguridad.
-        </p>
-        <hr style="border: 0; border-top: 1px solid #eee; margin: 28px 0;">
-        <p style="font-size: 13px; color: #777; margin-top: 24px; text-align: center;">
-          Si no reconoces esta invitación o no esperabas unirte a <strong>${companyName}</strong>, 
-          por favor ignórala.
-        </p>
-      </div>
-      <p style="font-size: 12px; color: #999; text-align: center; margin-top: 20px;">
-        © ${new Date().getFullYear()} Spree. Todos los derechos reservados.
-      </p>
-    </div>
-  `;
+  const emailHtml = buildInvitationEmailHtml({ inviterName, companyName, inviteLink });
 
   // Enviar correo
   await sendEmail({
@@ -81,97 +87,6 @@ async function sendInvitationEmail({
   });
 }
 const AuthController = {
-  /*async signUp(req, res) {
-    logger.info("Registrando Usuario.");
-    logger.info("Datos recibidos al registrarse:");
-    logger.info(JSON.stringify(req.body));
-
-    const t = await sequelize.transaction();
-    try {
-      // 1. Buscar rol por nombre (si se envía)
-      let role_id = null;
-      if (req.body.role_id) {
-        const role = await RoleRepository.findById(req.body.role_id);
-        if (!role) {
-          await t.rollback();
-          return res.status(400).json({ msg: "Rol no válido" });
-        }
-      } else {
-        const invitedRole = await RoleRepository.findByName("Invited");
-        if (invitedRole) {
-          role_id = invitedRole.id;
-        }
-      }
-
-      const hashedPassword = bcrypt.hashSync(
-        req.body.password,
-        parseInt(authConfig.rounds)
-      );
-      const extractedUser = req.body.user || req.body.email.split("@")[0];
-
-      const userData = {
-        name: req.body.name,
-        email: req.body.email,
-        password: hashedPassword,
-        status: false, // ✅ nuevo usuario activo
-        role_id: role_id, // ✅ asignar desde tabla roles
-        image: "users/default.jpg", // o procesa avatar si lo subes
-        email_verified_at: null,
-        remember_token: null,
-        registration_date: null,
-        user: extractedUser,
-      };
-
-      const user = await UserRepository.create(userData);
-
-      const roleName = user.role?.name || "Invited";
-
-      const userNew = {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        user: user.user,
-        image: user.image,
-        role: roleName,
-        role_id: user.role_id,
-      };
-
-      const token = jwt.sign({ user: userNew }, authConfig.secret, {
-        expiresIn: authConfig.expires,
-      });
-      const decoded = jwt.decode(token);
-      const expiresAt = new Date(decoded.exp * 1000);
-
-      await UserTokenRepository.create(
-        {
-          user_id: user.id,
-          token,
-          expires_at: expiresAt,
-        },
-        t
-      );
-
-      await t.commit();
-
-      return res.status(201).json({
-        id: userNew.id,
-        name: userNew.name,
-        email: userNew.email,
-        user: userNew.user,
-        image: userNew.image,
-        token,
-        role: userNew.role,
-        role_id: userNew.role_id,
-      });
-    } catch (error) {
-      await t.rollback();
-      const errorMsg = error.details
-        ? error.details.map((d) => d.message).join(", ")
-        : error.message;
-      logger.error("Error al registrar usuario: " + errorMsg);
-      return res.status(500).json({ error: "ServerError", details: errorMsg });
-    }
-  },*/
 
   async register(req, res) {
     logger.info("Registrando Usuario.");
@@ -465,7 +380,7 @@ const AuthController = {
   },
 
   async destroy(req, res) {
-    const requesterId = req.user?.id || null;
+  const requesterId = req.user?.id || null;
   const requesterName = req.user?.name || "Anonymous";
   const { user_id: userId, company_id, status } = req.body;
 
@@ -477,11 +392,11 @@ const AuthController = {
     });
   }
 
-  // Validar estado permitido
-  if (status !== 1 && status !== 2) {
+  // Validar estado permitido (0 = desasociado, 1 = activo, 2 = desactivado)
+  if (status !== 0 && status !== 1 && status !== 2) {
     return res.status(400).json({
       success: false,
-      message: "El estado debe ser 1 (activo) o 2 (desactivado)"
+      message: "El estado debe ser 0 (desasociado), 1 (activo) o 2 (desactivado)"
     });
   }
 
@@ -519,15 +434,15 @@ const AuthController = {
       return res.status(400).json({ success: false, message: "No puedes modificar tu propia membresía" });
     }
 
-    // 3. Verificar si es el último admin (solo si se va a desactivar)
-    if (status === 2) {
+    // 3. Verificar si es el último admin (solo si se va a desactivar O desasociar)
+    if (status === 2 || status === 0) {
       const userRole = await RoleRepository.findById(membership.role_id);
       if (userRole && userRole.name === 'Admin') {
         const otherAdmins = await UserCompanyRepository.countActiveAdminsInCompany(company_id, userId);
         if (otherAdmins === 0) {
           return res.status(403).json({
             success: false,
-            message: "No puedes desactivar al último administrador de la empresa"
+            message: "No puedes desactivar o desasociar al último administrador de la empresa"
           });
         }
       }
@@ -537,7 +452,11 @@ const AuthController = {
     await UserCompanyRepository.updateStatus(membership, status);
 
     // 5. Registrar log
-    const actionText = status === 1 ? "activada" : "desactivada";
+    let actionText = '';
+    if (status === 0) actionText = "desasociada";
+    else if (status === 1) actionText = "activada";
+    else actionText = "desactivada";
+    
     await LogRepository.create({
       user_id: requesterId,
       action: "membership.update",
@@ -550,7 +469,7 @@ const AuthController = {
     // 6. Responder
     return res.status(200).json({
       success: true,
-      message: `Membresía ${status === 1 ? 'activada' : 'desactivada'} exitosamente`,
+      message: `Membresía ${status === 0 ? 'desasociada' : (status === 1 ? 'activada' : 'desactivada')} exitosamente`,
       membership: {
         ...membership,
         membership_status: status
@@ -595,7 +514,14 @@ const AuthController = {
     const filters = {};
     if (company_id) filters.company_id = company_id;
     if (role_id) filters.role_id = role_id;
-    if (status !== undefined) filters.status = status;
+    
+    // ✅ Si se especifica status, se usa ese filtro
+    // Si no se especifica, el repository excluye status 0 (desasociado) por defecto
+    // status: -1 = pendiente, 1 = activo, 2 = desactivado (todos se incluyen excepto 0)
+    if (status !== undefined) {
+      filters.status = status;
+    }
+    // ✅ Si status es undefined, el repository filtra: status != 0
 
     try {
       const users = await UserRepository.findAll(filters);
@@ -1181,11 +1107,7 @@ const AuthController = {
       setImmediate(async () => {
         try {
           const inviterName = req.user?.name || "un miembro del equipo";
-          const inviteLink = `${
-            process.env.API_URL
-          }?token=${encodeURIComponent(
-            invitationToken
-          )}&company_id=${company_id}`;
+          const inviteLink = `${process.env.FRONTEND_URL}/login?token=${encodeURIComponent(invitationToken)}&company_id=${company_id}`;
 
           await sendInvitationEmail({
             to: email,

@@ -53,6 +53,25 @@ const UserCompanyRepository = {
   });
 },
 
+  // ✅ Buscar todas las membresías con filtros (para verificInvitation)
+  async findAll(filters = {}) {
+    const { company_id, status, user_id } = filters;
+    const where = {};
+    
+    if (company_id) where.company_id = company_id;
+    if (status !== undefined) where.status = status;
+    if (user_id) where.user_id = user_id;
+    
+    return await UserCompany.findAll({
+      where,
+      include: [
+        { model: User, as: 'user', attributes: ['id', 'name', 'email'] },
+        { model: Company, as: 'company', attributes: ['id', 'name'] },
+        { model: Role, as: 'role', attributes: ['id', 'name'] }
+      ]
+    });
+  },
+
 async findPendingByTokenAndCompany(plainToken, companyId, transaction = null, userId) {
   // Construir condición where
  const whereCondition = {
@@ -135,9 +154,28 @@ async activateMembership({ user_id, company_id }, transaction = null) {
   async updateStatus(record, status) {
     try {
       return await record.update({ status });
-      
+
     } catch (error) {
       logger.error(`Error al actualizar estado de membresía ID ${record.id}:`, error);
+      throw new Error(`Error al actualizar membresía: ${error.message}`);
+    }
+  },
+
+  // ✅ Actualizar membresía con soporte para transaction
+  async update(record, data, transaction = null) {
+    try {
+      const updateData = {};
+      if (data.role_id !== undefined) updateData.role_id = data.role_id;
+      if (data.status !== undefined) updateData.status = data.status;
+      if (data.invited_by !== undefined) updateData.invited_by = data.invited_by;
+      if (data.invitation_token !== undefined) updateData.invitation_token = data.invitation_token;
+      if (data.expires_at !== undefined) updateData.expires_at = data.expires_at;
+      if (data.joined_at !== undefined) updateData.joined_at = data.joined_at;
+      
+      await record.update(updateData, { transaction });
+      return record;
+    } catch (error) {
+      logger.error(`Error al actualizar membresía ID ${record.id}:`, error);
       throw new Error(`Error al actualizar membresía: ${error.message}`);
     }
   },
