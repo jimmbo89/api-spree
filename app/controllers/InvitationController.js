@@ -8,7 +8,7 @@ const { InvitationRepository, LogRepository, CompanyRepository, UserRepository, 
 const { sendEmail } = require('../services/EmailService');
 
 // 📨 Plantilla de correo de invitación (consistente en toda la app)
-function buildInvitationEmailHtml({ inviterName, companyName, inviteLink }) {
+function buildInvitationEmailHtml({ inviterName, companyName, inviteLink, email, temporalPassword = null }) {
   return `
     <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9f9f9;">
       <div style="background-color: white; padding: 30px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);">
@@ -20,6 +20,23 @@ function buildInvitationEmailHtml({ inviterName, companyName, inviteLink }) {
         <p style="font-size: 16px; line-height: 1.6; color: #333;">
           Al aceptar esta invitación, podrás colaborar con su organización directamente desde la plataforma.
         </p>
+        
+        ${temporalPassword ? `
+        <div style="background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0;">
+          <p style="font-size: 14px; color: #856404; margin: 0;">
+            <strong>🔐 Tus credenciales de acceso:</strong><br>
+            <strong>Email:</strong> ${email}<br>
+            <strong>Contraseña temporal:</strong> ${temporalPassword}
+          </p>
+        </div>
+        <div style="background-color: #d1ecf1; border-left: 4px solid #17a2b8; padding: 15px; margin: 20px 0;">
+          <p style="font-size: 14px; color: #0c5460; margin: 0;">
+            <strong>⚠️ Recomendación de seguridad:</strong><br>
+            Por tu seguridad, te recomendamos cambiar tu contraseña después de iniciar sesión por primera vez.
+          </p>
+        </div>
+        ` : ''}
+        
         <div style="text-align: center; margin: 32px 0;">
           <a href="${inviteLink}"
              style="display: inline-block; padding: 14px 32px; background-color: #006064; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; transition: background-color 0.2s;">
@@ -82,19 +99,19 @@ async sendInvitation(req, res) {
       user_agent: userAgent,
       status: 'error'
     });
-    return res.status(400).json({ 
+    return res.status(400).json({
       success: false,
-      error: `El dominio ${domain} no está autorizado.` 
+      error: `El dominio ${domain} no está autorizado.`
     });
   }
 
   const transaction = await sequelize.transaction();
-  
+
   try {
     // 2. Buscar o crear usuario
     let user = await UserRepository.findByEmail(email);
     let userId;
-    
+
     if (!user) {
       // Crear usuario con status inactivo hasta que acepte
       const userName = email.split('@')[0];
@@ -108,7 +125,7 @@ async sendInvitation(req, res) {
       userId = user.id;
     } else {
       userId = user.id;
-      
+
       // Verificar si ya tiene membresía activa en esta empresa
       const existingMembership = await UserCompanyRepository.findByUserIdAndCompanyId(userId, company_id);
       if (existingMembership && existingMembership.status === 1) {
@@ -119,19 +136,18 @@ async sendInvitation(req, res) {
         });
       }
     }
-    
+
     // 3. Generar token de invitación
     const invitationToken = uuidv4();
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
     const hashedToken = bcrypt.hashSync(invitationToken, 10);
-    
+
     // 4. Crear o actualizar membresía en user_companies
     let membership = await UserCompanyRepository.findByUserIdAndCompanyId(userId, company_id);
-    
+
     if (membership) {
-      // Actualizar membresía existente
+      // Actualizar membresía existente - ✅ Solo actualizar campos de invitación, NO role_id
       await UserCompanyRepository.update(membership, {
-        role_id,
         status: -1, // Pendiente
         invited_by: invitedBy,
         invitation_token: hashedToken,

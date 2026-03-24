@@ -60,7 +60,43 @@ const ProductCategoryController = {
       const category = await ProductCategoryRepository.findById(id);
       if (!category) return res.status(404).json({ msg: "ProductCategoryNotFound" });
 
-      // Validar company_id si se proporciona y es diferente
+      // ✅ Si el registro es global (company_id null) y se pasa company_id, crear uno nuevo en lugar de editar
+      if (category.company_id === null && company_id) {
+        logger.info(`Categoría global ${id} - Creando nueva categoría para empresa ${company_id}`);
+        
+        // Validar empresa
+        const company = await CompanyRepository.findById(company_id);
+        if (!company) {
+          return res.status(400).json({ error: "CompanyNotFound", message: "La empresa especificada no existe" });
+        }
+
+        // Validar que no exista ya una categoría con ese nombre en la empresa
+        const existingCategory = await ProductCategoryRepository.findByName(name, company_id);
+        if (existingCategory) {
+          return res.status(409).json({
+            error: "DuplicateName",
+            message: `Ya existe una categoría con el nombre "${name}" en la empresa ${company_id}`
+          });
+        }
+
+        // Crear nueva categoría para la empresa
+        const newCategory = await ProductCategoryRepository.create({ 
+          name, 
+          company_id, 
+          status: status !== undefined ? status : category.status, 
+          description: description !== undefined ? description : category.description 
+        });
+        
+        const categories = await ProductCategoryRepository.findAll({ companyId: company_id });
+        return res.status(201).json({ 
+          categories: categories, 
+          msg: "Categoría creada correctamente para la empresa",
+          created_from_global: true,
+          global_category_id: id
+        });
+      }
+
+      // Validar company_id si se proporciona y es diferente (para edición normal)
       if (company_id && company_id !== category.company_id) {
         const company = await CompanyRepository.findById(company_id);
         if (!company) {

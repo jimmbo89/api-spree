@@ -64,14 +64,22 @@ async function sendInvitationEmail({
   ip,
   userAgent,
   invitedByUserId,
+  email,
+  temporalPassword = null
 }) {
-  const emailHtml = buildInvitationEmailHtml({ inviterName, companyName, inviteLink });
+  const emailHtml = buildInvitationEmailHtml({ 
+    inviterName, 
+    companyName, 
+    inviteLink,
+    email,
+    temporalPassword 
+  });
 
   // Enviar correo
   await sendEmail({
     to,
     subject: `📬 Únete a ${companyName} en Spree Invitación de ${inviterName}`,
-    text: `Hola, ${inviterName} te ha invitado a unirte al equipo de ${companyName} en Spree. Accede al enlace para aceptar: ${inviteLink}`,
+    text: `Hola, ${inviterName} te ha invitado a unirte al equipo de ${companyName} en Spree. Accede al enlace para aceptar: ${inviteLink}${temporalPassword ? `\n\nContraseña temporal: ${temporalPassword}` : ''}`,
     html: emailHtml,
   });
 
@@ -1108,6 +1116,9 @@ const AuthController = {
         try {
           const inviterName = req.user?.name || "un miembro del equipo";
           const inviteLink = `${process.env.FRONTEND_URL}/login?token=${encodeURIComponent(invitationToken)}&company_id=${company_id}`;
+          
+          // ✅ Pasar contraseña solo si es usuario nuevo (no existía)
+          const passwordToSend = !userBd.id ? passwordValue : null;
 
           await sendInvitationEmail({
             to: email,
@@ -1118,6 +1129,8 @@ const AuthController = {
             ip: req.ip,
             userAgent: req.get("User-Agent"),
             invitedByUserId: req.user?.id,
+            email,
+            temporalPassword: passwordToSend
           });
         } catch (emailError) {
           logger.error(

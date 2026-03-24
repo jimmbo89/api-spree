@@ -71,7 +71,43 @@ const AttributeController = {
       const attribute = await AttributeRepository.findById(attributeId);
       if (!attribute) return res.status(404).json({ msg: "AttributeNotFound" });
 
-      // Validar company_id si se proporciona y es diferente
+      // ✅ Si el registro es global (company_id null) y se pasa company_id, crear uno nuevo en lugar de editar
+      if (attribute.company_id === null && company_id) {
+        logger.info(`Atributo global ${attributeId} - Creando nuevo atributo para empresa ${company_id}`);
+        
+        // Validar empresa
+        const company = await CompanyRepository.findById(company_id);
+        if (!company) {
+          return res.status(400).json({ error: "CompanyNotFound", message: "La empresa especificada no existe" });
+        }
+
+        // Validar que no exista ya un atributo con ese nombre en la empresa
+        const existingAttribute = await AttributeRepository.findByName(name, company_id);
+        if (existingAttribute) {
+          return res.status(409).json({
+            error: "DuplicateName",
+            message: `Ya existe un atributo con el nombre "${name}" en la empresa ${company_id}`
+          });
+        }
+
+        // Crear nuevo atributo para la empresa
+        const newAttribute = await AttributeRepository.create({ 
+          name, 
+          company_id, 
+          type: type !== undefined ? type : attribute.type, 
+          cant: cant !== undefined ? cant : attribute.cant 
+        });
+        
+        const attributes = await AttributeRepository.findAll({ companyId: company_id, withUsageCount });
+        return res.status(201).json({ 
+          attributes: attributes, 
+          msg: "Atributo creado correctamente para la empresa",
+          created_from_global: true,
+          global_attribute_id: attributeId
+        });
+      }
+
+      // Validar company_id si se proporciona y es diferente (para edición normal)
       if (company_id && company_id !== attribute.company_id) {
         const company = await CompanyRepository.findById(company_id);
         if (!company) {
