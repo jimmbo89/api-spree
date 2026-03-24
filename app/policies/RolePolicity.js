@@ -10,7 +10,10 @@ function requireRoles(allowedRoles) {
     const user = req.user;
 
     if (!user || !user.id) {
-      return res.status(403).json({ message: 'Autenticación requerida.' });
+      return res.status(403).json({ 
+        success: false,
+        message: 'Autenticación requerida.' 
+      });
     }
 
     // 🔍 Determinar companyId: explícito o implícito (del token)
@@ -18,6 +21,7 @@ function requireRoles(allowedRoles) {
 
     if (!companyId) {
       return res.status(400).json({
+        success: false,
         message: 'No se pudo determinar el contexto de la empresa. Asegúrate de que el token incluya company_id o que la solicitud defina companyId.'
       });
     }
@@ -27,6 +31,7 @@ function requireRoles(allowedRoles) {
 
       if (!membership || ![1, 0].includes(membership.status)) {
         return res.status(403).json({
+          success: false,
           message: 'No perteneces a esta empresa.'
         });
       }
@@ -43,6 +48,7 @@ function requireRoles(allowedRoles) {
       }
 
       return res.status(403).json({
+        success: false,
         message: 'Acceso denegado: rol no autorizado en esta empresa.',
         requiredRoles: rolesArray,
         yourRole: membership.role?.name || null
@@ -50,6 +56,7 @@ function requireRoles(allowedRoles) {
 
     } catch (error) {
       return res.status(500).json({
+        success: false,
         message: 'Error al verificar permisos.',
         error: error.message
       });

@@ -1,6 +1,6 @@
-const { Attribute, ProductAttribute, Company } = require("../models");
+const { Attribute, ProductAttribute, Company, Product } = require("../models");
 const logger = require("../../config/logger");
-const { Op } = require("sequelize");
+const { Op, fn, col } = require("sequelize");
 
 const AttributeRepository = {
 async findAll({ companyId = null, withUsageCount = false } = {}) {
@@ -15,41 +15,51 @@ async findAll({ companyId = null, withUsageCount = false } = {}) {
     }
 
     if (withUsageCount) {
-      // Query manual con COUNT
-      const replacements = [];
-      let whereClause = '';
-      
-      if (companyId != null && companyId !== 0) {
-        whereClause = `WHERE (a.company_id = ? OR a.company_id IS NULL)`;
-        replacements.push(companyId);
-      }
-
-      const attributesWithCount = await Attribute.sequelize.query(`
-        SELECT
-          a.id,
-          a.company_id,
-          a.name,
-          a.type,
-          a.cant,
-          COUNT(pa.id) as usage_count
-        FROM attributes a
-        LEFT JOIN product_attributes pa ON a.id = pa.attribute_id
-        ${whereClause}
-        GROUP BY a.id, a.company_id, a.name, a.type, a.cant
-        ORDER BY a.id ASC
-      `, {
-        replacements: companyId != null && companyId !== 0 ? [companyId] : [],
-        type: Attribute.sequelize.QueryTypes.SELECT
+      // ✅ Usar findAll con include condicional (igual que en categorías)
+      const attributes = await Attribute.findAll({
+        where,
+        attributes: [
+          "id",
+          "company_id",
+          "name",
+          "type",
+          "cant",
+          [fn('COUNT', col('productAttributes.id')), 'usage_count']
+        ],
+        include: [{
+          model: ProductAttribute,
+          as: 'productAttributes',
+          attributes: [],
+          required: false,
+          // ✅ Filtrar product_attributes solo si tienen productos de la empresa
+          include: [{
+            model: Product,
+            as: 'product',
+            attributes: [],
+            required: true, // ✅ INNER JOIN: solo si existe el producto
+            where: companyId != null && companyId !== 0 ? { company_id: companyId } : { id: { [Op.eq]: -1 } } // ✅ Si no hay companyId, no cuenta nada
+          }]
+        }, {
+          model: Company,
+          as: 'company',
+          attributes: ['id', 'name', 'image'],
+          required: false
+        }],
+        group: ['Attribute.id'],
+        order: [["id", "ASC"]]
       });
 
-      return attributesWithCount.map(attr => ({
-        id: parseInt(attr.id),
-        company_id: attr.company_id,
-        name: attr.name,
-        type: attr.type,
-        cant: attr.cant ? parseInt(attr.cant) : null,
-        usage_count: parseInt(attr.usage_count || 0)
-      }));
+      return attributes.map(attr => {
+        const attrPlain = attr.get({ plain: true });
+        return {
+          id: attrPlain.id,
+          company_id: attrPlain.company_id,
+          name: attrPlain.name,
+          type: attrPlain.type,
+          cant: attrPlain.cant,
+          usage_count: parseInt(attrPlain.usage_count || 0)
+        };
+      });
     } else {
       return await Attribute.findAll({
         where,

@@ -6,16 +6,22 @@ const ProductCategoryRepository = {
 async findAll({ companyId = null } = {}) {
   try {
     // Construir where: si hay companyId, traer categorías globales (NULL) O de la empresa
-    const where = {};
+    const categoryWhere = {};
     if (companyId != null && companyId !== 0) {
-      where[Op.or] = [
+      categoryWhere[Op.or] = [
         { company_id: companyId },
         { company_id: { [Op.is]: null } } // Categorías globales
       ];
     }
 
+    // Construir where para productos: solo los de la empresa especificada
+    const productWhere = {};
+    if (companyId != null && companyId !== 0) {
+      productWhere.company_id = companyId;
+    }
+
     const categories = await ProductCategory.findAll({
-      where,
+      where: categoryWhere,
       attributes: [
         "id",
         "company_id",
@@ -31,7 +37,8 @@ async findAll({ companyId = null } = {}) {
         model: Product,
         as: 'products',
         attributes: [],
-        required: false
+        required: false,
+        where: productWhere // ✅ Filtrar productos por company_id
       }, {
         model: Company,
         as: 'company',

@@ -120,6 +120,12 @@ const UserRepository = {
         where: {
           '$memberships.status$': status
         }
+      }),
+      // ✅ Si no se especifica status, excluir status 0 (desasociado) por defecto
+      ...(status === undefined && {
+        where: {
+          '$memberships.status$': { [Op.ne]: 0 }
+        }
       })
     });
 

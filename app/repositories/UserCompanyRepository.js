@@ -197,8 +197,16 @@ async activateMembership({ user_id, company_id }, transaction = null) {
 
   async getUsersByCompanyId(company_id) {
   try {
+    // ✅ Filtrar usuarios excluyendo status 0 (desasociado)
+    // status: -1 = pendiente (se incluye)
+    // status: 0 = desasociado (NO se incluye)
+    // status: 1 = activo (se incluye)
+    // status: 2 = desactivado (se incluye)
     const memberships = await UserCompany.findAll({
-      where: { company_id, status: 1 },
+      where: { 
+        company_id, 
+        status: { [Op.ne]: 0 } // ✅ Excluir solo desasociados
+      },
       include: [
         {
           model: User,
