@@ -24,7 +24,7 @@ async getUserNotifications(req, res) {
     const user_id = bodyUserId || getUserId();
 
     // Si se envía company_id, validamos que exista (opcional pero recomendado)
-    if (company_id !== undefined) {
+    if (company_id !== undefined && company_id !== null) {
       const company = await CompanyRepository.findById(company_id);
       if (!company) {
         return res.status(404).json({ success: false, message: "Compañía no encontrada" });

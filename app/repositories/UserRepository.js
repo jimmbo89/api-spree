@@ -254,7 +254,7 @@ const UserRepository = {
         [Op.or]: [{ email: identifier }, { user: identifier }]
       },
       attributes: [
-        'id', 'name', 'email', 'status', 'image', 'password', 'remember_token', 'registration_date', 'user'
+        'id', 'name', 'email', 'status', 'image', 'password', 'remember_token', 'registration_date', 'user', 'role_id'
       ],
       include: [{
         model: UserCompany,
@@ -286,6 +286,17 @@ const UserRepository = {
         ]
           }
         ]
+      },
+      {
+        model: Role,
+        as: 'role', // ✅ Rol global del usuario (BackOffice)
+        attributes: ['id', 'name', 'description'],
+        include: [{
+          model: Permission,
+          as: 'permissions',
+          attributes: ['id', 'name', 'description'],
+          through: { attributes: [] }
+        }]
       }]
     });
     return user;
@@ -300,7 +311,7 @@ const UserRepository = {
     try {
       return await User.findOne({
         where: { email },
-        attributes: ['id', 'name', 'email', 'status', 'user']
+        attributes: ['id', 'name', 'email', 'status', 'user', 'role_id']
       });
     } catch (error) {
       logger.error(`Error al buscar usuario por email (${email}):`, error);

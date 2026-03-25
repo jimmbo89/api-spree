@@ -5,7 +5,8 @@ module.exports = (sequelize, DataTypes) => {
   class User extends Model {
     static associate(models) {
       User.hasMany(models.UserToken, { foreignKey: 'user_id', as: 'tokens', onDelete: 'CASCADE' });
-      // Relación con Role
+      // Relación con Role (rol global, solo para BackOffice)
+      User.belongsTo(models.Role, { foreignKey: 'role_id', as: 'role', onDelete: 'SET NULL' });
       User.hasMany(models.Invitation, { foreignKey: 'user_id', as: 'invitations', onDelete: 'SET NULL' });
       User.hasMany(models.Invitation, { foreignKey: 'invited_by', as: 'inviteds', onDelete: 'SET NULL' });
       User.hasMany(models.Company, { foreignKey: 'user_id', as: 'companies', onDelete: 'SET NULL' });
@@ -18,11 +19,7 @@ module.exports = (sequelize, DataTypes) => {
       User.hasMany(models.MarketplaceCredential, { foreignKey: 'user_id', as: 'credentials', onDelete: 'CASCADE' });
       User.hasMany(models.Notification, { foreignKey: 'user_id', as: 'notifications', onDelete: 'SET NULL' });
       User.hasMany(models.UpgradeRequest, { foreignKey: 'user_id', as: 'upgradeRequests', onDelete: 'CASCADE' });
-      User.hasMany(models.Job, { 
-      foreignKey: 'user_id', 
-      as: 'publishingJobs', 
-      onDelete: 'SET NULL' 
-    });
+      User.hasMany(models.Job, { foreignKey: 'user_id', as: 'publishingJobs', onDelete: 'SET NULL' });
     }
   }
 
@@ -95,9 +92,16 @@ module.exports = (sequelize, DataTypes) => {
     },
     user: {
       type: DataTypes.STRING,
-      allowNull: true
+      allowNull: true,
+      comment: 'Username o identificador del usuario'
     },
-     reset_token: {
+    role_id: {
+      type: DataTypes.BIGINT,
+      allowNull: true,
+      defaultValue: null,
+      comment: 'Rol global del usuario (NULL = usuario normal, BackOffice = rol asignado)'
+    },
+    reset_token: {
       type: DataTypes.STRING,
       allowNull: true,
     },

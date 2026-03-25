@@ -10,13 +10,20 @@ function requireRoles(allowedRoles) {
     const user = req.user;
 
     if (!user || !user.id) {
-      return res.status(403).json({ 
+      return res.status(403).json({
         success: false,
-        message: 'Autenticación requerida.' 
+        message: 'Autenticación requerida.'
       });
     }
 
-    // 🔍 Determinar companyId: explícito o implícito (del token)
+    // ✅ Si el usuario tiene role_id (BackOffice), tiene acceso global - saltar validación de company
+    if (user.role_id) {
+      // Usuario BackOffice con rol global - acceso permitido sin company_id
+      // Los permisos vienen del rol global, no de memberships
+      return next();
+    }
+
+    // 🔍 Para usuarios normales: Determinar companyId: explícito o implícito (del token)
     let companyId = req.companyId || user.company_id;
 
     if (!companyId) {

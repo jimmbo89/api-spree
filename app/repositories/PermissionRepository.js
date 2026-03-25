@@ -1,9 +1,10 @@
 // app/repositories/PermissionRepository.js
-const { Permission } = require("../models");
+const { Permission, RolePermission } = require("../models");
 const logger = require("../../config/logger");
+const { Op } = require("sequelize");
 
 // Función de mapeo reutilizable
-function mapPermission(permission) {
+function mapPermission(permission, hasRoles = false) {
   if (!permission) return null;
   return {
     id: permission.id,
@@ -12,17 +13,35 @@ function mapPermission(permission) {
     service: permission.service,
     resource: permission.resource,
     action: permission.action,
-    is_conditional: permission.is_conditional
+    is_conditional: permission.is_conditional,
+    is_active: !hasRoles // ✅ true si NO tiene roles asignados, false si tiene roles
   };
 }
 
 const PermissionRepository = {
   async findAll() {
     try {
+      // Obtener todos los permisos
       const permissions = await Permission.findAll({
         order: [["id", "ASC"]]
       });
-      return permissions.map(permission => mapPermission(permission));
+      
+      // Obtener los permission_id que ya tienen roles asignados
+      const rolePermissions = await RolePermission.findAll({
+        attributes: ['permission_id'],
+        where: { status: 1 }, // Solo activos
+        raw: true
+      });
+      
+      const permissionIdsWithRoles = new Set(
+        rolePermissions.map(rp => rp.permission_id)
+      );
+      
+      // Mapear cada permiso con su estado is_active
+      return permissions.map(permission => {
+        const hasRoles = permissionIdsWithRoles.has(permission.id);
+        return mapPermission(permission, hasRoles);
+      });
     } catch (error) {
       logger.error("Error en PermissionRepository->findAll:", error);
       throw new Error(`Error al obtener permisos: ${error.message}`);
