@@ -988,6 +988,17 @@ async store(req, res) {
         where: { job_id: job.id }
       });
 
+      // ✅ Parsear config si es string JSON
+      let parsedConfig = job.config;
+      if (typeof job.config === 'string') {
+        try {
+          parsedConfig = JSON.parse(job.config);
+        } catch (e) {
+          logger.warn(`Error al parsear config del draft ${job.id}: ${e.message}`);
+          parsedConfig = {};
+        }
+      }
+
       // 7. Reconstruir datos para el frontend
       // 🔑 IMPORTANTE: Devolver el config COMPLETO tal cual se guardó + datos enriquecidos
       const draftData = {
@@ -998,19 +1009,41 @@ async store(req, res) {
         publication_step: job.publication_step,
         created_at: job.createdAt,
         updated_at: job.updatedAt,
-        
-        // 🔑 CONFIG COMPLETO (datos originales del frontend)
-        config: job.config,  // ← Contiene TODOS los datos originales: products, marketplaces, pool, economic_config, etc.
-        
+
+        // 🔑 CONFIG COMPLETO PARSEADO (datos originales del frontend)
+        config: parsedConfig,
+
         // 🔑 DATOS ENRIQUECIDOS (para conveniencia del frontend)
-        products: jobProducts.map(jp => ({
-          id: jp.product_id,
-          ...jp.product_payload
-        })),
+        products: jobProducts.map(jp => {
+          // ✅ Parsear product_payload si es string
+          let productPayload = jp.product_payload;
+          if (typeof jp.product_payload === 'string') {
+            try {
+              productPayload = JSON.parse(jp.product_payload);
+            } catch (e) {
+              logger.warn(`Error al parsear product_payload: ${e.message}`);
+            }
+          }
+          return {
+            id: jp.product_id,
+            ...productPayload
+          };
+        }),
         marketplaces: jobProducts
-          .map(jp => jp.marketplace_payload)
+          .map(jp => {
+            // ✅ Parsear marketplace_payload si es string
+            let mpPayload = jp.marketplace_payload;
+            if (typeof jp.marketplace_payload === 'string') {
+              try {
+                mpPayload = JSON.parse(jp.marketplace_payload);
+              } catch (e) {
+                logger.warn(`Error al parsear marketplace_payload: ${e.message}`);
+              }
+            }
+            return mpPayload;
+          })
           .filter((mp, index, self) =>
-            index === self.findIndex(m => m.id === m.id)
+            mp && index === self.findIndex(m => m?.id === mp.id)
           ),
         total_products: jobProducts.length
       };
@@ -1084,14 +1117,25 @@ async store(req, res) {
 
           // 🔑 USAR REPOSITORIOS: Obtener nombres de productos y marketplaces
           const productIds = draft.config?.products?.map(p => p.id) || [];
-          const products = productIds.length > 0 
+          const products = productIds.length > 0
             ? await ProductRepository.findByIds(productIds)
             : [];
-          
+
           const marketplaceIds = draft.config?.marketplaces?.map(m => m.id) || [];
           const marketplaces = marketplaceIds.length > 0
             ? await MarketplaceCredentialRepository.findByIds(marketplaceIds)
             : [];
+
+          // ✅ Parsear config si es string JSON
+          let parsedConfig = draft.config;
+          if (typeof draft.config === 'string') {
+            try {
+              parsedConfig = JSON.parse(draft.config);
+            } catch (e) {
+              logger.warn(`Error al parsear config del draft ${draft.id}: ${e.message}`);
+              parsedConfig = {};
+            }
+          }
 
           return {
             job_id: draft.id,
@@ -1101,10 +1145,10 @@ async store(req, res) {
             publication_step: draft.publication_step,
             created_at: draft.createdAt,
             updated_at: draft.updatedAt,
-            
-            // 🔑 CONFIG COMPLETO (datos originales del frontend)
-            config: draft.config,  // ← Contiene TODOS los datos originales
-            
+
+            // 🔑 CONFIG COMPLETO PARSEADO (datos originales del frontend)
+            config: parsedConfig,
+
             // 🔑 DATOS ENRIQUECIDOS (para conveniencia del frontend)
             products: {
               total: products.length,
