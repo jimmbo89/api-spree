@@ -301,6 +301,8 @@ async findById(id, options = {}) {
 
       // Campos permitidos para actualización
       const allowedFields = [
+        'job_type', 'mode', 'draft_name', 'publication_step',
+        'total_products',
         'status', 'processed', 'successful', 'errors_count', 
         'percentage', 'started_at', 'completed_at', 
         'error_summary', 'config'

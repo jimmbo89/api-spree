@@ -142,71 +142,52 @@ async getActiveJobs(req, res) {
       const { company_id, user_id: bodyUserId } = req.body;
     const user_id = bodyUserId || getUserId();
       
-      // 1. 🔹 Obtener jobs activos y completados usando el nuevo método del repository
-    const result = await JobRepository.getActiveAndCompletedJobs(
-      user_id, 
-      company_id, 
-      { includeNotNotified: true }
-    );
+    // 1. 🔹 Obtener solo jobs en curso (pending/processing)
+    const activeJobs = await JobRepository.findAll({
+      user_id,
+      company_id,
+      job_type: 'publish',
+      status: { [Op.in]: ['pending', 'processing'] },
+      limit: 50
+    });
     
-    // 2. 🔹 Para cada job completado no notificado, crear notificación
-    for (const job of result.jobs) {
-      // Solo procesar jobs completados
-      if (!['completed', 'completed_with_errors', 'failed'].includes(job.status)) {
-        continue;
-      }
-      
-      // 🔹 Verificar si ya fue notificado (usando método del repository)
-      const alreadyNotified = await JobRepository.checkIfJobNotified(job.id, user_id);
-      
-      if (!alreadyNotified) {
-        try {
-          // Obtener stats del job
-          const stats = await JobProductRepository.getStatsByJob(job.id);
-          const channels = await JobProductRepository.getStatsByJobAndMarketplace(job.id);
-          
-          // 🔹 Crear notificación (ahora con mejor logging de errores)
-          await JobController.createPublicationNotification(job, stats, channels, user_id, company_id);
-          
-          // 🔹 Marcar como notificado (usando método del repository)
-          await JobRepository.markJobNotified(job.id, user_id);
-          
-          logger.info(`[PublishingJobsController] Notificación creada para job ${job.id}, user ${user_id}`);
-          
-        } catch (notifError) {
-          // 🔍 Log completo del error de notificación SIN romper el flujo principal
-          logger.error(`[PublishingJobsController] Error creando notificación para job ${job.id}:`, {
-            error_message: notifError?.message,
-            error_name: notifError?.name,
-            error_stack: notifError?.stack?.split('\n')[0],
-            job_id: job.id,
-            user_id: user_id
-          });
-          
-          // Continuar con el siguiente job (no romper el flujo)
-          continue;
-        }
-      }
-    }
-    
-    // 3. 🔹 Respuesta con jobs
-    return res.json({
-      success: true,
-      data: {
-        active_count: result.metadata?.total_active || result.active_count || 0,
-        jobs: result.jobs.map(job => ({
-          id: job.id,
+    // 3. 🔹 Respuesta con jobs (formato requerido por UI)
+    const jobsByChannel = await Promise.all(activeJobs.map(async (job) => {
+      const channels = await JobProductRepository.getStatsByJobAndMarketplace(job.id);
+
+      if (!Array.isArray(channels) || channels.length === 0) {
+        const fallbackMarketplace = job.config?.marketplaces?.[0];
+        return [{
+          job_id: String(job.id),
           batch_id: job.batch_id,
           status: job.status,
-          mode: job.mode,
+          marketplace_name: fallbackMarketplace?.marketplace_name || fallbackMarketplace?.name || null,
+          credential_id: fallbackMarketplace?.credential_id || fallbackMarketplace?.id || null,
+          created_at: job.createdAt ? new Date(job.createdAt).toISOString() : null,
           total_products: job.total_products,
-          processed: job.processed,
           successful: job.successful,
           errors_count: job.errors_count,
-          percentage: job.percentage,
-          createdAt: job.createdAt,
-          completed_at: job.completed_at
-        }))
+          percentage: job.percentage
+        }];
+      }
+
+      return channels.map(channel => ({
+        job_id: String(job.id),
+        batch_id: job.batch_id,
+        status: job.status,
+        marketplace_name: channel.marketplace_name,
+        credential_id: channel.credential_id,
+        created_at: job.createdAt ? new Date(job.createdAt).toISOString() : null,
+        total_products: channel.total ?? job.total_products,
+        successful: channel.published ?? job.successful,
+        errors_count: channel.failed ?? job.errors_count,
+        percentage: channel.percentage ?? job.percentage
+      }));
+    }));
+
+    return res.json({
+      data: {
+        jobs: jobsByChannel.flat()
       }
     });
     

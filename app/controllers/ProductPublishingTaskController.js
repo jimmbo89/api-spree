@@ -2,7 +2,8 @@
 const { getUserId } = require('../../config/context');
 const logger = require('../../config/logger');
 const { v4: uuidv4 } = require('uuid');
-const { sequelize } = require('../models');
+const { sequelize, Job } = require('../models');
+const { Op } = require('sequelize');
 const {
   ProductPublishingTaskRepository,
   ProductRepository,
@@ -267,7 +268,7 @@ async store(req, res) {
     const SIM_BATCH_ID = 'c5a4e469-5b04-4772-88e7-684d980c5122';
 
   // === VALIDACIONES ===
-  if (!['draft', 'publish', 'quick', 'advanced'].includes(mode)) {
+  if (!['draft', 'publish', 'quick', 'advanced', 'manual'].includes(mode)) {
     return res.status(400).json({ success: false, msg: "mode_invalid" });
   }
   if (!Array.isArray(products) || products.length === 0) {
@@ -419,9 +420,285 @@ async store(req, res) {
   logger.info(`${req.user?.name || 'Unknown'} - Publicando draft`);
   logger.info(`Datos recibidos:\n ${JSON.stringify(req.body)}`);
 
+  const metadata = getRequestMetadata(req);
+
+  const isJobFlow = req.body && (req.body.job_id || req.body.action);
+  if (isJobFlow) {
+    const {
+      job_id,
+      action,
+      products,
+      marketplaces,
+      pool: rawPool,
+      mode,
+      draft_name,
+      economic_config,
+      publication_step
+    } = req.body;
+
+    const company_id = req.user.company_id;
+
+    try {
+      if (!['update', 'publish'].includes(action)) {
+        return res.status(400).json({ success: false, msg: "action_invalid" });
+      }
+      if (!Array.isArray(products) || products.length === 0) {
+        return res.status(400).json({ success: false, msg: "products_required" });
+      }
+      if (!Array.isArray(marketplaces) || marketplaces.length === 0) {
+        return res.status(400).json({ success: false, msg: "marketplaces_required" });
+      }
+
+      const jobInstance = await Job.findByPk(job_id);
+      if (!jobInstance || jobInstance.company_id !== company_id) {
+        return res.status(404).json({ success: false, msg: "draft_not_found" });
+      }
+      const job = jobInstance.get({ plain: true });
+
+      if (job.job_type !== 'draft') {
+        return res.status(400).json({
+          success: false,
+          msg: "not_a_draft",
+          details: "El job no es un borrador"
+        });
+      }
+
+      const step = publication_step !== undefined
+        ? parseInt(publication_step)
+        : (job.publication_step ?? 3);
+
+      if (!Number.isInteger(step) || step < 0 || step > 5) {
+        return res.status(400).json({
+          success: false,
+          msg: "publication_step_invalid",
+          details: "El paso debe ser un entero entre 0 y 5"
+        });
+      }
+
+      // Normalizar mode
+      const normalizeMode = (value) => {
+        if (!value) return value;
+        if (value === 'draft') return 'quick';
+        return value;
+      };
+      const actualMode = normalizeMode(mode || job.mode || 'quick');
+
+      // Normalizar pool
+      let pool = rawPool || job?.config?.pool || null;
+      if (pool && !pool.primary_warehouse && Array.isArray(pool.warehouses) && pool.warehouses.length > 0) {
+        pool.primary_warehouse = pool.warehouses[0];
+      }
+
+      const poolId = pool?.id || pool?.pool_id || null;
+
+      if (!pool || !pool.primary_warehouse) {
+        const activeWarehouses = await WarehouseRepository.getActiveWarehouses(company_id, null);
+        if (!Array.isArray(activeWarehouses) || activeWarehouses.length === 0) {
+          return res.status(400).json({
+            success: false,
+            msg: "pool_required",
+            details: "Debe seleccionar un pool con primary_warehouse o tener un almacén activo disponible"
+          });
+        }
+
+        const fallback = activeWarehouses[0];
+        pool = {
+          primary_warehouse: {
+            warehouse_id: fallback.id,
+            branch_id: null
+          },
+          warehouses: [
+            { warehouse_id: fallback.id, branch_id: null }
+          ]
+        };
+      }
+
+      // Validar marketplaces (existencia)
+      const marketplaceIds = [...new Set(marketplaces.map(mp => Number(mp.marketplace_id || mp.marketplace?.id || mp.marketplaceId || mp.id)))];
+      const validation = await MarketplaceRepository.findByIds(marketplaceIds);
+      if (!validation.valid) {
+        return res.status(400).json({ success: false, msg: "someMarketplacesNotFound" });
+      }
+
+      const normalizedMarketplaces = marketplaces.map(mpConfig => {
+        const marketplaceId = Number(mpConfig.marketplace_id || mpConfig.marketplace?.id || mpConfig.marketplaceId || mpConfig.id);
+        const credentialId = Number(mpConfig.credential_id || mpConfig.id);
+
+        return {
+          original: mpConfig,
+          marketplace_id: marketplaceId,
+          credential_id: credentialId
+        };
+      });
+
+      const invalidMarketplace = normalizedMarketplaces.find(mp => !mp.marketplace_id || !mp.credential_id);
+      if (invalidMarketplace) {
+        return res.status(400).json({
+          success: false,
+          msg: "marketplace_or_credential_invalid"
+        });
+      }
+
+      const job_type = action === 'publish' ? 'publish' : 'draft';
+      const totalExpected = products.length * normalizedMarketplaces.length;
+
+      // Actualizar job padre
+      const configMode = mode || job.mode || actualMode;
+      const configBody = { ...req.body };
+      delete configBody.job_id;
+      delete configBody.action;
+
+      const newConfig = {
+        ...configBody,
+        pool,
+        mode: configMode,
+        publication_step: step,
+        draft_name: draft_name ?? job.draft_name,
+        economic_config: economic_config ?? job.config?.economic_config,
+        pool_id: poolId,
+        _processed_at: new Date().toISOString(),
+        _total_expected: totalExpected
+      };
+
+      await JobRepository.update(jobInstance, {
+        job_type,
+        mode: actualMode,
+        draft_name: draft_name ?? job.draft_name,
+        publication_step: step,
+        total_products: totalExpected,
+        status: 'pending',
+        processed: 0,
+        successful: 0,
+        errors_count: 0,
+        percentage: 0,
+        started_at: null,
+        completed_at: null,
+        error_summary: null,
+        config: newConfig
+      });
+
+      // Sincronizar JobProducts
+      const existingJobProducts = await JobProductRepository.findAll({
+        where: { job_id: job_id }
+      });
+
+      const existingMap = new Map();
+      existingJobProducts.forEach(jp => {
+        const key = `${jp.product_id}-${jp.marketplace_id}-${jp.credential_id || ''}`;
+        existingMap.set(key, jp);
+      });
+
+      const newMap = new Map();
+      const toCreate = [];
+      const toUpdate = [];
+
+      for (const product of products) {
+        for (const mpConfig of normalizedMarketplaces) {
+          const marketplaceId = mpConfig.marketplace_id;
+          const credentialId = mpConfig.credential_id;
+
+          const key = `${product.id}-${marketplaceId}-${credentialId}`;
+          newMap.set(key, true);
+
+          const payload = {
+            product_payload: product ? JSON.parse(JSON.stringify(product)) : null,
+            marketplace_payload: mpConfig?.original ? JSON.parse(JSON.stringify(mpConfig.original)) : null
+          };
+
+          if (existingMap.has(key)) {
+            toUpdate.push({ jobProduct: existingMap.get(key), payload });
+          } else {
+            toCreate.push({
+              job_id: job_id,
+              product_id: product.id,
+              marketplace_id: marketplaceId,
+              credential_id: credentialId,
+              ...payload,
+              status: 'pending',
+              attempt_count: 0
+            });
+          }
+        }
+      }
+
+      const toDeleteIds = existingJobProducts
+        .filter(jp => !newMap.has(`${jp.product_id}-${jp.marketplace_id}-${jp.credential_id || ''}`))
+        .map(jp => jp.id);
+
+      const resetFields = {
+        status: 'pending',
+        attempt_count: 0,
+        error_message: null,
+        error_details: null,
+        external_id: null,
+        external_url: null,
+        last_attempt_at: null
+      };
+
+      for (const item of toUpdate) {
+        await JobProductRepository.update(item.jobProduct.id, {
+          ...resetFields,
+          ...item.payload
+        });
+      }
+
+      for (const item of toCreate) {
+        await JobProductRepository.create(item);
+      }
+
+      if (toDeleteIds.length > 0) {
+        await JobProductRepository.deleteMany({
+          id: { [Op.in]: toDeleteIds }
+        });
+      }
+
+      await LogRepository.create({
+        user_id: metadata.user_id,
+        action: action === 'publish' ? 'publishing_draft.publish' : 'publishing_draft.update',
+        description: `Draft ${job_id} ${action === 'publish' ? 'publicado' : 'actualizado'} (${products.length} productos × ${marketplaces.length} marketplaces)`,
+        ip_address: metadata.ip_address,
+        user_agent: metadata.user_agent,
+        status: 'success',
+        meta: {
+          job_id: job_id,
+          batch_id: job.batch_id,
+          total_expected: totalExpected,
+          action
+        }
+      });
+
+      return res.status(202).json({
+        success: true,
+        message: action === 'publish'
+          ? "Publicación en proceso en segundo plano"
+          : "Borrador guardado exitosamente",
+        job_id: job_id,
+        batch_id: job.batch_id,
+        tasks_count: totalExpected,
+        status: 'pending'
+      });
+
+    } catch (error) {
+      logger.error('Error publicando/actualizando draft:', error.message);
+      await LogRepository.create({
+        user_id: metadata?.user_id,
+        action: 'publishing_draft.error',
+        description: `Error: ${error.message}`,
+        ip_address: metadata?.ip_address,
+        user_agent: metadata?.user_agent,
+        status: 'error',
+        meta: { job_id, action }
+      });
+      return res.status(500).json({
+        success: false,
+        msg: "internal_error",
+        error: error.message
+      });
+    }
+  }
+
   const { task_id, mode } = req.body;
   const user_id = req.user.id;
-  const metadata = getRequestMetadata(req);
 
   try {
     // 1. Obtener tarea draft

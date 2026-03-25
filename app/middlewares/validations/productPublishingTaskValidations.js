@@ -1,7 +1,7 @@
 const Joi = require('joi');
 
 const storeSchema = Joi.object({
-  mode: Joi.string().valid('quick', 'advanced', 'draft', 'publish').required(), // ✅ Agregado 'draft' y 'publish'
+  mode: Joi.string().valid('quick', 'advanced', 'manual', 'draft', 'publish').required(), // ✅ Agregado 'draft', 'publish' y 'manual'
   pool: Joi.object({
     id: Joi.number().integer().positive().required(),
     name: Joi.string().optional(),
@@ -76,10 +76,33 @@ const retrySchema = Joi.object({
 });
 
 // ✅ Nuevo schema para publicar draft
-const publishDraftSchema = Joi.object({
+const publishDraftLegacySchema = Joi.object({
   task_id: Joi.number().integer().positive().required(),
-  mode: Joi.string().valid('quick', 'advanced').optional() // Modo de publicación
-});
+  mode: Joi.string().valid('quick', 'advanced', 'manual').optional() // Modo de publicación
+}).unknown(true);
+
+const publishDraftJobSchema = Joi.object({
+  job_id: Joi.number().integer().positive().required(),
+  action: Joi.string().valid('update', 'publish').required(),
+  mode: Joi.string().valid('quick', 'advanced', 'manual', 'draft', 'publish').optional(),
+  pool: Joi.object().optional(),
+  products: Joi.array().items(Joi.object({
+    id: Joi.number().integer().positive().required()
+  }).unknown(true)).min(1).required(),
+  marketplaces: Joi.array().items(Joi.object({
+    id: Joi.number().integer().positive().required(),
+    marketplace_id: Joi.number().integer().positive().optional()
+  }).unknown(true)).min(1).required(),
+  draft_name: Joi.string().max(255).optional(),
+  publication_step: Joi.number().integer().min(0).max(5).optional(),
+  economic_config: Joi.object().optional(),
+  meta: Joi.object().optional()
+}).unknown(true);
+
+const publishDraftSchema = Joi.alternatives().try(
+  publishDraftJobSchema,
+  publishDraftLegacySchema
+);
 
 module.exports = {
   storeProductPublishingTaskSchema: storeSchema,
