@@ -273,7 +273,30 @@ const AuthController = {
         status: "success",
       });
 
-      // Formatear memberships con permisos (roles por empresa)
+      // ✅ Usuario con rol global (BackOffice) - retornar solo con rol global
+      if (user.role_id) {
+        const globalRole = user.role ? {
+          id: user.role.id,
+          name: user.role.name,
+          description: user.role.description,
+          permissions: user.role.permissions || []
+        } : null;
+
+        return res.status(200).json({
+          id: user.id,
+          name: user.name,
+          user: user.user,
+          email: user.email,
+          image: user.image,
+          role_id: user.role_id,
+          global_role: globalRole, // ✅ Rol global con permisos
+          is_global_user: true, // ✅ Flag para que el frontend sepa que es BackOffice
+          token,
+          memberships: [] // ❌ Vacío porque no necesita empresas
+        });
+      }
+
+      // ✅ Usuario normal - procesar memberships por empresa
       const memberships = (user.memberships || []).filter(m => m.status === 1).map(m => ({
         id: m.id,
         company_id: m.company_id,
@@ -292,22 +315,15 @@ const AuthController = {
         }
       }));
 
-      // ✅ Rol global con permisos (si el usuario tiene role_id - BackOffice)
-      const globalRole = user.role ? {
-        id: user.role.id,
-        name: user.role.name,
-        description: user.role.description,
-        permissions: user.role.permissions || []
-      } : null;
-
       return res.status(200).json({
-        id: userNew.id,
-        name: userNew.name,
-        user: userNew.user,
-        email: userNew.email,
-        image: userNew.image,
-        role_id: userNew.role_id,
-        global_role: globalRole, // ✅ Rol global con permisos (BackOffice)
+        id: user.id,
+        name: user.name,
+        user: user.user,
+        email: user.email,
+        image: user.image,
+        role_id: null,
+        global_role: null,
+        is_global_user: false,
         token,
         memberships,
       });
