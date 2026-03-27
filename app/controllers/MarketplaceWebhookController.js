@@ -18,6 +18,11 @@ const MarketplaceStockSyncService = require("../services/MarketplaceStockSyncSer
 
 const ML_MARKETPLACE_KEY = "mercadolibre";
 const FB_MARKETPLACE_KEY = "falabella";
+const ML_ORDERS_TOPIC = "orders_v2";
+const ML_WEBHOOK_TIMEOUT_MS = 30000;
+const ML_FETCH_RETRY_MAX = 3;
+const ML_FETCH_RETRY_BASE_DELAY_MS = 1000;
+const ML_FETCH_RETRY_MAX_DELAY_MS = 8000;
 
 const MarketplaceWebhookController = {
   async mercadoLibre(req, res) {
@@ -26,7 +31,7 @@ const MarketplaceWebhookController = {
     res.status(200).json({ success: true });
 
     setImmediate(() => {
-      processMercadoLibreWebhook(payload).catch((err) => {
+      processMercadoLibreWebhook(payload, { timeoutMs: ML_WEBHOOK_TIMEOUT_MS }).catch((err) => {
         logger.error(`[ML Webhook] Error en procesamiento async: ${err.message}`);
       });
     });
@@ -45,10 +50,16 @@ const MarketplaceWebhookController = {
   }
 };
 
-async function processMercadoLibreWebhook(payload) {
-  const { resource, topic, user_id } = payload || {};
+async function processMercadoLibreWebhook(payload, options = {}) {
+  const validation = validateMercadoLibrePayload(payload);
+  if (!validation.ok) {
+    logger.warn(`[ML Webhook] Payload invalido: ${validation.reason}`);
+    return;
+  }
 
-  if (topic !== "orders") {
+  const { resource, topic, user_id } = payload;
+
+  if (topic !== ML_ORDERS_TOPIC) {
     logger.info(`[ML Webhook] Ignorado topic: ${topic}`);
     return;
   }
@@ -59,10 +70,13 @@ async function processMercadoLibreWebhook(payload) {
     return;
   }
 
+  const eventId = buildMercadoLibreEventId(payload, resource);
+
   const eventResult = await MarketplaceWebhookEventRepository.createUnique({
     marketplace: ML_MARKETPLACE_KEY,
     topic,
     resource,
+    event_id: eventId,
     external_id: String(orderId),
     marketplace_user_id: user_id != null ? String(user_id) : null,
     status: "received",
@@ -70,24 +84,54 @@ async function processMercadoLibreWebhook(payload) {
   });
 
   if (!eventResult.created) {
-    logger.info(`[ML Webhook] Duplicado ignorado: ${resource}`);
+    logger.info(`[ML Webhook] Evento duplicado ignorado: ${eventId}`);
     return;
   }
 
   const event = eventResult.record;
 
-  const credential = await MarketplaceCredentialRepository.findByMLUserIdGlobal(user_id);
+  const timeoutMs =
+    Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+      ? options.timeoutMs
+      : ML_WEBHOOK_TIMEOUT_MS;
+
+  const processPromise = processMercadoLibreEvent({
+    event,
+    payload,
+    orderId,
+    userId: user_id
+  });
+
+  try {
+    await withTimeout(processPromise, timeoutMs);
+  } catch (error) {
+    const isTimeout = error?.message === "timeout";
+    await MarketplaceWebhookEventRepository.updateById(event.id, {
+      status: isTimeout ? "timeout" : "error",
+      error_message: isTimeout
+        ? `timeout:${timeoutMs}ms`
+        : `processing_error:${error?.message || "unknown"}`,
+      processed_at: new Date()
+    });
+    logger.error(
+      `[ML Webhook] ${isTimeout ? "Timeout" : "Error"} procesando evento ${eventId}: ${error.message}`
+    );
+  }
+}
+
+async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
+  const credential = await MarketplaceCredentialRepository.findByMLUserIdGlobal(userId);
   if (!credential || !credential.access_token) {
     await MarketplaceWebhookEventRepository.updateById(event.id, {
       status: "error",
       error_message: "credential_not_found",
       processed_at: new Date()
     });
-    logger.warn(`[ML Webhook] Credencial no encontrada para ml_user_id=${user_id}`);
+    logger.warn(`[ML Webhook] Credencial no encontrada para ml_user_id=${userId}`);
     return;
   }
 
-  const order = await fetchMercadoLibreOrder(orderId, credential.access_token);
+  const order = await fetchMercadoLibreOrderWithRetry(orderId, credential.access_token);
   if (!order) {
     await MarketplaceWebhookEventRepository.updateById(event.id, {
       status: "error",
@@ -107,6 +151,25 @@ async function processMercadoLibreWebhook(payload) {
     return;
   }
 
+  // ✅ EXTRAER DATOS FINANCIEROS DE LA ORDEN (una vez para todos los items)
+  const shippingData = {
+    shippingCost: order?.shipping?.shipping_cost || 0,
+    logisticType: order?.shipping?.logistic_type || null,
+    shippingDiscount: order?.shipping?.shipping_discount || 0,
+    shippingOption: order?.shipping?.shipping_option || null
+  };
+
+  const orderFinancialData = {
+    orderId: order.id,
+    totalAmount: order.total_amount || 0,
+    paidAmount: order.paid_amount || 0,
+    shippingCost: shippingData.shippingCost,
+    logisticType: shippingData.logisticType,
+    shippingDiscount: shippingData.shippingDiscount,
+    buyerId: order?.buyer?.id || null,
+    sellerId: order?.seller?.id || null
+  };
+
   const errors = [];
 
   for (const orderItem of items) {
@@ -115,7 +178,15 @@ async function processMercadoLibreWebhook(payload) {
         orderId,
         marketplaceId: credential.marketplace_id,
         companyId: null,
-        branchId: null
+        branchId: null,
+        // ✅ NUEVO: Pasar datos financieros de la orden completa
+        ...orderFinancialData,
+        // ✅ Datos específicos del shipping para este item
+        shippingCost: shippingData.shippingCost,
+        logisticType: shippingData.logisticType,
+        shippingDiscount: shippingData.shippingDiscount,
+        // ✅ Total de items para prorrateo
+        totalItems: items.length
       });
     } catch (error) {
       errors.push(error.message);
@@ -130,20 +201,50 @@ async function processMercadoLibreWebhook(payload) {
   });
 }
 
-async function fetchMercadoLibreOrder(orderId, accessToken) {
-  try {
-    const response = await axios.get(
-      `https://api.mercadolibre.com/orders/${orderId}`,
-      {
-        headers: { Authorization: `Bearer ${accessToken}` },
-        timeout: 10000
+async function fetchMercadoLibreOrderWithRetry(orderId, accessToken) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= ML_FETCH_RETRY_MAX; attempt++) {
+    try {
+      const response = await axios.get(
+        `https://api.mercadolibre.com/orders/${orderId}`,
+        {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          timeout: 10000
+        }
+      );
+      return response.data;
+    } catch (error) {
+      lastError = error;
+      const status = error?.response?.status;
+
+      if (status === 404) {
+        logger.warn(`[ML Webhook] Orden ${orderId} no encontrada (404)`);
+        return null;
       }
-    );
-    return response.data;
-  } catch (error) {
-    logger.error(`[ML Webhook] Error obteniendo orden ${orderId}: ${error.message}`);
-    return null;
+
+      if (status === 401 || status === 403) {
+        logger.error(`[ML Webhook] Error de autenticacion ${status} para orden ${orderId}`);
+        return null;
+      }
+
+      if (attempt < ML_FETCH_RETRY_MAX) {
+        const delayMs = Math.min(
+          ML_FETCH_RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1),
+          ML_FETCH_RETRY_MAX_DELAY_MS
+        );
+        logger.warn(
+          `[ML Webhook] Intento ${attempt}/${ML_FETCH_RETRY_MAX} fallido para orden ${orderId}. Reintentando en ${delayMs}ms...`
+        );
+        await sleep(delayMs);
+      }
+    }
   }
+
+  logger.error(
+    `[ML Webhook] Error obteniendo orden ${orderId} despues de ${ML_FETCH_RETRY_MAX} intentos: ${lastError?.message || "unknown"}`
+  );
+  return null;
 }
 
 async function processFalabellaWebhook(payload) {
@@ -173,6 +274,7 @@ async function processFalabellaWebhook(payload) {
     marketplace: FB_MARKETPLACE_KEY,
     topic,
     resource,
+    event_id: buildFalabellaEventId(payload, resource),
     external_id: String(orderId),
     marketplace_user_id: getFalabellaSellerId(payload),
     status: "received",
@@ -387,6 +489,11 @@ async function processOrderItem(orderItem, ctx) {
     throw new Error("invalid_quantity");
   }
 
+  // ✅ EXTRAER DATOS FINANCIEROS DEL ITEM
+  const unitPrice = Number(orderItem?.unit_price || 0);
+  const saleFee = Number(orderItem?.sale_fee || 0);  // Comisión de ML
+  const totalPrice = unitPrice * quantity;
+
   const listingId = getListingId(orderItem);
   if (!listingId) {
     throw new Error("listing_id_not_found");
@@ -420,6 +527,51 @@ async function processOrderItem(orderItem, ctx) {
     throw new Error("warehouse_not_found");
   }
 
+  // ✅ CALCULAR ENVÍO PRORRATEADO (si el vendedor paga envío)
+  let shippingCostForItem = 0;
+  if (ctx.logisticType === 'dropoff' && !ctx.shippingDiscount) {
+    // Prorratear envío entre todos los items de la orden
+    shippingCostForItem = (ctx.shippingCost || 0) / (ctx.totalItems || 1);
+  }
+
+  // ✅ OBTENER PRECIO DE COSTO DEL PRODUCTO
+  const warehouseProduct = await WarehouseProductRepository.findByWarehouseAndProduct(
+    warehouseId,
+    productId
+  );
+
+  if (!warehouseProduct) {
+    throw new Error("warehouse_product_not_found");
+  }
+
+  const wpVariant = await WarehouseProductVariantRepository.findByVariantAndWarehouseProduct(
+    variant.id,
+    warehouseProduct.id
+  );
+
+  if (!wpVariant) {
+    throw new Error("warehouse_product_variant_not_found");
+  }
+
+  // ✅ CALCULAR GANANCIA
+  const costPrice = parseFloat(wpVariant?.purchase_price || wpVariant?.price || 0);
+  const totalCost = costPrice * quantity;
+  const grossProfit = totalPrice - saleFee - shippingCostForItem - totalCost;
+  const marginPercentage = totalPrice > 0 ? (grossProfit / totalPrice) * 100 : 0;
+
+  // ✅ LOG DE CÁLCULOS FINANCIEROS
+  logger.info(`[ML Webhook] 💰 Cálculo financiero - Order: ${ctx.orderId}, Item: ${listingId}`, {
+    unit_price: unitPrice,
+    quantity: quantity,
+    total_price: totalPrice,
+    sale_fee: saleFee,
+    shipping_cost_item: Math.round(shippingCostForItem),
+    cost_price: costPrice,
+    total_cost: totalCost,
+    gross_profit: Math.round(grossProfit),
+    margin_percentage: Math.round(marginPercentage * 100) / 100
+  });
+
   const exitResult = await applyStockExit({
     productId,
     variantId: variant.id,
@@ -429,7 +581,20 @@ async function processOrderItem(orderItem, ctx) {
     listingId,
     marketplaceKey: ML_MARKETPLACE_KEY,
     referencePrefix: "ml",
-    reason: "mercadolibre_sale"
+    reason: "mercadolibre_sale",
+    // ✅ NUEVO: Datos financieros para guardar en el movimiento
+    financial_data: {
+      unit_price: unitPrice,
+      total_price: totalPrice,
+      sale_fee: saleFee,                    // Comisión real de ML
+      shipping_cost: Math.round(shippingCostForItem),
+      cost_price: costPrice,
+      total_cost: totalCost,
+      gross_profit: Math.round(grossProfit),
+      margin_percentage: Math.round(marginPercentage * 100) / 100,
+      logistic_type: ctx.logisticType,
+      calculated_at: new Date().toISOString()
+    }
   });
 
   await queueStockSync({
@@ -503,7 +668,8 @@ async function applyStockExit({
   listingId,
   marketplaceKey,
   referencePrefix,
-  reason
+  reason,
+  financial_data = null  // ✅ NUEVO: Datos financieros opcionales
 }) {
   const finalMarketplaceKey = marketplaceKey || "marketplace";
   const finalReferencePrefix = referencePrefix || finalMarketplaceKey;
@@ -554,6 +720,19 @@ async function applyStockExit({
       branchId = warehouse?.branch_id || null;
     }
 
+    // ✅ PREPARAR METADATOS CON INFORMACIÓN FINANCIERA
+    const meta = {
+      order_id: orderId,
+      listing_id: listingId,
+      marketplace: finalMarketplaceKey
+    };
+
+    // Agregar datos financieros si existen
+    if (financial_data) {
+      meta.financial_data = financial_data;
+      meta.calculated_at = financial_data.calculated_at || new Date().toISOString();
+    }
+
     await InventoryMovementRepository.create({
       warehouse_id: warehouseId,
       product_id: productId,
@@ -570,7 +749,8 @@ async function applyStockExit({
       reference_id: `${finalReferencePrefix}:${orderId}:${listingId}`,
       reason: reason || `${finalMarketplaceKey}_sale`,
       notes: `order:${orderId}`,
-      user_id: null
+      user_id: null,
+      meta: meta  // ✅ GUARDAR METADATOS CON DATOS FINANCIEROS
     }, { transaction });
 
     await transaction.commit();
@@ -620,6 +800,58 @@ function extractOrderId(resource) {
   return parts.length > 0 ? parts[parts.length - 1] : null;
 }
 
+function validateMercadoLibrePayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return { ok: false, reason: "payload_not_object" };
+  }
+
+  if (!payload.topic) {
+    return { ok: false, reason: "topic_missing" };
+  }
+
+  if (!payload.resource) {
+    return { ok: false, reason: "resource_missing" };
+  }
+
+  if (payload.user_id == null) {
+    return { ok: false, reason: "user_id_missing" };
+  }
+
+  return { ok: true };
+}
+
+function buildMercadoLibreEventId(payload, resource) {
+  const eventId = payload?._id != null ? String(payload._id) : null;
+  if (eventId) return eventId;
+
+  const sent = payload?.sent ? String(payload.sent) : null;
+  if (sent) return `sent:${resource}:${sent}`;
+
+  const received = payload?.received ? String(payload.received) : null;
+  if (received) return `received:${resource}:${received}`;
+
+  return `resource:${resource}`;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withTimeout(promise, timeoutMs) {
+  let timerId = null;
+  const timeoutPromise = new Promise((_, reject) => {
+    timerId = setTimeout(() => {
+      reject(new Error("timeout"));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timerId) clearTimeout(timerId);
+  }
+}
+
 function getListingId(orderItem) {
   return (
     orderItem?.item?.id ||
@@ -662,6 +894,26 @@ function getFalabellaSellerId(payload) {
     payload?.UserID ||
     null
   );
+}
+
+function buildFalabellaEventId(payload, resource) {
+  const eventId =
+    payload?.event_id ||
+    payload?.EventId ||
+    payload?.eventId ||
+    payload?.data?.event_id ||
+    null;
+  if (eventId) return String(eventId);
+
+  const timestamp =
+    payload?.timestamp ||
+    payload?.created_at ||
+    payload?.createdAt ||
+    payload?.data?.created_at ||
+    null;
+  if (timestamp) return `ts:${resource}:${timestamp}`;
+
+  return `resource:${resource}`;
 }
 
 function rfc3986Encode(str) {

@@ -8,6 +8,12 @@ module.exports = (sequelize, DataTypes) => {
       ProductMarketplaceLink.belongsTo(models.Marketplace, { foreignKey: 'marketplace_id', as: 'marketplace' });
       ProductMarketplaceLink.belongsTo(models.Company, { foreignKey: 'company_id', as: 'company', onDelete: 'CASCADE' });
       ProductMarketplaceLink.belongsTo(models.Branch, { foreignKey: 'branch_id', as: 'branch', onDelete: 'CASCADE' });
+      // ✅ NUEVO: Asociación con MarketplaceCredential
+      ProductMarketplaceLink.belongsTo(models.MarketplaceCredential, { 
+        foreignKey: 'credential_id', 
+        as: 'credential',
+        onDelete: 'SET NULL'
+      });
     }
   }
 
@@ -32,6 +38,11 @@ module.exports = (sequelize, DataTypes) => {
     branch_id: {
       type: DataTypes.BIGINT,
       allowNull: true
+    },
+    credential_id: {
+      type: DataTypes.BIGINT,
+      allowNull: true,
+      comment: 'ID de la credencial específica usada para esta publicación'
     },
     status: {
       type: DataTypes.STRING,

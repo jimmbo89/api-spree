@@ -28,6 +28,14 @@ module.exports = async (req, res, next) => {
 
       // Obtener el companyId del header (si existe)
       const companyId = req.headers['x-company-id'];
+      const allowNoCompanyPaths = new Set([
+        '/companies',
+        '/business-types',
+        '/company-login',
+        '/available-for-request',
+        '/membership-requests',
+        '/logout'
+      ]);
 
       // Almacenar el ID del usuario en el contexto
       runWithUser(decoded.user.id, async () => {
@@ -64,6 +72,8 @@ module.exports = async (req, res, next) => {
               message: "Error al establecer el contexto de empresa."
             });
           }
+        } else if (allowNoCompanyPaths.has(req.path)) {
+          // Usuario normal sin companyId pero ruta permitida (flujo onboarding)
         } else {
           // Usuario normal sin companyId - error
           return res.status(403).json({

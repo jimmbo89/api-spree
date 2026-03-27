@@ -120,6 +120,13 @@ const ProductPublishingTaskRepository = {
         marketplace_id: marketplaceId,
         external_id: externalId
       },
+      include: [
+        {
+          model: MarketplaceCredential,
+          as: 'credential',
+          attributes: ['id', 'name', 'seller_email', 'active']
+        }
+      ],
       order: [['createdAt', 'DESC']]
     });
   },

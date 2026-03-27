@@ -115,13 +115,6 @@ const AuthController = {
     }
     const t = await sequelize.transaction();
     try {
-      // 1. Buscar rol por nombre (si se envía)
-      let role_id = null;
-          const role = await RoleRepository.findByName("Viewer");
-        if (role) {
-          role_id = role.id;
-        }
-
       const hashedPassword = bcrypt.hashSync(
         password,
         parseInt(authConfig.rounds)
@@ -586,10 +579,8 @@ const AuthController = {
     try {
       const userId = req.body.id;
 
-      // Buscar usuario con su rol
-      const user = await UserRepository.findById(userId, {
-        include: [{ association: "role" }],
-      });
+      // Buscar usuario
+      const user = await UserRepository.findById(userId);
 
       if (!user) {
         return res.status(204).json({ msg: "UserNotFound" });
@@ -600,8 +591,6 @@ const AuthController = {
 
       // 👉 Capturar valores actuales para comparar cambios
       const originalStatus = user.status;
-      const originalRoleId = user.role_id;
-      const originalRoleName = user.role?.name || "sin rol";
 
       if ("status" in req.body) {
         // Normalizar status a booleano
@@ -620,8 +609,6 @@ const AuthController = {
       // 👉 Detectar si hay cambio de rol o status
       const newStatus =
         updateData.status !== undefined ? updateData.status : originalStatus;
-      const newRoleId =
-        updateData.role_id !== undefined ? updateData.role_id : originalRoleId;
 
       // 👉 Registrar logs de cambios relevantes
       const logsToCreate = [];
@@ -644,31 +631,6 @@ const AuthController = {
         });
       }
 
-      // 📝 Log: cambio de rol
-      if (updateData.role_id !== undefined && newRoleId !== originalRoleId) {
-        // Obtener nombre del nuevo rol (si es posible)
-        let newRoleName = "desconocido";
-        if (newRoleId) {
-          const newRole = await RoleRepository.findById(newRoleId);
-          newRoleName = newRole?.name || "rol eliminado";
-        }
-
-        logsToCreate.push({
-          user_id: requesterId,
-          action: "user.update.role",
-          description: `Actualiza el rol de ${user.name} de ("${originalRoleName}" a "${newRoleName}")`,
-          ip_address: ip,
-          user_agent: userAgent,
-          status: "success",
-          meta: {
-            field: "role_id",
-            old_role_id: originalRoleId,
-            old_role_name: originalRoleName,
-            new_role_id: newRoleId,
-            new_role_name: newRoleName,
-          },
-        });
-      }
 
       // Si hubo al menos un cambio relevante, registrar logs
       if (logsToCreate.length > 0) {
