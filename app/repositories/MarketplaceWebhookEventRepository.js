@@ -20,6 +20,21 @@ const MarketplaceWebhookEventRepository = {
       where: { id },
       ...options
     });
+  },
+
+  async findByMarketplaceAndExternalId(marketplace, externalId, statuses = null) {
+    const where = {
+      marketplace,
+      external_id: String(externalId)
+    };
+    if (Array.isArray(statuses) && statuses.length > 0) {
+      where.status = statuses;
+    }
+
+    return await MarketplaceWebhookEvent.findOne({
+      where,
+      order: [['createdAt', 'DESC']]
+    });
   }
 };
 

@@ -1,4 +1,4 @@
-require('dotenv').config({ quiet: true });
+﻿require('dotenv').config({ quiet: true });
 
 const express = require("express");
 const app = express();
@@ -7,6 +7,7 @@ const { sequelize } = require('./models/index');
 const cors = require('cors');
 const logger = require('../config/logger');
 const JobBackgroundProcessor = require('./services/JobBackgroundProcessor');
+const FalabellaOrderReconciliationService = require('./services/FalabellaOrderReconciliationService');
 
 // // Sesión
 // app.use(session({
@@ -63,6 +64,8 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
     // ✅ INICIAR BACKGROUND PROCESSOR (solo después de que DB esté lista)
     JobBackgroundProcessor.start();
     logger.info('✅ JobBackgroundProcessor iniciado');
+    FalabellaOrderReconciliationService.start();
+    logger.info('✅ FalabellaOrderReconciliationService iniciado');
 
   } catch (error) {
     logger.error('❌ Error al iniciar servidor:', error);
@@ -88,6 +91,8 @@ async function gracefulShutdown() {
     // 1. Detener el background processor primero
     JobBackgroundProcessor.stop();
     logger.info('🔄 Background processor detenido');
+    FalabellaOrderReconciliationService.stop();
+    logger.info('🔄 FalabellaOrderReconciliationService detenido');
 
     // 2. Cerrar conexión a la base de datos
     await sequelize.close();

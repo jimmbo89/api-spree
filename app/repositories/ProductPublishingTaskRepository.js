@@ -1,4 +1,4 @@
-const { ProductPublishingTask, Product, Marketplace, Warehouse, Branch, Company, User, MarketplaceCredential } = require('../models');
+const { ProductPublishingTask, Product, Marketplace, Warehouse, Branch, Company, User, MarketplaceCredential, Job } = require('../models');
 const logger = require('../../config/logger');
 
 const ProductPublishingTaskRepository = {
@@ -125,6 +125,11 @@ const ProductPublishingTaskRepository = {
           model: MarketplaceCredential,
           as: 'credential',
           attributes: ['id', 'name', 'seller_email', 'active']
+        },
+        {
+          model: Job,
+          as: 'job',
+          attributes: ['id', 'batch_id', 'config', 'company_id', 'user_id']
         }
       ],
       order: [['createdAt', 'DESC']]

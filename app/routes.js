@@ -100,7 +100,7 @@ router.get('/validate-requests/:id/reject', UserCompanyController.handleMembersh
 
 router.post('/ml-callback', OAuthController.mercadoLibreCallback);
 router.post('/webhooks-mercadolibre', MarketplaceWebhookController.mercadoLibre);
-router.post('/webhooks/falabella', MarketplaceWebhookController.falabella);
+router.post('/webhooks-falabella', MarketplaceWebhookController.falabella);
 router.get("/images/:foldername/:filename", (req, res) => {
   const { foldername, filename } = req.params;
   const safeFoldername = path.basename(foldername); // prevención de path traversal

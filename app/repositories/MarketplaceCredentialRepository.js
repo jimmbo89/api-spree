@@ -679,6 +679,32 @@ async findByMLUserId(marketplaceId, userId, mlUserId, excludeId = null) {
     return plain;
   },
 
+  async findAllActiveFalabella() {
+    const records = await MarketplaceCredential.findAll({
+      where: { active: true },
+      include: [
+        {
+          model: Marketplace,
+          as: 'marketplace',
+          where: { domain: { [Op.like]: '%falabella%' } },
+          required: true
+        }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+
+    return records.map((record) => {
+      const plain = record.get({ plain: true });
+      if (plain.api_key) {
+        plain.api_key = EncryptionService.decrypt(plain.api_key);
+      }
+      if (plain.marketplace?.client_secret) {
+        plain.marketplace.client_secret = EncryptionService.decrypt(plain.marketplace.client_secret);
+      }
+      return plain;
+    });
+  },
+
   async delete(record) {
     return await record.destroy();
   },

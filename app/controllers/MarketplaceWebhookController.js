@@ -1,4 +1,4 @@
-const logger = require("../../config/logger");
+﻿const logger = require("../../config/logger");
 const axios = require("axios");
 const crypto = require("crypto");
 const { sequelize } = require("../models");
@@ -23,6 +23,13 @@ const ML_WEBHOOK_TIMEOUT_MS = 30000;
 const ML_FETCH_RETRY_MAX = 3;
 const ML_FETCH_RETRY_BASE_DELAY_MS = 1000;
 const ML_FETCH_RETRY_MAX_DELAY_MS = 8000;
+const FB_WEBHOOK_TIMEOUT_MS = 30000;
+const FB_FETCH_RETRY_MAX = 3;
+const FB_FETCH_RETRY_BASE_DELAY_MS = 1500;
+const FB_FETCH_RETRY_MAX_DELAY_MS = 8000;
+const FB_ORDER_TOPICS = new Set(["onordercreated", "ordercreated", "onorderitemsstatuschanged"]);
+const FB_API_VERSION = process.env.FB_API_VERSION || "2.0";
+const FB_USER_AGENT = process.env.FB_USER_AGENT || "Spree/1.0";
 
 const MarketplaceWebhookController = {
   async mercadoLibre(req, res) {
@@ -43,7 +50,7 @@ const MarketplaceWebhookController = {
     res.status(200).json({ success: true });
 
     setImmediate(() => {
-      processFalabellaWebhook(payload).catch((err) => {
+      processFalabellaWebhook(payload, { timeoutMs: FB_WEBHOOK_TIMEOUT_MS }).catch((err) => {
         logger.error(`[FB Webhook] Error en procesamiento async: ${err.message}`);
       });
     });
@@ -151,7 +158,7 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
     return;
   }
 
-  // ✅ EXTRAER DATOS FINANCIEROS DE LA ORDEN (una vez para todos los items)
+  // âœ… EXTRAER DATOS FINANCIEROS DE LA ORDEN (una vez para todos los items)
   const shippingData = {
     shippingCost: order?.shipping?.shipping_cost || 0,
     logisticType: order?.shipping?.logistic_type || null,
@@ -179,13 +186,13 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
         marketplaceId: credential.marketplace_id,
         companyId: null,
         branchId: null,
-        // ✅ NUEVO: Pasar datos financieros de la orden completa
+        // âœ… NUEVO: Pasar datos financieros de la orden completa
         ...orderFinancialData,
-        // ✅ Datos específicos del shipping para este item
+        // âœ… Datos especÃ­ficos del shipping para este item
         shippingCost: shippingData.shippingCost,
         logisticType: shippingData.logisticType,
         shippingDiscount: shippingData.shippingDiscount,
-        // ✅ Total de items para prorrateo
+        // âœ… Total de items para prorrateo
         totalItems: items.length
       });
     } catch (error) {
@@ -247,7 +254,13 @@ async function fetchMercadoLibreOrderWithRetry(orderId, accessToken) {
   return null;
 }
 
-async function processFalabellaWebhook(payload) {
+async function processFalabellaWebhook(payload, options = {}) {
+  const validation = validateFalabellaPayload(payload);
+  if (!validation.ok) {
+    logger.warn(`[FB Webhook] Payload invalido: ${validation.reason}`);
+    return;
+  }
+
   const topicRaw =
     payload?.event ||
     payload?.event_type ||
@@ -256,7 +269,7 @@ async function processFalabellaWebhook(payload) {
     null;
 
   const normalizedTopic = topicRaw ? String(topicRaw).toLowerCase() : null;
-  if (normalizedTopic && !["onordercreated", "ordercreated"].includes(normalizedTopic)) {
+  if (normalizedTopic && !FB_ORDER_TOPICS.has(normalizedTopic)) {
     logger.info(`[FB Webhook] Ignorado topic: ${topicRaw}`);
     return;
   }
@@ -288,6 +301,31 @@ async function processFalabellaWebhook(payload) {
 
   const event = eventResult.record;
 
+  const timeoutMs =
+    Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+      ? options.timeoutMs
+      : FB_WEBHOOK_TIMEOUT_MS;
+
+  const processPromise = processFalabellaEvent({ event, payload, orderId });
+
+  try {
+    await withTimeout(processPromise, timeoutMs);
+  } catch (error) {
+    const isTimeout = error?.message === "timeout";
+    await MarketplaceWebhookEventRepository.updateById(event.id, {
+      status: isTimeout ? "timeout" : "error",
+      error_message: isTimeout
+        ? `timeout:${timeoutMs}ms`
+        : `processing_error:${error?.message || "unknown"}`,
+      processed_at: new Date()
+    });
+    logger.error(
+      `[FB Webhook] ${isTimeout ? "Timeout" : "Error"} procesando evento: ${error.message}`
+    );
+  }
+}
+
+async function processFalabellaEvent({ event, payload, orderId }) {
   const credential = await resolveFalabellaCredential(payload);
   if (!credential || !credential.seller_email || !credential.api_key) {
     await MarketplaceWebhookEventRepository.updateById(event.id, {
@@ -299,7 +337,7 @@ async function processFalabellaWebhook(payload) {
     return;
   }
 
-  const orderData = await fetchFalabellaOrder(orderId, credential);
+  const orderData = await fetchFalabellaOrderWithRetry(orderId, credential);
   if (!orderData) {
     await MarketplaceWebhookEventRepository.updateById(event.id, {
       status: "error",
@@ -361,6 +399,36 @@ async function resolveFalabellaCredential(payload) {
   return await MarketplaceCredentialRepository.findSingleActiveFalabella();
 }
 
+async function fetchFalabellaOrderWithRetry(orderId, credential) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= FB_FETCH_RETRY_MAX; attempt++) {
+    try {
+      const response = await fetchFalabellaOrder(orderId, credential);
+      if (response) return response;
+      lastError = new Error("empty_response");
+    } catch (error) {
+      lastError = error;
+    }
+
+    if (attempt < FB_FETCH_RETRY_MAX) {
+      const delayMs = Math.min(
+        FB_FETCH_RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1),
+        FB_FETCH_RETRY_MAX_DELAY_MS
+      );
+      logger.warn(
+        `[FB Webhook] Intento ${attempt}/${FB_FETCH_RETRY_MAX} fallido para orden ${orderId}. Reintentando en ${delayMs}ms...`
+      );
+      await sleep(delayMs);
+    }
+  }
+
+  logger.error(
+    `[FB Webhook] Error obteniendo orden ${orderId} despues de ${FB_FETCH_RETRY_MAX} intentos: ${lastError?.message || "unknown"}`
+  );
+  return null;
+}
+
 async function fetchFalabellaOrder(orderId, credential) {
   try {
     const timestamp = timestampMinus03();
@@ -370,11 +438,16 @@ async function fetchFalabellaOrder(orderId, credential) {
       OrderId: String(orderId),
       Timestamp: timestamp,
       UserID: credential.seller_email.trim(),
-      Version: "1.0"
+      Version: FB_API_VERSION
     };
 
     const url = buildFalabellaSignedUrl(params, credential.api_key);
-    const response = await axios.get(url, { timeout: 15000 });
+    const response = await axios.get(url, {
+      timeout: 15000,
+      headers: {
+        "User-Agent": FB_USER_AGENT
+      }
+    });
 
     if (typeof response.data === "string") {
       try {
@@ -390,6 +463,70 @@ async function fetchFalabellaOrder(orderId, credential) {
     logger.error(`[FB Webhook] Error obteniendo orden ${orderId}: ${error.message}`);
     return null;
   }
+}
+
+async function fetchFalabellaOrdersV2({
+  credential,
+  createdAfter,
+  createdBefore,
+  offset = 0,
+  limit = 100,
+  status = null
+}) {
+  const timestamp = timestampMinus03();
+  const params = {
+    Action: "GetOrders",
+    Format: "JSON",
+    CreatedAfter: createdAfter,
+    CreatedBefore: createdBefore,
+    Offset: String(offset),
+    Limit: String(limit),
+    Timestamp: timestamp,
+    UserID: credential.seller_email.trim(),
+    Version: FB_API_VERSION
+  };
+
+  if (status) {
+    params.Status = status;
+  }
+
+  const url = buildFalabellaSignedUrl(params, credential.api_key);
+  try {
+    const response = await axios.get(url, {
+      timeout: 20000,
+      headers: {
+        "User-Agent": FB_USER_AGENT
+      }
+    });
+
+    if (typeof response.data === "string") {
+      try {
+        return JSON.parse(response.data);
+      } catch (e) {
+        logger.error("[FB Reconcile] Respuesta no JSON en GetOrders");
+        return null;
+      }
+    }
+
+    return response.data;
+  } catch (error) {
+    logger.error(`[FB Reconcile] Error GetOrders: ${error.message}`);
+    return null;
+  }
+}
+
+function parseFalabellaOrderIds(orderData) {
+  const orders =
+    orderData?.SuccessResponse?.Body?.Orders?.Order ||
+    orderData?.SuccessResponse?.Body?.Order ||
+    null;
+
+  const list = Array.isArray(orders) ? orders : orders ? [orders] : [];
+
+  return list
+    .map((order) => order?.OrderId || order?.OrderID || order?.order_id || order?.orderId || null)
+    .filter((id) => id != null)
+    .map((id) => String(id));
 }
 
 function parseFalabellaOrderItems(orderData) {
@@ -447,7 +584,7 @@ async function processFalabellaOrderItem(item, ctx) {
     throw new Error(`variant_not_found:${sku}`);
   }
 
-  const warehouseId = await resolveWarehouseId({
+  const warehouseIds = await resolveWarehouseCandidates({
     marketplaceId: ctx.marketplaceId,
     externalId: sku,
     productId,
@@ -455,15 +592,25 @@ async function processFalabellaOrderItem(item, ctx) {
     branchId: link?.branch_id || null
   });
 
-  if (!warehouseId) {
+  if (!warehouseIds || warehouseIds.length === 0) {
     throw new Error("warehouse_not_found");
   }
 
-  const exitResult = await applyStockExit({
+  const allocation = await planWarehouseAllocation({
     productId,
     variantId: variant.id,
-    warehouseId,
-    quantity,
+    warehouseIds,
+    quantity
+  });
+
+  if (!allocation.ok) {
+    throw new Error(`insufficient_stock_total:${allocation.totalAvailable}`);
+  }
+
+  const exitResults = await applyStockExitByPlan({
+    productId,
+    variantId: variant.id,
+    allocation,
     orderId: ctx.orderId,
     listingId: sku,
     marketplaceKey: FB_MARKETPLACE_KEY,
@@ -471,16 +618,18 @@ async function processFalabellaOrderItem(item, ctx) {
     reason: "falabella_sale"
   });
 
-  await queueStockSync({
-    productId,
-    variantId: variant.id,
-    warehouseId,
-    stock: exitResult?.stockAfter,
-    sourceMarketplaceId: ctx.marketplaceId,
-    companyId: link?.company_id || null,
-    branchId: link?.branch_id || null,
-    logPrefix: "FB Webhook"
-  });
+  for (const result of exitResults) {
+    await queueStockSync({
+      productId,
+      variantId: variant.id,
+      warehouseId: result.warehouseId,
+      stock: result.stockAfter,
+      sourceMarketplaceId: ctx.marketplaceId,
+      companyId: link?.company_id || null,
+      branchId: link?.branch_id || null,
+      logPrefix: "FB Webhook"
+    });
+  }
 }
 
 async function processOrderItem(orderItem, ctx) {
@@ -489,9 +638,8 @@ async function processOrderItem(orderItem, ctx) {
     throw new Error("invalid_quantity");
   }
 
-  // ✅ EXTRAER DATOS FINANCIEROS DEL ITEM
   const unitPrice = Number(orderItem?.unit_price || 0);
-  const saleFee = Number(orderItem?.sale_fee || 0);  // Comisión de ML
+  const saleFee = Number(orderItem?.sale_fee || 0);
   const totalPrice = unitPrice * quantity;
 
   const listingId = getListingId(orderItem);
@@ -515,7 +663,7 @@ async function processOrderItem(orderItem, ctx) {
     throw new Error(`variant_not_found:${sku || "no_sku"}`);
   }
 
-  const warehouseId = await resolveWarehouseId({
+  const warehouseIds = await resolveWarehouseCandidates({
     marketplaceId: ctx.marketplaceId,
     externalId: listingId,
     productId,
@@ -523,44 +671,35 @@ async function processOrderItem(orderItem, ctx) {
     branchId: link.branch_id
   });
 
-  if (!warehouseId) {
+  if (!warehouseIds || warehouseIds.length === 0) {
     throw new Error("warehouse_not_found");
   }
 
-  // ✅ CALCULAR ENVÍO PRORRATEADO (si el vendedor paga envío)
+  const allocation = await planWarehouseAllocation({
+    productId,
+    variantId: variant.id,
+    warehouseIds,
+    quantity
+  });
+
+  if (!allocation.ok) {
+    throw new Error(`insufficient_stock_total:${allocation.totalAvailable}`);
+  }
+
   let shippingCostForItem = 0;
   if (ctx.logisticType === 'dropoff' && !ctx.shippingDiscount) {
-    // Prorratear envío entre todos los items de la orden
     shippingCostForItem = (ctx.shippingCost || 0) / (ctx.totalItems || 1);
   }
 
-  // ✅ OBTENER PRECIO DE COSTO DEL PRODUCTO
-  const warehouseProduct = await WarehouseProductRepository.findByWarehouseAndProduct(
-    warehouseId,
-    productId
-  );
+  const totalCost = allocation.plan.reduce((sum, entry) => {
+    return sum + (entry.deduct || 0) * (entry.costPrice || 0);
+  }, 0);
 
-  if (!warehouseProduct) {
-    throw new Error("warehouse_product_not_found");
-  }
-
-  const wpVariant = await WarehouseProductVariantRepository.findByVariantAndWarehouseProduct(
-    variant.id,
-    warehouseProduct.id
-  );
-
-  if (!wpVariant) {
-    throw new Error("warehouse_product_variant_not_found");
-  }
-
-  // ✅ CALCULAR GANANCIA
-  const costPrice = parseFloat(wpVariant?.purchase_price || wpVariant?.price || 0);
-  const totalCost = costPrice * quantity;
+  const costPrice = quantity > 0 ? totalCost / quantity : 0;
   const grossProfit = totalPrice - saleFee - shippingCostForItem - totalCost;
   const marginPercentage = totalPrice > 0 ? (grossProfit / totalPrice) * 100 : 0;
 
-  // ✅ LOG DE CÁLCULOS FINANCIEROS
-  logger.info(`[ML Webhook] 💰 Cálculo financiero - Order: ${ctx.orderId}, Item: ${listingId}`, {
+  logger.info(`[ML Webhook] Cálculo financiero - Order: ${ctx.orderId}, Item: ${listingId}`, {
     unit_price: unitPrice,
     quantity: quantity,
     total_price: totalPrice,
@@ -572,21 +711,19 @@ async function processOrderItem(orderItem, ctx) {
     margin_percentage: Math.round(marginPercentage * 100) / 100
   });
 
-  const exitResult = await applyStockExit({
+  const exitResults = await applyStockExitByPlan({
     productId,
     variantId: variant.id,
-    warehouseId,
-    quantity,
+    allocation,
     orderId: ctx.orderId,
     listingId,
     marketplaceKey: ML_MARKETPLACE_KEY,
     referencePrefix: "ml",
     reason: "mercadolibre_sale",
-    // ✅ NUEVO: Datos financieros para guardar en el movimiento
-    financial_data: {
+    financialData: {
       unit_price: unitPrice,
       total_price: totalPrice,
-      sale_fee: saleFee,                    // Comisión real de ML
+      sale_fee: saleFee,
       shipping_cost: Math.round(shippingCostForItem),
       cost_price: costPrice,
       total_cost: totalCost,
@@ -597,16 +734,18 @@ async function processOrderItem(orderItem, ctx) {
     }
   });
 
-  await queueStockSync({
-    productId,
-    variantId: variant.id,
-    warehouseId,
-    stock: exitResult?.stockAfter,
-    sourceMarketplaceId: ctx.marketplaceId,
-    companyId: link.company_id,
-    branchId: link.branch_id,
-    logPrefix: "ML Webhook"
-  });
+  for (const result of exitResults) {
+    await queueStockSync({
+      productId,
+      variantId: variant.id,
+      warehouseId: result.warehouseId,
+      stock: result.stockAfter,
+      sourceMarketplaceId: ctx.marketplaceId,
+      companyId: link.company_id,
+      branchId: link.branch_id,
+      logPrefix: "ML Webhook"
+    });
+  }
 }
 
 async function resolveVariant(productId, sku) {
@@ -625,13 +764,18 @@ async function resolveVariant(productId, sku) {
   return null;
 }
 
-async function resolveWarehouseId({ marketplaceId, externalId, productId, companyId, branchId }) {
+async function resolveWarehouseCandidates({ marketplaceId, externalId, productId, companyId, branchId }) {
   const lastTask = await ProductPublishingTaskRepository.findLatestByExternalId(
     marketplaceId,
     externalId
   );
+  const poolWarehouseIds = extractPoolWarehouseIds(lastTask?.job?.config?.pool);
+  if (poolWarehouseIds.length > 0) {
+    return poolWarehouseIds;
+  }
+
   if (lastTask?.warehouse_id) {
-    return lastTask.warehouse_id;
+    return [lastTask.warehouse_id];
   }
 
   let finalCompanyId = companyId;
@@ -643,7 +787,7 @@ async function resolveWarehouseId({ marketplaceId, externalId, productId, compan
   }
 
   if (!finalCompanyId && !finalBranchId) {
-    return null;
+    return [];
   }
 
   const warehouses = await WarehouseRepository.findWarehousesByCompanyOrBranch(
@@ -652,11 +796,153 @@ async function resolveWarehouseId({ marketplaceId, externalId, productId, compan
   );
 
   if (!warehouses || warehouses.length === 0) {
-    return null;
+    return [];
   }
 
   const active = warehouses.find((w) => w.status === "activo") || warehouses[0];
-  return active?.id || null;
+  return active?.id ? [active.id] : [];
+}
+
+async function resolveWarehouseId({ marketplaceId, externalId, productId, companyId, branchId }) {
+  const candidates = await resolveWarehouseCandidates({
+    marketplaceId,
+    externalId,
+    productId,
+    companyId,
+    branchId
+  });
+  return candidates[0] || null;
+}
+
+function extractPoolWarehouseIds(pool) {
+  if (!pool) return [];
+
+  const warehouses = Array.isArray(pool.warehouses) ? pool.warehouses : [];
+  const primary =
+    pool.primary_warehouse ||
+    warehouses.find((w) => w?.is_primary) ||
+    null;
+
+  let ordered = [];
+  if (primary) {
+    ordered.push(primary);
+  }
+
+  const primaryId = primary?.warehouse_id ?? primary?.id ?? null;
+  const others = warehouses.filter((w) => {
+    const id = w?.warehouse_id ?? w?.id ?? null;
+    if (!id) return false;
+    return primaryId == null || id !== primaryId;
+  });
+
+  others.sort((a, b) => {
+    const posA = Number.isFinite(a?.position) ? a.position : 0;
+    const posB = Number.isFinite(b?.position) ? b.position : 0;
+    return posA - posB;
+  });
+
+  if (!primary && others.length > 0) {
+    ordered = others;
+  } else {
+    ordered = ordered.concat(others);
+  }
+
+  const ids = ordered
+    .map((w) => w?.warehouse_id ?? w?.id ?? null)
+    .filter((id) => id != null);
+
+  return [...new Set(ids)];
+}
+
+async function planWarehouseAllocation({ productId, variantId, warehouseIds, quantity }) {
+  const plan = [];
+  let totalAvailable = 0;
+
+  for (const warehouseId of warehouseIds) {
+    const stockInfo = await getWarehouseStockAndCost(productId, variantId, warehouseId);
+    totalAvailable += stockInfo.available;
+    plan.push({
+      warehouseId,
+      available: stockInfo.available,
+      costPrice: stockInfo.costPrice
+    });
+  }
+
+  if (totalAvailable < quantity) {
+    return { ok: false, totalAvailable, plan };
+  }
+
+  let remaining = quantity;
+  for (const entry of plan) {
+    if (remaining <= 0) {
+      entry.deduct = 0;
+      continue;
+    }
+    const toDeduct = Math.min(entry.available, remaining);
+    entry.deduct = toDeduct;
+    remaining -= toDeduct;
+  }
+
+  return { ok: true, totalAvailable, plan };
+}
+
+async function getWarehouseStockAndCost(productId, variantId, warehouseId) {
+  const warehouseProduct = await WarehouseProductRepository.findByWarehouseAndProduct(
+    warehouseId,
+    productId
+  );
+  if (!warehouseProduct) {
+    return { available: 0, costPrice: 0 };
+  }
+
+  const wpVariant = await WarehouseProductVariantRepository.findByVariantAndWarehouseProduct(
+    variantId,
+    warehouseProduct.id
+  );
+  if (!wpVariant) {
+    return { available: 0, costPrice: 0 };
+  }
+
+  return {
+    available: parseInt(wpVariant.stock, 10) || 0,
+    costPrice: parseFloat(wpVariant.purchase_price || wpVariant.price || 0)
+  };
+}
+
+async function applyStockExitByPlan({
+  productId,
+  variantId,
+  allocation,
+  orderId,
+  listingId,
+  marketplaceKey,
+  referencePrefix,
+  reason,
+  financialData
+}) {
+  const results = [];
+
+  for (const entry of allocation.plan) {
+    const qty = Number(entry.deduct || 0);
+    if (qty <= 0) continue;
+
+    const exitResult = await applyStockExit({
+      productId,
+      variantId,
+      warehouseId: entry.warehouseId,
+      quantity: qty,
+      orderId,
+      listingId,
+      marketplaceKey,
+      referencePrefix,
+      reason,
+      financial_data: financialData
+    });
+
+    results.push({ warehouseId: entry.warehouseId, stockAfter: exitResult?.stockAfter });
+  }
+
+  return results;
 }
 
 async function applyStockExit({
@@ -669,7 +955,7 @@ async function applyStockExit({
   marketplaceKey,
   referencePrefix,
   reason,
-  financial_data = null  // ✅ NUEVO: Datos financieros opcionales
+  financial_data = null  // âœ… NUEVO: Datos financieros opcionales
 }) {
   const finalMarketplaceKey = marketplaceKey || "marketplace";
   const finalReferencePrefix = referencePrefix || finalMarketplaceKey;
@@ -720,7 +1006,7 @@ async function applyStockExit({
       branchId = warehouse?.branch_id || null;
     }
 
-    // ✅ PREPARAR METADATOS CON INFORMACIÓN FINANCIERA
+    // âœ… PREPARAR METADATOS CON INFORMACIÃ“N FINANCIERA
     const meta = {
       order_id: orderId,
       listing_id: listingId,
@@ -750,7 +1036,7 @@ async function applyStockExit({
       reason: reason || `${finalMarketplaceKey}_sale`,
       notes: `order:${orderId}`,
       user_id: null,
-      meta: meta  // ✅ GUARDAR METADATOS CON DATOS FINANCIEROS
+      meta: meta  // âœ… GUARDAR METADATOS CON DATOS FINANCIEROS
     }, { transaction });
 
     await transaction.commit();
@@ -896,6 +1182,30 @@ function getFalabellaSellerId(payload) {
   );
 }
 
+function validateFalabellaPayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return { ok: false, reason: "payload_not_object" };
+  }
+
+  const topicRaw =
+    payload?.event ||
+    payload?.event_type ||
+    payload?.topic ||
+    payload?.type ||
+    null;
+
+  if (!topicRaw) {
+    return { ok: false, reason: "topic_missing" };
+  }
+
+  const orderId = extractFalabellaOrderId(payload);
+  if (!orderId) {
+    return { ok: false, reason: "order_id_missing" };
+  }
+
+  return { ok: true };
+}
+
 function buildFalabellaEventId(payload, resource) {
   const eventId =
     payload?.event_id ||
@@ -948,3 +1258,8 @@ function buildFalabellaSignedUrl(params, apiKey) {
 }
 
 module.exports = MarketplaceWebhookController;
+MarketplaceWebhookController._processFalabellaEvent = processFalabellaEvent;
+MarketplaceWebhookController._fetchFalabellaOrdersV2 = fetchFalabellaOrdersV2;
+MarketplaceWebhookController._parseFalabellaOrderIds = parseFalabellaOrderIds;
+
+
