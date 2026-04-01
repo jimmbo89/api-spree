@@ -108,17 +108,43 @@ async sendInvitation(req, res) {
   const transaction = await sequelize.transaction();
 
   try {
+    // ✅ Validar que el rol existe
+    const role = await RoleRepository.findById(role_id);
+    if (!role) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: `El rol con ID ${role_id} no existe`
+      });
+    }
+
+    // ✅ Validar que la empresa existe
+    const company = await CompanyRepository.findById(company_id);
+    if (!company) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: `La empresa con ID ${company_id} no existe`
+      });
+    }
+
     // 2. Buscar o crear usuario
     let user = await UserRepository.findByEmail(email);
     let userId;
+    let temporalPassword = null;
 
     if (!user) {
       // Crear usuario con status inactivo hasta que acepte
       const userName = email.split('@')[0];
+      // Generar contraseña temporal válida (mínimo 6 caracteres)
+      temporalPassword = 'Temp' + Math.random().toString(36).slice(-4);
+      const bcrypt = require('bcrypt');
+      const hashedPassword = bcrypt.hashSync(temporalPassword, 10);
+
       user = await UserRepository.create({
         name: userName,
         email: email,
-        password: '', // Sin contraseña hasta que acepte
+        password: hashedPassword, // ✅ Contraseña temporal válida
         user: userName,
         status: 0, // Inactivo hasta aceptar invitación
       }, null, transaction);
@@ -186,17 +212,19 @@ async sendInvitation(req, res) {
     // 6. Enviar email con enlace seguro (apunta al FRONTEND)
     // El frontend debe tener una ruta que maneje la invitación, ej: /invitacion o /login
     const inviteLink = `${process.env.FRONTEND_URL}/login?token=${encodeURIComponent(invitationToken)}&company_id=${company_id}`;
-    
+
     const emailHtml = buildInvitationEmailHtml({
       inviterName,
       companyName,
-      inviteLink
+      inviteLink,
+      email,
+      temporalPassword // ✅ Incluir contraseña si es usuario nuevo
     });
 
     await sendEmail({
       to: email,
       subject: `📬 Únete a ${companyName} en Spree Invitación de ${inviterName}`,
-      text: `Invitación de ${inviterName}. Enlace: ${inviteLink}`,
+      text: `Invitación de ${inviterName}. Enlace: ${inviteLink}${temporalPassword ? `\n\nUsuario: ${user.email}\nContraseña temporal: ${temporalPassword}` : ''}`,
       html: emailHtml
     });
 

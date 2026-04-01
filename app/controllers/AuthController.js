@@ -1001,6 +1001,10 @@ const AuthController = {
     let userBd, membership;
     let invitationToken = null;
     let typeStatus = -1;
+    let isNewUser = false; // 👈 Trackear si es usuario nuevo
+    let passwordValue = null; // 👈 Declarar en scope superior
+    let userValue = null; // 👈 Declarar en scope superior
+    
     if(invitation_method !== 'email'){
       typeStatus = 1;
     }
@@ -1034,26 +1038,27 @@ const AuthController = {
           transaction
         );
       } else {
-        const userValue = user || email.split("@")[0]; // evita usar "user" como nombre de variable
-          const passwordValue = password || userValue;
+        isNewUser = true; // 👈 Marcar como usuario nuevo
+        userValue = user || email.split("@")[0]; // evita usar "user" como nombre de variable
+        passwordValue = password || userValue;
 
-          const hashedPassword = bcrypt.hashSync(
-            passwordValue,
-            parseInt(authConfig.rounds)
-          );
+        const hashedPassword = bcrypt.hashSync(
+          passwordValue,
+          parseInt(authConfig.rounds)
+        );
 
-          userBd = await UserRepository.create(
-            {
-              name,
-              email,
-              password: hashedPassword, // ✅ clave correcta
-              user: userValue,          // ✅ clave correcta
-              status: 1,
-              registration_date: new Date(),
-            },
-            req.file,
-            transaction
-          );
+        userBd = await UserRepository.create(
+          {
+            name,
+            email,
+            password: hashedPassword, // ✅ clave correcta
+            user: userValue,          // ✅ clave correcta
+            status: 1,
+            registration_date: new Date(),
+          },
+          req.file,
+          transaction
+        );
         invitationToken = crypto.randomBytes(32).toString("hex");
         logger.info('token a verificar');
         logger.info(invitationToken);
@@ -1130,8 +1135,8 @@ const AuthController = {
           const inviteLink = `${process.env.FRONTEND_URL}/login?token=${encodeURIComponent(invitationToken)}&company_id=${company_id}`;
 
           // ✅ Pasar contraseña y usuario solo si es usuario nuevo (no existía)
-          const passwordToSend = !userBd.id ? passwordValue : null;
-          const userToSend = !userBd.id ? userValue : null;
+          const passwordToSend = isNewUser ? passwordValue : null;
+          const userToSend = isNewUser ? userValue : null;
 
           await sendInvitationEmail({
             to: email,

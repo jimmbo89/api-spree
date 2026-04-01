@@ -13,25 +13,46 @@ const transporter = nodemailer.createTransport({
     user: process.env.EMAIL_USER,      // no-reply@klint.cl
     pass: process.env.EMAIL_PASSWORD,  // contraseña de la cuenta
   },
+  debug: true, // ✅ Habilitar debug de nodemailer
+  logger: true // ✅ Logs internos de nodemailer
 });
 
 async function sendEmail({ to, subject, text, html }) {
   try {
-    logger.info(`Enviando correo a: ${to}`);
+    logger.info(`📧 Enviando correo a: ${to}`);
+    logger.info(`📝 Asunto: ${subject}`);
+    
+    // ✅ Verificar configuración SMTP
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
+      logger.error('❌ EMAIL_USER o EMAIL_PASSWORD no están configurados en .env');
+      throw new Error('Configuración SMTP incompleta');
+    }
+    
+    logger.info(`👤 From: ${process.env.EMAIL_USER}`);
 
     const mailOptions = {
-      from: `"Remitente" <${process.env.EMAIL_USER}>`,
+      from: `"Spree" <${process.env.EMAIL_USER}>`,
       to,
       subject,
       text,
       html,
     };
 
+    logger.info('📤 Intentando enviar correo...');
     const info = await transporter.sendMail(mailOptions);
-    logger.info(`Correo enviado a: ${to}, ID: ${info.messageId}`);
+    logger.info(`✅ Correo enviado a: ${to}, ID: ${info.messageId}`);
+    logger.info(`📬 Accepted: ${JSON.stringify(info.accepted)}`);
+    logger.info(`📭 Rejected: ${JSON.stringify(info.rejected)}`);
+    
+    // ✅ Verificar respuesta del servidor SMTP
+    if (info.response) {
+      logger.info(`📨 Respuesta SMTP: ${info.response}`);
+    }
+    
     return info;
   } catch (error) {
-    logger.error(`Error al enviar el correo: ${error.message || error}`);
+    logger.error(`❌ Error al enviar el correo: ${error.message || error}`);
+    logger.error(`🔍 Stack: ${error.stack}`);
     throw error;
   }
 }
