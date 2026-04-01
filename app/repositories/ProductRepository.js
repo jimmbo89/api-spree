@@ -39,7 +39,8 @@ const ProductRepository = {
         "brand", "model", "condition", "gtin", "mpn",
         "attributes", "warranty_months", "warranty_text",
         "weight_grams", "length_cm", "width_cm", "height_cm",
-        "images", "sync_meta", "state"
+        "images", "sync_meta", "state",
+        "purchase_price", "sale_price"
       ],
       include: [
         {
@@ -96,25 +97,52 @@ const ProductRepository = {
     return products.map(product => {
       // Buscar el status correspondiente
       const statusMatch = productStatus.find(s => s.id === product.status);
-      
+
       // Buscar la condición correspondiente
       const conditionMatch = conditions.find(c => c.id === product.condition);
 
+      // ⭐ Crear mapa de precios por variant_id desde warehouses
+      const warehouses = productToWarehousesMap[product.id] || [];
+      const variantPricesMap = {};
+      
+      for (const warehouse of warehouses) {
+        if (warehouse.variants && warehouse.variants.length > 0) {
+          for (const wv of warehouse.variants) {
+            if (!variantPricesMap[wv.variant_id]) {
+              variantPricesMap[wv.variant_id] = {
+                price: wv.price,
+                purchase_price: wv.purchase_price,
+                promotional_price: wv.promotional_price
+              };
+            }
+          }
+        }
+      }
+
+      // Procesar variantes con atributos y agregar precios
       const processedVariants = (Array.isArray(product.variants) ? product.variants : []).map(variant => {
-    let attributesObj = {};
-    try {
-      // Intentar parsear la cadena JSON
-      attributesObj = typeof variant.attributes === 'string' ? JSON.parse(variant.attributes) : variant.attributes;
-    } catch (error) {
-      console.error('Error parsing variant attributes:', error);
-      // Si falla, dejarlo como objeto vacío o manejarlo según tu lógica
-      attributesObj = {};
-    }
-    return {
-      ...variant,
-      attributes: attributesObj // Reemplazar la cadena por el objeto
-    };
-  });
+        let attributesObj = {};
+        try {
+          attributesObj = typeof variant.attributes === 'string' ? JSON.parse(variant.attributes) : variant.attributes;
+        } catch (error) {
+          attributesObj = {};
+        }
+
+        // ⭐ Agregar precios si existen para esta variante
+        const priceData = variantPricesMap[variant.id];
+
+        return {
+          id: variant.id,
+          sku: variant.sku,
+          attributes: attributesObj,
+          image: variant.image,
+          ...(priceData ? {
+            price: priceData.price,
+            purchase_price: priceData.purchase_price,
+            promotional_price: priceData.promotional_price
+          } : {})
+        };
+      });
 
     const realAttributes = [];
     if (Array.isArray(product.productAttributes)) {
@@ -178,7 +206,9 @@ const ProductRepository = {
         height_cm: product.height_cm,
         images: images,
         images_with_version: imagesWithVersion,
-        image_version: imagesWithVersion[0]?.version || null, // Versión de la primera imagen
+        image_version: imagesWithVersion[0]?.version || null,
+        purchase_price: product.purchase_price,
+        sale_price: product.sale_price,
         sync_meta: product.sync_meta || {},
         variants: processedVariants,
         warehouses: productToWarehousesMap[product.id] || []
@@ -188,6 +218,15 @@ const ProductRepository = {
 
   async findById(id) {
     return await Product.findByPk(id, {
+      attributes: [
+        'id', 'sku', 'name', 'description',
+        'category_id', 'user_id', 'company_id',
+        'brand', 'model', 'condition', 'gtin', 'mpn',
+        'attributes', 'warranty_months', 'warranty_text',
+        'weight_grams', 'length_cm', 'width_cm', 'height_cm',
+        'images', 'sync_meta', 'state',
+        'purchase_price', 'sale_price'
+      ],
       include: [
         {
           model: ProductVariant,
@@ -218,7 +257,8 @@ const ProductRepository = {
         'brand', 'model', 'condition', 'gtin', 'mpn',
         'attributes', 'warranty_months', 'warranty_text',
         'weight_grams', 'length_cm', 'width_cm', 'height_cm',
-        'images', 'sync_meta', 'state'
+        'images', 'sync_meta', 'state',
+        'purchase_price', 'sale_price'
       ],
       include: [
         {
@@ -251,7 +291,9 @@ const ProductRepository = {
         category_id: body.category_id || null,
         user_id: body.user_id || null,
         company_id: body.company_id || null,
-        sync_meta: body.sync_meta || {}
+        sync_meta: body.sync_meta || {},
+        purchase_price: body.purchase_price || null,
+        sale_price: body.sale_price || null
       };
 
       const product = await Product.create(productData, options);
@@ -309,7 +351,8 @@ const ProductRepository = {
         "user_id", "company_id",
         "brand", "model", "condition", "gtin", "mpn", "warranty_months", "warranty_text",
         "weight_grams", "length_cm", "width_cm", "height_cm",
-        "sync_meta", "state"
+        "sync_meta", "state",
+        "purchase_price", "sale_price"
       ];
 
       const updatedData = {};

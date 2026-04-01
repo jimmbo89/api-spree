@@ -39,7 +39,8 @@ function mapInventoryMovement(record) {
     quantity: record.quantity,
     stock_before: record.stock_before,
     stock_after: record.stock_after,
-    unit_price: record.unit_price,
+    unit_price: record.unit_price,        // Precio de venta unitario (histórico del movimiento)
+    purchase_price: record.purchase_price, // Precio de compra unitario (histórico del movimiento)
     total_value: record.total_value,
     reference_type: record.reference_type,
     reference_id: record.reference_id,
@@ -50,20 +51,29 @@ function mapInventoryMovement(record) {
     notes: record.notes,
     createdAt: record.createdAt ? record.createdAt.toISOString().slice(0, 16).replace('T', ' ') : null,
 
+    // ⭐ PRECIOS ACTUALES de la variante (enriquecidos)
+    current_price: record.current_price || null,
+    current_purchase_price: record.current_purchase_price || null,
+    current_promotional_price: record.current_promotional_price || null,
+
     warehouse: record.warehouse ? { id: record.warehouse.id, name: record.warehouse.name, image: record.warehouse.image } : null,
-    originWarehouse: record.originWarehouse ? { 
-      id: record.originWarehouse.id, 
-      name: record.originWarehouse.name, 
-      image: record.originWarehouse.image 
+    originWarehouse: record.originWarehouse ? {
+      id: record.originWarehouse.id,
+      name: record.originWarehouse.name,
+      image: record.originWarehouse.image
     } : null,
-    
-    destinationWarehouse: record.destinationWarehouse ? { 
-      id: record.destinationWarehouse.id, 
-      name: record.destinationWarehouse.name, 
-      image: record.destinationWarehouse.image 
+
+    destinationWarehouse: record.destinationWarehouse ? {
+      id: record.destinationWarehouse.id,
+      name: record.destinationWarehouse.name,
+      image: record.destinationWarehouse.image
     } : null,
     product: record.product ? { id: record.product.id, name: record.product.name, first_image: productFirstImage } : null,
-    variant: record.variant ? { id: record.variant.id, sku: record.variant.sku, attributes: record.variant.attributes } : null,
+    variant: record.variant ? { 
+      id: record.variant.id, 
+      sku: record.variant.sku, 
+      attributes: record.variant.attributes
+    } : null,
     user: record.user ? { id: record.user.id, name: record.user.name } : null,
     company: record.company ? { id: record.company.id, name: record.company.name, image: record.company.image } : null,
     branch: record.branch ? { id: record.branch.id, name: record.branch.name, image: record.branch.image } : null
@@ -71,6 +81,59 @@ function mapInventoryMovement(record) {
 }
 
 const InventoryMovementRepository = {
+  /**
+   * ⭐ Enriquece los movimientos con los precios actuales de las variantes
+   * desde warehouse_product_variants
+   */
+  async _enrichMovementsWithCurrentPrices(movements) {
+    try {
+      // Obtener todos los variant_id únicos de los movimientos
+      const variantIds = [...new Set(
+        movements
+          .map(m => m.variant_id)
+          .filter(id => id != null)
+      )];
+
+      if (variantIds.length === 0) return movements;
+
+      // Obtener precios actuales desde warehouse_product_variants
+      const currentPrices = await WarehouseProductVariantRepository.findAll({
+        where: {
+          variant_id: { [Op.in]: variantIds },
+          active: true
+        },
+        attributes: ['variant_id', 'price', 'purchase_price', 'promotional_price'],
+        raw: true
+      });
+
+      // Crear mapa de precios por variant_id
+      const priceMap = {};
+      for (const cp of currentPrices) {
+        if (!priceMap[cp.variant_id]) {
+          priceMap[cp.variant_id] = {
+            price: parseFloat(cp.price) || 0,
+            purchase_price: parseFloat(cp.purchase_price) || 0,
+            promotional_price: cp.promotional_price ? parseFloat(cp.promotional_price) : null
+          };
+        }
+      }
+
+      // Agregar precios actuales a cada movimiento
+      for (const movement of movements) {
+        if (movement.variant_id && priceMap[movement.variant_id]) {
+          movement.current_price = priceMap[movement.variant_id].price;
+          movement.current_purchase_price = priceMap[movement.variant_id].purchase_price;
+          movement.current_promotional_price = priceMap[movement.variant_id].promotional_price;
+        }
+      }
+
+      return movements;
+    } catch (error) {
+      logger.error("_enrichMovementsWithCurrentPrices error:", error.message);
+      return movements; // Retornar movimientos sin enriquecer si hay error
+    }
+  },
+
   async create(data, options = {}) {
     try {
       return await InventoryMovement.create(data, options);
@@ -224,7 +287,10 @@ async findWithFilters(filters = {}, options = {}) {
       order: [['createdAt', 'DESC']]
     });
 
-    return movements.map(m => mapInventoryMovement(m));
+    // ⭐ ENRIQUECER movimientos con precios actuales de las variantes desde warehouse_product_variants
+    const enrichedMovements = await this._enrichMovementsWithCurrentPrices(movements);
+
+    return enrichedMovements.map(m => mapInventoryMovement(m));
 
   } catch (error) {
     logger.error("InventoryMovementRepository.findWithFilters error:", error.message);

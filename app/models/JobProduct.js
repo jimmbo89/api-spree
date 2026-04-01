@@ -27,10 +27,17 @@ module.exports = (sequelize, DataTypes) => {
       });
 
       // JobProduct pertenece a una credencial (opcional)
-      JobProduct.belongsTo(models.MarketplaceCredential, { 
-        foreignKey: 'credential_id', 
-        as: 'credential', 
-        onDelete: 'SET NULL' 
+      JobProduct.belongsTo(models.MarketplaceCredential, {
+        foreignKey: 'credential_id',
+        as: 'credential',
+        onDelete: 'SET NULL'
+      });
+
+      // ✅ JobProduct tiene referencia a un ProductPublishingTask (opcional)
+      JobProduct.belongsTo(models.ProductPublishingTask, {
+        foreignKey: 'task_id',
+        as: 'task',
+        onDelete: 'SET NULL'
       });
     }
   }
@@ -118,6 +125,16 @@ module.exports = (sequelize, DataTypes) => {
     marketplace_payload: {
       type: DataTypes.JSON,
       allowNull: true
+    },
+    // ✅ Referencia al product_publishing_task creado
+    task_id: {
+      type: DataTypes.BIGINT,
+      allowNull: true,
+      comment: 'Referencia al product_publishing_task creado para este producto',
+      references: {
+        model: 'product_publishing_tasks',
+        key: 'id'
+      }
     }
   }, {
     sequelize,

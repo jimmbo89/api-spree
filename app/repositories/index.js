@@ -42,6 +42,10 @@ const UserTokenRepository = require("./UserTokenRepository");
 const WarehouseProductRepository = require("./WarehouseProductRepository");
 const WarehouseProductVariantRepository = require("./WarehouseProductVariantRepository");
 const WarehouseRepository = require("./WarehouseRepository");
+const MarketplaceOrderRepository = require("./MarketplaceOrderRepository");
+const MarketplaceOrderItemRepository = require("./MarketplaceOrderItemRepository");
+const MarketplaceOrderFeeRepository = require("./MarketplaceOrderFeeRepository");
+const MarketplaceOrderEventRepository = require("./MarketplaceOrderEventRepository");
 
 module.exports = {
     RoleRepository,
@@ -87,5 +91,9 @@ module.exports = {
     TenantLogRepository,
     JobProductRepository,
     JobRepository,
-    CategoryCommissionRepository
+    CategoryCommissionRepository,
+    MarketplaceOrderRepository,
+    MarketplaceOrderItemRepository,
+    MarketplaceOrderFeeRepository,
+    MarketplaceOrderEventRepository
 };

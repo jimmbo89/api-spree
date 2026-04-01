@@ -61,6 +61,8 @@ module.exports = (sequelize, DataTypes) => {
     images: { type: DataTypes.JSON, allowNull: true, defaultValue: [] },
     sync_meta: { type: DataTypes.JSON, allowNull: true, defaultValue: {} },
     state: { type: DataTypes.TINYINT, allowNull: true, defaultValue: 1 },
+    purchase_price: { type: DataTypes.DECIMAL(16, 2), allowNull: true, comment: 'Precio de compra por defecto del producto (fallback para variantes)' },
+    sale_price: { type: DataTypes.DECIMAL(16, 2), allowNull: true, comment: 'Precio de venta por defecto del producto (fallback para variantes)' },
   }, {
     sequelize,
     modelName: 'Product',

@@ -1,4 +1,4 @@
-const Joi = require('joi');
+﻿const Joi = require('joi');
 
 const storeSchema = Joi.object({
   mode: Joi.string().valid('quick', 'advanced', 'manual', 'draft', 'publish').required(), // ✅ Agregado 'draft', 'publish' y 'manual'
@@ -25,6 +25,7 @@ const storeSchema = Joi.object({
       publishStock: Joi.number().integer().min(0).required()
     })).optional()
   })).min(1).required(),
+  // ✅ marketplaces es opcional cuando mode === 'draft' (se guarda solo el producto)
   marketplaces: Joi.array().items(Joi.object({
     id: Joi.number().integer().positive().required(), // ✅ Cambiado a number
     name: Joi.string().optional(),
@@ -35,7 +36,7 @@ const storeSchema = Joi.object({
       stockLimit: Joi.number().min(0).allow(null),
       allowPromotions: Joi.boolean().required()
     }).required()
-  })).min(1).required(),
+  })).min(1).optional(),
   // ✅ Nuevos campos para drafts
   draft_name: Joi.string().max(255).optional(), // Nombre del borrador
   batch_id: Joi.string().guid({ version: ['uuidv4'] }).optional(), // UUID para agrupar
@@ -61,6 +62,12 @@ const listSchema = Joi.object({
   user_id: Joi.number().integer().optional(),
   status: Joi.string().valid('draft', 'pending', 'processing', 'published', 'failed', 'cancelled').optional(), // ✅ Actualizado
   batch_id: Joi.string().guid().optional() // ✅ Nuevo
+});
+
+const listWithProductSchema = Joi.object({
+  company_id: Joi.number().integer().positive().required(),
+  user_id: Joi.number().integer().optional(),
+  product_id: Joi.number().integer().positive().required()
 });
 
 // ✅ Nuevo schema para listar borradores por usuario/empresa
@@ -89,10 +96,11 @@ const publishDraftJobSchema = Joi.object({
   products: Joi.array().items(Joi.object({
     id: Joi.number().integer().positive().required()
   }).unknown(true)).min(1).required(),
+  // ✅ marketplaces es opcional cuando action === 'update', requerido cuando action === 'publish'
   marketplaces: Joi.array().items(Joi.object({
     id: Joi.number().integer().positive().required(),
     marketplace_id: Joi.number().integer().positive().optional()
-  }).unknown(true)).min(1).required(),
+  }).unknown(true)).min(1).optional(),
   draft_name: Joi.string().max(255).optional(),
   publication_step: Joi.number().integer().min(0).max(5).optional(),
   economic_config: Joi.object().optional(),
@@ -108,7 +116,9 @@ module.exports = {
   storeProductPublishingTaskSchema: storeSchema,
   updateProductPublishingTaskStatusSchema: updateStatusSchema,
   listProductPublishingTaskSchema: listSchema,
+  listProductPublishingTaskWithProductSchema: listWithProductSchema,
   listDraftsByUserSchema: listDraftsByUserSchema, // ✅ Nuevo
   retryProductPublishingTaskSchema: retrySchema,
   publishDraftSchema: publishDraftSchema // ✅ Nuevo
 };
+

@@ -445,12 +445,13 @@ async findById(id, options = {}) {
       
       if (!id) throw new Error('JobProduct ID es requerido');
 
-      // 🔑 Allowed fields actualizado con marketplace_payload
+      // 🔑 Allowed fields actualizado con marketplace_payload y task_id
       const allowedFields = [
-        'status', 'external_id', 'external_url', 
-        'error_message', 'error_details', 
-        'attempt_count', 'last_attempt_at', 
-        'product_payload', 'marketplace_payload'  // ← NUEVO
+        'status', 'external_id', 'external_url',
+        'error_message', 'error_details',
+        'attempt_count', 'last_attempt_at',
+        'product_payload', 'marketplace_payload',  // ← NUEVO
+        'task_id'  // ✅ Referencia al product_publishing_task
       ];
       
       const updateData = {};

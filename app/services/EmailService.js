@@ -17,7 +17,7 @@ const transporter = nodemailer.createTransport({
 
 async function sendEmail({ to, subject, text, html }) {
   try {
-    logger.info("Enviando correo a:", to);
+    logger.info(`Enviando correo a: ${to}`);
 
     const mailOptions = {
       from: `"Remitente" <${process.env.EMAIL_USER}>`,
@@ -28,10 +28,10 @@ async function sendEmail({ to, subject, text, html }) {
     };
 
     const info = await transporter.sendMail(mailOptions);
-    logger.info("Correo enviado a:", to, "ID:", info.messageId);
+    logger.info(`Correo enviado a: ${to}, ID: ${info.messageId}`);
     return info;
   } catch (error) {
-    logger.error("Error al enviar el correo:", error.message || error);
+    logger.error(`Error al enviar el correo: ${error.message || error}`);
     throw error;
   }
 }

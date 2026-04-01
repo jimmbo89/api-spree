@@ -20,7 +20,7 @@ const {
 const { sendEmail } = require("../services/EmailService");
 
 // 📨 Plantilla de correo de invitación (consistente en toda la app)
-function buildInvitationEmailHtml({ inviterName, companyName, inviteLink }) {
+function buildInvitationEmailHtml({ inviterName, companyName, inviteLink, email, temporalPassword, user }) {
   return `
     <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9f9f9;">
       <div style="background-color: white; padding: 30px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);">
@@ -32,6 +32,28 @@ function buildInvitationEmailHtml({ inviterName, companyName, inviteLink }) {
         <p style="font-size: 16px; line-height: 1.6; color: #333;">
           Al aceptar esta invitación, podrás colaborar con su organización directamente desde la plataforma.
         </p>
+
+        ${temporalPassword ? `
+        <div style="background-color: #f0f8ff; padding: 20px; border-radius: 8px; margin: 24px 0; border-left: 4px solid #006064;">
+          <h3 style="color: #006064; margin-top: 0; font-size: 18px;">🔐 Credenciales de acceso</h3>
+          <p style="font-size: 15px; line-height: 1.6; color: #333; margin: 10px 0;">
+            <strong>Usuario:</strong> <span style="font-family: monospace; background-color: #e8e8e8; padding: 2px 6px; border-radius: 4px;">${user}</span>
+          </p>
+          <p style="font-size: 15px; line-height: 1.6; color: #333; margin: 10px 0;">
+            <strong>Correo:</strong> <span style="font-family: monospace; background-color: #e8e8e8; padding: 2px 6px; border-radius: 4px;">${email}</span>
+          </p>
+          <p style="font-size: 15px; line-height: 1.6; color: #333; margin: 10px 0;">
+            <strong>Contraseña temporal:</strong> <span style="font-family: monospace; background-color: #e8e8e8; padding: 2px 6px; border-radius: 4px;">${temporalPassword}</span>
+          </p>
+        </div>
+
+        <div style="background-color: #fff3cd; padding: 16px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ffc107;">
+          <p style="font-size: 15px; line-height: 1.6; color: #856404; margin: 0;">
+            ⚠️ <strong>Importante:</strong> Por motivos de seguridad es necesario que una vez ingresado al sistema cambie esta contraseña en su Perfil de usuario.
+          </p>
+        </div>
+        ` : ''}
+
         <div style="text-align: center; margin: 32px 0;">
           <a href="${inviteLink}"
              style="display: inline-block; padding: 14px 32px; background-color: #006064; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; transition: background-color 0.2s;">
@@ -65,21 +87,23 @@ async function sendInvitationEmail({
   userAgent,
   invitedByUserId,
   email,
-  temporalPassword = null
+  temporalPassword = null,
+  user = null
 }) {
-  const emailHtml = buildInvitationEmailHtml({ 
-    inviterName, 
-    companyName, 
+  const emailHtml = buildInvitationEmailHtml({
+    inviterName,
+    companyName,
     inviteLink,
     email,
-    temporalPassword 
+    temporalPassword,
+    user
   });
 
   // Enviar correo
   await sendEmail({
     to,
     subject: `📬 Únete a ${companyName} en Spree Invitación de ${inviterName}`,
-    text: `Hola, ${inviterName} te ha invitado a unirte al equipo de ${companyName} en Spree. Accede al enlace para aceptar: ${inviteLink}${temporalPassword ? `\n\nContraseña temporal: ${temporalPassword}` : ''}`,
+    text: `Hola, ${inviterName} te ha invitado a unirte al equipo de ${companyName} en Spree. Accede al enlace para aceptar: ${inviteLink}${temporalPassword ? `\n\nUsuario: ${user}\nCorreo: ${email}\nContraseña temporal: ${temporalPassword}\n\n⚠️ Importante: Por motivos de seguridad es necesario que una vez ingresado al sistema cambie esta contraseña en su Perfil de usuario.` : ''}`,
     html: emailHtml,
   });
 
@@ -528,13 +552,12 @@ const AuthController = {
     logger.info(JSON.stringify(req.body));
     const { company_id, role_id, status } = req.body;
 
-    // Validar que el usuario autenticado pertenezca a la compañía
-    const authUserCompany = await UserCompanyRepository.findByPk(company_id);
-
-    if (!authUserCompany) {
-      return res.status(204).json({
+    // ✅ Validar que la empresa exista
+    const company = await CompanyRepository.findById(company_id);
+    if (!company) {
+      return res.status(404).json({
         success: false,
-        message: "No usuarios asociados a esta compañía",
+        message: "Empresa no encontrada",
         users: [],
       });
     }
@@ -542,7 +565,7 @@ const AuthController = {
     const filters = {};
     if (company_id) filters.company_id = company_id;
     if (role_id) filters.role_id = role_id;
-    
+
     // ✅ Si se especifica status, se usa ese filtro
     // Si no se especifica, el repository excluye status 0 (desasociado) por defecto
     // status: -1 = pendiente, 1 = activo, 2 = desactivado (todos se incluyen excepto 0)
@@ -1105,9 +1128,10 @@ const AuthController = {
         try {
           const inviterName = req.user?.name || "un miembro del equipo";
           const inviteLink = `${process.env.FRONTEND_URL}/login?token=${encodeURIComponent(invitationToken)}&company_id=${company_id}`;
-          
-          // ✅ Pasar contraseña solo si es usuario nuevo (no existía)
+
+          // ✅ Pasar contraseña y usuario solo si es usuario nuevo (no existía)
           const passwordToSend = !userBd.id ? passwordValue : null;
+          const userToSend = !userBd.id ? userValue : null;
 
           await sendInvitationEmail({
             to: email,
@@ -1119,7 +1143,8 @@ const AuthController = {
             userAgent: req.get("User-Agent"),
             invitedByUserId: req.user?.id,
             email,
-            temporalPassword: passwordToSend
+            temporalPassword: passwordToSend,
+            user: userToSend
           });
         } catch (emailError) {
           logger.error(

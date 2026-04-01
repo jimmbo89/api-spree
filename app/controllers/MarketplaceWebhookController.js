@@ -12,7 +12,13 @@ const {
   ProductPublishingTaskRepository,
   WarehouseRepository,
   ProductRepository,
-  MarketplaceWebhookEventRepository
+  MarketplaceWebhookEventRepository,
+  MarketplaceOrderRepository,
+  MarketplaceOrderItemRepository,
+  MarketplaceOrderFeeRepository,
+  MarketplaceOrderEventRepository,
+  CompanyRepository,
+  UserCompanyRepository
 } = require("../repositories");
 const MarketplaceStockSyncService = require("../services/MarketplaceStockSyncService");
 
@@ -158,7 +164,69 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
     return;
   }
 
-  // âœ… EXTRAER DATOS FINANCIEROS DE LA ORDEN (una vez para todos los items)
+  // ✅ RESOLVER COMPAÑÍA DESDE EL PRIMER LISTING DE LA ORDEN
+  // Las credenciales son globales, el company_id viene del producto/link
+  const firstListingId = getListingId(items[0]);
+  const companyInfo = await resolveCompanyFromListing(ML_MARKETPLACE_KEY, firstListingId);
+  const companyId = companyInfo?.company_id || null;
+  const branchId = companyInfo?.branch_id || null;
+
+  // ✅ GUARDAR ORDEN EN marketplace_orders
+  const orderData = {
+    marketplace: ML_MARKETPLACE_KEY,
+    marketplace_order_id: String(order.id),
+    marketplace_credential_id: credential.id,
+    company_id: companyId,
+    branch_id: branchId,
+    order_status: mapMercadoLibreOrderStatus(order.order_status),
+    payment_status: mapMercadoLibrePaymentStatus(order.payment_status),
+    subtotal: order.total_amount || 0,
+    shipping_total: order?.shipping?.shipping_cost || 0,
+    discount_total: order?.shipping?.shipping_discount || 0,
+    tax_total: 0, // ML no devuelve impuestos separados
+    total_amount: order.total_amount || 0,
+    currency: order.currency_id || 'CLP',
+    buyer_id: order?.buyer?.id?.toString() || null,
+    buyer_name: order?.buyer?.nickname || null,
+    buyer_email: null, // ML no expone email completo
+    payment_method: order?.payments?.[0]?.payment_type || null,
+    payment_date: order?.payments?.[0]?.date_created || null,
+    shipping_address: buildShippingAddress(order.shipping),
+    shipping_city: order?.shipping?.receiver_address?.city_name || null,
+    shipping_region: order?.shipping?.receiver_address?.state_name || null,
+    raw_payload: order
+  };
+
+  let savedOrder;
+  let orderCreated = false;
+  
+  try {
+    const result = await MarketplaceOrderRepository.upsert(orderData);
+    savedOrder = result.record;
+    orderCreated = result.created;
+  } catch (error) {
+    logger.error(`[ML Webhook] Error guardando orden ${orderId}: ${error.message}`);
+    await MarketplaceWebhookEventRepository.updateById(event.id, {
+      status: "error",
+      error_message: `order_save_failed: ${error.message}`,
+      processed_at: new Date()
+    });
+    return;
+  }
+
+  // ✅ GUARDAR EVENTO DE CREACIÓN DE ORDEN
+  if (orderCreated) {
+    await MarketplaceOrderEventRepository.createStatusChange(
+      savedOrder.id,
+      'created',
+      null,
+      orderData.order_status,
+      order,
+      { company_id: companyId }
+    );
+  }
+
+  // ✅ DATOS DE SHIPPING PARA TODA LA ORDEN
   const shippingData = {
     shippingCost: order?.shipping?.shipping_cost || 0,
     logisticType: order?.shipping?.logistic_type || null,
@@ -166,38 +234,56 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
     shippingOption: order?.shipping?.shipping_option || null
   };
 
-  const orderFinancialData = {
-    orderId: order.id,
-    totalAmount: order.total_amount || 0,
-    paidAmount: order.paid_amount || 0,
-    shippingCost: shippingData.shippingCost,
-    logisticType: shippingData.logisticType,
-    shippingDiscount: shippingData.shippingDiscount,
-    buyerId: order?.buyer?.id || null,
-    sellerId: order?.seller?.id || null
-  };
-
   const errors = [];
+  const savedItems = [];
 
+  // ✅ PROCESAR CADA ITEM
   for (const orderItem of items) {
     try {
-      await processOrderItem(orderItem, {
+      const itemResult = await processOrderItem(orderItem, {
         orderId,
         marketplaceId: credential.marketplace_id,
-        companyId: null,
-        branchId: null,
-        // âœ… NUEVO: Pasar datos financieros de la orden completa
-        ...orderFinancialData,
-        // âœ… Datos especÃ­ficos del shipping para este item
+        companyId,
+        branchId,
+        orderIdLocal: savedOrder.id,
+        // Datos financieros de la orden completa
+        totalAmount: order.total_amount || 0,
         shippingCost: shippingData.shippingCost,
         logisticType: shippingData.logisticType,
         shippingDiscount: shippingData.shippingDiscount,
-        // âœ… Total de items para prorrateo
         totalItems: items.length
       });
+      
+      if (itemResult) {
+        savedItems.push(itemResult);
+      }
     } catch (error) {
       errors.push(error.message);
       logger.error(`[ML Webhook] Item error order=${orderId}: ${error.message}`);
+    }
+  }
+
+  // ✅ GUARDAR FEES TOTALES DE LA ORDEN
+  if (savedOrder && items.length > 0) {
+    try {
+      const totalFees = items.reduce((sum, item) => {
+        return sum + (Number(item.sale_fee) || 0);
+      }, 0);
+
+      if (totalFees > 0) {
+        await MarketplaceOrderFeeRepository.create({
+          order_id: savedOrder.id,
+          company_id: companyId,
+          fee_type: 'commission',
+          amount: totalFees,
+          percentage: calculateAverageCommissionPercentage(totalFees, order.total_amount),
+          status: 'pending',
+          description: `Comisión Mercado Libre - Orden ${orderId}`,
+          raw_data: { items: items.map(i => ({ id: i.id, sale_fee: i.sale_fee })) }
+        });
+      }
+    } catch (error) {
+      logger.error(`[ML Webhook] Error guardando fees de orden ${orderId}: ${error.message}`);
     }
   }
 
@@ -347,7 +433,17 @@ async function processFalabellaEvent({ event, payload, orderId }) {
     return;
   }
 
+  // ✅ RESOLVER COMPAÑÍA DESDE EL PRIMER SKU DE LA ORDEN
+  // Las credenciales son globales, el company_id viene del producto/link
+  const firstSku = items[0]?.sku;
+  const companyInfo = await resolveCompanyFromListing(FB_MARKETPLACE_KEY, firstSku);
+  const companyId = companyInfo?.company_id || null;
+  const branchId = companyInfo?.branch_id || null;
+
+  // ✅ PARSEAR DATOS DE LA ORDEN COMPLETA
+  const orderInfo = parseFalabellaOrderInfo(orderData);
   const items = parseFalabellaOrderItems(orderData);
+  
   if (items.length === 0) {
     await MarketplaceWebhookEventRepository.updateById(event.id, {
       status: "processed_with_errors",
@@ -357,19 +453,97 @@ async function processFalabellaEvent({ event, payload, orderId }) {
     return;
   }
 
-  const errors = [];
+  // ✅ GUARDAR ORDEN EN marketplace_orders
+  const orderDataToSave = {
+    marketplace: FB_MARKETPLACE_KEY,
+    marketplace_order_id: String(orderId),
+    marketplace_credential_id: credential.id,
+    company_id: companyId,
+    branch_id: branchId,
+    order_status: mapFalabellaOrderStatus(orderInfo.status),
+    payment_status: 'pending', // Falabella no expone estado de pago directamente
+    subtotal: orderInfo.subtotal || 0,
+    shipping_total: orderInfo.shippingTotal || 0,
+    discount_total: orderInfo.discountTotal || 0,
+    tax_total: orderInfo.taxTotal || 0,
+    total_amount: orderInfo.totalAmount || 0,
+    currency: 'CLP',
+    buyer_name: orderInfo.buyerName || null,
+    buyer_email: null,
+    shipping_address: orderInfo.shippingAddress || null,
+    shipping_city: orderInfo.shippingCity || null,
+    shipping_region: orderInfo.shippingRegion || null,
+    raw_payload: orderData
+  };
 
+  let savedOrder;
+  let orderCreated = false;
+  
+  try {
+    const result = await MarketplaceOrderRepository.upsert(orderDataToSave);
+    savedOrder = result.record;
+    orderCreated = result.created;
+  } catch (error) {
+    logger.error(`[FB Webhook] Error guardando orden ${orderId}: ${error.message}`);
+    await MarketplaceWebhookEventRepository.updateById(event.id, {
+      status: "error",
+      error_message: `order_save_failed: ${error.message}`,
+      processed_at: new Date()
+    });
+    return;
+  }
+
+  // ✅ GUARDAR EVENTO DE CREACIÓN DE ORDEN
+  if (orderCreated) {
+    await MarketplaceOrderEventRepository.createStatusChange(
+      savedOrder.id,
+      'created',
+      null,
+      orderDataToSave.order_status,
+      orderData,
+      { company_id: companyId }
+    );
+  }
+
+  const errors = [];
+  const savedItems = [];
+
+  // ✅ PROCESAR CADA ITEM
   for (const item of items) {
     try {
-      await processFalabellaOrderItem(item, {
+      const itemResult = await processFalabellaOrderItem(item, {
         orderId,
         marketplaceId: credential.marketplace_id,
-        companyId: null,
-        branchId: null
+        companyId,
+        branchId,
+        orderIdLocal: savedOrder.id,
+        itemData: item // Pasar datos completos del item
       });
+      
+      if (itemResult) {
+        savedItems.push(itemResult);
+      }
     } catch (error) {
       errors.push(error.message);
       logger.error(`[FB Webhook] Item error order=${orderId}: ${error.message}`);
+    }
+  }
+
+  // ✅ GUARDAR FEES TOTALES DE LA ORDEN (comisiones)
+  if (savedOrder && orderInfo.commission > 0) {
+    try {
+      await MarketplaceOrderFeeRepository.create({
+        order_id: savedOrder.id,
+        company_id: companyId,
+        fee_type: 'commission',
+        amount: orderInfo.commission,
+        percentage: orderInfo.totalAmount > 0 ? (orderInfo.commission / orderInfo.totalAmount) * 100 : 0,
+        status: 'pending',
+        description: `Comisión Falabella - Orden ${orderId}`,
+        raw_data: { commission: orderInfo.commission }
+      });
+    } catch (error) {
+      logger.error(`[FB Webhook] Error guardando fees de orden ${orderId}: ${error.message}`);
     }
   }
 
@@ -549,8 +723,89 @@ function parseFalabellaOrderItems(orderData) {
       item?.Sku ||
       item?.sku ||
       null,
-    quantity: parseInt(item?.Quantity || item?.quantity || item?.Qty, 10) || 0
+    quantity: parseInt(item?.Quantity || item?.quantity || item?.Qty, 10) || 0,
+    // ✅ NUEVO: Datos financieros del item
+    unitPrice: parseFloat(item?.Price || item?.price || item?.UnitPrice || 0) || 0,
+    totalPrice: parseFloat(item?.TotalPrice || item?.total_price || item?.Amount || 0) || 0,
+    discount: parseFloat(item?.Discount || item?.discount || 0) || 0,
+    commission: parseFloat(item?.Commission || item?.commission || 0) || 0,
+    shippingFee: parseFloat(item?.ShippingFee || item?.shipping_fee || item?.ShippingCost || 0) || 0,
+    tax: parseFloat(item?.Tax || item?.tax || item?.TaxAmount || 0) || 0
   }));
+}
+
+/**
+ * Parsea información general de una orden de Falabella
+ */
+function parseFalabellaOrderInfo(orderData) {
+  const order =
+    orderData?.SuccessResponse?.Body?.Order ||
+    orderData?.SuccessResponse?.Body?.Orders?.Order ||
+    null;
+
+  if (!order) return {};
+
+  // Calcular totales sumando los items
+  const rawItems =
+    order?.OrderItems?.OrderItem ||
+    orderData?.SuccessResponse?.Body?.OrderItems?.OrderItem ||
+    [];
+  
+  const items = Array.isArray(rawItems) ? rawItems : rawItems ? [rawItems] : [];
+  
+  const subtotal = items.reduce((sum, item) => {
+    const price = parseFloat(item?.Price || item?.UnitPrice || 0) || 0;
+    const qty = parseInt(item?.Quantity || item?.Qty || 1, 10) || 1;
+    return sum + (price * qty);
+  }, 0);
+
+  const shippingTotal = items.reduce((sum, item) => {
+    return sum + (parseFloat(item?.ShippingFee || item?.ShippingCost || 0) || 0);
+  }, 0);
+
+  const discountTotal = items.reduce((sum, item) => {
+    return sum + (parseFloat(item?.Discount || 0) || 0);
+  }, 0);
+
+  const commissionTotal = items.reduce((sum, item) => {
+    return sum + (parseFloat(item?.Commission || 0) || 0);
+  }, 0);
+
+  const taxTotal = items.reduce((sum, item) => {
+    return sum + (parseFloat(item?.Tax || item?.TaxAmount || 0) || 0);
+  }, 0);
+
+  const totalAmount = subtotal + shippingTotal - discountTotal + taxTotal;
+
+  // Información del comprador
+  const customer = order?.Customer || order?.Buyer || {};
+  const buyerName = [
+    customer?.FirstName,
+    customer?.LastName
+  ].filter(Boolean).join(' ') || null;
+
+  // Dirección de envío
+  const shippingAddress = order?.ShippingAddress || {};
+  const addressParts = [];
+  if (shippingAddress?.Street) addressParts.push(shippingAddress.Street);
+  if (shippingAddress?.City) addressParts.push(shippingAddress.City);
+  if (shippingAddress?.State || shippingAddress?.Region) addressParts.push(shippingAddress.State || shippingAddress.Region);
+  if (shippingAddress?.ZipCode) addressParts.push(shippingAddress.ZipCode);
+
+  return {
+    status: order?.OrderStatus || order?.Status || 'pending',
+    subtotal,
+    shippingTotal,
+    discountTotal,
+    taxTotal,
+    commission: commissionTotal,
+    totalAmount,
+    buyerName,
+    shippingAddress: addressParts.join(', ') || null,
+    shippingCity: shippingAddress?.City || null,
+    shippingRegion: shippingAddress?.State || shippingAddress?.Region || null,
+    createdAt: order?.CreatedDate || order?.CreatedAt || null
+  };
 }
 
 async function processFalabellaOrderItem(item, ctx) {
@@ -563,6 +818,14 @@ async function processFalabellaOrderItem(item, ctx) {
   if (!sku) {
     throw new Error("sku_not_found");
   }
+
+  // ✅ DATOS FINANCIEROS DEL ITEM
+  const unitPrice = parseFloat(item?.unitPrice || 0);
+  const totalPrice = parseFloat(item?.totalPrice || (unitPrice * quantity)) || (unitPrice * quantity);
+  const commission = parseFloat(item?.commission || 0);
+  const shippingFee = parseFloat(item?.shippingFee || 0);
+  const discount = parseFloat(item?.discount || 0);
+  const tax = parseFloat(item?.tax || 0);
 
   let link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
     ctx.marketplaceId,
@@ -588,7 +851,7 @@ async function processFalabellaOrderItem(item, ctx) {
     marketplaceId: ctx.marketplaceId,
     externalId: sku,
     productId,
-    companyId: link?.company_id || null,
+    companyId: link?.company_id || ctx.companyId,
     branchId: link?.branch_id || null
   });
 
@@ -607,6 +870,15 @@ async function processFalabellaOrderItem(item, ctx) {
     throw new Error(`insufficient_stock_total:${allocation.totalAvailable}`);
   }
 
+  // ✅ CALCULAR COSTO Y GANANCIA
+  const totalCost = allocation.plan.reduce((sum, entry) => {
+    return sum + (entry.deduct || 0) * (entry.costPrice || 0);
+  }, 0);
+
+  const costPrice = quantity > 0 ? totalCost / quantity : 0;
+  const grossProfit = totalPrice - commission - shippingFee - totalCost;
+  const marginPercentage = totalPrice > 0 ? (grossProfit / totalPrice) * 100 : 0;
+
   const exitResults = await applyStockExitByPlan({
     productId,
     variantId: variant.id,
@@ -615,9 +887,69 @@ async function processFalabellaOrderItem(item, ctx) {
     listingId: sku,
     marketplaceKey: FB_MARKETPLACE_KEY,
     referencePrefix: "fb",
-    reason: "falabella_sale"
+    reason: "falabella_sale",
+    financialData: {
+      unit_price: unitPrice,
+      total_price: totalPrice,
+      sale_fee: commission,
+      shipping_cost: shippingFee,
+      cost_price: costPrice,
+      total_cost: totalCost,
+      gross_profit: grossProfit,
+      margin_percentage: Math.round(marginPercentage * 100) / 100,
+      discount: discount,
+      tax: tax,
+      calculated_at: new Date().toISOString()
+    }
   });
 
+  // ✅ GUARDAR ITEM EN marketplace_order_items
+  let savedItem = null;
+  if (ctx.orderIdLocal && exitResults.length > 0) {
+    try {
+      const inventoryMovementId = exitResults[0]?.inventoryMovementId || null;
+      const itemCompanyId = link?.company_id || ctx.companyId;
+      const itemBranchId = link?.branch_id || ctx.branchId;
+
+      savedItem = await MarketplaceOrderItemRepository.create({
+        order_id: ctx.orderIdLocal,
+        marketplace_item_id: null, // Falabella no devuelve item_id
+        listing_id: sku,
+        sku: sku,
+        product_id: productId,
+        variant_id: variant.id,
+        company_id: itemCompanyId,
+        branch_id: itemBranchId,
+        quantity: quantity,
+        unit_price: unitPrice,
+        total_price: totalPrice,
+        discount_amount: discount,
+        tax_amount: tax,
+        cost_price: costPrice,
+        total_cost: totalCost,
+        inventory_movement_id: inventoryMovementId
+      });
+
+      // ✅ GUARDAR FEE DEL ITEM (commission)
+      if (commission > 0) {
+        await MarketplaceOrderFeeRepository.create({
+          order_id: ctx.orderIdLocal,
+          order_item_id: savedItem.id,
+          company_id: itemCompanyId,
+          fee_type: 'commission',
+          amount: commission,
+          percentage: unitPrice > 0 ? (commission / unitPrice) * 100 : 0,
+          status: 'pending',
+          description: `Comisión Falabella - Item ${sku}`,
+          raw_data: { commission: commission }
+        });
+      }
+    } catch (error) {
+      logger.error(`[FB Webhook] Error guardando item ${sku}: ${error.message}`);
+    }
+  }
+
+  // ✅ ENCULAR SYNC DE STOCK
   for (const result of exitResults) {
     await queueStockSync({
       productId,
@@ -625,11 +957,13 @@ async function processFalabellaOrderItem(item, ctx) {
       warehouseId: result.warehouseId,
       stock: result.stockAfter,
       sourceMarketplaceId: ctx.marketplaceId,
-      companyId: link?.company_id || null,
-      branchId: link?.branch_id || null,
+      companyId: itemCompanyId,
+      branchId: itemBranchId,
       logPrefix: "FB Webhook"
     });
   }
+
+  return savedItem;
 }
 
 async function processOrderItem(orderItem, ctx) {
@@ -667,8 +1001,8 @@ async function processOrderItem(orderItem, ctx) {
     marketplaceId: ctx.marketplaceId,
     externalId: listingId,
     productId,
-    companyId: link.company_id,
-    branchId: link.branch_id
+    companyId: link.company_id || ctx.companyId,
+    branchId: link.branch_id || ctx.branchId
   });
 
   if (!warehouseIds || warehouseIds.length === 0) {
@@ -734,6 +1068,53 @@ async function processOrderItem(orderItem, ctx) {
     }
   });
 
+  // ✅ GUARDAR ITEM EN marketplace_order_items
+  let savedItem = null;
+  if (ctx.orderIdLocal && exitResults.length > 0) {
+    try {
+      const inventoryMovementId = exitResults[0]?.inventoryMovementId || null;
+      const itemCompanyId = link.company_id || ctx.companyId;
+      const itemBranchId = link.branch_id || ctx.branchId;
+      
+      savedItem = await MarketplaceOrderItemRepository.create({
+        order_id: ctx.orderIdLocal,
+        marketplace_item_id: orderItem.id?.toString() || null,
+        listing_id: listingId,
+        sku: sku,
+        product_id: productId,
+        variant_id: variant.id,
+        company_id: itemCompanyId,
+        branch_id: itemBranchId,
+        quantity: quantity,
+        unit_price: unitPrice,
+        total_price: totalPrice,
+        discount_amount: 0,
+        tax_amount: 0,
+        cost_price: costPrice,
+        total_cost: totalCost,
+        inventory_movement_id: inventoryMovementId
+      });
+
+      // ✅ GUARDAR FEE DEL ITEM (commission)
+      if (saleFee > 0) {
+        await MarketplaceOrderFeeRepository.create({
+          order_id: ctx.orderIdLocal,
+          order_item_id: savedItem.id,
+          company_id: itemCompanyId,
+          fee_type: 'commission',
+          amount: saleFee,
+          percentage: unitPrice > 0 ? (saleFee / unitPrice) * 100 : 0,
+          status: 'pending',
+          description: `Comisión ML - Item ${listingId}`,
+          raw_data: { sale_fee: saleFee }
+        });
+      }
+    } catch (error) {
+      logger.error(`[ML Webhook] Error guardando item ${listingId}: ${error.message}`);
+    }
+  }
+
+  // ✅ ENCULAR SYNC DE STOCK
   for (const result of exitResults) {
     await queueStockSync({
       productId,
@@ -741,11 +1122,13 @@ async function processOrderItem(orderItem, ctx) {
       warehouseId: result.warehouseId,
       stock: result.stockAfter,
       sourceMarketplaceId: ctx.marketplaceId,
-      companyId: link.company_id,
-      branchId: link.branch_id,
+      companyId: itemCompanyId,
+      branchId: itemBranchId,
       logPrefix: "ML Webhook"
     });
   }
+
+  return savedItem;
 }
 
 async function resolveVariant(productId, sku) {
@@ -921,6 +1304,7 @@ async function applyStockExitByPlan({
   financialData
 }) {
   const results = [];
+  let firstInventoryMovementId = null;
 
   for (const entry of allocation.plan) {
     const qty = Number(entry.deduct || 0);
@@ -939,7 +1323,15 @@ async function applyStockExitByPlan({
       financial_data: financialData
     });
 
-    results.push({ warehouseId: entry.warehouseId, stockAfter: exitResult?.stockAfter });
+    if (!firstInventoryMovementId && exitResult?.inventoryMovementId) {
+      firstInventoryMovementId = exitResult.inventoryMovementId;
+    }
+
+    results.push({ 
+      warehouseId: entry.warehouseId, 
+      stockAfter: exitResult?.stockAfter,
+      inventoryMovementId: exitResult?.inventoryMovementId || null
+    });
   }
 
   return results;
@@ -955,7 +1347,7 @@ async function applyStockExit({
   marketplaceKey,
   referencePrefix,
   reason,
-  financial_data = null  // âœ… NUEVO: Datos financieros opcionales
+  financial_data = null  // ✅ NUEVO: Datos financieros opcionales
 }) {
   const finalMarketplaceKey = marketplaceKey || "marketplace";
   const finalReferencePrefix = referencePrefix || finalMarketplaceKey;
@@ -1006,7 +1398,7 @@ async function applyStockExit({
       branchId = warehouse?.branch_id || null;
     }
 
-    // âœ… PREPARAR METADATOS CON INFORMACIÃ“N FINANCIERA
+    // ✅ PREPARAR METADATOS CON INFORMACIÓN FINANCIERA
     const meta = {
       order_id: orderId,
       listing_id: listingId,
@@ -1019,7 +1411,7 @@ async function applyStockExit({
       meta.calculated_at = financial_data.calculated_at || new Date().toISOString();
     }
 
-    await InventoryMovementRepository.create({
+    const movement = await InventoryMovementRepository.create({
       warehouse_id: warehouseId,
       product_id: productId,
       variant_id: variantId,
@@ -1036,11 +1428,14 @@ async function applyStockExit({
       reason: reason || `${finalMarketplaceKey}_sale`,
       notes: `order:${orderId}`,
       user_id: null,
-      meta: meta  // âœ… GUARDAR METADATOS CON DATOS FINANCIEROS
+      meta: meta  // ✅ GUARDAR METADATOS CON DATOS FINANCIEROS
     }, { transaction });
 
     await transaction.commit();
-    return { stockAfter };
+    return { 
+      stockAfter,
+      inventoryMovementId: movement?.id || null
+    };
   } catch (error) {
     await transaction.rollback();
     throw error;
@@ -1256,6 +1651,160 @@ function buildFalabellaSignedUrl(params, apiKey) {
 
   return `https://sellercenter-api.falabella.com?${urlQueryString}`;
 }
+
+/**
+ * Mapea el estado de orden de Falabella a estado interno
+ */
+function mapFalabellaOrderStatus(fbStatus) {
+  if (!fbStatus) return 'pending';
+  
+  const statusMap = {
+    'confirmed': 'paid',
+    'confirmed by seller': 'paid',
+    'shipped': 'shipped',
+    'delivered': 'delivered',
+    'cancelled': 'cancelled',
+    'returned': 'returned',
+    'pending': 'pending',
+    'on order created': 'pending',
+    'order created': 'pending'
+  };
+  
+  return statusMap[fbStatus.toLowerCase()] || 'pending';
+}
+
+// ==========================================
+// FUNCIONES AUXILIARES PARA MARKETPLACE ORDERS
+// ==========================================
+
+/**
+ * Resuelve compañía y usuario desde un listing/producto
+ * Usa ProductMarketplaceLink que sí tiene company_id
+ * @param {String} marketplace - Nombre del marketplace
+ * @param {String} listingId - ID del listing en el marketplace
+ * @returns {Promise<Object|null>} { company_id, user_id }
+ */
+async function resolveCompanyFromListing(marketplace, listingId) {
+  try {
+    if (!marketplace || !listingId) return null;
+    
+    // Buscar el link producto-marketplace por listing_id
+    const link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
+      marketplace === ML_MARKETPLACE_KEY ? 'mercadolibre' : 'falabella',
+      listingId
+    );
+    
+    if (link && link.company_id) {
+      return {
+        company_id: link.company_id,
+        user_id: null, // El link no tiene user_id directo
+        branch_id: link.branch_id || null
+      };
+    }
+    
+    return null;
+  } catch (error) {
+    logger.error(`[resolveCompanyFromListing] Error: ${error.message}`);
+    return null;
+  }
+}
+
+/**
+ * Resuelve compañía desde un producto
+ * @param {Number} productId - ID del producto
+ * @returns {Promise<Object|null>} { company_id, user_id }
+ */
+async function resolveCompanyFromProduct(productId) {
+  try {
+    if (!productId) return null;
+    
+    const product = await ProductRepository.findById(productId);
+    if (product && product.company_id) {
+      return {
+        company_id: product.company_id,
+        user_id: null
+      };
+    }
+    
+    return null;
+  } catch (error) {
+    logger.error(`[resolveCompanyFromProduct] Error: ${error.message}`);
+    return null;
+  }
+}
+
+/**
+ * Mapea el estado de orden de Mercado Libre a estado interno
+ */
+function mapMercadoLibreOrderStatus(mlStatus) {
+  if (!mlStatus) return 'pending';
+  
+  const statusMap = {
+    'paid': 'paid',
+    'confirmed': 'paid',
+    'shipped': 'shipped',
+    'delivered': 'delivered',
+    'cancelled': 'cancelled',
+    'refunded': 'returned',
+    'pending': 'pending',
+    'processing': 'pending'
+  };
+  
+  return statusMap[mlStatus.toLowerCase()] || 'pending';
+}
+
+/**
+ * Mapea el estado de pago de Mercado Libre a estado interno
+ */
+function mapMercadoLibrePaymentStatus(mlStatus) {
+  if (!mlStatus) return 'pending';
+  
+  const statusMap = {
+    'paid': 'paid',
+    'pending': 'pending',
+    'authorized': 'authorized',
+    'in_process': 'processing',
+    'in_mediation': 'mediation',
+    'cancelled': 'cancelled',
+    'refunded': 'refunded',
+    'charged_back': 'charged_back'
+  };
+  
+  return statusMap[mlStatus.toLowerCase()] || 'pending';
+}
+
+/**
+ * Construye dirección de envío desde datos de Mercado Libre
+ */
+function buildShippingAddress(shipping) {
+  if (!shipping) return null;
+  
+  const address = shipping.receiver_address || {};
+  const parts = [];
+  
+  if (address.street_name) parts.push(`${address.street_name} ${address.street_number || ''}`);
+  if (address.city_name) parts.push(address.city_name);
+  if (address.state_name) parts.push(address.state_name);
+  if (address.country_name) parts.push(address.country_name);
+  if (address.zip_code) parts.push(address.zip_code);
+  
+  return parts.join(', ') || null;
+}
+
+/**
+ * Calcula el porcentaje promedio de comisión
+ */
+function calculateAverageCommissionPercentage(totalFees, totalAmount) {
+  if (!totalAmount || totalAmount <= 0) return 0;
+  return parseFloat(((totalFees / totalAmount) * 100).toFixed(2));
+}
+
+/**
+ * Actualiza applyStockExitByPlan para devolver el inventoryMovementId
+ */
+const originalApplyStockExitByPlan = global.applyStockExitByPlan;
+
+// ==========================================
 
 module.exports = MarketplaceWebhookController;
 MarketplaceWebhookController._processFalabellaEvent = processFalabellaEvent;

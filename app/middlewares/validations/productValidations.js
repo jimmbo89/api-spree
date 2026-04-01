@@ -35,6 +35,8 @@ const productBaseSchema = {
     .default([]),
   sync_meta: Joi.object().optional().default({}),
   state: Joi.number().integer().optional(),
+  purchase_price: Joi.number().precision(2).min(0).optional().allow(null),
+  sale_price: Joi.number().precision(2).min(0).optional().allow(null),
 };
 
 const storeProductSchema = Joi.object({
@@ -43,7 +45,7 @@ const storeProductSchema = Joi.object({
     Joi.object({
       id: Joi.number().integer().positive().required(),
       published: Joi.boolean().optional().default(false),
-      price: Joi.number().precision(2).min(0).required(), // precio por almacén/variante
+      price: Joi.number().precision(2).min(0).optional().allow(null), // precio por almacén/variante (puede ser null, usa fallback del producto)
       stock: Joi.number().integer().min(0).required()    // stock por almacén/variante
     })
   ).optional().default([])
@@ -61,8 +63,8 @@ const assignWarehouseSchema = Joi.object({
         Joi.object({
           active: Joi.boolean().optional().default(true),
           local_sku: Joi.string().max(100).optional().allow(null, ''),
-          price: Joi.number().precision(2).min(0).required(),
-          purchase_price: Joi.number().precision(2).min(0).optional().default(0),
+          price: Joi.number().precision(2).min(0).optional().allow(null),
+          purchase_price: Joi.number().precision(2).min(0).optional().allow(null),
           stock: Joi.number().integer().min(0).required()
         })
       ).required()

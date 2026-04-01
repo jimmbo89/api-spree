@@ -141,7 +141,7 @@ const WarehouseController = {
     logger.info(`${req.user?.name || 'Unknown'} - Crea nuevo almacén`);
     logger.info('Datos recibidos:');
     logger.info(JSON.stringify(req.body));
-    
+
     const { company_id, user_id: bodyUserId, branch_id, name, code } = req.body;
     let user_id = bodyUserId || req.user.id;
     req.body.user_id = user_id;
@@ -153,7 +153,7 @@ const WarehouseController = {
         return res.status(404).json({ success: false, message: "Compañía encontrada" });
       }
     }
-    
+
     if (user_id) {
       const user = await UserRepository.findById(user_id);
       if (!user) {
@@ -170,27 +170,33 @@ const WarehouseController = {
       }
     }
     const validation = await WarehouseRepository.checkUniqueName({
-        name: name,
-        company_id: company_id,
-        branch_id: branch_id,
-        code: code
+      name: name,
+      company_id: company_id,
+      branch_id: branch_id,
+      code: code
+    });
+    
+    if (validation.exists) {
+      const field = validation.field === 'name' ? 'nombre' : 'código';
+      return res.status(409).json({
+        success: false,
+        message: `Ya existe un almacén con ese ${field}.`,
+        code: "EXIT_WAREHOUSE"
       });
-      logger.info('JSON.stringify(validation)');
-      logger.info(JSON.stringify(validation.existing));
-      if (validation.existing) {
-          return res.status(409).json({
-                    success: false,
-                    message: 'Ya existe un almacén con ese nombre.',
-                    code: "EXIT_WAREHOUSE"
-                  });  
-      }
+    }
 
     try {
       const warehouse = await WarehouseRepository.create(req.body, req.file);
+      
+      // ✅ Devolver lista actualizada igual que el endpoint list
+      const companyId = company_id ? Number(company_id) : undefined;
+      const branchId = branch_id ? Number(branch_id) : undefined;
       const warehouses = await WarehouseRepository.findFiltered({
-        companyId: warehouse.company_id,
-        branchId: warehouse.branch_id,
+        companyId,
+        branchId,
+        include_products: true
       });
+      
       res.status(201).json({ message: "Almacén creado correctamente", warehouses });
     } catch (error) {
       logger.error('WarehouseController->store: ' + error.message);
@@ -235,14 +241,14 @@ const WarehouseController = {
     logger.info(`${req.user?.name || 'Unknown'} - edita un almacén ${req.body.id}`);
     logger.info('Datos recibidos:');
     logger.info(JSON.stringify(req.body));
-    
+
     const { id, company_id, user_id, branch_id, name, code } = req.body;
     const metadata = getRequestMetadata(req);
-    
+
     try {
       const warehouse = await WarehouseRepository.findById(id);
       if (!warehouse) return res.status(404).json({ success: false, message: 'Alamcén no encontrado' });
-      
+
       if (company_id) {
         const company = await CompanyRepository.findById(company_id);
         if (!company) {
@@ -250,7 +256,7 @@ const WarehouseController = {
           return res.status(404).json({ success: false, message: "Compañía encontrada" });
         }
       }
-      
+
       if (user_id) {
         const user = await UserRepository.findById(user_id);
         if (!user) {
@@ -267,26 +273,28 @@ const WarehouseController = {
         }
       }
 
-      if(name || code){
-            const validation = await WarehouseRepository.checkUniqueName({
+      // ✅ Validar unicidad de nombre y código
+      if (name !== undefined || code !== undefined) {
+        const validation = await WarehouseRepository.checkUniqueName({
           name: name,
           company_id: warehouse.company_id,
           branch_id: warehouse.branch_id,
           code: code
         }, id);
 
-        if (validation) {
-            return res.status(409).json({
-                      success: false,
-                      message: 'Ya existe un almacén con ese nombre.',
-                      code: 'EXIT_WAREHOUSE'
-                    });  
+        if (validation.exists) {
+          const field = validation.field === 'name' ? 'nombre' : 'código';
+          return res.status(409).json({
+            success: false,
+            message: `Ya existe un almacén con ese ${field}.`,
+            code: 'EXIT_WAREHOUSE'
+          });
         }
       }
 
       const originalData = { ...warehouse.get({ plain: true }) };
       const updated = await WarehouseRepository.update(warehouse, req.body, req.file);
-      
+
       // ✅ Detectar cambios y crear UN SOLO log
       const fieldChanges = detectChanges(originalData, updated.get({ plain: true }), WAREHOUSE_AUDIT_FIELDS);
 
@@ -314,10 +322,18 @@ const WarehouseController = {
       }
 
       await LogRepository.create(logEntry);
+      
+      // ✅ Devolver lista actualizada igual que el endpoint list
+      const finalCompanyId = company_id || updated.company_id;
+      const finalBranchId = branch_id || updated.branch_id;
+      const companyId = finalCompanyId ? Number(finalCompanyId) : undefined;
+      const branchId = finalBranchId ? Number(finalBranchId) : undefined;
       const warehouses = await WarehouseRepository.findFiltered({
-        companyId: updated.company_id,
-        branchId: updated.branch_id,
+        companyId,
+        branchId,
+        include_products: true
       });
+      
       res.status(200).json({ message: "Almacén actualizado correctamente", warehouses });
     } catch (error) {
       await LogRepository.create({

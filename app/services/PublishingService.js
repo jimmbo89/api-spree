@@ -80,13 +80,33 @@ class PublishingService {
 
     if (!adapter) {
       logger.error(`[PublishingService] Adapter no encontrado para marketplace ${marketplace.name}`);
-      return { success: false, error: 'adapter_not_found', product_id: productData.id };
+      // ✅ Crear task fallido incluso para adapter_not_found
+      const failedTask = await ProductPublishingTaskRepository.create({
+        product_id: productData.id,
+        marketplace_id: marketplace.marketplace_id,
+        credential_id: credentialId,
+        warehouse_id: warehouse.id,
+        user_id: userId,
+        date: new Date(),
+        status: 'failed',
+        payload: productData ? JSON.parse(JSON.stringify(productData)) : null,
+        error_message: 'Adapter no encontrado para este marketplace',
+        error_details: { error_code: 'adapter_not_found', marketplace: marketplace.name },
+        batch_id: batch_id || null,
+        attempt_count: 1
+      });
+      return { 
+        success: false, 
+        error: 'adapter_not_found', 
+        product_id: productData.id,
+        task_id: failedTask.id
+      };
     }
 
     try {
       // === 1. Preparar producto (el adapter ya usa credentialId internamente) ===
       const preparedProduct = await adapter.prepareProduct(productData);
-      
+
       //logger.info(`[PublishingService] Producto preparado para ${marketplace.name}`);
       //logger.info(`Preparado:\n ${JSON.stringify(preparedProduct, null, 2)}`);
 
@@ -104,7 +124,27 @@ class PublishingService {
 
       if (!transformed) {
         logger.error(`[PublishingService] Transformación fallida`);
-        return { success: false, error: 'productTransformFailed', product_id: productData.id };
+        // ✅ Crear task fallido para productTransformFailed
+        const failedTask = await ProductPublishingTaskRepository.create({
+          product_id: productData.id,
+          marketplace_id: marketplace.marketplace_id,
+          credential_id: credentialId,
+          warehouse_id: warehouse.id,
+          user_id: userId,
+          date: new Date(),
+          status: 'failed',
+          payload: productData ? JSON.parse(JSON.stringify(productData)) : null,
+          error_message: 'Transformación del producto fallida',
+          error_details: { error_code: 'productTransformFailed' },
+          batch_id: batch_id || null,
+          attempt_count: 1
+        });
+        return { 
+          success: false, 
+          error: 'productTransformFailed', 
+          product_id: productData.id,
+          task_id: failedTask.id
+        };
       }
 
       // ✅ Fallback para family_name/title
@@ -120,11 +160,27 @@ class PublishingService {
       const validation = adapter.validateProduct(transformed);
       if (!validation.valid) {
         logger.error(`[PublishingService] Validación fallida: ${JSON.stringify(validation.errors)}`);
+        // ✅ Crear task fallido para validation_failed
+        const failedTask = await ProductPublishingTaskRepository.create({
+          product_id: productData.id,
+          marketplace_id: marketplace.marketplace_id,
+          credential_id: credentialId,
+          warehouse_id: warehouse.id,
+          user_id: userId,
+          date: new Date(),
+          status: 'failed',
+          payload: transformed,
+          error_message: 'Validación fallida',
+          error_details: { error_code: 'validation_failed', errors: validation.errors },
+          batch_id: batch_id || null,
+          attempt_count: 1
+        });
         return {
           success: false,
           error: 'validation_failed',
           details: validation.errors,
-          product_id: productData.id
+          product_id: productData.id,
+          task_id: failedTask.id
         };
       }
 
@@ -132,13 +188,33 @@ class PublishingService {
       const result = await adapter.publish(transformed);
 
       if (result.auth_required) {
+        // ✅ Crear task en estado pending para auth_required (esperando re-autorización)
+        const pendingTask = await ProductPublishingTaskRepository.create({
+          product_id: productData.id,
+          marketplace_id: marketplace.marketplace_id,
+          credential_id: credentialId,
+          warehouse_id: warehouse.id,
+          user_id: userId,
+          date: new Date(),
+          status: 'pending',
+          payload: transformed,
+          error_message: 'Autenticación requerida',
+          error_details: { 
+            error_code: 'auth_required', 
+            auth_url: result.auth_url,
+            message: result.message || 'Autenticación requerida'
+          },
+          batch_id: batch_id || null,
+          attempt_count: 1
+        });
         return {
           success: false,
           auth_required: true,
           auth_url: result.auth_url,
           message: result.message || 'Autenticación requerida',
           product_id: productData.id,
-          credential_id: credentialId  // ← NUEVO
+          credential_id: credentialId,
+          task_id: pendingTask.id
         };
       }
 
@@ -250,22 +326,43 @@ class PublishingService {
 
     } catch (error) {
       logger.error(`[PublishingService] ❌ Error al publicar producto ${productData.id}:`, error);
-      
+
+      // ✅ Crear task fallido para errores excepcionales
+      const failedTask = await ProductPublishingTaskRepository.create({
+        product_id: productData.id,
+        marketplace_id: marketplace.marketplace_id,
+        credential_id: credentialId,
+        warehouse_id: warehouse.id,
+        user_id: userId,
+        date: new Date(),
+        status: 'failed',
+        payload: productData ? JSON.parse(JSON.stringify(productData)) : null,
+        error_message: error.message || 'Error interno al publicar',
+        error_details: { 
+          error_code: 'exception',
+          stack: error.stack 
+        },
+        batch_id: batch_id || null,
+        attempt_count: 1
+      });
+
       if (error.message && (error.message.includes('auth') || error.message.includes('credencial'))) {
         return {
           success: false,
           auth_required: true,
           error: error.message,
           product_id: productData.id,
-          credential_id: credentialId  // ← NUEVO
+          credential_id: credentialId,
+          task_id: failedTask.id
         };
       }
-      
+
       return {
         success: false,
         error: error.message || 'internal_error',
         product_id: productData.id,
-        credential_id: credentialId  // ← NUEVO
+        credential_id: credentialId,
+        task_id: failedTask.id
       };
     }
   }

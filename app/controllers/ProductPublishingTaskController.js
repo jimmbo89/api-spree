@@ -28,7 +28,7 @@ const PublishingAdapterFactory = require('../services/adapters/PublishingAdapter
 
 const ProductPublishingTaskController = {
   // 1. Registrar publicación (simula envío a API)
- async warehouseMarketplaces(req, res) {
+async warehouseMarketplaces(req, res) {
   logger.info(`${req.user?.name || 'Unknown'} - Lista ruta combinada de almacenes y marketplaces`);
 
   const { company_id, user_id: bodyUserId, status } = req.body;
@@ -109,6 +109,146 @@ const ProductPublishingTaskController = {
       success: false,  
       message: 'Error interno del servidor', 
       details: error.message 
+    });
+  }
+},
+
+// Nuevo endpoint: combina marketplaces-pools + productos según product_id
+async warehouseMarketplacesWithProduct(req, res) {
+  logger.info(`${req.user?.name || 'Unknown'} - Lista ruta combinada de almacenes, marketplaces y productos por product_id`);
+
+  const { company_id, user_id: bodyUserId, product_id } = req.body;
+  let user_id = bodyUserId || getUserId;
+
+  const userId = user_id ? Number(user_id) : undefined;
+
+  if (company_id) {
+    const company = await CompanyRepository.findById(company_id);
+    if (!company) {
+      logger.info(`WarehouseController->list: Compañía no encontrada con ID ${company_id}`);
+      return res.status(400).json({ success: false, message: "companyNotFound" });
+    }
+  }
+
+  try {
+    let pools = await PoolRepository.findFiltered({
+      companyId: company_id,
+      userId: user_id,
+      isActive: true
+    });
+
+    const credentials = await MarketplaceCredentialRepository.findByUserDecifrado(user_id);
+    const refreshedCredentials = await ProductPublishingTaskController.refreshExpiredTokens(credentials, userId);
+
+    const marketplaces = refreshedCredentials.map(credential => {
+      const mp = credential.marketplace;
+
+      if (typeof mp.domain === 'string') {
+        mp.domain = mp.domain.trim();
+      }
+
+      return {
+        id: credential.id,
+        name: credential.name || `${mp.name} (${credential.seller_email || 'Sin nombre'})`,
+        description: mp.description || 'Integración con marketplace',
+        marketplace_id: mp.id,
+        marketplace_name: mp.name,
+        type: mp.type,
+        domain: mp.domain,
+        config: mp.config,
+        active: mp.active,
+        client_id: mp.client_id,
+        client_secret: mp.client_secret,
+        redirect_uri: mp.redirect_uri,
+        scopes: mp.scopes,
+        createdAt: mp.createdAt,
+        updatedAt: mp.updatedAt,
+        credential_id: credential.id,
+        access_token: credential.access_token ? 'Token existente' : null,
+        seller_id: credential.seller_id,
+        seller_email: credential.seller_email,
+        api_key: credential.api_key,
+        expires_at: credential.expires_at,
+        is_expired: credential.expires_at ? new Date(credential.expires_at) < new Date() : false,
+        country: credential.country,
+        fieldMappings: credential.fieldMappings
+      };
+    });
+
+    const categories = await ProductCategoryRepository.findActive();
+
+    // Determinar pool con mayor stock del product_id
+    let selectedPoolId = null;
+    let selectedWarehouseIds = [];
+
+    if (Array.isArray(pools) && pools.length > 0) {
+      const allWarehouseIds = [
+        ...new Set(
+          pools.flatMap(pool => (pool.warehouses || []).map(w => w.warehouse_id).filter(Boolean))
+        )
+      ];
+
+      const stockByWarehouse = await WarehouseProductRepository.getProductStockByWarehouseIds({
+        productId: product_id,
+        warehouseIds: allWarehouseIds
+      });
+
+      let maxStock = -1;
+      for (const pool of pools) {
+        let poolStock = 0;
+        if (Array.isArray(pool.warehouses)) {
+          for (const w of pool.warehouses) {
+            poolStock += stockByWarehouse[w.warehouse_id] || 0;
+          }
+        }
+
+        if (poolStock > maxStock) {
+          maxStock = poolStock;
+          selectedPoolId = pool.id;
+        }
+      }
+
+      if (selectedPoolId == null && pools.length > 0) {
+        selectedPoolId = pools[0].id;
+      }
+
+      pools = pools.map(pool => ({
+        ...pool,
+        is_selected: pool.id === selectedPoolId
+      }));
+
+      const selectedPool = pools.find(p => p.id === selectedPoolId);
+      selectedWarehouseIds = (selectedPool?.warehouses || [])
+        .map(w => w.warehouse_id)
+        .filter(Boolean);
+    }
+
+    let products = [];
+    if (selectedWarehouseIds.length > 0) {
+      products = await WarehouseProductRepository.findProductsByWarehouseIds({
+        companyId: company_id,
+        warehouseIds: selectedWarehouseIds
+      });
+
+      products = products.map(product => ({
+        ...product,
+        is_selected: product.id === Number(product_id)
+      }));
+    }
+
+    res.status(200).json({
+      success: true,
+      pools,
+      marketplaces,
+      categories,
+      products
+    });
+  } catch (error) {
+    logger.error('ProductCategoryController->warehouseMarketplacesWithProduct: ' + error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      details: error.message
     });
   }
 },
@@ -213,7 +353,7 @@ async refreshSingleCredential(credential, marketplace, userId) {
     }
     
     logger.info(`[refreshSingleCredential] 🔑 Token expirado/ausente para credential ${credential.id}. Renovando...`);
-    
+
     // ✅ Crear adapter y renovar
     const adapter = PublishingAdapterFactory.getAdapter(
       marketplace,
@@ -232,7 +372,7 @@ async refreshSingleCredential(credential, marketplace, userId) {
     
     if (status.valid) {
       logger.info(`[refreshSingleCredential] ✅ Token renovado exitosamente para credential ${credential.id}`);
-      
+
       // ✅ Recargar credencial actualizada desde BD
       const updated = await MarketplaceCredentialRepository.findById(credential.id);
       if (updated) {
@@ -274,20 +414,23 @@ async store(req, res) {
   if (!Array.isArray(products) || products.length === 0) {
     return res.status(400).json({ success: false, msg: "products_required" });
   }
-  if (!Array.isArray(marketplaces) || marketplaces.length === 0) {
+  
+  // ✅ marketplaces es opcional solo cuando mode === 'draft'
+  const isDraft = mode === 'draft';
+  if (!isDraft && (!Array.isArray(marketplaces) || marketplaces.length === 0)) {
     return res.status(400).json({ success: false, msg: "marketplaces_required" });
   }
 
   // === NUEVO: Validar publication_step ===
   const step = publication_step !== undefined ? parseInt(publication_step) : 3; // Default: 3 (Resumen completado)
   if (!Number.isInteger(step) || step < 0 || step > 5) {
-    return res.status(400).json({ 
-      success: false, 
+    return res.status(400).json({
+      success: false,
       msg: "publication_step_invalid",
       details: "El paso debe ser un entero entre 0 y 5"
     });
   }
-  
+
   const batch_id = uuidv4();
 
   // === Normalizar pool seleccionado ===
@@ -321,20 +464,22 @@ async store(req, res) {
     };
   }
 
-  // Validar marketplaces (solo para verificar que existen)
-  const marketplaceIds = [...new Set(marketplaces.map(mp => Number(mp.marketplace_id || mp.id)))];
-  const validation = await MarketplaceRepository.findByIds(marketplaceIds);
-  if (!validation.valid) {
-    return res.status(400).json({ success: false, msg: "someMarketplacesNotFound" });
+  // ✅ Validar marketplaces solo si se enviaron (para verificar que existen)
+  let marketplaceIds = [];
+  if (Array.isArray(marketplaces) && marketplaces.length > 0) {
+    marketplaceIds = [...new Set(marketplaces.map(mp => Number(mp.marketplace_id || mp.id)))];
+    const validation = await MarketplaceRepository.findByIds(marketplaceIds);
+    if (!validation.valid) {
+      return res.status(400).json({ success: false, msg: "someMarketplacesNotFound" });
+    }
   }
 
   // ✅ Determinar job_type según el modo
-  const isDraft = mode === 'draft';
   const actualMode = isDraft ? 'quick' : mode;
   const job_type = isDraft ? 'draft' : 'publish';
 
   // ✅ Calcular total de productos × marketplaces para el job
-  const totalExpected = products.length * marketplaces.length;
+  const totalExpected = products.length * (marketplaces?.length || 0);
 
   // ✅ Crear job padre
   // 🔑 IMPORTANTE: Guardar TODOS los datos originales del frontend + campos calculados
@@ -371,18 +516,21 @@ async store(req, res) {
   }
 
   // ✅ Crear JobProducts para cada combinación producto × credential
-  for (const product of products) {
-    for (const mpConfig of marketplaces) {
-      await JobProductRepository.create({
-        job_id: jobId,  // ← ✅ jobId ya es un número
-        product_id: product.id,
-        marketplace_id: mpConfig.marketplace_id,
-        credential_id: mpConfig.id,
-        product_payload: product ? JSON.parse(JSON.stringify(product)) : null,
-        marketplace_payload: mpConfig ? JSON.parse(JSON.stringify(mpConfig)) : null,
-        status: 'pending',
-        attempt_count: 0
-      });
+  // Solo crear si hay marketplaces (en modo draft puede no haber)
+  if (Array.isArray(marketplaces) && marketplaces.length > 0) {
+    for (const product of products) {
+      for (const mpConfig of marketplaces) {
+        await JobProductRepository.create({
+          job_id: jobId,  // ← ✅ jobId ya es un número
+          product_id: product.id,
+          marketplace_id: mpConfig.marketplace_id,
+          credential_id: mpConfig.id,
+          product_payload: product ? JSON.parse(JSON.stringify(product)) : null,
+          marketplace_payload: mpConfig ? JSON.parse(JSON.stringify(mpConfig)) : null,
+          status: 'pending',
+          attempt_count: 0
+        });
+      }
     }
   }
 
@@ -390,7 +538,7 @@ async store(req, res) {
   await LogRepository.create({
     user_id: metadata.user_id,
     action: 'publishing_job.created',
-    description: `Job creado: ${jobId} - ${products.length} productos × ${marketplaces.length} marketplaces`,
+    description: `Job creado: ${jobId} - ${products.length} productos × ${marketplaces?.length || 0} marketplaces`,
     ip_address: metadata.ip_address,
     user_agent: metadata.user_agent,
     status: 'success',
@@ -445,7 +593,10 @@ async store(req, res) {
       if (!Array.isArray(products) || products.length === 0) {
         return res.status(400).json({ success: false, msg: "products_required" });
       }
-      if (!Array.isArray(marketplaces) || marketplaces.length === 0) {
+      
+      // ✅ marketplaces es opcional cuando action === 'update' (solo se actualiza el borrador)
+      // ✅ marketplaces es requerido cuando action === 'publish' (se va a publicar)
+      if (action === 'publish' && (!Array.isArray(marketplaces) || marketplaces.length === 0)) {
         return res.status(400).json({ success: false, msg: "marketplaces_required" });
       }
 
@@ -513,34 +664,87 @@ async store(req, res) {
         };
       }
 
-      // Validar marketplaces (existencia)
-      const marketplaceIds = [...new Set(marketplaces.map(mp => Number(mp.marketplace_id || mp.marketplace?.id || mp.marketplaceId || mp.id)))];
-      const validation = await MarketplaceRepository.findByIds(marketplaceIds);
-      if (!validation.valid) {
-        return res.status(400).json({ success: false, msg: "someMarketplacesNotFound" });
-      }
+      // ✅ Validar marketplaces solo si se enviaron (para action === 'publish' o si hay marketplaces)
+      let normalizedMarketplaces = [];
+      if (Array.isArray(marketplaces) && marketplaces.length > 0) {
+        const marketplaceIds = [...new Set(marketplaces.map(mp => Number(mp.marketplace_id || mp.marketplace?.id || mp.marketplaceId || mp.id)))];
+        const validation = await MarketplaceRepository.findByIds(marketplaceIds);
+        if (!validation.valid) {
+          return res.status(400).json({ success: false, msg: "someMarketplacesNotFound" });
+        }
 
-      const normalizedMarketplaces = marketplaces.map(mpConfig => {
-        const marketplaceId = Number(mpConfig.marketplace_id || mpConfig.marketplace?.id || mpConfig.marketplaceId || mpConfig.id);
-        const credentialId = Number(mpConfig.credential_id || mpConfig.id);
+        normalizedMarketplaces = marketplaces.map(mpConfig => {
+          const marketplaceId = Number(mpConfig.marketplace_id || mpConfig.marketplace?.id || mpConfig.marketplaceId || mpConfig.id);
+          const credentialId = Number(mpConfig.credential_id || mpConfig.id);
 
-        return {
-          original: mpConfig,
-          marketplace_id: marketplaceId,
-          credential_id: credentialId
-        };
-      });
-
-      const invalidMarketplace = normalizedMarketplaces.find(mp => !mp.marketplace_id || !mp.credential_id);
-      if (invalidMarketplace) {
-        return res.status(400).json({
-          success: false,
-          msg: "marketplace_or_credential_invalid"
+          return {
+            original: mpConfig,
+            marketplace_id: marketplaceId,
+            credential_id: credentialId
+          };
         });
+
+        const invalidMarketplace = normalizedMarketplaces.find(mp => !mp.marketplace_id || !mp.credential_id);
+        if (invalidMarketplace) {
+          return res.status(400).json({
+            success: false,
+            msg: "marketplace_or_credential_invalid"
+          });
+        }
+
+        // ✅ REFRESCO PREVENTIVO DE TOKENS (antes de publicar)
+        // Esto evita errores de autenticación durante la publicación en background
+        if (action === 'publish') {
+          const credentialIds = normalizedMarketplaces.map(mp => mp.credential_id);
+          const credentials = await MarketplaceCredentialRepository.findByIds(credentialIds);
+
+          if (credentials.length > 0) {
+            logger.info(`[publishDraft] 🔄 Refrescando ${credentials.length} credenciales antes de publicar...`);
+
+            // ✅ Refrescar tokens expirados (sin bloquear si falla)
+            const refreshedCredentials = await ProductPublishingTaskController.refreshExpiredTokens(
+              credentials,
+              metadata.user_id
+            );
+
+            // ✅ Verificar si alguna credencial requiere re-autorización
+            const authRequired = refreshedCredentials.filter(cred => {
+              const mpDomain = cred.marketplace?.domain || '';
+              // Solo verificar marketplaces basados en token (MercadoLibre)
+              if (!mpDomain.includes('mercadolibre')) {
+                return false; // API key no expira
+              }
+              const isExpired = cred.expires_at ? new Date(cred.expires_at) < new Date() : true;
+              const hasNoToken = !cred.access_token;
+              return isExpired || hasNoToken;
+            });
+
+            if (authRequired.length > 0) {
+              const authUrls = authRequired.map(cred => ({
+                credential_id: cred.id,
+                marketplace_name: cred.marketplace?.name || 'Marketplace',
+                marketplace_domain: cred.marketplace?.domain || '',
+                auth_url: cred.marketplace?.auth_url || null
+              }));
+
+              logger.warn(`[publishDraft] ⚠️ ${authUrls.length} credenciales requieren re-autorización`);
+
+              // ✅ Retornar información de re-autorización al frontend
+              return res.status(401).json({
+                success: false,
+                msg: "auth_required",
+                details: "Algunas credenciales requieren re-autorización antes de publicar",
+                credentials_requiring_auth: authUrls
+              });
+            }
+
+            logger.info(`[publishDraft] ✅ Tokens refrescados exitosamente`);
+          }
+        }
       }
 
       const job_type = action === 'publish' ? 'publish' : 'draft';
-      const totalExpected = products.length * normalizedMarketplaces.length;
+      const totalExpected = products.length * (normalizedMarketplaces.length || 0);
 
       // Actualizar job padre
       const configMode = mode || job.mode || actualMode;
@@ -592,31 +796,34 @@ async store(req, res) {
       const toCreate = [];
       const toUpdate = [];
 
-      for (const product of products) {
-        for (const mpConfig of normalizedMarketplaces) {
-          const marketplaceId = mpConfig.marketplace_id;
-          const credentialId = mpConfig.credential_id;
+      // ✅ Solo procesar JobProducts si hay marketplaces (action === 'update' sin marketplaces no crea JobProducts)
+      if (normalizedMarketplaces.length > 0) {
+        for (const product of products) {
+          for (const mpConfig of normalizedMarketplaces) {
+            const marketplaceId = mpConfig.marketplace_id;
+            const credentialId = mpConfig.credential_id;
 
-          const key = `${product.id}-${marketplaceId}-${credentialId}`;
-          newMap.set(key, true);
+            const key = `${product.id}-${marketplaceId}-${credentialId}`;
+            newMap.set(key, true);
 
-          const payload = {
-            product_payload: product ? JSON.parse(JSON.stringify(product)) : null,
-            marketplace_payload: mpConfig?.original ? JSON.parse(JSON.stringify(mpConfig.original)) : null
-          };
+            const payload = {
+              product_payload: product ? JSON.parse(JSON.stringify(product)) : null,
+              marketplace_payload: mpConfig?.original ? JSON.parse(JSON.stringify(mpConfig.original)) : null
+            };
 
-          if (existingMap.has(key)) {
-            toUpdate.push({ jobProduct: existingMap.get(key), payload });
-          } else {
-            toCreate.push({
-              job_id: job_id,
-              product_id: product.id,
-              marketplace_id: marketplaceId,
-              credential_id: credentialId,
-              ...payload,
-              status: 'pending',
-              attempt_count: 0
-            });
+            if (existingMap.has(key)) {
+              toUpdate.push({ jobProduct: existingMap.get(key), payload });
+            } else {
+              toCreate.push({
+                job_id: job_id,
+                product_id: product.id,
+                marketplace_id: marketplaceId,
+                credential_id: credentialId,
+                ...payload,
+                status: 'pending',
+                attempt_count: 0
+              });
+            }
           }
         }
       }
@@ -655,7 +862,7 @@ async store(req, res) {
       await LogRepository.create({
         user_id: metadata.user_id,
         action: action === 'publish' ? 'publishing_draft.publish' : 'publishing_draft.update',
-        description: `Draft ${job_id} ${action === 'publish' ? 'publicado' : 'actualizado'} (${products.length} productos × ${marketplaces.length} marketplaces)`,
+        description: `Draft ${job_id} ${action === 'publish' ? 'publicado' : 'actualizado'} (${products.length} productos × ${normalizedMarketplaces.length} marketplaces)`,
         ip_address: metadata.ip_address,
         user_agent: metadata.user_agent,
         status: 'success',
@@ -1628,3 +1835,6 @@ async updatePayload(req, res) {
 };
 
 module.exports = ProductPublishingTaskController;
+
+
+

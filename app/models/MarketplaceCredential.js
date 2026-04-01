@@ -7,11 +7,12 @@ module.exports = (sequelize, DataTypes) => {
     static associate(models) {
       MarketplaceCredential.belongsTo(models.Marketplace, { foreignKey: 'marketplace_id', as: 'marketplace' });
       MarketplaceCredential.belongsTo(models.User, { foreignKey: 'user_id', as: 'user', onDelete: 'CASCADE' });
+      //MarketplaceCredential.belongsTo(models.Company, { foreignKey: 'company_id', as: 'company' });
       MarketplaceCredential.hasMany(models.ProductPublishingTask, { foreignKey: 'credential_id', as: 'credentials', onDelete: 'SET NULL' });
-      MarketplaceCredential.hasMany(models.JobProduct, { 
-        foreignKey: 'credential_id', 
-        as: 'jobProducts', 
-        onDelete: 'SET NULL' 
+      MarketplaceCredential.hasMany(models.JobProduct, {
+        foreignKey: 'credential_id',
+        as: 'jobProducts',
+        onDelete: 'SET NULL'
       });
     }
   }
@@ -75,7 +76,7 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: true,
       comment: 'API Key para marketplaces sin OAuth (Falabella)'
     },
-    
+
     // ===== Campo genérico para datos adicionales =====
     additional_data: {
       type: DataTypes.JSON,

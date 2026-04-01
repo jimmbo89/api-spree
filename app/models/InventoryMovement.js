@@ -13,6 +13,12 @@ module.exports = (sequelize, DataTypes) => {
       InventoryMovement.belongsTo(models.Branch, { foreignKey: 'branch_id', as: 'branch' });
       InventoryMovement.belongsTo(models.Warehouse, { foreignKey: 'origin_warehouse_id', as: 'originWarehouse' });
       InventoryMovement.belongsTo(models.Warehouse, { foreignKey: 'destination_warehouse_id', as: 'destinationWarehouse' });
+      
+      // Asociación con MarketplaceOrderItem (un movimiento puede estar vinculado a un item de orden)
+      InventoryMovement.belongsTo(models.MarketplaceOrderItem, {
+        foreignKey: 'inventory_movement_id',
+        as: 'marketplaceOrderItem'
+      });
     }
   }
 
@@ -61,6 +67,11 @@ module.exports = (sequelize, DataTypes) => {
     unit_price: {
       type: DataTypes.DECIMAL(16, 2),
       allowNull: true
+    },
+    purchase_price: {
+      type: DataTypes.DECIMAL(16, 2),
+      allowNull: true,
+      comment: 'Precio de compra unitario en el momento del movimiento'
     },
     total_value: {
       type: DataTypes.DECIMAL(16, 2),

@@ -214,57 +214,75 @@ const WarehouseRepository = {
   });
 },
 /**
- * Verifica si ya existe un almacén con el mismo nombre en la misma empresa o sucursal.
- * 
- * @param {Object} data - Contiene name, company_id y branch_id
+ * Verifica si ya existe un almacén con el mismo nombre o código en la misma empresa o sucursal.
+ *
+ * @param {Object} data - Contiene name, code, company_id y branch_id
  * @param {number|null} excludeId - ID del almacén a excluir (para ediciones)
- * @returns {Promise<{ exists: boolean, field: string | null }>}
+ * @returns {Promise<{ exists: boolean, field: string | null, existing: object | null }>}
  */
 async checkUniqueName(data, excludeId = null) {
   const { code, name, company_id, branch_id } = data;
 
-  // Validación básica: si no hay nombre, no hay nada que verificar
-  if (!name || name.trim() === '') {
-    return { exists: false, field: null };
+  // Validar nombre
+  if (name && name.trim() !== '') {
+    const whereCondition = {
+      name: name.trim()
+    };
+
+    // Filtrar por empresa o sucursal según corresponda
+    if (branch_id !== null && branch_id !== undefined) {
+      // Almacén asociado a una sucursal → unicidad dentro de esa sucursal
+      whereCondition.branch_id = branch_id;
+      whereCondition.company_id = null;
+    } else {
+      // Almacén asociado directamente a la empresa → unicidad dentro de la empresa
+      whereCondition.company_id = company_id;
+      whereCondition.branch_id = null;
+    }
+
+    // Excluir el registro actual si se está editando
+    if (excludeId !== null) {
+      whereCondition.id = { [Op.ne]: excludeId };
+    }
+
+    const existingByName = await Warehouse.findOne({
+      where: whereCondition,
+      attributes: ['id', 'name', 'company_id', 'branch_id']
+    });
+
+    if (existingByName) {
+      return { exists: true, field: 'name', existing: existingByName };
+    }
   }
 
-  if (!code || code.trim() === '') {
-    return { exists: false, field: null };
-  }
+  // Validar código
+  if (code && code.trim() !== '') {
+    const whereCondition = {
+      code: code.trim()
+    };
 
+    // Filtrar por empresa o sucursal según corresponda
+    if (branch_id !== null && branch_id !== undefined) {
+      whereCondition.branch_id = branch_id;
+      whereCondition.company_id = null;
+    } else {
+      whereCondition.company_id = company_id;
+      whereCondition.branch_id = null;
+    }
 
-  // Construir condiciones de búsqueda
-  let whereCondition = {
-    name: name.trim()
-  };
+    // Excluir el registro actual si se está editando
+    if (excludeId !== null) {
+      whereCondition.id = { [Op.ne]: excludeId };
+    }
 
-   whereCondition = {
-    code: code.trim()
-  };
+    const existingByCode = await Warehouse.findOne({
+      where: whereCondition,
+      attributes: ['id', 'code', 'company_id', 'branch_id']
+    });
 
-  // Filtrar por empresa o sucursal según corresponda
-  if (branch_id !== null && branch_id !== undefined) {
-    // Almacén asociado a una sucursal → unicidad dentro de esa sucursal
-    whereCondition.branch_id = branch_id;
-    whereCondition.company_id = null; // Asegurar coherencia lógica
-  } else {
-    // Almacén asociado directamente a la empresa → unicidad dentro de la empresa
-    whereCondition.company_id = company_id;
-    whereCondition.branch_id = null;
-  }
-
-  // Excluir el registro actual si se está editando
-  if (excludeId !== null) {
-    whereCondition.id = { [Op.ne]: excludeId };
-  }
-
-  const existing = await Warehouse.findOne({
-    where: whereCondition,
-    attributes: ['id', 'name', 'company_id', 'branch_id']
-  });
-
-  if (existing) {
-    return { exists: true, field: 'name', existing: existing };
+    if (existingByCode) {
+      return { exists: true, field: 'code', existing: existingByCode };
+    }
   }
 
   return { exists: false, field: null, existing: null };

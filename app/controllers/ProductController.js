@@ -400,14 +400,22 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
               const variant = createdVariants[i];
 
               if (variant) {
+                // Usar precios del producto como fallback si la variante no tiene precios
+                const salePrice = variantConfig.price !== undefined && variantConfig.price !== null 
+                  ? parseFloat(variantConfig.price) 
+                  : (product.sale_price ? parseFloat(product.sale_price) : 0);
+                const purchasePriceVal = variantConfig.purchase_price !== undefined && variantConfig.purchase_price !== null 
+                  ? parseFloat(variantConfig.purchase_price) 
+                  : (product.purchase_price ? parseFloat(product.purchase_price) : 0);
+
                 const wpv = await WarehouseProductVariantRepository.create(
                   {
                     warehouse_product_id: wp.id,
                     variant_id: variant.id,
                     active: variantConfig.active !== false,
                     local_sku: variantConfig.local_sku || null,
-                    price: parseFloat(variantConfig.price) || 0,
-                    purchase_price: parseFloat(variantConfig.purchase_price) || 0,
+                    price: salePrice,
+                    purchase_price: purchasePriceVal,
                     stock: parseInt(variantConfig.stock) || 0,
                   },
                   { transaction }
@@ -419,7 +427,6 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
 
                 // Registrar movimiento de inventario inicial
                 const stockQty = parseInt(variantConfig.stock) || 0;
-                const purchasePrice = parseFloat(variantConfig.purchase_price) || 0;
                 await InventoryMovementRepository.create({
                   warehouse_id: warehouse.id,
                   product_id: product.id,
@@ -431,8 +438,8 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
                   quantity: stockQty,
                   stock_before: 0,
                   stock_after: stockQty,
-                  unit_price: purchasePrice,
-                  total_value: purchasePrice * stockQty,
+                  unit_price: purchasePriceVal,
+                  total_value: purchasePriceVal * stockQty,
                   reference_type: 'product_creation',
                   reference_id: product.id.toString(),
                   reason: 'Stock inicial al crear producto',
@@ -456,14 +463,22 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
                   { transaction }
                 );
 
+                // Usar precios del producto como fallback si la variante no tiene precios
+                const salePrice = variantConfig.price !== undefined && variantConfig.price !== null 
+                  ? parseFloat(variantConfig.price) 
+                  : (product.sale_price ? parseFloat(product.sale_price) : 0);
+                const purchasePriceVal = variantConfig.purchase_price !== undefined && variantConfig.purchase_price !== null 
+                  ? parseFloat(variantConfig.purchase_price) 
+                  : (product.purchase_price ? parseFloat(product.purchase_price) : 0);
+
                 const wpv = await WarehouseProductVariantRepository.create(
                   {
                     warehouse_product_id: wp.id,
                     variant_id: missingVariant.id,
                     active: variantConfig.active !== false,
                     local_sku: variantConfig.local_sku || null,
-                    price: parseFloat(variantConfig.price) || 0,
-                    purchase_price: parseFloat(variantConfig.purchase_price) || 0,
+                    price: salePrice,
+                    purchase_price: purchasePriceVal,
                     stock: parseInt(variantConfig.stock) || 0,
                   },
                   { transaction }
@@ -473,7 +488,6 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
 
                 // Registrar movimiento de inventario inicial
                 const stockQty = parseInt(variantConfig.stock) || 0;
-                const purchasePrice = parseFloat(variantConfig.purchase_price) || 0;
                 await InventoryMovementRepository.create({
                   warehouse_id: warehouse.id,
                   product_id: product.id,
@@ -485,8 +499,8 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
                   quantity: stockQty,
                   stock_before: 0,
                   stock_after: stockQty,
-                  unit_price: purchasePrice,
-                  total_value: purchasePrice * stockQty,
+                  unit_price: purchasePriceVal,
+                  total_value: purchasePriceVal * stockQty,
                   reference_type: 'product_creation',
                   reference_id: product.id.toString(),
                   reason: 'Stock inicial al crear producto',
@@ -505,14 +519,18 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
             // Si no hay variantes configuradas, usar la primera variante por defecto
             if (createdVariants.length > 0) {
               const defaultVariant = createdVariants[0];
+              // Usar precios del producto como fallback
+              const salePrice = product.sale_price ? parseFloat(product.sale_price) : 0;
+              const purchasePriceVal = product.purchase_price ? parseFloat(product.purchase_price) : 0;
+
               const wpv = await WarehouseProductVariantRepository.create(
                 {
                   warehouse_product_id: wp.id,
                   variant_id: defaultVariant.id,
                   active: true,
                   local_sku: null,
-                  price: 0,
-                  purchase_price: 0,
+                  price: salePrice,
+                  purchase_price: purchasePriceVal,
                   stock: 0,
                 },
                 { transaction }
@@ -534,7 +552,7 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
                 quantity: 0,
                 stock_before: 0,
                 stock_after: 0,
-                unit_price: 0,
+                unit_price: purchasePriceVal,
                 total_value: 0,
                 reference_type: 'product_creation',
                 reference_id: product.id.toString(),
@@ -939,13 +957,21 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
             productVariant.id
           );
 
+          // Usar precios del producto como fallback si la variante no tiene precios
+          const salePrice = variantConfig.price !== undefined && variantConfig.price !== null 
+            ? parseFloat(variantConfig.price) 
+            : (product.sale_price ? parseFloat(product.sale_price) : 0);
+          const purchasePriceVal = variantConfig.purchase_price !== undefined && variantConfig.purchase_price !== null 
+            ? parseFloat(variantConfig.purchase_price) 
+            : (product.purchase_price ? parseFloat(product.purchase_price) : 0);
+
           const variantData = {
             warehouse_product_id: wp.id,
             variant_id: productVariant.id,
             active: variantConfig.active !== false,
             local_sku: variantConfig.local_sku || null,
-            price: parseFloat(variantConfig.price) || 0,
-            purchase_price: parseFloat(variantConfig.purchase_price) || 0,
+            price: salePrice,
+            purchase_price: purchasePriceVal,
             stock: parseInt(variantConfig.stock) || 0,
           };
 

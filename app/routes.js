@@ -1,4 +1,4 @@
-const express = require("express");
+﻿const express = require("express");
 const logger = require('../config/logger');
 const fs = require("fs");
 const path = require("path");
@@ -32,7 +32,7 @@ const { storeMarketplaceSchema, updateMarketplaceSchema, idMarketplaceSchema } =
 const MarketplaceController = require("./controllers/MarketplaceController.js");
 const { createProductFieldMappingSchema, updateProductFieldMappingSchema, idProductFieldMappingSchema, listProductFieldMappingSchema, bulkCreateProductFieldMappingSchema } = require("./middlewares/validations/productFieldMappingValidations.js");
 const ProductFieldMappingController = require("./controllers/ProductFieldMappingController.js");
-const { storeProductPublishingTaskSchema, updateProductPublishingTaskStatusSchema, listProductPublishingTaskSchema, retryProductPublishingTaskSchema, publishDraftSchema, listDraftsByUserSchema } = require("./middlewares/validations/productPublishingTaskValidations.js");
+const { storeProductPublishingTaskSchema, updateProductPublishingTaskStatusSchema, listProductPublishingTaskSchema, listProductPublishingTaskWithProductSchema, retryProductPublishingTaskSchema, publishDraftSchema, listDraftsByUserSchema } = require("./middlewares/validations/productPublishingTaskValidations.js");
 const ProductPublishingTaskController = require("./controllers/ProductPublishingTaskController.js");
 const { storeMarketplaceCredentialSchema, findByMarketplaceCredentialSchema, updateMarketplaceCredentialSchema, idMarketplaceCredentialSchema } = require("./middlewares/validations/marketplaceCredentialValidations.js");
 const MarketplaceCredentialController = require("./controllers/MarketplaceCredentialController.js");
@@ -81,6 +81,7 @@ const cafXmlUpload = require("./middlewares/siiCafUpload.js");
 const { createDteSchema, checkStatusSchema } = require("./middlewares/validations/dteDocumentValidation.js");
 const JobController = require("./controllers/JobController.js");
 const MarketplaceWebhookController = require("./controllers/MarketplaceWebhookController.js");
+const MarketplaceReportController = require("./controllers/MarketplaceReportController.js");
 const router = express.Router();
 
 
@@ -143,6 +144,14 @@ router.get("/images/:foldername/:filename", (req, res) => {
 });
 //rutas protegidas
 router.use(auth);
+
+// Rutas de reportes de marketplace (protegidas con auth)
+router.get("/reports-sales", MarketplaceReportController.sales);
+router.get("/reports-sales-stats", MarketplaceReportController.salesStats);
+router.get("/reports-commissions", MarketplaceReportController.commissions);
+router.get("/reports-commissions-stats", MarketplaceReportController.commissionStats);
+router.get("/reports-profits", MarketplaceReportController.profits);
+router.get("/reports-profits-stats", MarketplaceReportController.profitStats);
 
 router.get("/images-protect/:foldername/:filename", (req, res) => {
   const { foldername, filename } = req.params;
@@ -355,6 +364,7 @@ router.post("/pool-update", requireRoles([ 'Backoffice', 'Admin', 'Seller Manage
 router.post("/pool-destroy", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(idPoolSchema), PoolController.destroy);
 //Rutas de publicaciones de productos
 router.post("/marketplaces-pools", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(listProductPublishingTaskSchema), ProductPublishingTaskController.warehouseMarketplaces);
+router.post("/marketplaces-pools-with-product", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(listProductPublishingTaskWithProductSchema), ProductPublishingTaskController.warehouseMarketplacesWithProduct);
 router.post("/publishing-task", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(storeProductPublishingTaskSchema), ProductPublishingTaskController.store);
 router.post("/publishing-task-update-status", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(updateProductPublishingTaskStatusSchema), ProductPublishingTaskController.updateStatus);
 router.post("/publishing-task-update", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(updateProductPublishingTaskStatusSchema), ProductPublishingTaskController.updatePayload);
@@ -464,3 +474,4 @@ router.post('/jobs-finished-list', requireRoles([ 'Backoffice', 'Admin', 'Seller
 router.post('/jobs-detail', requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), JobController.getJobDetail);
 
 module.exports = router;
+

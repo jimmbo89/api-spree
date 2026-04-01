@@ -424,13 +424,16 @@ async _processProduct(jobProduct, parentJobId) {
     );
 
     // === Manejar resultado: éxito o error, sin reintentos ===
-    
+
     // Auth required
     if (result?.auth_required) {
       await JobProductRepository.update(jobProduct, {
         status: 'error',
         error_message: 'auth_required',
-        error_details: { auth_url: result.auth_url }
+        error_details: { 
+          auth_url: result.auth_url,
+          task_id: result.task_id || null  // ✅ Guardar referencia al task creado
+        }
       });
       return { success: false, auth_required: true };
     }
@@ -441,9 +444,12 @@ async _processProduct(jobProduct, parentJobId) {
         status: 'success',
         external_id: result.external_id || null,
         external_url: result.external_url || null,
-        error_message: result.has_warnings ? 
+        error_message: result.has_warnings ?
           `Advertencias: ${result.warnings?.map(w => w.message).join(', ')}` : null,
-        error_details: result.has_warnings ? { warnings: result.warnings } : null
+        error_details: {
+          warnings: result.has_warnings ? result.warnings : null,
+          task_id: result.task_id || null  // ✅ Guardar referencia al task creado
+        }
       });
       return { success: true };
     }
@@ -451,13 +457,16 @@ async _processProduct(jobProduct, parentJobId) {
     // Error → marcar y terminar
     const errorMessage = result?.error || result?.message || 'unknown_error';
     logger.warn(`[JobProcessor] ❌ Producto ${product_id} falló: ${errorMessage}`);
-    
+
     await JobProductRepository.update(jobProduct, {
       status: 'error',
       error_message: errorMessage,
-      error_details: result?.details || null
+      error_details: {
+        ...(result?.details || null),
+        task_id: result?.task_id || null  // ✅ Guardar referencia al task creado
+      }
     });
-    
+
     return { success: false };
 
   } catch (error) {

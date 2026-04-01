@@ -414,22 +414,59 @@ async refreshToken(req, res) {
       // 5. Ejecutar actualización parcial
       const credential = await MarketplaceCredentialRepository.updatePartial(id, updatePayload);
 
-      // 6. Log de éxito
+      // 6. ✅ VERIFICAR CONEXIÓN AL MARKETPLACE (similar a warehouseMarketplaces)
+      const marketplace = await MarketplaceRepository.findById(credential.marketplace_id);
+      if (!marketplace) {
+        return res.status(400).json({ msg: "Marketplace no encontrado" });
+      }
+
+      // Detectar si es OAuth (MercadoLibre) o Manual (Falabella)
+      const isOAuth = marketplace.client_id && marketplace.client_secret && marketplace.redirect_uri;
+      let connectionStatus = { valid: false, auth_required: false };
+
+      if (isOAuth) {
+        // ✅ Para OAuth, verificar/renovar token usando el adapter
+        const adapter = PublishingAdapterFactory.getAdapter(
+          marketplace,
+          null, // companyId
+          null, // branchId
+          req.user.id,
+          credential.id  // ← Pasar credencial actualizada
+        );
+
+        if (adapter && typeof adapter.ensureValidCredentials === 'function') {
+          connectionStatus = await adapter.ensureValidCredentials();
+        }
+      } else {
+        // ✅ Para manual (Falabella), verificar que las credenciales existan
+        connectionStatus = {
+          valid: !!(credential.seller_email && credential.seller_id && credential.api_key),
+          message: credential.api_key ? "Credenciales manuales configuradas" : "Credenciales incompletas"
+        };
+      }
+
+      // 7. Log de éxito
       await LogRepository.create({
         user_id: metadata.user_id,
         action: 'marketplace_credential.update',
-        description: `Credenciales actualizadas para marketplace ${credential.marketplace_id}`,
+        description: `Credenciales actualizadas para marketplace ${credential.marketplace_id} - Conexión: ${connectionStatus.valid ? 'OK' : 'Pendiente'}`,
         ip_address: metadata.ip_address,
         user_agent: metadata.user_agent,
         status: 'success',
-        meta: { id: credential.id, updated_fields: Object.keys(updatePayload) }
+        meta: { id: credential.id, updated_fields: Object.keys(updatePayload), connection_valid: connectionStatus.valid }
       });
 
-      // 7. Respuesta segura (sin tokens)
+      // 8. Respuesta segura (sin tokens) + estado de conexión
       const { access_token: _, refresh_token: __, api_key: ___, ...safeCredential } = credential;
-      res.status(200).json({ 
-        message: "Credenciales actualizadas correctamente", 
-        credential: safeCredential 
+      res.status(200).json({
+        message: "Credenciales actualizadas correctamente",
+        credential: safeCredential,
+        connection: {
+          valid: connectionStatus.valid,
+          auth_required: connectionStatus.auth_required,
+          auth_url: connectionStatus.auth_url,
+          message: connectionStatus.message || (connectionStatus.valid ? "Conectado" : "Requiere atención")
+        }
       });
 
     } catch (error) {
