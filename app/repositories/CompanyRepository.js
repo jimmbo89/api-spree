@@ -6,8 +6,7 @@ const logger = require('../../config/logger');
 const CompanyRepository = {
   async findAll() {
     return await Company.findAll({
-      attributes: ['id', 'name', 'address', 'city', 'country', 'image', 'rut', 'phone', 'business_type_id', 'email', 'currency'],
-      include: [
+     include: [
       { model: BusinessType, as: 'businessType', attributes: ['id', 'name'], required: false },
       { model: Plan, as: 'plan', attributes: ['id', 'name'], required: false } // 👈 NUEVO
     ]
