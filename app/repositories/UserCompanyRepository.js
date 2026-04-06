@@ -153,7 +153,11 @@ async activateMembership({ user_id, company_id }, transaction = null) {
 
   async updateStatus(record, status) {
     try {
-      return await record.update({ status });
+      const updateData = { status };
+      if (status === 1) {
+        updateData.joined_at = new Date();
+      }
+      return await record.update(updateData);
 
     } catch (error) {
       logger.error(`Error al actualizar estado de membresía ID ${record.id}:`, error);

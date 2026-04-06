@@ -179,7 +179,7 @@ const MarketplaceCredentialController = {
         access_token: null,
         refresh_token: null,
         expires_at: null,
-        active: false
+        active: true  // ← La credencial se crea ACTIVA (el front detectará cuando expire)
       });
 
         logger.info(`[store] Nueva credencial creada:`, {

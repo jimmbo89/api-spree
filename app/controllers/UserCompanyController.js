@@ -382,7 +382,15 @@ async handleMembershipRequest(req, res) {
       emailHtml = `
         <p>${actionEmoji} Hola ${user.name},</p>
         <p>Tu solicitud para unirte a <strong>${company.name}</strong> ha sido <strong>${actionText}</strong>.</p>
-        ${isApprove ? '<p>¡Ya puedes acceder a la plataforma!</p>' : '<p>Si crees que esto es un error, contacta a un administrador.</p>'}
+        ${isApprove ? `
+          <p>¡Ya puedes acceder a la plataforma!</p>
+          <div style="margin: 25px 0;">
+            <a href="${process.env.FRONTEND_URL}/login"
+               style="display: inline-block; padding: 12px 24px; background-color: #3b82f6; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;">
+              Iniciar sesión
+            </a>
+          </div>
+        ` : '<p>Si crees que esto es un error, contacta a un administrador.</p>'}
       `;
 
       emailSubject += company.name;
