@@ -116,7 +116,7 @@ const MarketplaceOrderRepository = {
       const { limit = 50, offset = 0 } = pagination;
 
       const where = {};
-      if (marketplace) where.marketplace = marketplace;
+      if (marketplace) where.marketplace_credential_id = marketplace;
       if (order_status) where.order_status = order_status;
       if (payment_status) where.payment_status = payment_status;
       if (company_id) where.company_id = company_id;
@@ -164,7 +164,7 @@ const MarketplaceOrderRepository = {
       const where = {
         order_status: 'paid'
       };
-      if (marketplace) where.marketplace = marketplace;
+      if (marketplace) where.marketplace_credential_id = marketplace;
       if (company_id) where.company_id = company_id;
       if (user_id) where.user_id = user_id;
       if (from || to) {

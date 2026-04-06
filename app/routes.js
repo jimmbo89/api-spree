@@ -146,12 +146,12 @@ router.get("/images/:foldername/:filename", (req, res) => {
 router.use(auth);
 
 // Rutas de reportes de marketplace (protegidas con auth)
-router.get("/reports-sales", MarketplaceReportController.sales);
-router.get("/reports-sales-stats", MarketplaceReportController.salesStats);
-router.get("/reports-commissions", MarketplaceReportController.commissions);
-router.get("/reports-commissions-stats", MarketplaceReportController.commissionStats);
-router.get("/reports-profits", MarketplaceReportController.profits);
-router.get("/reports-profits-stats", MarketplaceReportController.profitStats);
+router.post("/reports-sales", MarketplaceReportController.sales);
+router.post("/reports-sales-stats", MarketplaceReportController.salesStats);
+router.post("/reports-commissions", MarketplaceReportController.commissions);
+router.post("/reports-commissions-stats", MarketplaceReportController.commissionStats);
+router.post("/reports-profits", MarketplaceReportController.profits);
+router.post("/reports-profits-stats", MarketplaceReportController.profitStats);
 
 router.get("/images-protect/:foldername/:filename", (req, res) => {
   const { foldername, filename } = req.params;
