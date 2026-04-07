@@ -35,6 +35,40 @@ const CompanyController = {
     }
   },
 
+   async index_login(req, res) {
+    logger.info(`Solicitando compañías desde union a empresa`);
+
+    try {
+      const companies = await CompanyRepository.findAll();
+
+      if (!companies.length) {
+        return res.status(204).json({ msg: 'CompaniesNotFound' });
+      }
+
+      const mappedCompanies = companies.map(company => ({
+        id: company.id,
+        name: company.name,
+        description: company.description,
+        country: company.country,
+        rut: company.rut,
+        image: company.image,
+        email: company.email,
+        business_type_id: company.business_type_id,
+        businessTypeName: company.businessType?.name || null,
+        plan_id: company.plan_id,
+        planName: company.plan?.name || null,
+      }));
+
+      const businessTypesRaw = await BusinessTypeRepository.findAll();
+      const businessTypes = businessTypesRaw.map(bt => bt.get({ plain: true }));
+
+      res.status(200).json({ companies: mappedCompanies, businessTypes });
+    } catch (error) {
+      logger.error('CompanyController->index_login: ' + error.message);
+      res.status(500).json({ error: 'ServerError', details: error.message });
+    }
+  },
+
   async store(req, res) {
     logger.info(`${req.user?.name || 'Unknown'} - Crea una nueva compañía`);
     logger.info('Datos recibidos:');

@@ -30,11 +30,13 @@ module.exports = async (req, res, next) => {
       const companyId = req.headers['x-company-id'];
       const allowNoCompanyPaths = new Set([
         '/companies',
+        '/login-companies',
         '/business-types',
         '/company-login',
         '/available-for-request',
         '/membership-requests',
-        '/logout'
+        '/logout',
+        '/joint-invitation-token'
       ]);
 
       // Almacenar el ID del usuario en el contexto

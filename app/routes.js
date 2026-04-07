@@ -98,6 +98,7 @@ router.post('/verify-code-password', AuthController.verifyCode);
 router.post('/reset-password', AuthController.resetPassword);
 router.get('/validate-requests/:id/approve', UserCompanyController.handleMembershipRequest);
 router.get('/validate-requests/:id/reject', UserCompanyController.handleMembershipRequest);
+router.post('/login-companies', CompanyController.index_login);
 
 router.post('/ml-callback', OAuthController.mercadoLibreCallback);
 router.post('/webhooks-mercadolibre', MarketplaceWebhookController.mercadoLibre);
