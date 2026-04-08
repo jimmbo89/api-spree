@@ -1,11 +1,25 @@
 const Joi = require('joi');
 
+// Formato RUT chileno: 77206959-6 (dígitos-guion-verificador)
+const rutPattern = /^\d{1,8}-[\dkK]$/;
+
+const validateRut = (value, helpers) => {
+  if (!rutPattern.test(value)) {
+    return helpers.error('string.pattern.base', {
+      message: 'El RUT debe tener formato válido: 12345678-9 o 12345678-K'
+    });
+  }
+  return value;
+};
+
 const storeCompanySchema = Joi.object({
   business_type_id: Joi.number().integer().positive().required(),
   plan_id: Joi.number().integer().positive().optional(), // 👈 NUEVO
   name: Joi.string().max(255).required(),
   description: Joi.string().allow(null, '').optional(),
-  rut: Joi.string().max(50).required(),
+  rut: Joi.string().pattern(rutPattern).required().messages({
+    'string.pattern.base': 'El RUT debe tener formato válido: 12345678-9 o 12345678-K'
+  }),
   address: Joi.string().max(255).allow(null, '').optional(),
   city: Joi.string().max(100).allow(null, '').optional(),
   country: Joi.string().max(100).allow(null, '').optional(),
@@ -49,7 +63,9 @@ const updateCompanySchema = Joi.object({
   plan_id: Joi.number().integer().positive().optional(), // 👈 NUEVO
   name: Joi.string().max(255).allow(null, '').optional(),
   description: Joi.string().allow(null, '').optional(),
-  rut: Joi.string().max(50).allow(null, '').optional(),
+  rut: Joi.string().pattern(rutPattern).optional().allow(null, '').messages({
+    'string.pattern.base': 'El RUT debe tener formato válido: 12345678-9 o 12345678-K'
+  }),
   address: Joi.string().max(255).allow(null, '').optional(),
   city: Joi.string().max(100).allow(null, '').optional(),
   country: Joi.string().max(100).allow(null, '').optional(),

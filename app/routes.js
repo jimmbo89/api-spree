@@ -268,6 +268,7 @@ router.post("/branch-user-company", requireRoles([ 'Backoffice', 'Admin', 'Selle
 router.post("/branch", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), checkPlanLimit('branch'), multerImage("image", "branches"), validateSchema(storeBranchSchema), BranchController.store);
 router.post("/branch-update", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), multerImage("image", "branches"), validateSchema(updateBranchSchema), BranchController.update);
 router.post("/branch-destroy", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(idBranchSchema), BranchController.destroy);
+router.post("/branch-status", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), BranchController.updateStatus);
 
 //Rutas de Almacénes
 router.post("/warehouse-branch-company", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(listWarehouseSchema), WarehouseController.list);
@@ -378,6 +379,9 @@ router.post("/publishing-draft-get", requireRoles([ 'Backoffice', 'Admin', 'Sell
 
 // === NUEVA RUTA: Listar borradores por usuario/empresa ===
 router.post("/publishing-draft-list", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(listDraftsByUserSchema), ProductPublishingTaskController.listDraftsByUser);
+
+// === ELIMINAR BORRADOR (Job tipo draft) ===
+router.post("/publishing-draft-delete", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), JobController.deleteDraft);
 
 router.post("/publishing-task-delete", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(idCompanySchema), ProductPublishingTaskController.destroy);
 

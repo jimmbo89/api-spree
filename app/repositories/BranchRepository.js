@@ -5,7 +5,7 @@ const logger = require('../../config/logger');
 
 const BranchRepository = {
   // ✅ Método flexible: por company_id, user_id o ambos
-  async findFiltered({ companyId, userId }) {
+  async findFiltered({ companyId, userId, status = 1 }) {
   const where = {};
 
   if (companyId !== undefined) {
@@ -15,6 +15,8 @@ const BranchRepository = {
   if (userId !== undefined) {
     where.user_id = userId;
   }
+
+  where.status = status !== undefined ? status : 1;
 
   const branches = await Branch.findAll({
     where,

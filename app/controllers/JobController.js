@@ -848,7 +848,71 @@ async republishFromJob(req, res) {
       error: error.message
     });
   }
-}
+},
+
+  async deleteDraft(req, res) {
+    logger.info(`${req.user?.name || 'Unknown'} - Elimina borrador (job)`);
+    logger.info(`Datos recibidos: ${JSON.stringify(req.body)}`);
+
+    const { job_id } = req.body;
+    const userId = req.user.id;
+
+    try {
+      if (!job_id) {
+        return res.status(400).json({
+          success: false,
+          msg: 'job_id_required',
+          message: 'Se requiere el ID del borrador'
+        });
+      }
+
+      const job = await JobRepository.findById(job_id);
+
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          msg: 'draft_not_found',
+          message: 'Borrador no encontrado'
+        });
+      }
+
+      if (job.job_type !== 'draft') {
+        return res.status(400).json({
+          success: false,
+          msg: 'not_a_draft',
+          message: 'Solo se pueden eliminar borradores'
+        });
+      }
+
+      const terminalStatuses = ['completed', 'completed_with_errors', 'failed', 'cancelled'];
+      if (terminalStatuses.includes(job.status)) {
+        return res.status(400).json({
+          success: false,
+          msg: 'draft_already_finished',
+          message: 'No se puede eliminar un borrador que ya fue procesado o finalizado'
+        });
+      }
+
+      await JobRepository.delete(job_id);
+
+      logger.info(`Borrador eliminado: Job ID ${job_id} por usuario ${userId}`);
+
+      res.status(200).json({
+        success: true,
+        message: 'Borrador eliminado correctamente',
+        job_id: job.id
+      });
+
+    } catch (error) {
+      logger.error(`[JobController.deleteDraft] Error: ${error.message}`, { stack: error.stack });
+      return res.status(500).json({
+        success: false,
+        msg: 'delete_draft_failed',
+        message: 'Error al eliminar el borrador',
+        error: error.message
+      });
+    }
+  }
 };
 
 module.exports = JobController

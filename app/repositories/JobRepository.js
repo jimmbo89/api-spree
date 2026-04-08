@@ -576,28 +576,25 @@ async complete(jobId, { successful, errors_count, error_summary = null }) {
   /**
    * Elimina un job (soft delete vía status, o hard delete si se requiere)
    */
-  async delete(job) {
+  async delete(jobId) {
     try {
-      if (!job || !job.id) {
-        throw new Error('Job inválido para eliminar');
+      if (!jobId) {
+        throw new Error('Job ID es requerido para eliminar');
       }
 
-      // Opción A: Soft delete (recomendado para auditoría)
-      await job.update({ 
-        status: 'cancelled',
-        completed_at: new Date()
+      const deleted = await Job.destroy({
+        where: { id: jobId }
       });
-      
-      logger.info(`Job marcado como cancelado (ID: ${job.id})`);
-      return { success: true, message: 'Job cancelado correctamente', job_id: job.id };
 
-      // Opción B: Hard delete (descomentar si se requiere eliminación física)
-      // await job.destroy();
-      // logger.info(`Job eliminado físicamente (ID: ${job.id})`);
-      // return { success: true, message: 'Job eliminado correctamente' };
+      if (deleted === 0) {
+        throw new Error('Job no encontrado');
+      }
+
+      logger.info(`Job eliminado físicamente (ID: ${jobId})`);
+      return { success: true, message: 'Job eliminado correctamente', job_id: jobId };
 
     } catch (error) {
-      logger.error(`Error en JobRepository->delete (ID: ${job?.id}):`, error);
+      logger.error(`Error en JobRepository->delete (ID: ${jobId}):`, error);
       throw new Error(`Error al eliminar job: ${error.message}`);
     }
   },

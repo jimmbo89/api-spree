@@ -6,12 +6,36 @@ const { getRequestMetadata } = require('../util/requestUtil');
 
 const BRANCH_AUDIT_FIELDS = ['name', 'address', 'city', 'phone', 'status', 'company_id', 'user_id'];
 
+/**
+ * Construye la respuesta con branches + warehouses de la company
+ * @param {number} companyId - ID de la empresa
+ * @param {number} userId - ID del usuario
+ * @param {boolean} includeProducts - Si true incluye productos en warehouses
+ * @returns {object} { branches, warehouses }
+ */
+async function buildBranchWarehouseResponse(companyId, userId, includeProducts = false) {
+  const branches = await BranchRepository.findFiltered({
+    companyId,
+    userId
+  });
+
+  let warehouses = [];
+  if (companyId) {
+    warehouses = await WarehouseRepository.findFiltered({
+      companyId,
+      includeProducts
+    });
+  }
+
+  return { branches, warehouses };
+}
+
 const BranchController = {
   // ✅ Endpoint flexible: /api/branches/list
   async list(req, res) {
     logger.info(`${req.user?.name || 'Unknown'} - Lista sucursales`);
 
-    let { company_id, user_id:bodyUserId } = req.body;
+    let { company_id, user_id:bodyUserId, include_products = false } = req.body;
 
     let user_id = bodyUserId || req.user.id;
     // Validar que sean números si existen
@@ -19,7 +43,7 @@ const BranchController = {
         const company = await CompanyRepository.findById(company_id);
         if (!company) {
           logger.info(
-            `BranchController->store: Compañía no encontrada con ID ${company_id}`
+            `BranchController->list: Compañía no encontrada con ID ${company_id}`
           );
           return res.status(400).json({ msg: "companyNotFound" });
         }
@@ -28,23 +52,20 @@ const BranchController = {
         const user = await UserRepository.findById(user_id);
         if (!user) {
           logger.info(
-            `BranchController->update: Compañía no editada con ID ${user_id}`
+            `BranchController->list: Usuario no encontrado con ID ${user_id}`
           );
           return res.status(400).json({ msg: "userNotFound" });
         }
       }
 
     try {
-      const mappedBranches = await BranchRepository.findFiltered({
-        companyId: company_id,
-        userId: user_id
-      });
+      const { branches, warehouses } = await buildBranchWarehouseResponse(company_id, user_id, include_products);
 
-      if (mappedBranches.length === 0) {
-        return res.status(200).json({ branches: [], msg: 'NoBranchesFound' });
+      if (branches.length === 0 && warehouses.length === 0) {
+        return res.status(200).json({ branches: [], warehouses: [], msg: 'NoDataFound' });
       }
 
-      res.status(200).json({ branches: mappedBranches });
+      res.status(200).json({ branches, warehouses });
     } catch (error) {
       logger.error('BranchController->list: ' + error.message);
       res.status(500).json({ error: 'ServerError', details: error.message });
@@ -56,7 +77,7 @@ const BranchController = {
     logger.info(`${req.user?.name || 'Unknown'} - Crea nueva sucursal`);
     logger.info('Datos recibidos:');
     logger.info(JSON.stringify(req.body));
-    const { company_id, user_id:bodyUserId, warehouse } = req.body;
+    const { company_id, user_id:bodyUserId, warehouse, include_products = false } = req.body;
 
     let user_id = bodyUserId || req.user.id;
 
@@ -123,11 +144,8 @@ const BranchController = {
         logger.info(`Almacén principal creado para la sucursal ID ${branch.id}`);
       }*/
       await transaction.commit();
-      const branches = await BranchRepository.findFiltered({
-        companyId: branch.company_id,
-        userId: branch.user_id
-      });
-      res.status(201).json({ message: "Sucursal creada correctamente", branches: branches });
+      const { branches, warehouses } = await buildBranchWarehouseResponse(branch.company_id, branch.user_id, include_products);
+      res.status(201).json({ message: "Sucursal creada correctamente", branches, warehouses });
     } catch (error) {
          await transaction.rollback();
       const errorMsg = error.message || 'Error desconocido';
@@ -160,10 +178,10 @@ const BranchController = {
   },
 
   async update(req, res) {
-    logger.info(`${req.user?.name || 'Unknown'} - Crea nueva sucursal ${req.body.id}`);
+    logger.info(`${req.user?.name || 'Unknown'} - Actualiza sucursal ${req.body.id}`);
     logger.info('Datos recibidos:');
     logger.info(JSON.stringify(req.body));
-    const { id , company_id, user_id} = req.body;
+    const { id , company_id, user_id, include_products = false } = req.body;
     const metadata = getRequestMetadata(req);
     try {
       const branch = await BranchRepository.findById(id);
@@ -186,7 +204,7 @@ const BranchController = {
             );
             return res.status(400).json({ msg: "userNotFound" });
             }
-        } 
+        }
 
         const originalData = { ...branch.get({ plain: true }) };
 
@@ -219,11 +237,8 @@ const BranchController = {
     }
 
     await LogRepository.create(logEntry);
-      const branches = await BranchRepository.findFiltered({
-        companyId: branch.company_id,
-        userId: branch.user_id
-      });
-      res.status(200).json({ message: "Sucursal actualizada correctamente", branches: branches });
+      const { branches, warehouses } = await buildBranchWarehouseResponse(branch.company_id, branch.user_id, include_products);
+      res.status(200).json({ message: "Sucursal actualizada correctamente", branches, warehouses });
     } catch (error) {
        await LogRepository.create({
       user_id: metadata?.user_id,
@@ -239,15 +254,70 @@ const BranchController = {
     }
   },
 
+  async updateStatus(req, res) {
+    logger.info(`${req.user?.name || 'Unknown'} - Cambia estado de sucursal con ID ${req.body.id}`);
+    const metadata = getRequestMetadata(req);
+
+    try {
+      const { id, status, include_products = false } = req.body;
+      if (id === undefined || status === undefined) {
+        return res.status(400).json({ msg: 'id_and_status_required' });
+      }
+
+      const branch = await BranchRepository.findById(id);
+      if (!branch) return res.status(404).json({ msg: 'BranchNotFound' });
+
+      const newStatus = status === 0 ? 0 : 1;
+      await branch.update({ status: newStatus });
+
+      await LogRepository.create({
+        user_id: metadata.user_id,
+        action: 'branch.status_change',
+        description: `Sucursal ${branch.name} (ID ${id}) ${newStatus === 0 ? 'desactivada' : 'activada'}`,
+        ip_address: metadata.ip_address,
+        user_agent: metadata.user_agent,
+        status: 'success',
+        meta: { branch_id: id, old_status: branch.status, new_status: newStatus }
+      });
+
+      const { branches, warehouses } = await buildBranchWarehouseResponse(branch.company_id, branch.user_id, include_products);
+
+      res.status(200).json({
+        success: true,
+        message: `Sucursal ${newStatus === 0 ? 'desactivada' : 'activada'} correctamente`,
+        branches,
+        warehouses
+      });
+
+    } catch (error) {
+      await LogRepository.create({
+        user_id: metadata?.user_id,
+        action: 'branch.status_change',
+        description: `Error al cambiar estado de sucursal ID ${req.body?.id}: ${error.message}`,
+        ip_address: metadata?.ip_address,
+        user_agent: metadata?.user_agent,
+        status: 'error',
+        meta: null
+      });
+      logger.error('BranchController->updateStatus: ' + error.message);
+      res.status(500).json({ error: 'ServerError', details: error.message });
+    }
+  },
+
   async destroy(req, res) {
     logger.info(`${req.user?.name || 'Unknown'} - Elimina sucursal con ID ${req.body.id}`);
      const metadata = getRequestMetadata(req);
+
+    const { include_products = false } = req.body;
+
     try {
       const branch = await BranchRepository.findById(req.body.id);
       if (!branch) return res.status(404).json({ msg: 'BranchNotFound' });
 
        // ✅ Guardar datos antes de eliminar
     const branchData = branch.get({ plain: true });
+    const companyId = branch.company_id;
+    const userId = branch.user_id;
 
       await BranchRepository.delete(branch);
 
@@ -260,11 +330,8 @@ const BranchController = {
       status: 'success',
       meta: { deleted_record: branchData }
     });
-      const branches = await BranchRepository.findFiltered({
-        companyId: branch.company_id,
-        userId:branch.user_id
-      });
-      res.status(200).json({  success: true, message: "Sucursal eliminada correctamente", branches: branches });
+      const { branches, warehouses } = await buildBranchWarehouseResponse(companyId, userId, include_products);
+      res.status(200).json({  success: true, message: "Sucursal eliminada correctamente", branches, warehouses });
     } catch (error) {
       await LogRepository.create({
       user_id: metadata?.user_id,
