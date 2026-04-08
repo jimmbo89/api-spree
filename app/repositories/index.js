@@ -46,6 +46,7 @@ const MarketplaceOrderRepository = require("./MarketplaceOrderRepository");
 const MarketplaceOrderItemRepository = require("./MarketplaceOrderItemRepository");
 const MarketplaceOrderFeeRepository = require("./MarketplaceOrderFeeRepository");
 const MarketplaceOrderEventRepository = require("./MarketplaceOrderEventRepository");
+const DashboardRepository = require("./DashboardRepository");
 
 module.exports = {
     RoleRepository,
@@ -95,5 +96,6 @@ module.exports = {
     MarketplaceOrderRepository,
     MarketplaceOrderItemRepository,
     MarketplaceOrderFeeRepository,
-    MarketplaceOrderEventRepository
+    MarketplaceOrderEventRepository,
+    DashboardRepository
 };

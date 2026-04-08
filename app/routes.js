@@ -82,6 +82,7 @@ const { createDteSchema, checkStatusSchema } = require("./middlewares/validation
 const JobController = require("./controllers/JobController.js");
 const MarketplaceWebhookController = require("./controllers/MarketplaceWebhookController.js");
 const MarketplaceReportController = require("./controllers/MarketplaceReportController.js");
+const DashboardController = require("./controllers/DashboardController.js");
 const router = express.Router();
 
 
@@ -477,6 +478,9 @@ router.post('/job-progress', requireRoles([ 'Backoffice', 'Admin', 'Seller Manag
 router.post('/jobs-actives', requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), JobController.getActiveJobs);
 router.post('/jobs-finished-list', requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), JobController.listFinishedJobs);
 router.post('/jobs-detail', requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), JobController.getJobDetail);
+
+// Dashboard
+router.post('/dashboard', requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), DashboardController.getDashboard);
 
 module.exports = router;
 
