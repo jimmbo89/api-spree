@@ -5,7 +5,7 @@ module.exports = {
     const rolesData = [
       { name: 'Admin', description: 'Propietario del tenant. Acceso total.', status: true },
       { name: 'Seller Manager', description: 'Responsable operativo del ecommerce interno.', status: true },
-      { name: 'Editor', description: 'Enfocado en operación diaria básica.', status: true },
+      { name: 'Publicador', description: 'Enfocado en operación diaria básica.', status: true },
       { name: 'Viewer', description: 'Solo lectura.', status: true },
       { name: 'Backoffice', description: 'Acceso global de soporte (Klint + Deed).', status: true }
     ];
@@ -63,111 +63,99 @@ module.exports = {
     // --- SELLER MANAGER ---
     const sellerManagerPerms = [
       // PRODUCTOS
-      'product.create', 'product.edit', 'product.delete', 'product.view', 'product.clone',
-      'product.ia.manual', 'product.ia.auto',
+      'product.view', 'product.category.view', 'product.attribute.view', 'product.attribute.create',
 
       // INVENTARIO
-      'inventory.branch.create', 'inventory.store.create', 'inventory.stock.assign',
-      'inventory.movement.view', 'inventory.kardex.view', 'inventory.pool.create',
+      'movement.view', 'inventory.kardex.view', 'branch.view', 'pool.view', 'store.view',
 
       // PUBLICACIÓN
-      'publishing.publish', 'publishing.pool.select', 'publishing.preview',
-      'publishing.logs.view', 'publishing.retry',
+      'publishing.publish', 'publishing.jobs.view',
 
-      // MARKETPLACES EXTERNOS
-      'marketplace.external.connect', 'marketplace.external.status.view',
-      'marketplace.external.webhook.view', 'marketplace.external.token.renew',
+      // MARKETPLACES
+      'marketplace.view', 'marketplacecredential.view',
 
-      // MARKETPLACE DEL TENANT
-      'marketplace.tenant.branding', 'marketplace.tenant.seller.invite',
+      // EMPRESA
+      'company.view', 'company.type.view',
 
-      // SYNC ENGINE
-      'sync.view', 'sync.force',
-
-      // ÓRDENES & BILLING
-      'order.external.view', 'order.tenant.view', 'order.global.view',
-      'billing.dte.view', 'billing.nc.view',
+      // PLANES
+      'plan.view', 'plan.upgrade',
 
       // REPORTING
-      'report.kpi.view', 'report.export', 'report.commission.view',
+      'report.sales.view', 'report.profit.view', 'report.commission.view',
 
       // IAM (limitado)
-      'iam.acl.branch.set', 'iam.audit.view'
+      'user.view', 'role.view', 'permission.view', 'audit.view'
     ];
     sellerManagerPerms.forEach(p => addPermission('Seller Manager', p));
 
-    // --- EDITOR ---
-    const editorPerms = [
+    // --- PUBLICADOR ---
+    const publicadorPerms = [
       // PRODUCTOS
-      'product.create', 'product.edit', 'product.view', 'product.clone',
-      'product.ia.manual',
+      'product.view', 'product.category.view', 'product.attribute.view',
 
-      // INVENTARIO (solo ver stock asignado)
-      'inventory.movement.view', 'inventory.kardex.view',
+      // INVENTARIO (solo ver)
+      'movement.view', 'inventory.kardex.view',
 
-      // PUBLICACIÓN (si ACL lo permite)
-      'publishing.preview', 'publishing.logs.view',
+      // PUBLICACIÓN
+      'publishing.jobs.view',
 
-      // ÓRDENES
-      'order.external.view', 'order.tenant.view', 'order.global.view',
+      // ÓRDENES (si existen)
 
       // REPORTING
-      'report.kpi.view'
+      'report.sales.view'
     ];
-    editorPerms.forEach(p => addPermission('Editor', p));
+    publicadorPerms.forEach(p => addPermission('Publicador', p));
 
     // --- VIEWER ---
     const viewerPerms = [
       // PRODUCTOS
-      'product.view',
+      'product.view', 'product.category.view', 'product.attribute.view',
 
       // INVENTARIO
-      'inventory.movement.view', 'inventory.kardex.view',
+      'movement.view', 'inventory.kardex.view', 'branch.view', 'pool.view', 'store.view',
 
       // PUBLICACIÓN
-      'publishing.preview', 'publishing.logs.view',
+      'publishing.jobs.view',
 
       // MARKETPLACES
-      'marketplace.external.status.view',
-      'marketplace.global.profile.view', 'marketplace.global.order.view',
+      'marketplace.view', 'marketplacecredential.view',
 
-      // ÓRDENES
-      'order.external.view', 'order.tenant.view', 'order.global.view',
+      // EMPRESA
+      'company.view', 'company.type.view',
+
+      // PLANES
+      'plan.view',
 
       // REPORTING
-      'report.kpi.view'
+      'report.sales.view', 'report.profit.view', 'report.commission.view'
     ];
     viewerPerms.forEach(p => addPermission('Viewer', p));
 
     // --- BACKOFFICE ---
     const backofficePerms = [
-      // PRODUCTOS (solo ver global)
-      'product.view',
+      // PRODUCTOS
+      'product.view', 'product.category.view', 'product.attribute.view',
 
-      // INVENTARIO (solo ver)
-      'inventory.movement.view', 'inventory.kardex.view',
+      // INVENTARIO
+      'movement.view', 'inventory.kardex.view', 'branch.view', 'pool.view', 'store.view',
 
       // PUBLICACIÓN
-      'publishing.publish', 'publishing.preview', 'publishing.logs.view', 'publishing.retry',
+      'publishing.publish', 'publishing.jobs.view',
 
       // MARKETPLACES
-      'marketplace.external.connect', 'marketplace.external.status.view',
-      'marketplace.external.webhook.view',
-      'marketplace.global.publish', 'marketplace.global.profile.view',
-      'marketplace.global.order.view', 'marketplace.global.moderate',
+      'marketplace.view', 'marketplacecredential.view',
 
-      // SYNC ENGINE
-      'sync.view', 'sync.force',
+      // EMPRESA
+      'company.view', 'company.type.view',
 
-      // ÓRDENES & BILLING
-      'order.external.view', 'order.tenant.view', 'order.global.view',
-      'billing.dte.view', 'billing.nc.view',
+      // PLANES
+      'plan.view', 'plan.upgrade',
 
       // REPORTING
-      'report.kpi.view', 'report.export', 'report.commission.view',
+      'report.sales.view', 'report.profit.view', 'report.commission.view',
 
       // IAM
-      'iam.audit.view'
+      'user.view', 'role.view', 'permission.view', 'audit.view'
     ];
     backofficePerms.forEach(p => addPermission('Backoffice', p));
 
@@ -184,7 +172,7 @@ module.exports = {
     await queryInterface.bulkDelete('role_permissions', null, {});
 
     // Eliminar roles oficiales (opcional, normalmente no se hace en down)
-    const officialRoles = ['Admin', 'Seller Manager', 'Editor', 'Viewer', 'Backoffice'];
+    const officialRoles = ['Admin', 'Seller Manager', 'Publicador', 'Viewer', 'Backoffice'];
     await queryInterface.bulkDelete('roles', { name: officialRoles }, {});
   }
 };

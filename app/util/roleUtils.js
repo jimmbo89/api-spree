@@ -3,7 +3,7 @@
 /**
  * Verifica si un usuario tiene uno de los roles permitidos EN UNA EMPRESA.
  * @param {Object} membership - Registro de user_companies con rol cargado
- * @param {string[]} allowedRoles - Lista de nombres de roles permitidos (ej: ['Admin', 'Editor'])
+ * @param {string[]} allowedRoles - Lista de nombres de roles permitidos (ej: ['Admin', 'Publicador'])
  * @returns {boolean}
  */
 function hasRoleInCompany(membership, allowedRoles) {

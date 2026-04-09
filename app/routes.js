@@ -387,10 +387,10 @@ router.post("/publishing-draft-delete", requireRoles([ 'Backoffice', 'Admin', 'S
 router.post("/publishing-task-delete", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(idCompanySchema), ProductPublishingTaskController.destroy);
 
 // Notificaciones
-router.post("/get-user-notifications", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager', 'Editor', 'Viewer']), validateSchema(listNotificationsSchema), NotificationController.getUserNotifications);
-router.post("/notification-mark-as-read", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager', 'Editor', 'Viewer']), validateSchema(markAsReadSchema), NotificationController.markAsRead);
-router.post("/notification-destroy", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager', 'Editor', 'Viewer']), validateSchema(idNotificationSchema), NotificationController.destroy);
-router.get('/unread-count', requireRoles([ 'Backoffice', 'Admin', 'Seller Manager', 'Editor', 'Viewer']), NotificationController.getUnreadCount); 
+router.post("/get-user-notifications", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager', 'Publicador', 'Viewer']), validateSchema(listNotificationsSchema), NotificationController.getUserNotifications);
+router.post("/notification-mark-as-read", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager', 'Publicador', 'Viewer']), validateSchema(markAsReadSchema), NotificationController.markAsRead);
+router.post("/notification-destroy", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager', 'Publicador', 'Viewer']), validateSchema(idNotificationSchema), NotificationController.destroy);
+router.get('/unread-count', requireRoles([ 'Backoffice', 'Admin', 'Seller Manager', 'Publicador', 'Viewer']), NotificationController.getUnreadCount); 
 //Subcripciones
 router.post("/subscriptions", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(listSubscriptionsSchema), SubscriptionController.index);
 router.post("/subscription", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(storeSubscriptionSchema), SubscriptionController.store);
