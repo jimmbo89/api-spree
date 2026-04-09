@@ -109,6 +109,20 @@ const CompanyController = {
     try {
 
       const company = await CompanyRepository.create(req.body, req.file, transaction);
+      
+      // Associate the creating user with the new company as Admin
+      const adminRole = await RoleRepository.findByName('Admin');
+      if (adminRole) {
+        await UserCompanyRepository.create({
+          user_id: req.user.id,
+          company_id: company.id,
+          role_id: adminRole.id,
+          status: 1,
+          joined_at: new Date()
+        }, transaction);
+        logger.info(`Usuario ID ${req.user.id} asociado a compañía ID ${company.id} con rol Admin`);
+      }
+
        // ✅ Usar el nuevo método del repositorio
       //const hasPrincipal = await WarehouseRepository.existsPrincipalByEntity({ companyId: company.id }, transaction);
 
@@ -294,15 +308,35 @@ const CompanyController = {
   async getCompaniesByUser(req, res) {
     logger.info(`${req.user?.name || 'Unknown'} - Visualiza las compañías`);
     const user_id = req.body.user_id || req.user?.id;
+    const companyIdFromHeader = req.headers['x-company-id'];
 
     try {
       const mappedCompanies = await CompanyRepository.getMappedCompaniesByUserId(user_id);
 
       if (!mappedCompanies.length) {
-        return res.status(200).json({ companies: [], msg: 'NoCompaniesFound' });
+        return res.status(200).json({ companies: [], warehouses: [], msg: 'NoCompaniesFound' });
       }
 
-      res.status(200).json({ companies: mappedCompanies });
+      // Get warehouses for all companies
+      const companyIds = mappedCompanies.map(company => company.id);
+      
+      // Use company ID from header if provided, otherwise use the first company from the list
+      const targetCompanyId = companyIdFromHeader ? parseInt(companyIdFromHeader) : companyIds[0];
+
+      // Validate that the targetCompanyId belongs to the user's companies
+      if (!companyIds.includes(targetCompanyId)) {
+        return res.status(403).json({ error: 'CompanyNotAuthorized', msg: 'La compañía no pertenece al usuario' });
+      }
+
+      const filteredWarehouses = await WarehouseRepository.findFiltered({
+        companyId: targetCompanyId,
+        includeProducts: false
+      });
+
+      res.status(200).json({
+        companies: mappedCompanies,
+        warehouses: filteredWarehouses
+      });
     } catch (error) {
       const errorMsg = error.message || 'Error desconocido';
       logger.error('CompanyController->getCompaniesByUser: ' + errorMsg);

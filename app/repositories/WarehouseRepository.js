@@ -74,6 +74,11 @@ const WarehouseRepository = {
   if (status != null && status !== 0) where.status = status;
   if (type != null && type !== 0) where.type = type;
 
+  // ✅ Excluir almacenes con status 'delete' por defecto
+  if (!status || status === 'delete') {
+    where.status = { [Op.ne]: 'delete' };
+  }
+
   // ✅ Incluir relaciones
   include.push(
     {
@@ -335,6 +340,9 @@ async checkUniqueName(data, excludeId = null) {
     where.company_id = companyId;
   }
 
+  // ✅ Excluir almacenes con status 'delete'
+  where.status = { [Op.ne]: 'delete' };
+
   const foundWarehouses = await Warehouse.findAll({
     where,
     attributes: ['id'],
@@ -461,9 +469,12 @@ async checkUniqueName(data, excludeId = null) {
   },
 
   async findWarehousesByCompanyOrBranch(company_id, branch_id) {
- 
+
   const where = {};
-  
+
+  // ✅ Excluir almacenes con status 'delete'
+  where.status = { [Op.ne]: 'delete' };
+
   if (branch_id) {
     where.branch_id = branch_id;
   } else if (company_id) {
@@ -472,16 +483,16 @@ async checkUniqueName(data, excludeId = null) {
       where: { company_id },
       attributes: ['id']
     });
-    
+
     const branchIds = branches.map(b => b.id);
-    
+
     // Buscar warehouses de la company directa O de sus branches
     where[Op.or] = [
       { company_id },
       { branch_id: { [Op.in]: branchIds } }
     ];
   }
-  
+
   return Warehouse.findAll({
     where,
     attributes: ['id', 'code', 'name', 'type', 'status', 'company_id', 'branch_id']

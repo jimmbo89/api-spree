@@ -1,5 +1,5 @@
 // app/repositories/RoleRepository.js
-const { Role, Permission } = require("../models");
+const { Role, Permission, User, UserCompany } = require("../models");
 const logger = require("../../config/logger");
 
 const RoleRepository = {
@@ -7,9 +7,33 @@ const RoleRepository = {
     try {
       const roles = await Role.findAll({
         attributes: ["id", "name", "status", "description"],
-        order: [["id", "ASC"]]
+        order: [["id", "ASC"]],
+        include: [
+          {
+            model: User,
+            as: 'users',
+            attributes: ['id'],
+            required: false,
+          },
+          {
+            model: UserCompany,
+            as: 'memberships',
+            attributes: ['id'],
+            required: false,
+          },
+        ]
       });
-      return roles;
+
+      // Add hasUsers attribute to each role
+      return roles.map(role => {
+        const rolePlain = role.get({ plain: true });
+        const { users, memberships, ...rest } = rolePlain;
+        return {
+          ...rest,
+          hasUsers: (users && users.length > 0) || 
+                    (memberships && memberships.length > 0),
+        };
+      });
     } catch (error) {
       logger.error("Error en RoleRepository->findAll:", error);
       throw new Error(`Error al obtener roles: ${error.message}`);

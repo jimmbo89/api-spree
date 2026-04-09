@@ -14,7 +14,7 @@ const baseSchema = {
   capacity_max_units: Joi.number().integer().min(0).allow(null).optional(),
   allow_mermas: Joi.boolean().optional(),
   rotation_policy: Joi.string().valid('FIFO', 'LIFO', 'FEFO').optional(),
-  status: Joi.string().valid('activo', 'inactivo').optional(),
+  status: Joi.string().valid('activo', 'inactivo', 'delete').optional(),
   company_id: Joi.number().integer().positive().optional().empty('').allow(null),
   branch_id: Joi.number().integer().positive().optional().empty('').allow(null),
   user_id: Joi.number().integer().positive().optional().empty('').allow(null),
@@ -45,7 +45,7 @@ const listWarehouseSchema = Joi.object({
   company_id: Joi.number().allow(null).empty('').optional(),
   branch_id: Joi.number().allow(null).empty('').optional(),
   user_id: Joi.number().allow(null).empty('').optional(),
-  status: Joi.string().valid('activo', 'inactivo').optional(),
+  status: Joi.string().valid('activo', 'inactivo', 'delete').optional(),
   type: Joi.string().valid('central', 'tienda', 'frio', 'inflamable', 'externo').optional(),
 });
 

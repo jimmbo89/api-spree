@@ -1,7 +1,13 @@
 {
   "permissions": {
     "allow": [
-      "Bash(node *)"
+      "Bash(node *)",
+      "WebSearch",
+      "WebFetch(developers.mercadolibre.com)",
+      "WebFetch(developers.falabella.com)",
+      "WebFetch(developers.mercadolibre.com.ar)",
+      "WebFetch(global-selling.mercadolibre.com)"
     ]
-  }
+  },
+  "$version": 3
 }

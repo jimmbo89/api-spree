@@ -1431,10 +1431,16 @@ const AuthController = {
       company_id,
       branch_id
     );
+
+    // Filter out 'Seller Manager' and 'Backoffice' roles
+    const filteredRoles = roles.filter(
+      (role) => role.name !== 'Seller Manager' && role.name !== 'Backoffice'
+    );
+
     try {
       return res.status(200).json({
         success: true,
-        roles: roles, // ya están en formato plano
+        roles: filteredRoles, // ya están en formato plano
         warehouses: warehouses,
         pools: pools,
       });

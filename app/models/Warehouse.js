@@ -132,7 +132,7 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: false,
       defaultValue: 'activo',
       validate: {
-        isIn: [['activo', 'inactivo']]
+        isIn: [['activo', 'inactivo', 'delete']]
       }
     },
     image: {

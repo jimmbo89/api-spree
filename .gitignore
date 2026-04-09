@@ -13,6 +13,10 @@ logs/
 #Docs
 docs/
 
+#qwen
+.qwen/
+.qwen/settings.json
+
 #vnm
 .nvmrc
 public/
