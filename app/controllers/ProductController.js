@@ -213,23 +213,6 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
       });
     }
 
-    // Normalizar atributos técnicos
-    /*let attributes = [];
-    if (req.body.attributes) {
-      if (typeof req.body.attributes === "string") {
-        try {
-          attributes = JSON.parse(req.body.attributes);
-        } catch (e) {
-          return res.status(400).json({
-            success: false,
-            msg: "attributesInvalidJSON",
-          });
-        }
-      } else if (Array.isArray(req.body.attributes)) {
-        attributes = req.body.attributes;
-      }
-    }
-    req.body.attributes = attributes;*/
     let productAttributes = [];
     if (req.body.attributes) {
       if (typeof req.body.attributes === "string") {
@@ -618,7 +601,7 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
     logger.info("Datos recibidos del producto:");
     logger.info(JSON.stringify(req.body));
 
-    const { id, images_to_remove, product_variants } = req.body;
+    const { id, product_variants } = req.body;
     const metadata = getRequestMetadata(req);
 
     try {
@@ -654,36 +637,74 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
       if (req.body.images && typeof req.body.images === "string") {
         req.body.images = JSON.parse(req.body.images);
       }
-      if (images_to_remove) {
-        const namesToRemove = 
-          typeof images_to_remove === 'string' 
-            ? JSON.parse(images_to_remove) 
-            : images_to_remove;
 
+      // Parsear images_order si viene como string JSON o string separado por comas
+      if (req.body.images_order && typeof req.body.images_order === "string") {
+        try {
+          if (req.body.images_order.trim().startsWith('[')) {
+            req.body.images_order = JSON.parse(req.body.images_order);
+          } else {
+            req.body.images_order = req.body.images_order
+              .split(',')
+              .map(item => item.trim())
+              .filter(item => item.length > 0);
+          }
+        } catch (e) {
+          logger.error(`Error parseando images_order:`, e.message);
+          return res.status(400).json({
+            success: false,
+            error: "InvalidImagesOrder",
+            message: "images_order tiene un formato inválido. Debe ser un array JSON o string separado por comas"
+          });
+        }
+      }
+
+      // Parsear images_to_remove si viene como string JSON o string separado por comas
+      if (req.body.images_to_remove && typeof req.body.images_to_remove === "string") {
+        try {
+          if (req.body.images_to_remove.trim().startsWith('[')) {
+            req.body.images_to_remove = JSON.parse(req.body.images_to_remove);
+          } else {
+            req.body.images_to_remove = req.body.images_to_remove
+              .split(',')
+              .map(item => item.trim())
+              .filter(item => item.length > 0);
+          }
+        } catch (e) {
+          logger.error(`Error parseando images_to_remove:`, e.message);
+          return res.status(400).json({
+            success: false,
+            error: "InvalidImagesRemove",
+            message: "images_to_remove tiene un formato inválido. Debe ser un array JSON o string separado por comas"
+          });
+        }
+      }
+
+      // Eliminar archivos físicos si hay images_to_remove
+      if (req.body.images_to_remove && Array.isArray(req.body.images_to_remove)) {
         // Validar que sean strings
-        if (!Array.isArray(namesToRemove) || !namesToRemove.every(name => typeof name === 'string')) {
-          return res.status(400).json({ 
-            success: false, 
-            error: "InvalidImagesRemove", 
-            message: "images_to_remove debe ser un array de nombres de archivos" 
+        if (!req.body.images_to_remove.every(name => typeof name === 'string')) {
+          return res.status(400).json({
+            success: false,
+            error: "InvalidImagesRemove",
+            message: "images_to_remove debe ser un array de nombres de archivos"
           });
         }
 
         const currentImages = Array.isArray(product.images) ? [...product.images] : [];
 
-        // Eliminar archivos físicos
-        for (const filename of namesToRemove) {
+        // Eliminar archivos físicos (solo los que existen y no son default)
+        for (const filename of req.body.images_to_remove) {
           if (currentImages.includes(filename) && filename !== DEFAULT_IMAGE) {
             await FileService.deleteFile(filename);
           }
         }
 
-        // Actualizar el array de imágenes (quitar los nombres especificados)
-        req.body.images = currentImages.filter(img => !namesToRemove.includes(img));
-
-        // Si no se envió req.body.images, usar el filtrado
-        if (req.body.images === undefined) {
-          req.body.images = currentImages.filter(img => !namesToRemove.includes(img));
+        // ⚠️ IMPORTANTE: NO modificar req.body.images aquí
+        // El frontend ya envió images_order con el orden correcto
+        // Solo si NO vino images_order, filtrar como fallback
+        if (req.body.images_order === undefined) {
+          req.body.images = currentImages.filter(img => !req.body.images_to_remove.includes(img));
         }
       }
       // Validar relaciones

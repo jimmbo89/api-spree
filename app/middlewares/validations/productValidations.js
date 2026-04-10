@@ -33,6 +33,17 @@ const productBaseSchema = {
     .items(Joi.string().pattern(/\.(jpg|jpeg|png|gif|webp)$/i))
     .optional()
     .default([]),
+  images_order: Joi.array()
+    .items(Joi.alternatives().try(
+      Joi.string().pattern(/\.(jpg|jpeg|png|gif|webp)$/i),
+      Joi.string().valid('__NEW__')
+    ))
+    .max(40)
+    .optional(),
+  images_to_remove: Joi.array()
+    .items(Joi.string().pattern(/\.(jpg|jpeg|png|gif|webp)$/i))
+    .optional()
+    .default([]),
   sync_meta: Joi.object().optional().default({}),
   state: Joi.number().integer().optional(),
   purchase_price: Joi.number().precision(2).min(0).optional().allow(null),

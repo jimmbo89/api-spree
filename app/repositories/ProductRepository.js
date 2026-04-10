@@ -327,11 +327,26 @@ const ProductRepository = {
   async update(product, body, files = []) {
     try {
       let finalImages = Array.isArray(product.images) ? [...product.images] : [];
-      
-      if (body.images !== undefined) {
-        finalImages = Array.isArray(body.images) ? [...body.images] : [];
+
+      // 👇 LÓGICA DE ELIMINACIÓN (solo si NO viene images_order)
+      // Si viene images_order, el frontend ya excluyó las imágenes a eliminar
+      if (body.images_to_remove && !body.images_order) {
+        const namesToRemove = Array.isArray(body.images_to_remove)
+          ? body.images_to_remove
+          : (typeof body.images_to_remove === 'string' ? JSON.parse(body.images_to_remove) : []);
+
+        if (Array.isArray(namesToRemove)) {
+          const validToRemove = namesToRemove.filter(name =>
+            finalImages.includes(name) && name !== DEFAULT_IMAGE
+          );
+          if (validToRemove.length > 0) {
+            finalImages = finalImages.filter(img => !validToRemove.includes(img));
+          }
+        }
       }
 
+      // 👇 Subir nuevas imágenes y generar filenames
+      let newImagePaths = [];
       if (files?.length > 0) {
         for (const file of files) {
           if (file?.originalname) {
@@ -341,11 +356,39 @@ const ProductRepository = {
               file.originalname
             );
             const filePath = await FileService.moveFile(file, newFilename);
-            finalImages.push(filePath);
+            newImagePaths.push(filePath);
           }
         }
       }
-      
+
+      // 👇 ORDENAMIENTO: si el frontend envía images_order, lo usamos como fuente de verdad
+      if (body.images_order && Array.isArray(body.images_order)) {
+        const PLACEHOLDER = '__NEW__';
+        // Contar cuántos placeholders hay
+        const placeholderCount = body.images_order.filter(item => item === PLACEHOLDER).length;
+
+        // Debe coincidir con la cantidad de nuevas imágenes subidas
+        if (placeholderCount !== newImagePaths.length) {
+          throw new Error(`images_order tiene ${placeholderCount} placeholder(s) "__NEW__" pero se subieron ${newImagePaths.length} imagen(es) nueva(s)`);
+        }
+
+        // Reemplazar cada "__NEW__" secuencialmente con los nombres generados
+        let newIdx = 0;
+        finalImages = body.images_order.map(item => {
+          if (item === PLACEHOLDER) {
+            return newImagePaths[newIdx++];
+          }
+          return item;
+        });
+
+        logger.info(`[ProductRepository] Imágenes finales ordenadas:`, JSON.stringify(finalImages));
+      } else {
+        // Fallback: comportamiento actual (nuevas imágenes al final)
+        if (newImagePaths.length > 0) {
+          finalImages = [...finalImages, ...newImagePaths];
+        }
+      }
+
       const fieldsToUpdate = [
         "sku", "name", "description", "category_id",
         "user_id", "company_id",
@@ -360,7 +403,7 @@ const ProductRepository = {
         if (body[key] !== undefined) updatedData[key] = body[key];
       }
       updatedData.images = finalImages;
-      
+
       await product.update(updatedData);
       logger.info(`Producto actualizado (ID: ${product.id})`);
       return product;
