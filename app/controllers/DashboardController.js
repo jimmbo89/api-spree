@@ -36,7 +36,7 @@ const DashboardController = {
       const alerts = await calculateAlerts(companyId);
 
       // === 4. Marketplaces ===
-      const marketplaces = await calculateMarketplaces(companyId);
+      const marketplaces = await calculateMarketplaces(companyId, req.user?.id);
 
       // === 5. Productos ===
       const products = await calculateProducts(companyId, currentPeriodStart, now);
@@ -126,20 +126,32 @@ async function calculateSalesChart(companyId, fromDate, toDate) {
  * Calcula las alertas del sistema
  */
 async function calculateAlerts(companyId) {
-  const criticalStockCount = await DashboardRepository.getCriticalStockCount(companyId);
-  const publishingErrors = await DashboardRepository.getPublishingIssuesCount(companyId, 
-    new Date(Date.now() - 7 * 24 * 60 * 60 * 1000), 
+  // Contar productos SIN stock (stock = 0) para la alerta de "sin stock"
+  const outOfStockCount = await DashboardRepository.getOutOfStockCount(companyId);
+  // Contar productos con stock bajo (stock <= 5) para referencia
+  const lowStockCount = await DashboardRepository.getCriticalStockCount(companyId);
+  
+  const publishingErrors = await DashboardRepository.getPublishingIssuesCount(companyId,
+    new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
     new Date()
   );
 
   const alerts = [];
 
-  if (criticalStockCount > 0) {
+  if (outOfStockCount > 0) {
     alerts.push({
       type: 'error',
       label: 'Productos sin stock',
-      count: criticalStockCount,
+      count: outOfStockCount,
       link: '/products?stock=out'
+    });
+  } else if (lowStockCount > 0) {
+    // Si no hay productos sin stock pero sí con stock bajo, mostrar advertencia
+    alerts.push({
+      type: 'warning',
+      label: 'Productos con stock bajo',
+      count: lowStockCount,
+      link: '/products?stock=low'
     });
   }
 
@@ -161,8 +173,8 @@ async function calculateAlerts(companyId) {
 /**
  * Calcula el estado de los marketplaces
  */
-async function calculateMarketplaces(companyId) {
-  return await DashboardRepository.getMarketplaces(companyId);
+async function calculateMarketplaces(companyId, userId) {
+  return await DashboardRepository.getMarketplaces(companyId, userId);
 }
 
 /**

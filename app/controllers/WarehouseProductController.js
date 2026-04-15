@@ -404,76 +404,108 @@ const WarehouseProductController = {
           const normalizedVariantId = variant_id != null ? String(variant_id) : null;
           const key = `global-${normalizedVariantId}`;
 
-          // Normalizar purchase_price a número
-          const normalizedPurchasePrice = parseFloat(purchase_price) || 0;
+          const hasStock = stock !== undefined && stock !== null;
+          const hasPrice = price !== undefined && price !== null;
+          const hasPurchasePrice = purchase_price !== undefined && purchase_price !== null;
+          const hasPromotionalPrice = promotional_price !== undefined;
+          const hasLocalSku = local_sku !== undefined;
+          const hasActive = variantData.active !== undefined;
+          const hasPublished = variantData.published !== undefined;
+
+          const normalizedPurchasePrice = hasPurchasePrice
+            ? (parseFloat(purchase_price) || 0)
+            : null;
 
           logger.info(`[DEBUG] Buscando variante con key: ${key}, purchase_price: ${normalizedPurchasePrice}`);
 
           // ⭐ BUSCAR lote existente con el MISMO purchase_price y misma variante_id
-          const existingWithSamePrice = existingVariants.find(v => {
-            const vNormalizedVariantId = v.variant_id != null ? String(v.variant_id) : null;
-            const vKey = `global-${vNormalizedVariantId}`;
-            
-            const vPurchasePrice = parseFloat(v.purchase_price) || 0;
-            const priceMatch = Math.abs(vPurchasePrice - normalizedPurchasePrice) < 0.01;
-            
-            logger.info(`[DEBUG] Comparando con variante existente: key=${vKey}, purchase_price=${vPurchasePrice}, match=${vKey === key && priceMatch}`);
-            
-            return vKey === key && priceMatch;
-          });
+          let existingWithSamePrice = null;
+          if (hasPurchasePrice) {
+            existingWithSamePrice = existingVariants.find(v => {
+              const vNormalizedVariantId = v.variant_id != null ? String(v.variant_id) : null;
+              const vKey = `global-${vNormalizedVariantId}`;
+              
+              const vPurchasePrice = parseFloat(v.purchase_price) || 0;
+              const priceMatch = Math.abs(vPurchasePrice - normalizedPurchasePrice) < 0.01;
+              
+              logger.info(`[DEBUG] Comparando con variante existente: key=${vKey}, purchase_price=${vPurchasePrice}, match=${vKey === key && priceMatch}`);
+              
+              return vKey === key && priceMatch;
+            });
+          }
+
+          if (!existingWithSamePrice) {
+            const candidates = existingVariants.filter(v => {
+              const vNormalizedVariantId = v.variant_id != null ? String(v.variant_id) : null;
+              return `global-${vNormalizedVariantId}` === key;
+            });
+            if (candidates.length > 0) {
+              candidates.sort((a, b) => {
+                const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+                const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+                if (aTime !== bTime) return bTime - aTime;
+                return (b.id || 0) - (a.id || 0);
+              });
+              existingWithSamePrice = candidates[0];
+            }
+          }
 
           const variantToUpdate = {
             warehouse_product_id: record.id,
             variant_id: variant_id || null,
-            local_sku: local_sku || null,
-            stock: parseInt(stock) || 0,
-            price: parseFloat(price) || 0,
-            purchase_price: normalizedPurchasePrice, // ⭐ AGREGADO
-            promotional_price: promotional_price
-              ? parseFloat(promotional_price)
-              : null,
-            active: activeVariant !== false,
-            published: published,
           };
+          if (hasLocalSku) variantToUpdate.local_sku = local_sku || null;
+          if (hasPrice) variantToUpdate.price = parseFloat(price) || 0;
+          if (hasPurchasePrice) variantToUpdate.purchase_price = normalizedPurchasePrice;
+          if (hasPromotionalPrice) {
+            variantToUpdate.promotional_price = promotional_price
+              ? parseFloat(promotional_price)
+              : null;
+          }
+          if (hasActive) variantToUpdate.active = activeVariant !== false;
+          if (hasPublished) variantToUpdate.published = published;
 
           if (existingWithSamePrice) {
             logger.info(`[DEBUG] Variante encontrada (ID: ${existingWithSamePrice.id}), incrementando stock`);
             
             // ✅ MISMO PRECIO DE COMPRA: Incrementar stock al lote existente
-            const oldStock = existingWithSamePrice.stock || 0;
-            const newStock = oldStock + (parseInt(stock) || 0);
-
-            await existingWithSamePrice.update({
-              ...variantToUpdate,
-              stock: newStock
-            }, { transaction });
-            
-            // ⭐ REGISTRAR MOVIMIENTO DE INVENTARIO (entrada de stock)
-            if (parseInt(stock) > 0) {
-              await InventoryMovementRepository.create({
-                warehouse_id: record.warehouse_id,
-                product_id: record.product_id,
-                variant_id: variant_id || null,
-                company_id: record.company_id,
-                branch_id: record.branch_id,
-                movement_type: 'entry',
-                quantity: parseInt(stock) || 0,
-                stock_before: oldStock,
-                stock_after: newStock,
-                unit_price: parseFloat(price) || 0,
-                purchase_price: parseFloat(purchase_price) || 0,
-                total_value: (parseFloat(purchase_price) || 0) * (parseInt(stock) || 0),
-                reference_type: 'warehouse_product_update',
-                reference_id: referenceId,
-                user_id: metadata.user_id,
-                notes: `Actualización de stock - warehouse_product_update ID: ${id}`,
-                meta: {
-                  operation: 'warehouse_product_update',
-                  warehouse_product_id: id,
-                  lot_matched: true,
-                  existing_variant_id: existingWithSamePrice.id
-                }
+            if (hasStock) {
+              const oldStock = existingWithSamePrice.stock || 0;
+              const newStock = oldStock + (parseInt(stock) || 0);
+              await existingWithSamePrice.update({
+                ...variantToUpdate,
+                stock: newStock
               }, { transaction });
+
+              // ⭐ REGISTRAR MOVIMIENTO DE INVENTARIO (entrada de stock)
+              if (parseInt(stock) > 0) {
+                await InventoryMovementRepository.create({
+                  warehouse_id: record.warehouse_id,
+                  product_id: record.product_id,
+                  variant_id: variant_id || null,
+                  company_id: record.company_id,
+                  branch_id: record.branch_id,
+                  movement_type: 'entry',
+                  quantity: parseInt(stock) || 0,
+                  stock_before: oldStock,
+                  stock_after: newStock,
+                  unit_price: hasPrice ? (parseFloat(price) || 0) : (parseFloat(existingWithSamePrice.price) || 0),
+                  purchase_price: hasPurchasePrice ? (parseFloat(purchase_price) || 0) : (parseFloat(existingWithSamePrice.purchase_price) || 0),
+                  total_value: (parseFloat(purchase_price) || 0) * (parseInt(stock) || 0),
+                  reference_type: 'warehouse_product_update',
+                  reference_id: referenceId,
+                  user_id: metadata.user_id,
+                  notes: `Actualizacion de stock - warehouse_product_update ID: ${id}`,
+                  meta: {
+                    operation: 'warehouse_product_update',
+                    warehouse_product_id: id,
+                    lot_matched: true,
+                    existing_variant_id: existingWithSamePrice.id
+                  }
+                }, { transaction });
+              }
+            } else {
+              await existingWithSamePrice.update(variantToUpdate, { transaction });
             }
             
             processedIds.add(existingWithSamePrice.id);
@@ -481,15 +513,26 @@ const WarehouseProductController = {
             // ⭐ DIFERENTE PRECIO DE COMPRA: Crear nuevo lote (FIFO)
             logger.info(`[DEBUG] NO se encontró variante con mismo precio, creando NUEVO lote`);
             
-            const newVariant = await WarehouseProductVariantRepository.create(
-              variantToUpdate,
-              { transaction }
-            );
+            const createData = {
+              warehouse_product_id: record.id,
+              variant_id: variant_id || null,
+              local_sku: hasLocalSku ? (local_sku || null) : null,
+              stock: hasStock ? (parseInt(stock) || 0) : 0,
+              price: hasPrice ? (parseFloat(price) || 0) : 0,
+              purchase_price: hasPurchasePrice ? normalizedPurchasePrice : 0,
+              promotional_price: hasPromotionalPrice
+                ? (promotional_price ? parseFloat(promotional_price) : null)
+                : null,
+              active: hasActive ? (activeVariant !== false) : true,
+              published: hasPublished ? published : false
+            };
+
+            const newVariant = await WarehouseProductVariantRepository.create(createData, { transaction });
 
             logger.info(`[DEBUG] Nueva variante creada (ID: ${newVariant.id})`);
             
             // ⭐ REGISTRAR MOVIMIENTO DE INVENTARIO (entrada de stock - nuevo lote)
-            if (parseInt(stock) > 0) {
+            if (hasStock && parseInt(stock) > 0) {
               await InventoryMovementRepository.create({
                 warehouse_id: record.warehouse_id,
                 product_id: record.product_id,
@@ -500,13 +543,13 @@ const WarehouseProductController = {
                 quantity: parseInt(stock) || 0,
                 stock_before: 0,
                 stock_after: parseInt(stock) || 0,
-                unit_price: parseFloat(price) || 0,
-                purchase_price: parseFloat(purchase_price) || 0,
+                unit_price: hasPrice ? (parseFloat(price) || 0) : 0,
+                purchase_price: hasPurchasePrice ? (parseFloat(purchase_price) || 0) : 0,
                 total_value: (parseFloat(purchase_price) || 0) * (parseInt(stock) || 0),
                 reference_type: 'warehouse_product_update',
                 reference_id: referenceId,
                 user_id: metadata.user_id,
-                notes: `Creación de nuevo lote - warehouse_product_update ID: ${id}`,
+                notes: `Creacion de nuevo lote - warehouse_product_update ID: ${id}`,
                 meta: {
                   operation: 'warehouse_product_update',
                   warehouse_product_id: id,

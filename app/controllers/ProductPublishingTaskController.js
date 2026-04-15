@@ -408,17 +408,33 @@ async store(req, res) {
     const SIM_BATCH_ID = 'c5a4e469-5b04-4772-88e7-684d980c5122';
 
   // === VALIDACIONES ===
-  if (!['draft', 'publish', 'quick', 'advanced', 'manual'].includes(mode)) {
-    return res.status(400).json({ success: false, msg: "mode_invalid" });
-  }
-  if (!Array.isArray(products) || products.length === 0) {
-    return res.status(400).json({ success: false, msg: "products_required" });
+  // Validar que mode tenga un valor válido (validación redundante por seguridad)
+  const validModes = ['draft', 'publish', 'quick', 'advanced', 'manual'];
+  if (!mode || !validModes.includes(mode)) {
+    return res.status(400).json({ 
+      success: false, 
+      msg: "modo_invalido",
+      details: `El campo "mode" es obligatorio y debe ser uno de: ${validModes.join(', ')}`,
+      received_value: mode
+    });
   }
   
+  if (!Array.isArray(products) || products.length === 0) {
+    return res.status(400).json({ 
+      success: false, 
+      msg: "productos_requeridos",
+      details: "El campo 'products' es obligatorio y debe contener al menos un producto"
+    });
+  }
+
   // ✅ marketplaces es opcional solo cuando mode === 'draft'
   const isDraft = mode === 'draft';
   if (!isDraft && (!Array.isArray(marketplaces) || marketplaces.length === 0)) {
-    return res.status(400).json({ success: false, msg: "marketplaces_required" });
+    return res.status(400).json({ 
+      success: false, 
+      msg: "marketplaces_requeridos",
+      details: "El campo 'marketplaces' es obligatorio cuando el modo no es 'draft'. Debe contener al menos un marketplace"
+    });
   }
 
   // === NUEVO: Validar publication_step ===
@@ -470,7 +486,12 @@ async store(req, res) {
     marketplaceIds = [...new Set(marketplaces.map(mp => Number(mp.marketplace_id || mp.id)))];
     const validation = await MarketplaceRepository.findByIds(marketplaceIds);
     if (!validation.valid) {
-      return res.status(400).json({ success: false, msg: "someMarketplacesNotFound" });
+      return res.status(400).json({ 
+        success: false, 
+        msg: "marketplaces_no_encontrados",
+        details: "Algunos marketplaces no existen o no están disponibles",
+        invalid_ids: validation.invalid_ids || marketplaceIds
+      });
     }
   }
 
@@ -588,16 +609,28 @@ async store(req, res) {
 
     try {
       if (!['update', 'publish'].includes(action)) {
-        return res.status(400).json({ success: false, msg: "action_invalid" });
+        return res.status(400).json({ 
+          success: false, 
+          msg: "accion_invalida",
+          details: "El campo 'action' debe ser 'update' o 'publish'"
+        });
       }
       if (!Array.isArray(products) || products.length === 0) {
-        return res.status(400).json({ success: false, msg: "products_required" });
+        return res.status(400).json({ 
+          success: false, 
+          msg: "productos_requeridos",
+          details: "El campo 'products' es obligatorio y debe contener al menos un producto"
+        });
       }
-      
+
       // ✅ marketplaces es opcional cuando action === 'update' (solo se actualiza el borrador)
       // ✅ marketplaces es requerido cuando action === 'publish' (se va a publicar)
       if (action === 'publish' && (!Array.isArray(marketplaces) || marketplaces.length === 0)) {
-        return res.status(400).json({ success: false, msg: "marketplaces_required" });
+        return res.status(400).json({ 
+          success: false, 
+          msg: "marketplaces_requeridos",
+          details: "El campo 'marketplaces' es obligatorio cuando la acción es 'publish'. Debe contener al menos un marketplace"
+        });
       }
 
       const jobInstance = await Job.findByPk(job_id);
@@ -670,7 +703,11 @@ async store(req, res) {
         const marketplaceIds = [...new Set(marketplaces.map(mp => Number(mp.marketplace_id || mp.marketplace?.id || mp.marketplaceId || mp.id)))];
         const validation = await MarketplaceRepository.findByIds(marketplaceIds);
         if (!validation.valid) {
-          return res.status(400).json({ success: false, msg: "someMarketplacesNotFound" });
+          return res.status(400).json({ 
+          success: false, 
+          msg: "marketplaces_no_encontrados",
+          details: "Algunos marketplaces no existen o no están disponibles"
+        });
         }
 
         normalizedMarketplaces = marketplaces.map(mpConfig => {

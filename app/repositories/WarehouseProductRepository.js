@@ -1,5 +1,5 @@
 ﻿const { Op, fn, col, where, and, or, literal } = require('sequelize');
-const { WarehouseProduct, Product, ProductVariant, WarehouseProductVariant, ProductCategory, ProductAttribute, Attribute, Branch, Company, Warehouse, sequelize } = require('../models');
+const { WarehouseProduct, Product, ProductVariant, WarehouseProductVariant, ProductCategory, ProductAttribute, Attribute, VariantValue, VariantDefinition, Branch, Company, Warehouse, sequelize } = require('../models');
 const ImageService = require('../services/ImageService');
 const logger = require('../../config/logger');
 const path = require('path');
@@ -73,7 +73,18 @@ async findFiltered({ companyId, userId, branchId, warehouseId }) {
           { 
             model: ProductVariant, 
             as: 'variants',
-            attributes: ['id', 'sku', 'attributes']
+            attributes: ['id', 'sku', 'attributes'],
+            include: [{
+              model: VariantValue,
+              as: 'variantValues',
+              attributes: ['id', 'name', 'code', 'variant_definition_id'],
+              through: { attributes: [] },
+              include: [{
+                model: VariantDefinition,
+                as: 'definition',
+                attributes: ['id', 'name']
+              }]
+            }]
           },
           {
             model: ProductAttribute,
@@ -99,7 +110,18 @@ async findFiltered({ companyId, userId, branchId, warehouseId }) {
         include: [{
           model: ProductVariant,
           as: 'variant',
-          attributes: ['id', 'sku', 'attributes']
+          attributes: ['id', 'sku', 'attributes'],
+          include: [{
+            model: VariantValue,
+            as: 'variantValues',
+            attributes: ['id', 'name', 'code', 'variant_definition_id'],
+            through: { attributes: [] },
+            include: [{
+              model: VariantDefinition,
+              as: 'definition',
+              attributes: ['id', 'name']
+            }]
+          }]
         }]
       }
     ],
@@ -168,11 +190,28 @@ async findFiltered({ companyId, userId, branchId, warehouseId }) {
     const warehouseVariants = wpJson.warehouseVariants || [];
 
     const variantsWithStock = warehouseVariants.map(wpv => {
+      const variantValuesRaw = Array.isArray(wpv.variant?.variantValues) ? wpv.variant.variantValues : [];
+      const variantValues = variantValuesRaw.map(v => ({
+        id: v.id,
+        name: v.name,
+        code: v.code,
+        variant_definition_id: v.variant_definition_id,
+        definition: v.definition ? { id: v.definition.id, name: v.definition.name } : null
+      })).sort((a, b) => {
+        if (a.variant_definition_id !== b.variant_definition_id) {
+          return a.variant_definition_id - b.variant_definition_id;
+        }
+        return a.id - b.id;
+      });
+      const variantLabel = variantValues.map(v => v.name).filter(Boolean).join(" / ");
+
       return {
         id: wpv.id,
         variant_id: wpv.variant_id,
         sku: wpv.variant?.sku || '',
         attributes: wpv.variant?.attributes || {},
+        variant_values: variantValues,
+        variant_label: variantLabel,
         active: wpv.active !== false,
         published: wpv.published || false,
         local_sku: wpv.local_sku || '',
@@ -306,10 +345,30 @@ async getProductWarehousesWithStock({ productIds, companyId, branchId }) {
           'purchase_price',
           'promotional_price',
           'active',
-          'published'
+          'published',
+          'local_sku'
         ],
         required: false,
-        where: { active: true }
+        where: { active: true },
+        include: [{
+          model: ProductVariant,
+          as: 'variant',
+          attributes: ['id', 'sku', 'attributes'],
+          required: false,
+          include: [{
+            model: VariantValue,
+            as: 'variantValues',
+            attributes: ['id', 'name', 'code', 'variant_definition_id'],
+            through: { attributes: [] },
+            required: false,
+            include: [{
+              model: VariantDefinition,
+              as: 'definition',
+              attributes: ['id', 'name'],
+              required: false
+            }]
+          }]
+        }]
       }
     ],
     raw: false
@@ -333,15 +392,41 @@ async getProductWarehousesWithStock({ productIds, companyId, branchId }) {
       image: wp.warehouse_image || null,
       stock: totalStock,
       warehouse_product_id: wp.id,
-      variants: variants.map(v => ({
-        variant_id: v.variant_id,
-        stock: parseInt(v.stock, 10) || 0,
-        price: parseFloat(v.price) || 0,
-        purchase_price: parseFloat(v.purchase_price) || 0,
-        promotional_price: v.promotional_price ? parseFloat(v.promotional_price) : null,
-        active: v.active,
-        published: v.published
-      }))
+      variants: variants.map(v => {
+        // ⭐ Procesar variant_values si existen
+        const variantValuesRaw = Array.isArray(v.variant?.variantValues) ? v.variant.variantValues : [];
+        const variantValues = variantValuesRaw.map(vv => ({
+          id: vv.id,
+          name: vv.name,
+          code: vv.code,
+          variant_definition_id: vv.variant_definition_id,
+          definition: vv.definition ? { id: vv.definition.id, name: vv.definition.name } : null
+        })).sort((a, b) => {
+          if (a.variant_definition_id !== b.variant_definition_id) {
+            return a.variant_definition_id - b.variant_definition_id;
+          }
+          return a.id - b.id;
+        });
+
+        // ⭐ Crear variant_label similar a /warehouse-products-not-in-warehouse
+        const variantLabel = variantValues.map(vv => vv.name).filter(Boolean).join(" / ");
+
+        return {
+          id: v.id,  // warehouse_product_variant_id
+          variant_id: v.variant_id,
+          sku: v.variant?.sku || '',
+          attributes: v.variant?.attributes || {},
+          variant_values: variantValues,
+          variant_label: variantLabel,
+          local_sku: v.local_sku || '',
+          stock: parseInt(v.stock, 10) || 0,
+          price: parseFloat(v.price) || 0,
+          purchase_price: parseFloat(v.purchase_price) || 0,
+          promotional_price: v.promotional_price ? parseFloat(v.promotional_price) : null,
+          active: v.active,
+          published: v.published
+        };
+      })
     });
   });
 
@@ -394,7 +479,17 @@ async findProductsNotInWarehouse({ warehouseId, companyId, specificProductId = n
       include: [{
         model: ProductVariant,
         as: 'variants',
-        attributes: ['id', 'sku', 'attributes']
+        include: [{
+          model: VariantValue,
+          as: 'variantValues',
+          attributes: ['id', 'name', 'code', 'variant_definition_id'],
+          through: { attributes: [] },
+          include: [{
+            model: VariantDefinition,
+            as: 'definition',
+            attributes: ['id', 'name']
+          }]
+        }]
       }],
       order: [['name', 'ASC']],
       limit: 100
@@ -459,12 +554,37 @@ async findProductsNotInWarehouse({ warehouseId, companyId, specificProductId = n
         height_cm: product.height_cm || null,
         category_id: product.category_id || null,
         base_price: product.base_price || 0,
+        purchase_price: product.purchase_price,
+        sale_price: product.sale_price,
         status: product.status || 1,
         image: firstImage,
         image_url: firstImageWithVersion,
         image_version: imageVersion,
         attributes: attributes,
-        variants: product.variants || [],
+        variants: (product.variants || []).map(v => {
+          const variantValuesRaw = Array.isArray(v.variantValues) ? v.variantValues : [];
+          const variantValues = variantValuesRaw.map(val => ({
+            id: val.id,
+            name: val.name,
+            code: val.code,
+            variant_definition_id: val.variant_definition_id,
+            definition: val.definition ? { id: val.definition.id, name: val.definition.name } : null
+          })).sort((a, b) => {
+            if (a.variant_definition_id !== b.variant_definition_id) {
+              return a.variant_definition_id - b.variant_definition_id;
+            }
+            return a.id - b.id;
+          });
+          const variantLabel = variantValues.map(val => val.name).filter(Boolean).join(" / ");
+
+          return {
+            id: v.id,
+            sku: v.sku || '',
+            attributes: v.attributes || {},
+            variant_values: variantValues,
+            variant_label: variantLabel
+          };
+        }),
         // Información adicional para el autocomplete
         display_name: `${product.name}${product.brand ? ` - ${product.brand}` : ''}${product.sku ? ` (${product.sku})` : ''}`
       };
@@ -494,7 +614,18 @@ async findProductsByWarehouseIds({ companyId, warehouseIds }) {
         include: [{
           model: ProductVariant,
           as: 'variants',
-          attributes: ['id', 'sku', 'attributes']
+          attributes: ['id', 'sku', 'attributes'],
+          include: [{
+            model: VariantValue,
+            as: 'variantValues',
+            attributes: ['id', 'name', 'code', 'variant_definition_id'],
+            through: { attributes: [] },
+            include: [{
+              model: VariantDefinition,
+              as: 'definition',
+              attributes: ['id', 'name']
+            }]
+          }]
         },{
           model: ProductCategory,
           as: 'category',
@@ -507,7 +638,18 @@ async findProductsByWarehouseIds({ companyId, warehouseIds }) {
         include: [{
           model: ProductVariant,
           as: 'variant',
-          attributes: ['id', 'sku', 'attributes']
+          attributes: ['id', 'sku', 'attributes'],
+          include: [{
+            model: VariantValue,
+            as: 'variantValues',
+            attributes: ['id', 'name', 'code', 'variant_definition_id'],
+            through: { attributes: [] },
+            include: [{
+              model: VariantDefinition,
+              as: 'definition',
+              attributes: ['id', 'name']
+            }]
+          }]
         }]
       }
     ]
@@ -600,12 +742,28 @@ async findProductsByWarehouseIds({ companyId, warehouseIds }) {
       const stock = parseInt(wv.stock) || 0;
       const price = parseFloat(wv.price) || 0;
       const purchasePrice = parseFloat(wv.purchase_price) || 0; // ⭐ AGREGADO
+      const variantValuesRaw = Array.isArray(wv.variant?.variantValues) ? wv.variant.variantValues : [];
+      const variantValues = variantValuesRaw.map(v => ({
+        id: v.id,
+        name: v.name,
+        code: v.code,
+        variant_definition_id: v.variant_definition_id,
+        definition: v.definition ? { id: v.definition.id, name: v.definition.name } : null
+      })).sort((a, b) => {
+        if (a.variant_definition_id !== b.variant_definition_id) {
+          return a.variant_definition_id - b.variant_definition_id;
+        }
+        return a.id - b.id;
+      });
+      const variantLabel = variantValues.map(v => v.name).filter(Boolean).join(" / ");
 
       if (!consolidated.variants.has(variantId)) {
         consolidated.variants.set(variantId, {
           id: variantId,
           sku: wv.variant?.sku || '',
           attributes: wv.variant?.attributes || {},
+          variant_values: variantValues,
+          variant_label: variantLabel,
           price: price,
           purchase_price: purchasePrice, // ⭐ AGREGADO
           totalStock: 0
@@ -976,4 +1134,3 @@ async getWarehouseSummaryByCompanyId(companyId) {
 };
 
 module.exports = WarehouseProductRepository;
-

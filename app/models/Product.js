@@ -55,6 +55,18 @@ module.exports = (sequelize, DataTypes) => {
     length_cm: { type: DataTypes.DECIMAL(8, 2), allowNull: true },
     width_cm: { type: DataTypes.DECIMAL(8, 2), allowNull: true },
     height_cm: { type: DataTypes.DECIMAL(8, 2), allowNull: true },
+    product_measurements: {
+      type: DataTypes.JSON,
+      allowNull: true,
+      defaultValue: {},
+      comment: 'Medidas del producto: { weight: { value, unit }, dimensions: { length, width, height, depth } }'
+    },
+    packaging_measurements: {
+      type: DataTypes.JSON,
+      allowNull: true,
+      defaultValue: {},
+      comment: 'Medidas de la caja: { weight: { value, unit }, dimensions: { length, width, height, depth }, material, fragile }'
+    },
     category_id: { type: DataTypes.BIGINT, allowNull: true },
     user_id: { type: DataTypes.BIGINT, allowNull: true },
     company_id: { type: DataTypes.BIGINT, allowNull: true },

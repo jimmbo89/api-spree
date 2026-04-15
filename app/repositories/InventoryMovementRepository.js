@@ -1,5 +1,5 @@
 // repositories/InventoryMovementRepository.js
-const { InventoryMovement, Warehouse, Product, ProductVariant, User, Company, Branch } = require("../models");
+const { InventoryMovement, Warehouse, Product, ProductVariant, User, Company, Branch, VariantValue, ProductVariantValue, VariantDefinition } = require("../models");
 const logger = require("../../config/logger");
 const { Op, col, fn, literal } = require("sequelize");
 const WarehouseRepository = require("./WarehouseRepository");
@@ -7,6 +7,52 @@ const WarehouseProductRepository = require("./WarehouseProductRepository");
 const WarehouseProductVariantRepository = require("./WarehouseProductVariantRepository");
 const ProductRepository = require("./ProductRepository");
 const { getDateRange } = require("../util/dateUtils");
+
+/**
+ * Obtiene los variant_values para un variant_id dado
+ * @param {number} variantId - ID del ProductVariant
+ * @returns {Promise<Array>} Lista de variant_values con información completa
+ */
+async function getVariantValues(variantId) {
+  try {
+    if (!variantId) return [];
+
+    const productVariant = await ProductVariant.findByPk(variantId, {
+      include: [{
+        model: VariantValue,
+        as: 'variantValues',
+        attributes: ['id', 'name', 'code', 'variant_definition_id'],
+        through: { attributes: [] },
+        include: [{
+          model: VariantDefinition,
+          as: 'definition',
+          attributes: ['id', 'name']
+        }]
+      }]
+    });
+
+    if (!productVariant || !productVariant.variantValues) return [];
+
+    return productVariant.variantValues.map(vv => ({
+      id: vv.id,
+      name: vv.name,
+      code: vv.code,
+      variant_definition_id: vv.variant_definition_id,
+      definition: vv.definition ? {
+        id: vv.definition.id,
+        name: vv.definition.name
+      } : null
+    })).sort((a, b) => {
+      if (a.variant_definition_id !== b.variant_definition_id) {
+        return a.variant_definition_id - b.variant_definition_id;
+      }
+      return a.id - b.id;
+    });
+  } catch (error) {
+    logger.error("getVariantValues error:", error.message);
+    return [];
+  }
+}
 
 /**
  * Mapea un registro de InventoryMovement a un objeto plano con relaciones.
@@ -26,6 +72,38 @@ function mapInventoryMovement(record) {
     } catch (e) {
       // Ignorar
     }
+  }
+
+  // ⭐ Extraer variant_values del meta si existen
+  let variantValues = null;
+  let variantLabel = null;
+  if (record.meta) {
+    try {
+      const meta = typeof record.meta === 'string' ? JSON.parse(record.meta) : record.meta;
+      variantValues = meta.variant_values || null;
+      variantLabel = meta.variant_label || null;
+    } catch (e) {
+      // Ignorar si no se puede parsear
+    }
+  }
+
+  // ⭐ Si no hay variant_values en meta, obtenerlos desde la relación variant.variantValues
+  if (!variantValues && record.variant?.variantValues) {
+    const variantValuesRaw = Array.isArray(record.variant.variantValues) ? record.variant.variantValues : [];
+    variantValues = variantValuesRaw.map(vv => ({
+      id: vv.id,
+      name: vv.name,
+      code: vv.code,
+      variant_definition_id: vv.variant_definition_id,
+      definition: vv.definition ? { id: vv.definition.id, name: vv.definition.name } : null
+    })).sort((a, b) => {
+      if (a.variant_definition_id !== b.variant_definition_id) {
+        return a.variant_definition_id - b.variant_definition_id;
+      }
+      return a.id - b.id;
+    });
+
+    variantLabel = variantValues.map(vv => vv.name).filter(Boolean).join(" / ");
   }
 
   return {
@@ -56,6 +134,13 @@ function mapInventoryMovement(record) {
     current_purchase_price: record.current_purchase_price || null,
     current_promotional_price: record.current_promotional_price || null,
 
+    // ⭐ VARIANT_VALUES: Información de las variantes (similar a /warehouse-products-not-in-warehouse)
+    variant_values: variantValues,
+    variant_label: variantLabel,
+
+    // ⭐ PRIMERA IMAGEN DEL PRODUCTO (para fácil acceso en el frontend)
+    product_first_image: productFirstImage,
+
     warehouse: record.warehouse ? { id: record.warehouse.id, name: record.warehouse.name, image: record.warehouse.image } : null,
     originWarehouse: record.originWarehouse ? {
       id: record.originWarehouse.id,
@@ -69,12 +154,12 @@ function mapInventoryMovement(record) {
       image: record.destinationWarehouse.image
     } : null,
     product: record.product ? { id: record.product.id, name: record.product.name, first_image: productFirstImage } : null,
-    variant: record.variant ? { 
-      id: record.variant.id, 
-      sku: record.variant.sku, 
+    variant: record.variant ? {
+      id: record.variant.id,
+      sku: record.variant.sku,
       attributes: record.variant.attributes
     } : null,
-    user: record.user ? { id: record.user.id, name: record.user.name } : null,
+    user: record.user ? { id: record.user.id, name: record.user.name, image: record.user.image } : null,
     company: record.company ? { id: record.company.id, name: record.company.name, image: record.company.image } : null,
     branch: record.branch ? { id: record.branch.id, name: record.branch.name, image: record.branch.image } : null
   };
@@ -136,6 +221,23 @@ const InventoryMovementRepository = {
 
   async create(data, options = {}) {
     try {
+      // ⭐ Agregar variant_values al movimiento si hay variant_id
+      if (data.variant_id && !data.meta?.variant_values) {
+        const variantValues = await getVariantValues(data.variant_id);
+        
+        if (variantValues.length > 0) {
+          // Crear etiqueta legible similar a /warehouse-products-not-in-warehouse
+          const variantLabel = variantValues.map(vv => vv.name).filter(Boolean).join(" / ");
+          
+          // Agregar al meta
+          data.meta = {
+            ...(data.meta || {}),
+            variant_values: variantValues,
+            variant_label: variantLabel
+          };
+        }
+      }
+
       return await InventoryMovement.create(data, options);
     } catch (error) {
       logger.error("InventoryMovementRepository.create error:", error.message);
@@ -279,8 +381,23 @@ async findWithFilters(filters = {}, options = {}) {
             { model: Warehouse, as: 'originWarehouse', foreignKey: 'origin_warehouse_id', attributes: ['id','name','image'] },
             { model: Warehouse, as: 'destinationWarehouse', foreignKey: 'destination_warehouse_id', attributes: ['id','name','image'] },
             { model: Product, as: 'product', attributes: ['id','name','images'] },
-            { model: ProductVariant, as: 'variant', attributes: ['id','sku','attributes'] },
-            { model: User, as: 'user', attributes: ['id','name'] },
+            { 
+              model: ProductVariant, 
+              as: 'variant', 
+              attributes: ['id','sku','attributes'],
+              include: [{
+                model: VariantValue,
+                as: 'variantValues',
+                attributes: ['id', 'name', 'code', 'variant_definition_id'],
+                through: { attributes: [] },
+                include: [{
+                  model: VariantDefinition,
+                  as: 'definition',
+                  attributes: ['id', 'name']
+                }]
+              }]
+            },
+            { model: User, as: 'user', attributes: ['id','name','image'] },
             { model: Company, as: 'company', attributes: ['id','name','image'] },
             { model: Branch, as: 'branch', attributes: ['id','name','image'] }
         ],

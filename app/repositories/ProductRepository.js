@@ -1,4 +1,4 @@
-const { Product, ProductVariant, ProductAttribute, Attribute, sequelize } = require("../models");
+const { Product, ProductVariant, ProductAttribute, Attribute, VariantValue, VariantDefinition, sequelize } = require("../models");
 const { Op } = require("sequelize");
 const logger = require("../../config/logger");
 const WarehouseProductRepository = require("./WarehouseProductRepository");
@@ -39,6 +39,7 @@ const ProductRepository = {
         "brand", "model", "condition", "gtin", "mpn",
         "attributes", "warranty_months", "warranty_text",
         "weight_grams", "length_cm", "width_cm", "height_cm",
+        "product_measurements", "packaging_measurements",
         "images", "sync_meta", "state",
         "purchase_price", "sale_price"
       ],
@@ -46,7 +47,18 @@ const ProductRepository = {
         {
           model: ProductVariant,
           as: 'variants',
-          attributes: ['id', 'sku', 'attributes', 'image']
+          attributes: ['id', 'sku', 'attributes', 'image'],
+          include: [{
+            model: VariantValue,
+            as: 'variantValues',
+            attributes: ['id', 'name', 'code', 'variant_definition_id'],
+            through: { attributes: [] },
+            include: [{
+              model: VariantDefinition,
+              as: 'definition',
+              attributes: ['id', 'name']
+            }]
+          }]
         },
       {
         model: ProductAttribute,
@@ -101,10 +113,11 @@ const ProductRepository = {
       // Buscar la condición correspondiente
       const conditionMatch = conditions.find(c => c.id === product.condition);
 
-      // ⭐ Crear mapa de precios por variant_id desde warehouses
+      // ⭐ Crear mapa de precios y stock por variant_id desde warehouses
       const warehouses = productToWarehousesMap[product.id] || [];
       const variantPricesMap = {};
-      
+      const variantStockMap = {};
+
       for (const warehouse of warehouses) {
         if (warehouse.variants && warehouse.variants.length > 0) {
           for (const wv of warehouse.variants) {
@@ -115,11 +128,17 @@ const ProductRepository = {
                 promotional_price: wv.promotional_price
               };
             }
+            
+            // ⭐ Acumular stock por variante (sumando de todos los warehouses)
+            if (!variantStockMap[wv.variant_id]) {
+              variantStockMap[wv.variant_id] = 0;
+            }
+            variantStockMap[wv.variant_id] += parseInt(wv.stock) || 0;
           }
         }
       }
 
-      // Procesar variantes con atributos y agregar precios
+      // Procesar variantes con atributos y agregar precios y stock
       const processedVariants = (Array.isArray(product.variants) ? product.variants : []).map(variant => {
         let attributesObj = {};
         try {
@@ -130,12 +149,38 @@ const ProductRepository = {
 
         // ⭐ Agregar precios si existen para esta variante
         const priceData = variantPricesMap[variant.id];
+        
+        // ⭐ Agregar stock total de la variante (sumado de todos los warehouses)
+        const totalStock = variantStockMap[variant.id] || 0;
+
+        const variantValues = Array.isArray(variant.variantValues)
+          ? variant.variantValues.map(v => ({
+            id: v.id,
+            name: v.name,
+            code: v.code,
+            variant_definition_id: v.variant_definition_id,
+            definition: v.definition ? { id: v.definition.id, name: v.definition.name } : null
+          }))
+          : [];
+
+        variantValues.sort((a, b) => {
+          if (a.variant_definition_id !== b.variant_definition_id) {
+            return a.variant_definition_id - b.variant_definition_id;
+          }
+          return a.id - b.id;
+        });
+
+        // ⭐ Crear variant_label similar a /warehouse-products-not-in-warehouse
+        const variantLabel = variantValues.map(vv => vv.name).filter(Boolean).join(" / ");
 
         return {
           id: variant.id,
           sku: variant.sku,
           attributes: attributesObj,
           image: variant.image,
+          variant_values: variantValues,
+          variant_label: variantLabel,
+          stock: totalStock,  // ⭐ Stock total de la variante
           ...(priceData ? {
             price: priceData.price,
             purchase_price: priceData.purchase_price,
@@ -182,6 +227,9 @@ const ProductRepository = {
       }
     });
 
+      // ⭐ Calcular stock total del producto (sumando todas las variantes)
+      const totalProductStock = Object.values(variantStockMap).reduce((sum, stock) => sum + stock, 0);
+
       return {
         id: product.id,
         sku: product.sku,
@@ -204,12 +252,15 @@ const ProductRepository = {
         length_cm: product.length_cm,
         width_cm: product.width_cm,
         height_cm: product.height_cm,
+        product_measurements: product.product_measurements || {},
+        packaging_measurements: product.packaging_measurements || {},
         images: images,
         images_with_version: imagesWithVersion,
         image_version: imagesWithVersion[0]?.version || null,
         purchase_price: product.purchase_price,
         sale_price: product.sale_price,
         sync_meta: product.sync_meta || {},
+        stock: totalProductStock,  // ⭐ Stock total del producto (suma de todas las variantes)
         variants: processedVariants,
         warehouses: productToWarehousesMap[product.id] || []
       };
@@ -224,6 +275,7 @@ const ProductRepository = {
         'brand', 'model', 'condition', 'gtin', 'mpn',
         'attributes', 'warranty_months', 'warranty_text',
         'weight_grams', 'length_cm', 'width_cm', 'height_cm',
+        'product_measurements', 'packaging_measurements',
         'images', 'sync_meta', 'state',
         'purchase_price', 'sale_price'
       ],
@@ -231,7 +283,18 @@ const ProductRepository = {
         {
           model: ProductVariant,
           as: 'variants',
-          attributes: ['id', 'sku', 'attributes', 'image']
+          attributes: ['id', 'sku', 'attributes', 'image'],
+          include: [{
+            model: VariantValue,
+            as: 'variantValues',
+            attributes: ['id', 'name', 'code', 'variant_definition_id'],
+            through: { attributes: [] },
+            include: [{
+              model: VariantDefinition,
+              as: 'definition',
+              attributes: ['id', 'name']
+            }]
+          }]
         }
       ]
     });
@@ -257,6 +320,7 @@ const ProductRepository = {
         'brand', 'model', 'condition', 'gtin', 'mpn',
         'attributes', 'warranty_months', 'warranty_text',
         'weight_grams', 'length_cm', 'width_cm', 'height_cm',
+        'product_measurements', 'packaging_measurements',
         'images', 'sync_meta', 'state',
         'purchase_price', 'sale_price'
       ],
@@ -264,7 +328,18 @@ const ProductRepository = {
         {
           model: ProductVariant,
           as: 'variants',
-          attributes: ['id', 'sku', 'attributes', 'image']
+          attributes: ['id', 'sku', 'attributes', 'image'],
+          include: [{
+            model: VariantValue,
+            as: 'variantValues',
+            attributes: ['id', 'name', 'code', 'variant_definition_id'],
+            through: { attributes: [] },
+            include: [{
+              model: VariantDefinition,
+              as: 'definition',
+              attributes: ['id', 'name']
+            }]
+          }]
         }
       ]
     });
@@ -288,6 +363,8 @@ const ProductRepository = {
         length_cm: body.length_cm || null,
         width_cm: body.width_cm || null,
         height_cm: body.height_cm || null,
+        product_measurements: body.product_measurements || {},
+        packaging_measurements: body.packaging_measurements || {},
         category_id: body.category_id || null,
         user_id: body.user_id || null,
         company_id: body.company_id || null,
@@ -394,6 +471,7 @@ const ProductRepository = {
         "user_id", "company_id",
         "brand", "model", "condition", "gtin", "mpn", "warranty_months", "warranty_text",
         "weight_grams", "length_cm", "width_cm", "height_cm",
+        "product_measurements", "packaging_measurements",
         "sync_meta", "state",
         "purchase_price", "sale_price"
       ];

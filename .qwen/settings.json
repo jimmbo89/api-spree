@@ -6,7 +6,9 @@
       "WebFetch(developers.mercadolibre.com)",
       "WebFetch(developers.falabella.com)",
       "WebFetch(developers.mercadolibre.com.ar)",
-      "WebFetch(global-selling.mercadolibre.com)"
+      "WebFetch(global-selling.mercadolibre.com)",
+      "Bash(npx *)",
+      "Bash(npm run *)"
     ]
   },
   "$version": 3

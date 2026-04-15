@@ -14,6 +14,8 @@ const {
   InventoryMovementRepository,
   AttributeRepository,
   ProductAttributeRepository,
+  VariantDefinitionRepository,
+  ProductVariantValueRepository,
 } = require("../repositories");
 const { sequelize } = require("../models");
 const MarketplaceTransformer = require("../services/MarketplaceTransformer");
@@ -43,6 +45,8 @@ const PRODUCT_AUDIT_FIELDS = [
   "length_cm",
   "width_cm",
   "height_cm",
+  "product_measurements",
+  "packaging_measurements",
   "sync_meta",
 ];
 
@@ -126,11 +130,17 @@ const ProductController = {
         withUsageCount: false
       });
 
+      // ✅ Obtener variantes (definiciones) con valores
+      const variants = await VariantDefinitionRepository.findAllWithValues({
+        companyId: company_id || null
+      });
+
       return res.status(200).json({
         productcategories: categories,
         conditions,
         warehouses,
-        attributes
+        attributes,
+        variants
       });
     } catch (err) {
       logger.error("ProductController->getProductMetadata: " + err.message);
@@ -301,6 +311,14 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
             },
             { transaction }
           );
+
+          if (variantData.variant_value_ids !== undefined) {
+            await ProductVariantValueRepository.replaceValuesForVariant(
+              variant.id,
+              variantData.variant_value_ids,
+              { transaction, companyId: product.company_id }
+            );
+          }
 
           createdVariants.push({
             id: variant.id,
@@ -638,6 +656,34 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
         req.body.images = JSON.parse(req.body.images);
       }
 
+      // Parsear product_measurements si viene como string JSON
+      if (req.body.product_measurements && typeof req.body.product_measurements === "string") {
+        try {
+          req.body.product_measurements = JSON.parse(req.body.product_measurements);
+        } catch (e) {
+          logger.error(`Error parseando product_measurements:`, e.message);
+          return res.status(400).json({
+            success: false,
+            error: "InvalidProductMeasurements",
+            message: "product_measurements tiene un formato inválido. Debe ser un objeto JSON"
+          });
+        }
+      }
+
+      // Parsear packaging_measurements si viene como string JSON
+      if (req.body.packaging_measurements && typeof req.body.packaging_measurements === "string") {
+        try {
+          req.body.packaging_measurements = JSON.parse(req.body.packaging_measurements);
+        } catch (e) {
+          logger.error(`Error parseando packaging_measurements:`, e.message);
+          return res.status(400).json({
+            success: false,
+            error: "InvalidPackagingMeasurements",
+            message: "packaging_measurements tiene un formato inválido. Debe ser un objeto JSON"
+          });
+        }
+      }
+
       // Parsear images_order si viene como string JSON o string separado por comas
       if (req.body.images_order && typeof req.body.images_order === "string") {
         try {
@@ -803,8 +849,8 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
                 existing = existingBySku.get(variantData.sku);
               }
 
-              // Opción 3: fallback por atributos (solo si no hay SKU)
-              if (!existing && variantData.attributes) {
+              // Opción 3: fallback por atributos (solo si NO hay SKU)
+              if (!existing && !variantData.sku && variantData.attributes) {
                 const attrKey = JSON.stringify(variantData.attributes);
                 existing = existingByAttrs.get(attrKey);
               }
@@ -830,9 +876,17 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
                     existingBySku.set(updates.sku, existing);
                   }
                 }
+
+                if (variantData.variant_value_ids !== undefined) {
+                  await ProductVariantValueRepository.replaceValuesForVariant(
+                    existing.id,
+                    variantData.variant_value_ids,
+                    { transaction, companyId: product.company_id }
+                  );
+                }
               } else {
                 // Crear nueva variante
-                await ProductVariantRepository.create(
+                const newVariant = await ProductVariantRepository.create(
                   {
                     product_id: product.id, // usa el ID validado
                     sku: variantData.sku,
@@ -840,6 +894,14 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
                   },
                   { transaction }
                 );
+
+                if (variantData.variant_value_ids !== undefined) {
+                  await ProductVariantValueRepository.replaceValuesForVariant(
+                    newVariant.id,
+                    variantData.variant_value_ids,
+                    { transaction, companyId: product.company_id }
+                  );
+                }
               }
             }
 

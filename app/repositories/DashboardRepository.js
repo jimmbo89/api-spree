@@ -10,7 +10,8 @@ const {
   ProductMarketplaceLink,
   JobProduct,
   Job,
-  InventoryMovement
+  InventoryMovement,
+  MarketplaceCredential
 } = require('../models');
 const { Op, fn, col, literal } = require('sequelize');
 const logger = require('../../config/logger');
@@ -96,7 +97,8 @@ const DashboardRepository = {
    */
   async getCriticalStockCount(companyId, threshold = 5) {
     try {
-      const count = await WarehouseProductVariant.count({
+      // Obtener variantes con stock bajo
+      const lowStockVariants = await WarehouseProductVariant.findAll({
         include: [{
           model: WarehouseProduct,
           as: 'warehouseProduct',
@@ -106,7 +108,7 @@ const DashboardRepository = {
             where: {
               company_id: companyId
             },
-            attributes: []
+            attributes: ['id']
           }],
           attributes: []
         }],
@@ -115,12 +117,69 @@ const DashboardRepository = {
             [Op.lte]: threshold
           }
         },
-        distinct: true
+        attributes: [],
+        raw: true
       });
 
-      return count;
+      // Extraer IDs únicos de productos con stock bajo
+      const uniqueProductIds = new Set();
+      lowStockVariants.forEach(variant => {
+        const productId = variant['warehouseProduct.product.id'];
+        if (productId) {
+          uniqueProductIds.add(productId);
+        }
+      });
+
+      return uniqueProductIds.size;
     } catch (error) {
       logger.error('[DashboardRepository] Error en getCriticalStockCount:', error.message);
+      throw error;
+    }
+  },
+
+  /**
+   * Cuenta productos SIN stock (stock = 0)
+   * @param {number} companyId - ID de la empresa
+   * @returns {Promise<number>}
+   */
+  async getOutOfStockCount(companyId) {
+    try {
+      // Obtener variantes con stock = 0
+      const outOfStockVariants = await WarehouseProductVariant.findAll({
+        include: [{
+          model: WarehouseProduct,
+          as: 'warehouseProduct',
+          include: [{
+            model: Product,
+            as: 'product',
+            where: {
+              company_id: companyId
+            },
+            attributes: ['id']
+          }],
+          attributes: []
+        }],
+        where: {
+          stock: {
+            [Op.eq]: 0
+          }
+        },
+        attributes: [],
+        raw: true
+      });
+
+      // Extraer IDs únicos de productos sin stock
+      const uniqueProductIds = new Set();
+      outOfStockVariants.forEach(variant => {
+        const productId = variant['warehouseProduct.product.id'];
+        if (productId) {
+          uniqueProductIds.add(productId);
+        }
+      });
+
+      return uniqueProductIds.size;
+    } catch (error) {
+      logger.error('[DashboardRepository] Error en getOutOfStockCount:', error.message);
       throw error;
     }
   },
@@ -228,6 +287,7 @@ const DashboardRepository = {
       const problemProductsMap = {}; // Usar mapa para agrupar por producto
 
       // 1. Productos con stock bajo - buscar en todas las variantes de todos los almacenes
+      // Obtenemos todas las variantes con stock bajo y luego agrupamos por producto
       const lowStockVariants = await WarehouseProductVariant.findAll({
         include: [
           {
@@ -246,7 +306,7 @@ const DashboardRepository = {
                 attributes: ['id', 'name']
               }
             ],
-            attributes: ['id']
+            attributes: []
           }
         ],
         where: {
@@ -271,8 +331,8 @@ const DashboardRepository = {
           // Parsear imágenes (es un JSON array)
           let mainImage = null;
           try {
-            const images = typeof productImages === 'string' 
-              ? JSON.parse(productImages) 
+            const images = typeof productImages === 'string'
+              ? JSON.parse(productImages)
               : productImages;
             mainImage = images && images.length > 0 ? images[0] : null;
           } catch (e) {
@@ -362,26 +422,38 @@ const DashboardRepository = {
   },
 
   /**
-   * Obtiene el estado de todos los marketplaces de la empresa
+   * Obtiene el estado de los marketplaces conectados por el usuario (o de la empresa si no se pasa userId)
    * @param {number} companyId - ID de la empresa
+   * @param {number} [userId] - ID del usuario (opcional: si se pasa, filtra solo sus credenciales)
    * @returns {Promise<Array<{name: string, domain: string, status: string, summary: string, link: string}>>}
    */
-  async getMarketplaces(companyId) {
+  async getMarketplaces(companyId, userId = null) {
     try {
-      // 1. Obtener todos los marketplaces activos que tengan publicaciones de esta empresa
+      // 👇 Construir where dinámico para credenciales
+      const credentialWhere = { active: true };
+      if (userId) {
+        credentialWhere.user_id = userId; // 👈 Filtrar solo credenciales de este usuario
+      }
+
+      // 👇 Decidir si es INNER o LEFT JOIN según si filtramos por usuario
+      const credentialsRequired = !!userId; // true = solo marketplaces con credenciales del usuario
+
+      // 1. Obtener marketplaces con sus links y credenciales
       const marketplaces = await Marketplace.findAll({
         include: [{
           model: ProductMarketplaceLink,
           as: 'productLinks',
-          where: {
-            company_id: companyId
-          },
+          where: { company_id: companyId },
           attributes: ['status'],
           required: false
+        }, {
+          model: MarketplaceCredential,
+          as: 'credentials',
+          where: credentialWhere, // 👈 Where dinámico con user_id si aplica
+          required: credentialsRequired, // 👈 INNER JOIN si filtramos por usuario
+          attributes: ['id', 'active', 'expires_at', 'seller_email', 'api_key', 'user_id']
         }],
-        where: {
-          active: true
-        },
+        where: { active: true },
         attributes: ['id', 'name', 'domain'],
         raw: false,
         distinct: true
@@ -392,9 +464,7 @@ const DashboardRepository = {
         include: [{
           model: Job,
           as: 'job',
-          where: {
-            company_id: companyId
-          },
+          where: { company_id: companyId },
           attributes: [],
           required: true
         }],
@@ -408,11 +478,7 @@ const DashboardRepository = {
         const mpId = jp.marketplace_id;
         if (!jobProductsByMarketplace[mpId]) {
           jobProductsByMarketplace[mpId] = {
-            success: 0,
-            error: 0,
-            pending: 0,
-            processing: 0,
-            retrying: 0
+            success: 0, error: 0, pending: 0, processing: 0, retrying: 0
           };
         }
         jobProductsByMarketplace[mpId][jp.status] = (jobProductsByMarketplace[mpId][jp.status] || 0) + 1;
@@ -422,24 +488,26 @@ const DashboardRepository = {
       const result = marketplaces.map(marketplace => {
         const mpId = marketplace.id;
         const links = marketplace.productLinks || [];
+        const credentials = marketplace.credentials || [];
         const jobStats = jobProductsByMarketplace[mpId] || {
-          success: 0,
-          error: 0,
-          pending: 0,
-          processing: 0,
-          retrying: 0
+          success: 0, error: 0, pending: 0, processing: 0, retrying: 0
         };
 
-        // Calcular métricas reales
-        const publishedCount = links.filter(l => l.status === 'published' || l.status === 'published_with_warnings').length;
+        const publishedCount = links.filter(l => 
+          l.status === 'published' || l.status === 'published_with_warnings'
+        ).length;
+        
         const errors = jobStats.error;
         const pending = jobStats.pending + jobStats.processing + jobStats.retrying;
+        const connectionStatus = checkConnectionStatus(marketplace);
 
-        // Determinar estado según reglas del dashboard
         let status = 'healthy';
         let summary = '';
 
-        if (errors > 0) {
+        if (!connectionStatus.isConnected) {
+          status = 'error';
+          summary = connectionStatus.reason;
+        } else if (errors > 0) {
           status = 'error';
           summary = `${errors} error${errors > 1 ? 'es' : ''} de publicación`;
         } else if (pending > 5) {
@@ -453,7 +521,6 @@ const DashboardRepository = {
           summary = 'Sin publicaciones';
         }
 
-        // Construir link para navegación (usar dominio para consistencia)
         const domainSlug = marketplace.domain
           ? marketplace.domain.replace(/\./g, '-').toLowerCase()
           : marketplace.name.toLowerCase().replace(/\s+/g, '-');
@@ -463,7 +530,9 @@ const DashboardRepository = {
           domain: marketplace.domain,
           status: status,
           summary: summary,
-          link: `/procesos?marketplace=${domainSlug}`
+          link: `/marketplace-credentials?marketplace=${domainSlug}`,
+          connectionStatus: connectionStatus.isConnected
+          // 👈 hasUserCredential ya no es necesario, porque el filtro está en la consulta
         };
       });
 
@@ -694,6 +763,89 @@ const DashboardRepository = {
     }
   }
 };
+
+/**
+ * Verifica el estado de la conexión con un marketplace
+ * @param {Object} marketplace - Objeto Marketplace con credenciales incluidas
+ * @returns {Object} - { isConnected: boolean, reason: string }
+ */
+function checkConnectionStatus(marketplace) {
+  const now = new Date();
+  const credentials = marketplace.credentials || [];
+  const domain = marketplace.domain || '';
+
+  // Si no hay credenciales activas
+  if (credentials.length === 0) {
+    return {
+      isConnected: false,
+      reason: 'Sin conexión configurada'
+    };
+  }
+
+  // Verificar cada credencial (puede haber múltiples conexiones)
+  for (const credential of credentials) {
+    // Para marketplaces con OAuth (Mercado Libre)
+    if (domain.includes('mercadolibre') || domain.includes('mercadolibre')) {
+      if (!credential.expires_at) {
+        continue; // Token sin expiración, asumir válido
+      }
+
+      const expiresAt = new Date(credential.expires_at);
+      if (expiresAt < now) {
+        // Token expirado, pero puede haber otra credencial válida
+        continue;
+      }
+
+      // Token válido
+      return {
+        isConnected: true,
+        reason: ''
+      };
+    }
+
+    // Para marketplaces con API Key (Falabella)
+    if (domain.includes('falabella')) {
+      if (credential.seller_email && credential.api_key) {
+        // Falabella usa API Key + Email, no expira
+        return {
+          isConnected: true,
+          reason: ''
+        };
+      }
+    }
+
+    // Para otros marketplaces, verificar si tiene algún método de autenticación
+    if (credential.access_token || credential.api_key) {
+      return {
+        isConnected: true,
+        reason: ''
+      };
+    }
+  }
+
+  // Si llegamos aquí, ninguna credencial es válida
+  const isOAuth = domain.includes('mercadolibre');
+  const isApiKey = domain.includes('falabella');
+
+  if (isOAuth) {
+    return {
+      isConnected: false,
+      reason: 'Token OAuth expirado'
+    };
+  }
+
+  if (isApiKey) {
+    return {
+      isConnected: false,
+      reason: 'API Key no configurada'
+    };
+  }
+
+  return {
+    isConnected: false,
+    reason: 'Credenciales inválidas'
+  };
+}
 
 /**
  * Formatea una fecha en tiempo relativo (ej: "Hace 5 min")

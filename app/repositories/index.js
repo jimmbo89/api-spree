@@ -27,6 +27,7 @@ const ProductMarketplaceLinkRepository = require("./ProductMarketplaceLinkReposi
 const ProductPublishingTaskRepository = require("./ProductPublishingTaskRepository");
 const ProductRepository = require("./ProductRepository");
 const ProductVariantRepository = require("./ProductVariantRepository");
+const ProductVariantValueRepository = require("./ProductVariantValueRepository");
 const RolePermissionRepository = require("./RolePermissionRepository");
 const RoleRepository = require("./RoleRepository");
 const SiiCafRepository = require("./SiiCafRepository");
@@ -42,6 +43,8 @@ const UserTokenRepository = require("./UserTokenRepository");
 const WarehouseProductRepository = require("./WarehouseProductRepository");
 const WarehouseProductVariantRepository = require("./WarehouseProductVariantRepository");
 const WarehouseRepository = require("./WarehouseRepository");
+const VariantDefinitionRepository = require("./VariantDefinitionRepository");
+const VariantValueRepository = require("./VariantValueRepository");
 const MarketplaceOrderRepository = require("./MarketplaceOrderRepository");
 const MarketplaceOrderItemRepository = require("./MarketplaceOrderItemRepository");
 const MarketplaceOrderFeeRepository = require("./MarketplaceOrderFeeRepository");
@@ -68,6 +71,7 @@ module.exports = {
     MarketplaceCredentialRepository,
     ProductMarketplaceLinkRepository,
     ProductVariantRepository,
+    ProductVariantValueRepository,
     WarehouseProductVariantRepository,
     PoolRepository,
     PoolWarehouseRepository,
@@ -79,6 +83,8 @@ module.exports = {
     UserAclScopeRepository,
     AttributeRepository,
     ProductAttributeRepository,
+    VariantDefinitionRepository,
+    VariantValueRepository,
     NotificationRepository,
     SubscriptionRepository,
     UpgradeRequestRepository,

@@ -56,6 +56,10 @@ const UserAclScopeController = require("./controllers/UserAclScopeController.js"
 const { createUserAclScopeSchema, userAclScopeIdSchema, userAclScopesByUserAndCompanySchema } = require("./middlewares/validations/userAclScopeValidation.js");
 const AttributeController = require("./controllers/AttributeController.js");
 const { attributeSchema, updateAttributeSchema, listAttributeSchema, idAttributeSchema } = require("./middlewares/validations/attributeValidation.js");
+const VariantDefinitionController = require("./controllers/VariantDefinitionController.js");
+const VariantValueController = require("./controllers/VariantValueController.js");
+const { variantDefinitionSchema, updateVariantDefinitionSchema, listVariantDefinitionSchema, idVariantDefinitionSchema } = require("./middlewares/validations/variantDefinitionValidation.js");
+const { variantValueSchema, updateVariantValueSchema, listVariantValueSchema, idVariantValueSchema } = require("./middlewares/validations/variantValueValidation.js");
 const { checkPlanLimit } = require("./policies/PlanLimitsPolicity.js");
 const { storeUpgradeRequestSchema, listUpgradeRequestsSchema, updateUpgradeRequestSchema, idUpgradeRequestSchema } = require("./middlewares/validations/upgradeRequestValidation.js");
 const UpgradeRequestController = require("./controllers/UpgradeRequestController.js");
@@ -290,6 +294,18 @@ router.post("/attribute", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager'
 router.post("/attribute-update", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(updateAttributeSchema), AttributeController.update);
 router.post("/attribute-destroy", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(idAttributeSchema), AttributeController.destroy);
 
+// Rutas de variantes (definiciones)
+router.post("/variants", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(listVariantDefinitionSchema), VariantDefinitionController.index);
+router.post("/variant", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(variantDefinitionSchema), VariantDefinitionController.store);
+router.post("/variant-update", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(updateVariantDefinitionSchema), VariantDefinitionController.update);
+router.post("/variant-destroy", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(idVariantDefinitionSchema), VariantDefinitionController.destroy);
+
+// Rutas de valores de variantes
+router.post("/variant-values", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(listVariantValueSchema), VariantValueController.index);
+router.post("/variant-value", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(variantValueSchema), VariantValueController.store);
+router.post("/variant-value-update", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(updateVariantValueSchema), VariantValueController.update);
+router.post("/variant-value-destroy", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(idVariantValueSchema), VariantValueController.destroy);
+
 const productImageFields = {
   images: {
     folder: 'products',
@@ -483,4 +499,3 @@ router.post('/jobs-detail', requireRoles([ 'Backoffice', 'Admin', 'Seller Manage
 router.post('/dashboard', requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), DashboardController.getDashboard);
 
 module.exports = router;
-

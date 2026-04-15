@@ -18,6 +18,8 @@ const productBaseSchema = {
   length_cm: Joi.number().precision(2).min(0).optional().allow(null),
   width_cm: Joi.number().precision(2).min(0).optional().allow(null),
   height_cm: Joi.number().precision(2).min(0).optional().allow(null),
+  product_measurements: Joi.object().optional().default({}),
+  packaging_measurements: Joi.object().optional().default({}),
   attributes: Joi.array().items(
     Joi.object({
       id: Joi.string().required(),

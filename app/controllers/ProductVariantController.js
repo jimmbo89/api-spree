@@ -1,13 +1,14 @@
 // controllers/ProductVariantController.js
 const logger = require("../../config/logger");
 const ProductVariantRepository = require("../repositories/ProductVariantRepository");
+const ProductVariantValueRepository = require("../repositories/ProductVariantValueRepository");
 const { ProductVariant, Product, sequelize } = require("../models");
 const { Op } = require("sequelize");
 const { ProductRepository } = require("../repositories");
 
 const ProductVariantController = {
   async update(req, res) {
-     const { id, sku, attributes } = req.body;
+     const { id, sku, attributes, variant_value_ids } = req.body;
     // Buscar variante
       const variant = await ProductVariantRepository.findById(id);
       if (!variant) {
@@ -33,6 +34,14 @@ const ProductVariantController = {
 
       const updated = await ProductVariantRepository.update(variant, updateData, { transaction: t });
 
+      if (variant_value_ids !== undefined) {
+        await ProductVariantValueRepository.replaceValuesForVariant(
+          updated.id,
+          variant_value_ids,
+          { transaction: t, companyId: product.company_id }
+        );
+      }
+
       await t.commit();
 
       return res.status(200).json({
@@ -57,7 +66,7 @@ const ProductVariantController = {
   },
 
   async create(req, res) {
-  const { product_id, sku, attributes } = req.body;
+  const { product_id, sku, attributes, variant_value_ids } = req.body;
 
   if (!attributes || typeof attributes !== 'object' || Array.isArray(attributes)) {
     return res.status(400).json({
@@ -85,6 +94,14 @@ const ProductVariantController = {
 
     // Crear variante
     const newVariant = await ProductVariantRepository.create(variantData, { transaction: t });
+
+    if (variant_value_ids !== undefined) {
+      await ProductVariantValueRepository.replaceValuesForVariant(
+        newVariant.id,
+        variant_value_ids,
+        { transaction: t, companyId: product.company_id }
+      );
+    }
 
     await t.commit();
 
