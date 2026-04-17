@@ -324,660 +324,28 @@ async mercadoLibreCallback(req, res) {
     }
   },
 
-  // controllers/marketplace/mercadoLibreController.js
-
-/*async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
-  logger.info(`Datos recibidos para categorías sugeridas con atributos en MercadoLibre:\n ${JSON.stringify(req.body)}`);
-
-  const { marketplace_id, site_id, products } = req.body;
-  const user_id = req.user?.id || req.body.user_id;
-
-  if (!site_id || !['MLC', 'MLA', 'MLB', 'MCO', 'MPE', 'MLM', 'MLU', 'MLV', 'MPY', 'MBO', 'MEC', 'MCR', 'MPA', 'MRD', 'MGT', 'MHN', 'MNI', 'MSV', 'MCU'].includes(site_id)) {
-    return res.status(400).json({
-      success: false,
-      error: "site_id inválido o no soportado"
-    });
-  }
-
-  if (!Array.isArray(products) || products.length === 0) {
-    return res.status(400).json({
-      success: false,
-      error: "Se requiere un array no vacío de productos con 'id' y 'name'."
-    });
-  }
-
-  try {
-    // === PASO 1: Aplicar Rate Limit por usuario ===
-    try {
-      await marketplaceRateLimiter.consume(user_id);
-    } catch (rateLimitError) {
-      logger.warn(`Rate limit excedido para usuario ${user_id}`);
-      return res.status(429).json({
-        success: false,
-        error: "Demasiadas solicitudes. Por favor, espera un momento."
-      });
-    }
-
-    // === PASO 2: Obtener Credenciales ===
-    const credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
-      marketplace_id,
-      user_id
-    );
-
-    if (!credential) {
-      return res.status(400).json({
-        success: false,
-        error: "Credenciales no encontradas"
-      });
-    }
-
-    const suggestions = [];
-    let cacheHits = 0;
-    let apiCalls = 0;
-
-    // === PASO 3: Procesar Cada Producto ===
-    for (const product of products) {
-      if (!product.id || !product.name) {
-        logger.warn(`Producto inválido omitido: ${JSON.stringify(product)}`);
-        continue;
-      }
-
-      const nameFixed = product.name.trim();
-
-      // === PASO 4: Verificar Caché GLOBAL para este Producto ===
-      const cachedProductResult = getFromCache(marketplace_id, `product_suggestion_${site_id}`, nameFixed);
-
-      if (cachedProductResult) {
-        logger.info(`[CACHE HIT] Producto "${nameFixed}" en MercadoLibre ${site_id} (compartido)`);
-        cacheHits++;
-        
-        suggestions.push({
-          product_id: product.id,
-          categories: cachedProductResult
-        });
-        continue;
-      }
-
-      logger.info(`[CACHE MISS] Producto "${nameFixed}" en MercadoLibre ${site_id}`);
-      apiCalls++;
-
-      let categories = [];
-
-      // === PASO 5: Obtener Categorías Sugeridas ===
-      try {
-        // ✅ URL CORREGIDA: sin espacios
-        const domainDiscoveryUrl = `https://api.mercadolibre.com/sites/${site_id}/domain_discovery/search`;
-        const catResponse = await axios.get(domainDiscoveryUrl, {
-          params: { q: nameFixed, limit: 3 },
-          timeout: 20000
-        });
-
-        const rawCategories = catResponse.data || [];
-        logger.info(`Categorías obtenidas:\n ${JSON.stringify(rawCategories)}`);
-        
-        // ✅ Mapeo correcto de campos
-        categories = rawCategories.map(cat => ({
-          category_id: cat.category_id,
-          category_name: cat.category_name,
-          domain_id: cat.domain_id,
-          domain_name: cat.domain_name,
-          path: cat.domain_name || ''
-        }));
-      } catch (catErr) {
-        logger.error(`Error al obtener categorías para "${nameFixed}": ${catErr.message}`);
-        continue;
-      }
-
-      // === PASO 6: Para cada categoría, cargar atributos ===
-      const categoriesWithAttrs = [];
-      
-      for (const cat of categories) {
-        if (!cat.category_id) {
-          logger.warn(`Categoría sin ID omitida: ${JSON.stringify(cat)}`);
-          continue;
-        }
-
-        // === PASO 7: Verificar Caché GLOBAL para esta Categoría ===
-        const cachedCategory = getFromCache(marketplace_id, `category_attributes_${site_id}`, cat.category_id);
-
-        if (cachedCategory) {
-          logger.info(`[CACHE HIT] Categoría ${cat.category_id} en MercadoLibre ${site_id} (compartido)`);
-          categoriesWithAttrs.push(cachedCategory);
-          continue;
-        }
-
-        logger.info(`[CACHE MISS] Categoría ${cat.category_id} en MercadoLibre ${site_id}`);
-
-        let attributes = [];
-        try {
-          // ✅ URL CORREGIDA: sin espacios
-          const attrUrl = `https://api.mercadolibre.com/categories/${cat.category_id}/attributes`;
-          const attrResponse = await axios.get(attrUrl, {
-            headers: { Authorization: `Bearer ${credential.access_token}` },
-            timeout: 20000
-          });
-
-          const rawAttrs = attrResponse.data || [];
-          logger.info(`Atributos obtenidos para categoría ${cat.category_id}: ${rawAttrs.length} atributos`);
-          
-          // ✅ DEVOLVER ATRIBUTOS SIN MODIFICAR - TAL CUAL COMO VIENEN DE MERCADOLIBRE
-          attributes = rawAttrs;
-        } catch (attrErr) {
-          logger.error(`Error al cargar atributos para categoría ${cat.category_id}: ${attrErr.message}`);
-        }
-
-        // === PASO 8: Guardar Categoría en Caché GLOBAL ===
-        const categoryData = {
-          category_id: cat.category_id,
-          category_name: cat.category_name,
-          domain_id: cat.domain_id,
-          domain_name: cat.domain_name,
-          path: cat.path,
-          attributes // ✅ Atributos sin modificar
-        };
-
-        saveToCache(marketplace_id, `category_attributes_${site_id}`, cat.category_id, categoryData);
-        categoriesWithAttrs.push(categoryData);
-      }
-
-      // === PASO 9: Guardar Resultado del Producto en Caché GLOBAL ===
-      saveToCache(marketplace_id, `product_suggestion_${site_id}`, nameFixed, categoriesWithAttrs);
-
-      suggestions.push({
-        product_id: product.id,
-        categories: categoriesWithAttrs
-      });
-    }
-
-    // === PASO 10: Retornar Resultado con Estadísticas ===
-    return res.status(200).json({
-      success: true,
-      suggestions,
-      count: suggestions.length,
-      stats: {
-        total_products: products.length,
-        cache_hits: cacheHits,
-        api_calls: apiCalls,
-        cache_hit_rate: products.length > 0 
-          ? ((cacheHits / products.length) * 100).toFixed(2) + '%'
-          : '0%'
-      }
-    });
-
-  } catch (error) {
-    logger.error(`❌ Error general en mercadoLibreSuggestedCategoriesWithAttributes: ${error.message}`, {
-      stack: error.stack,
-      body: req.body
-    });
-    return res.status(500).json({
-      success: false,
-      error: "Error interno al procesar categorías con atributos de MercadoLibre."
-    });
-  }
-},*/
-/*async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
-  logger.info(`Datos recibidos para categorías sugeridas con atributos en MercadoLibre:\n ${JSON.stringify(req.body)}`);
-
-  // ← CAMBIO: Recibir credential_id en lugar de marketplace_id
-  const { credential_id, products } = req.body;
-  const user_id = req.user?.id || req.body.user_id;
-
-  if (!credential_id) {
-    return res.status(400).json({
-      success: false,
-      error: "credential_id es requerido"
-    });
-  }
-
-  if (!Array.isArray(products) || products.length === 0) {
-    return res.status(400).json({
-      success: false,
-      error: "Se requiere un array no vacío de productos con 'id' y 'name'."
-    });
-  }
-
-  try {
-    // === PASO 1: Aplicar Rate Limit por usuario ===
-    try {
-      await marketplaceRateLimiter.consume(user_id);
-    } catch (rateLimitError) {
-      logger.warn(`Rate limit excedido para usuario ${user_id}`);
-      return res.status(429).json({
-        success: false,
-        error: "Demasiadas solicitudes. Por favor, espera un momento."
-      });
-    }
-
-    // === PASO 2: Obtener Credencial ESPECÍFICA por ID ← CAMBIO
-    const credential = await MarketplaceCredentialRepository.findById(credential_id);
-
-    if (!credential) {
-      return res.status(404).json({
-        success: false,
-        error: "Credencial no encontrada"
-      });
-    }
-
-    // Verificar propiedad
-    if (credential.user_id !== user_id) {
-      return res.status(403).json({
-        success: false,
-        error: "No autorizado"
-      });
-    }
-
-    const marketplace_id = credential.marketplace_id;
-    const site_id = getMercadoLibreSiteId(credential.marketplace?.domain);
-
-    const suggestions = [];
-    let cacheHits = 0;
-    let apiCalls = 0;
-
-    for (const product of products) {
-      if (!product.id || !product.name) {
-        logger.warn(`Producto inválido omitido: ${JSON.stringify(product)}`);
-        continue;
-      }
-
-      const nameFixed = product.name.trim();
-
-      // ← CAMBIO: Usar credential_id en la clave de caché
-      const cachedProductResult = getFromCache(`credential_${credential_id}`, `product_suggestion_${site_id}`, nameFixed);
-
-      if (cachedProductResult) {
-        logger.info(`[CACHE HIT] Producto "${nameFixed}" en credential ${credential_id}`);
-        cacheHits++;
-        
-        suggestions.push({
-          product_id: product.id,
-          credential_id: credential_id,
-          marketplace_id: marketplace_id,
-          categories: cachedProductResult
-        });
-        continue;
-      }
-
-      logger.info(`[CACHE MISS] Producto "${nameFixed}" en credential ${credential_id}`);
-      apiCalls++;
-
-      let categories = [];
-
-      try {
-        const domainDiscoveryUrl = `https://api.mercadolibre.com/sites/${site_id}/domain_discovery/search`;
-        const catResponse = await axios.get(domainDiscoveryUrl, {
-          params: { q: nameFixed, limit: 3 },
-          timeout: 20000
-        });
-
-        const rawCategories = catResponse.data || [];
-        logger.info(`Categorías obtenidas:\n ${JSON.stringify(rawCategories)}`);
-        
-        categories = rawCategories.map(cat => ({
-          category_id: cat.category_id,
-          category_name: cat.category_name,
-          domain_id: cat.domain_id,
-          domain_name: cat.domain_name,
-          path: cat.domain_name || ''
-        }));
-      } catch (catErr) {
-        logger.error(`Error al obtener categorías para "${nameFixed}": ${catErr.message}`);
-        continue;
-      }
-
-      const categoriesWithAttrs = [];
-      
-      for (const cat of categories) {
-        if (!cat.category_id) {
-          logger.warn(`Categoría sin ID omitida: ${JSON.stringify(cat)}`);
-          continue;
-        }
-
-        const cachedCategory = getFromCache(`credential_${credential_id}`, `category_attributes_${site_id}`, cat.category_id);
-
-        if (cachedCategory) {
-          logger.info(`[CACHE HIT] Categoría ${cat.category_id} en credential ${credential_id}`);
-          categoriesWithAttrs.push(cachedCategory);
-          continue;
-        }
-
-        logger.info(`[CACHE MISS] Categoría ${cat.category_id} en credential ${credential_id}`);
-
-        let attributes = [];
-        try {
-          const attrUrl = `https://api.mercadolibre.com/categories/${cat.category_id}/attributes`;
-          const attrResponse = await axios.get(attrUrl, {
-            headers: { Authorization: `Bearer ${credential.access_token}` },
-            timeout: 20000
-          });
-
-          const rawAttrs = attrResponse.data || [];
-          logger.info(`Atributos obtenidos para categoría ${cat.category_id}: ${rawAttrs.length} atributos`);
-          
-          attributes = rawAttrs;
-        } catch (attrErr) {
-          logger.error(`Error al cargar atributos para categoría ${cat.category_id}: ${attrErr.message}`);
-        }
-
-        const categoryData = {
-          category_id: cat.category_id,
-          category_name: cat.category_name,
-          domain_id: cat.domain_id,
-          domain_name: cat.domain_name,
-          path: cat.path,
-          attributes
-        };
-
-        categoriesWithAttrs.push(categoryData);
-      }
-
-      saveToCache(`credential_${credential_id}`, `product_suggestion_${site_id}`, productCacheKey, categoriesWithAttrs);
-
-      suggestions.push({
-        product_id: product.id,
-        credential_id: credential_id,
-        marketplace_id: marketplace_id,
-        categories: categoriesWithAttrs
-      });
-    }
-
-    return res.status(200).json({
-      success: true,
-      suggestions,
-      count: suggestions.length,
-      stats: {
-        total_products: products.length,
-        cache_hits: cacheHits,
-        api_calls: apiCalls,
-        cache_hit_rate: products.length > 0 
-          ? ((cacheHits / products.length) * 100).toFixed(2) + '%'
-          : '0%'
-      }
-    });
-
-  } catch (error) {
-    logger.error(`❌ Error general en mercadoLibreSuggestedCategoriesWithAttributes: ${error.message}`, {
-      stack: error.stack,
-      body: req.body
-    });
-    return res.status(500).json({
-      success: false,
-      error: "Error interno al procesar categorías con atributos de MercadoLibre."
-    });
-  }
-},*/
-/*
-async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
-  logger.info(`Datos recibidos para categorías sugeridas con atributos y pricing en MercadoLibre:\n ${JSON.stringify(req.body)}`);
-
-  // ✅ CORRECCIÓN: NO extraer 'price' global, viene dentro de cada producto
-  const { credential_id, products, listing_type_id } = req.body;
-  const user_id = req.user?.id || req.body.user_id;
-
-  if (!credential_id) {
-    return res.status(400).json({ success: false, error: "credential_id es requerido" });
-  }
-
-  if (!Array.isArray(products) || products.length === 0) {
-    return res.status(400).json({
-      success: false,
-      error: "Se requiere un array no vacío de productos con 'id' y 'name'."
-    });
-  }
-
-  const listingType = listing_type_id || 'gold_special'; // Default a gold_special
-
-  try {
-    // === PASO 1: Rate Limit ===
-    try {
-      await marketplaceRateLimiter.consume(user_id);
-    } catch (rateLimitError) {
-      logger.warn(`Rate limit excedido para usuario ${user_id}`);
-      return res.status(429).json({
-        success: false,
-        error: "Demasiadas solicitudes. Por favor, espera un momento."
-      });
-    }
-
-    // === PASO 2: Obtener Credencial ===
-    const credential = await MarketplaceCredentialRepository.findById(credential_id);
-    if (!credential) {
-      return res.status(404).json({ success: false, error: "Credencial no encontrada" });
-    }
-
-    if (credential.user_id !== user_id) {
-      return res.status(403).json({ success: false, error: "No autorizado" });
-    }
-
-    const marketplace_id = credential.marketplace_id;
-    const site_id = getMercadoLibreSiteId(credential.marketplace?.domain);
-
-    const suggestions = [];
-    let cacheHits = 0;
-    let apiCalls = 0;
-    let pricingCalls = 0;
-
-    // === PROCESAR CADA PRODUCTO ===
-    for (const product of products) {
-      if (!product.id || !product.name) {
-        logger.warn(`Producto inválido omitido: ${JSON.stringify(product)}`);
-        continue;
-      }
-
-      const nameFixed = product.name.trim();
-      
-      // ✅ CORRECCIÓN CLAVE: Obtener price DE CADA PRODUCTO, no global
-      const productPrice = (product.price !== undefined && product.price !== null && !isNaN(product.price))
-        ? parseFloat(product.price)
-        : null;
-
-      // Cache de producto debe variar por listing_type_id (y por price/dimensions cuando se pide pricing/shipping)
-      const productCacheKey = [
-        nameFixed,
-        `listing:${listingType}`,
-        `price:${productPrice !== null ? productPrice : 'null'}`,
-        `dim:${dimensionsFormatted || 'null'}`,
-      ].join('__');
-
-      const cachedProductResult = getFromCache(
-        `credential_${credential_id}`,
-        `product_suggestion_${site_id}`,
-        productCacheKey
-      );
-
-      if (cachedProductResult) {
-        logger.info(`[CACHE HIT] Producto "${nameFixed}" (listing: ${listingType}) en credential ${credential_id}`);
-        cacheHits++;
-        
-        suggestions.push({
-          product_id: product.id,
-          credential_id: credential_id,
-          marketplace_id: marketplace_id,
-          categories: cachedProductResult
-        });
-        continue;
-      }
-
-      logger.info(`[CACHE MISS] Producto "${nameFixed}" en credential ${credential_id}`);
-      apiCalls++;
-
-      let categories = [];
-
-      // === Obtener categorías sugeridas ===
-      try {
-        const domainDiscoveryUrl = `https://api.mercadolibre.com/sites/${site_id}/domain_discovery/search`;
-        const catResponse = await axios.get(domainDiscoveryUrl, {
-          params: { q: nameFixed, limit: 3 },
-          timeout: 20000
-        });
-
-        const rawCategories = catResponse.data || [];
-        categories = rawCategories.map(cat => ({
-          category_id: cat.category_id,
-          category_name: cat.category_name,
-          domain_id: cat.domain_id,
-          domain_name: cat.domain_name,
-          path: cat.domain_name || ''
-        }));
-      } catch (catErr) {
-        logger.error(`Error al obtener categorías para "${nameFixed}": ${catErr.message}`);
-        continue;
-      }
-
-      const categoriesWithAttrs = [];
-      
-      for (const cat of categories) {
-        if (!cat.category_id) continue;
-
-        // === Cache de categoría (solo atributos/base; NO incluir pricing/shipping) ===
-        const cachedCategoryBase = getFromCache(`credential_${credential_id}`, `category_attributes_${site_id}`, cat.category_id);
-
-        let attributes = cachedCategoryBase?.attributes || [];
-
-        if (cachedCategoryBase) {
-          logger.info(`[CACHE HIT] Categoría ${cat.category_id} en credential ${credential_id}`);
-        } else {
-          logger.info(`[CACHE MISS] Categoría ${cat.category_id} en credential ${credential_id}`);
-
-          // === Obtener atributos de la categoría ===
-          try {
-            const attrUrl = `https://api.mercadolibre.com/categories/${cat.category_id}/attributes`;
-            const attrResponse = await axios.get(attrUrl, {
-              headers: { Authorization: `Bearer ${credential.access_token}` },
-              timeout: 20000
-            });
-            attributes = attrResponse.data || [];
-          } catch (attrErr) {
-            logger.error(`Error al cargar atributos para categoría ${cat.category_id}: ${attrErr.message}`);
-          }
-
-          // Guardar SOLO base/atributos en cache (no depende de listing/price/dimensions)
-          saveToCache(`credential_${credential_id}`, `category_attributes_${site_id}`, cat.category_id, {
-            category_id: cat.category_id,
-            category_name: cat.category_name,
-            domain_id: cat.domain_id,
-            domain_name: cat.domain_name,
-            path: cat.path,
-            attributes
-          });
-        }
-
-        // === 💰 NUEVO: Obtener pricing/comisiones usando productPrice ===
-        let pricing = null;
-        
-        // ✅ Calcular pricing SOLO si este producto tiene precio válido
-        if (productPrice !== null) {
-          const pricingCacheKey = `pricing_${cat.category_id}_${productPrice}_${listingType}`;
-          const cachedPricing = getFromCache(`credential_${credential_id}`, 'category_pricing', pricingCacheKey);
-
-          if (cachedPricing) {
-            logger.info(`[CACHE HIT PRICING] Categoría ${cat.category_id}`);
-            pricing = cachedPricing;
-          } else {
-            try {
-              pricingCalls++;
-              const pricingUrl = `https://api.mercadolibre.com/sites/${site_id}/listing_prices`;
-              const pricingResponse = await axios.get(pricingUrl, {
-                params: {
-                  price: productPrice,  // ✅ Usar price del producto
-                  category_id: cat.category_id,
-                  listing_type_id: listingType
-                },
-                headers: { Authorization: `Bearer ${credential.access_token}` },
-                timeout: 15000
-              });
-
-              const fees = pricingResponse.data || {};
-              
-              // ✅ Calcular monto neto y porcentaje correctamente
-              pricing = {
-                sale_fee_amount: fees.sale_fee_amount || 0,
-                listing_fee_amount: fees.listing_fee_amount || 0,
-                total_fee_amount: fees.total_fee_amount || 0,
-                listing_type_id: listingType,
-                input_price: productPrice,  // ✅ Precio del producto
-                net_amount: parseFloat((productPrice - (fees.sale_fee_amount || 0)).toFixed(2)),
-                // ✅ CORRECCIÓN: fee_percentage calculado con productPrice como denominador
-                fee_percentage: productPrice > 0 
-                  ? parseFloat((((fees.sale_fee_amount || 0) / productPrice) * 100).toFixed(2))
-                  : 0
-              };
-
-              // Guardar en cache (30 minutos)
-              saveToCache(`credential_${credential_id}`, 'category_pricing', pricingCacheKey, pricing, 1800);
-              
-            } catch (pricingErr) {
-              logger.warn(`No se pudo obtener pricing para categoría ${cat.category_id}: ${pricingErr.message}`);
-              pricing = {
-                error: 'No se pudo calcular',
-                message: pricingErr.message
-              };
-            }
-          }
-        }
-
-        // === Construir objeto de categoría completo ===
-        const categoryData = {
-          category_id: cat.category_id,
-          category_name: cat.category_name,
-          domain_id: cat.domain_id,
-          domain_name: cat.domain_name,
-          path: cat.path,
-          attributes,
-          // 💰 Incluir pricing SOLO si se calculó para este producto
-          ...(productPrice !== null && { pricing })
-        };
-
-        saveToCache(`credential_${credential_id}`, `category_attributes_${site_id}`, cat.category_id, categoryData);
-        categoriesWithAttrs.push(categoryData);
-      }
-
-      saveToCache(`credential_${credential_id}`, `product_suggestion_${site_id}`, nameFixed, categoriesWithAttrs);
-
-      suggestions.push({
-        product_id: product.id,
-        credential_id: credential_id,
-        marketplace_id: marketplace_id,
-        categories: categoriesWithAttrs
-      });
-    }
-
-    return res.status(200).json({
-      success: true,
-      suggestions,
-      count: suggestions.length,
-      stats: {
-        total_products: products.length,
-        cache_hits: cacheHits,
-        api_calls: apiCalls,
-        pricing_calls: pricingCalls,
-        cache_hit_rate: products.length > 0 
-          ? ((cacheHits / products.length) * 100).toFixed(2) + '%'
-          : '0%',
-        // ✅ Indicar si al menos un producto tenía precio para pricing
-        pricing_requested: products.some(p => p.price !== undefined && p.price !== null)
-      }
-    });
-
-  } catch (error) {
-    logger.error(`❌ Error general en mercadoLibreSuggestedCategoriesWithAttributes: ${error.message}`, {
-      stack: error.stack,
-      body: req.body
-    });
-    return res.status(500).json({
-      success: false,
-      error: "Error interno al procesar categorías con atributos y pricing de MercadoLibre."
-    });
-  }
-},*/
-
 /**
  * Convertir dimensiones del formato del frontend al formato de la API de MercadoLibre
  * API ML espera: "HeightxWidthxLength,Weight" - TODOS ENTEROS, en cm y gramos
  * 
  * @param {Object} packageData - Datos del paquete desde el frontend
+ * @param {Object} [options] - Opciones de parseo
+ * @param {boolean} [options.strict=true] - Si es false, completa faltantes con defaults en vez de lanzar error
+ * @param {Object} [options.defaults] - Defaults cuando faltan datos (en cm y gramos)
+ * @param {number} [options.defaults.height_cm=1]
+ * @param {number} [options.defaults.width_cm=1]
+ * @param {number} [options.defaults.length_cm=1]
+ * @param {number} [options.defaults.weight_grams=1]
  * @returns {String} Dimensiones en formato "15x8x22,320"
  */
-formatDimensionsForAPI(packageData) {
+formatDimensionsForAPI(packageData, options = {}) {
+  const strict = options?.strict !== false;
+  const defaults = options?.defaults || {};
+  const defaultHeightCm = Number.isFinite(Number(defaults.height_cm)) ? Number(defaults.height_cm) : 1;
+  const defaultWidthCm = Number.isFinite(Number(defaults.width_cm)) ? Number(defaults.width_cm) : 1;
+  const defaultLengthCm = Number.isFinite(Number(defaults.length_cm)) ? Number(defaults.length_cm) : 1;
+  const defaultWeightGrams = Number.isFinite(Number(defaults.weight_grams)) ? Number(defaults.weight_grams) : 1;
+
   // Helper para extraer número de cualquier formato
   const extractNumber = (value) => {
     if (value === null || value === undefined) return null;
@@ -1026,7 +394,13 @@ formatDimensionsForAPI(packageData) {
   };
 
   if (!packageData) {
-    throw new Error('Package data is required');
+    if (strict) throw new Error('Package data is required');
+    logger.warn(`[Dimensions] Package data ausente, usando defaults: ${defaultHeightCm}x${defaultWidthCm}x${defaultLengthCm},${defaultWeightGrams}`);
+    const h = Math.max(1, Math.ceil(defaultHeightCm));
+    const w = Math.max(1, Math.ceil(defaultWidthCm));
+    const l = Math.max(1, Math.ceil(defaultLengthCm));
+    const wt = Math.max(1, Math.ceil(defaultWeightGrams));
+    return `${h}x${w}x${l},${wt}`;
   }
 
   // Aceptar shape { package: {...} } por si llega envuelto
@@ -1096,10 +470,28 @@ formatDimensionsForAPI(packageData) {
   if (weightGrams === null) missing.push('weight');
 
   if (missing.length) {
-    throw new Error(
-      `Missing required dimensions: ${missing.join(', ')}. ` +
-      `Accepted shapes: {package:{height_cm,width_cm,length_cm,weight_grams}} or {package:{dimensions:{height,width,length},weight}}`
+    if (strict) {
+      throw new Error(
+        `Missing required dimensions: ${missing.join(', ')}. ` +
+        `Accepted shapes: {package:{height_cm,width_cm,length_cm,weight_grams}} or {package:{dimensions:{height,width,length},weight}}`
+      );
+    }
+
+    const heightFallback = heightCm ?? defaultHeightCm;
+    const widthFallback = widthCm ?? defaultWidthCm;
+    const lengthFallback = lengthCm ?? defaultLengthCm;
+    const weightFallback = weightGrams ?? defaultWeightGrams;
+
+    logger.warn(
+      `[Dimensions] Faltan datos (${missing.join(', ')}), usando defaults para MercadoLibre: ` +
+      `${heightFallback}x${widthFallback}x${lengthFallback},${weightFallback}`
     );
+
+    const h = Math.max(1, Math.ceil(heightFallback));
+    const w = Math.max(1, Math.ceil(widthFallback));
+    const l = Math.max(1, Math.ceil(lengthFallback));
+    const wt = Math.max(1, Math.ceil(weightFallback));
+    return `${h}x${w}x${l},${wt}`;
   }
 
   // ✅ IMPORTANTE: Redondear TODOS los valores a enteros (ML API lo requiere)
@@ -1262,7 +654,7 @@ async calculateMercadoLibreShippingCosts(credential, product, categoryId, siteId
     }
   };
 
-  const dimensions = OAuthController.formatDimensionsForAPI(product.package);
+  const dimensions = OAuthController.formatDimensionsForAPI(product.package, { strict: false });
   const mlUserIdFromCredential = getMercadoLibreUserIdFromCredential(credential);
   const mlUserId = mlUserIdFromCredential || (await fetchMercadoLibreUserId(credential?.access_token));
 
@@ -1444,7 +836,7 @@ async mercadoLibreShippingCosts(req, res) {
     const listingType = listing_type_id || 'gold_special';
 
     // Cache key
-    const dimensions = OAuthController.formatDimensionsForAPI(product.package);
+    const dimensions = OAuthController.formatDimensionsForAPI(product.package, { strict: false });
     const cacheKey = `shipping_${category_id}_${product.price}_${dimensions}_${listingType}`;
     const cachedShipping = getFromCache(`credential_${credential_id}`, 'shipping_costs', cacheKey);
 
@@ -1569,11 +961,11 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
       let dimensionsFormatted = null;
       if (product.package) {
         try {
-          dimensionsFormatted = OAuthController.formatDimensionsForAPI(product.package);
+          dimensionsFormatted = OAuthController.formatDimensionsForAPI(product.package, { strict: false });
           logger.info(`[Producto ${product.id}] Dimensiones formateadas: ${dimensionsFormatted}`);
         } catch (dimError) {
-          logger.error(`[Producto ${product.id}] Error formateando dimensiones: ${dimError.message}`);
-          // Continuar sin shipping
+          logger.warn(`[Producto ${product.id}] No se pudieron formatear dimensiones (best-effort): ${dimError.message}`);
+          dimensionsFormatted = "1x1x1,1";
         }
       }
       
@@ -1652,14 +1044,14 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
 
           if (productPrice !== null) {
             // ✅ CORRECCIÓN 1: Incluir site_id en la clave para evitar colisiones entre países
-            const pricingCacheKey = `pricing_${site_id}_${cat.category_id}_${productPrice}_${listing_type_id}`;
+            const pricingCacheKey = `pricing_${site_id}_${cat.category_id}_${productPrice}_${listingType}`;
             
-            logger.info(`[PRICING] Cache key: ${pricingCacheKey} | listing_type_id recibido: ${listing_type_id}`);
+            logger.info(`[PRICING] Cache key: ${pricingCacheKey} | listing_type_id efectivo: ${listingType}`);
             
             const cachedPricing = getFromCache(`credential_${credential_id}`, 'category_pricing', pricingCacheKey);
 
             if (cachedPricing) {
-              logger.info(`[CACHE HIT PRICING] Categoría ${cat.category_id} con listing ${listing_type_id}`);
+              logger.info(`[CACHE HIT PRICING] Categoría ${cat.category_id} con listing ${listingType}`);
               pricing = cachedPricing;
             } else {
               try {
@@ -1671,7 +1063,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
                 logger.info(`[PRICING API] Params:`, {
                   price: productPrice,
                   category_id: cat.category_id,
-                  listing_type_id: listing_type_id,
+                  listing_type_id: listingType,
                   site_id: site_id
                 });
                 
@@ -1679,7 +1071,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
                   params: {
                     price: productPrice,
                     category_id: cat.category_id,
-                    listing_type_id: listing_type_id  // ← Verificar que este valor es el correcto
+                    listing_type_id: listingType
                   },
                   headers: { Authorization: `Bearer ${credential.access_token}` },
                   timeout: 15000
@@ -1694,7 +1086,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
                   sale_fee_amount: fees.sale_fee_amount || 0,
                   listing_fee_amount: fees.listing_fee_amount || 0,
                   total_fee_amount: fees.total_fee_amount || 0,
-                  listing_type_id: listing_type_id,  // ← Forzar el valor que se solicitó, no el que devuelve la API
+                  listing_type_id: listingType,
                   input_price: productPrice,
                   net_amount: parseFloat((productPrice - (fees.sale_fee_amount || 0)).toFixed(2)),
                   fee_percentage: productPrice > 0 
@@ -1719,14 +1111,16 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
 
         if (productPrice !== null && dimensionsFormatted) {
           // ✅ CORRECCIÓN: Incluir listing_type_id, logistic_type y shipping_mode en la clave
-          const shippingCacheKey = `shipping_${site_id}_${cat.category_id}_${productPrice}_${dimensionsFormatted}_${listing_type_id}_${logistic_type || 'drop_off'}_${shipping_mode || 'me2'}`;
+          const effectiveLogisticType = logistic_type || 'drop_off';
+          const effectiveShippingMode = shipping_mode || 'me2';
+          const shippingCacheKey = `shipping_${site_id}_${cat.category_id}_${productPrice}_${dimensionsFormatted}_${listingType}_${effectiveLogisticType}_${effectiveShippingMode}`;
           
           logger.info(`[SHIPPING] Cache key: ${shippingCacheKey}`);
           
           const cachedShipping = getFromCache(`credential_${credential_id}`, 'shipping_costs', shippingCacheKey);
 
           if (cachedShipping) {
-            logger.info(`[CACHE HIT SHIPPING] Categoría ${cat.category_id} con config: ${listing_type_id}/${logistic_type}/${shipping_mode}`);
+            logger.info(`[CACHE HIT SHIPPING] Categoría ${cat.category_id} con config: ${listingType}/${effectiveLogisticType}/${effectiveShippingMode}`);
             shipping = cachedShipping;
           } else {
             try {

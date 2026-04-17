@@ -164,7 +164,7 @@ const MercadoLibreCapabilitiesService = {
 
       // === Si no hay datos de ninguna fuente, usar fallback ===
       if (finalListingTypes.length === 0) {
-        logger.warn(`${TRACE_ID} [ML Capabilities] Sin listing types de ninguna fuente, usando fallback`, {
+        logger.info(`${TRACE_ID} [ML Capabilities] Sin listing types de ninguna fuente, usando fallback`, {
           site_listing_types_count: siteListingTypes.length,
           user_listing_types_count: userAvailableTypes.length
         });
@@ -226,7 +226,7 @@ const MercadoLibreCapabilitiesService = {
       const marketplace = credential.marketplace || {};
       const siteId = getMercadoLibreSiteId(marketplace.domain);
       
-      logger.debug(`${TRACE_ID} [Shipping Modes] Usando valores estáticos documentados`, {
+      logger.info(`${TRACE_ID} [Shipping Modes] Usando valores estáticos documentados`, {
         site_id: siteId,
         reason: 'No existe endpoint público para shipping_modes'
       });
@@ -304,7 +304,7 @@ const MercadoLibreCapabilitiesService = {
       const marketplace = credential.marketplace || {};
       const siteId = getMercadoLibreSiteId(marketplace.domain);
       
-      logger.debug(`${TRACE_ID} [Logistic Types] Usando valores estáticos documentados`, {
+      logger.info(`${TRACE_ID} [Logistic Types] Usando valores estáticos documentados`, {
         site_id: siteId,
         reason: 'No existe endpoint público para logistic_types'
       });
