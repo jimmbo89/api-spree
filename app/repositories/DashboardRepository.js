@@ -89,100 +89,104 @@ const DashboardRepository = {
     }
   },
 
-  /**
-   * Cuenta productos con stock crítico (stock <= 0 o stock bajo threshold)
-   * @param {number} companyId - ID de la empresa
-   * @param {number} threshold - Umbral de stock crítico (default: 5)
-   * @returns {Promise<number>}
-   */
-  async getCriticalStockCount(companyId, threshold = 5) {
-    try {
-      // Obtener variantes con stock bajo
-      const lowStockVariants = await WarehouseProductVariant.findAll({
+/**
+ * Cuenta productos con stock crítico (stock <= 0 o stock bajo threshold)
+ * @param {number} companyId - ID de la empresa
+ * @param {number} threshold - Umbral de stock crítico (default: 5)
+ * @returns {Promise<number>}
+ */
+async getCriticalStockCount(companyId, threshold = 5) {
+  try {
+    const lowStockVariants = await WarehouseProductVariant.findAll({
+      include: [{
+        model: WarehouseProduct,
+        as: 'warehouseProduct',
+        required: true,
+        attributes: ['id', 'product_id'],
         include: [{
-          model: WarehouseProduct,
-          as: 'warehouseProduct',
-          include: [{
-            model: Product,
-            as: 'product',
-            where: {
-              company_id: companyId
-            },
-            attributes: ['id']
-          }],
-          attributes: []
+          model: Product,
+          as: 'product',
+          where: {
+            company_id: companyId,
+            id: { [Op.ne]: null }
+          },
+          attributes: ['id'],
+          required: true
         }],
-        where: {
-          stock: {
-            [Op.lte]: threshold
-          }
-        },
-        attributes: [],
-        raw: true
-      });
-
-      // Extraer IDs únicos de productos con stock bajo
-      const uniqueProductIds = new Set();
-      lowStockVariants.forEach(variant => {
-        const productId = variant['warehouseProduct.product.id'];
-        if (productId) {
-          uniqueProductIds.add(productId);
+        attributes: []
+      }],
+      where: {
+        stock: {
+          [Op.lte]: threshold
         }
-      });
+      },
+      attributes: [],
+      raw: true
+    });
 
-      return uniqueProductIds.size;
-    } catch (error) {
-      logger.error('[DashboardRepository] Error en getCriticalStockCount:', error.message);
-      throw error;
-    }
-  },
+    const uniqueProductIds = new Set();
+    lowStockVariants.forEach(variant => {
+      const productId = variant['warehouseProduct.product.id'];
+      if (productId) {
+        uniqueProductIds.add(productId);
+      }
+    });
+
+    return uniqueProductIds.size;
+  } catch (error) {
+    logger.error('[DashboardRepository] Error en getCriticalStockCount:', error.message);
+    throw error;
+  }
+},
 
   /**
-   * Cuenta productos SIN stock (stock = 0)
-   * @param {number} companyId - ID de la empresa
-   * @returns {Promise<number>}
-   */
-  async getOutOfStockCount(companyId) {
-    try {
-      // Obtener variantes con stock = 0
-      const outOfStockVariants = await WarehouseProductVariant.findAll({
+ * Cuenta productos SIN stock (stock = 0)
+ * @param {number} companyId - ID de la empresa
+ * @returns {Promise<number>}
+ */
+async getOutOfStockCount(companyId) {
+  try {
+    const outOfStockVariants = await WarehouseProductVariant.findAll({
+      include: [{
+        model: WarehouseProduct,
+        as: 'warehouseProduct',
+        required: true,
+        attributes: ['id', 'product_id'],
         include: [{
-          model: WarehouseProduct,
-          as: 'warehouseProduct',
-          include: [{
-            model: Product,
-            as: 'product',
-            where: {
-              company_id: companyId
-            },
-            attributes: ['id']
-          }],
-          attributes: []
+          model: Product,
+          as: 'product',
+          where: {
+            company_id: companyId,
+            id: { [Op.ne]: null }
+          },
+          attributes: ['id'],
+          required: true
         }],
-        where: {
-          stock: {
-            [Op.eq]: 0
-          }
-        },
-        attributes: [],
-        raw: true
-      });
-
-      // Extraer IDs únicos de productos sin stock
-      const uniqueProductIds = new Set();
-      outOfStockVariants.forEach(variant => {
-        const productId = variant['warehouseProduct.product.id'];
-        if (productId) {
-          uniqueProductIds.add(productId);
+        attributes: []
+      }],
+      where: {
+        stock: {
+          [Op.eq]: 0
         }
-      });
+      },
+      attributes: [],
+      raw: true
+    });
 
-      return uniqueProductIds.size;
-    } catch (error) {
-      logger.error('[DashboardRepository] Error en getOutOfStockCount:', error.message);
-      throw error;
-    }
-  },
+    const uniqueProductIds = new Set();
+    outOfStockVariants.forEach(variant => {
+      const productId = variant['warehouseProduct.product.id'];
+      if (productId) {
+        uniqueProductIds.add(productId);
+      }
+    });
+
+    return uniqueProductIds.size;
+  } catch (error) {
+    logger.error('[DashboardRepository] Error en getOutOfStockCount:', error.message);
+    throw error;
+  }
+},
 
   /**
    * Obtiene conteo de problemas de publicación (errores + pendientes)
@@ -276,150 +280,168 @@ const DashboardRepository = {
     }
   },
 
-  /**
-   * Obtiene productos con problemas (stock bajo o errores de publicación)
-   * @param {number} companyId - ID de la empresa
-   * @param {number} limit - Límite (default: 3)
-   * @returns {Promise<Array<{id: number, name: string, status: string, image: string, warehouses: Array<{id: number, name: string, stock: number}>}>>}
-   */
-  async getProblemProducts(companyId, limit = 3) {
-    try {
-      const problemProductsMap = {}; // Usar mapa para agrupar por producto
+/**
+ * Obtiene productos con problemas (stock bajo o errores de publicación)
+ * @param {number} companyId - ID de la empresa
+ * @param {number} limit - Límite (default: 3)
+ * @returns {Promise<Array<{id: number, name: string, status: string, image: string, warehouses: Array<{id: number, name: string, stock: number}>}>>}
+ */
+async getProblemProducts(companyId, limit = 3) {
+  try {
+    const problemProductsMap = {};
 
-      // 1. Productos con stock bajo - buscar en todas las variantes de todos los almacenes
-      // Obtenemos todas las variantes con stock bajo y luego agrupamos por producto
-      const lowStockVariants = await WarehouseProductVariant.findAll({
-        include: [
-          {
-            model: WarehouseProduct,
-            as: 'warehouseProduct',
-            include: [
-              {
-                model: Product,
-                as: 'product',
-                where: { company_id: companyId },
-                attributes: ['id', 'name', 'images']
+    // 1. Productos con stock bajo - consulta corregida con validaciones
+    const lowStockVariants = await WarehouseProductVariant.findAll({
+      include: [
+        {
+          model: WarehouseProduct,
+          as: 'warehouseProduct',
+          required: true,
+          attributes: ['id', 'product_id'],
+          include: [
+            {
+              model: Product,
+              as: 'product',
+              where: { 
+                company_id: companyId,
+                id: { [Op.ne]: null }
               },
-              {
-                model: Warehouse,
-                as: 'warehouse',
-                attributes: ['id', 'name']
-              }
-            ],
-            attributes: []
-          }
-        ],
-        where: {
-          stock: {
-            [Op.lte]: 5
-          }
-        },
-        attributes: ['stock'],
-        raw: true
-      });
+              attributes: ['id', 'name', 'images'],
+              required: true
+            },
+            {
+              model: Warehouse,
+              as: 'warehouse',
+              attributes: ['id', 'name']
+            }
+          ]
+        }
+      ],
+      where: {
+        stock: {
+          [Op.lte]: 5
+        }
+      },
+      attributes: ['stock', 'warehouse_product_id'],
+      raw: true
+    });
 
-      // Agrupar por producto y detallar warehouses
-      lowStockVariants.forEach(variant => {
-        const productId = variant['warehouseProduct.product.id'];
-        const productName = variant['warehouseProduct.product.name'];
-        const productImages = variant['warehouseProduct.product.images'];
-        const warehouseId = variant['warehouseProduct.warehouse.id'];
-        const warehouseName = variant['warehouseProduct.warehouse.name'];
-        const stock = parseInt(variant.stock || 0);
+    // Agrupar por producto con validación estricta
+    lowStockVariants.forEach(variant => {
+      const productId = variant['warehouseProduct.product.id'];
+      
+      // Validación crítica: saltar variantes sin producto asociado válido
+      if (!productId || !variant['warehouseProduct.product.name']) {
+        logger.warn(`[DashboardRepository] Variante con producto inválido omitida: warehouse_product_id=${variant['warehouseProduct.id']}, product_id=${variant['warehouseProduct.product_id']}`);
+        return;
+      }
 
-        if (!problemProductsMap[productId]) {
-          // Parsear imágenes (es un JSON array)
-          let mainImage = null;
-          try {
-            const images = typeof productImages === 'string'
-              ? JSON.parse(productImages)
-              : productImages;
-            mainImage = images && images.length > 0 ? images[0] : null;
-          } catch (e) {
-            mainImage = null;
-          }
+      const productName = variant['warehouseProduct.product.name'];
+      const productImages = variant['warehouseProduct.product.images'];
+      const warehouseId = variant['warehouseProduct.warehouse.id'];
+      const warehouseName = variant['warehouseProduct.warehouse.name'];
+      const stock = parseInt(variant.stock || 0);
 
-          problemProductsMap[productId] = {
-            id: productId,
-            name: productName,
-            status: 'low_stock',
-            image: mainImage,
-            warehouses: []
-          };
+      if (!problemProductsMap[productId]) {
+        let mainImage = null;
+        try {
+          const images = typeof productImages === 'string'
+            ? JSON.parse(productImages)
+            : productImages;
+          mainImage = images && images.length > 0 ? images[0] : null;
+        } catch (e) {
+          mainImage = null;
         }
 
-        // Agregar warehouse con su stock
-        problemProductsMap[productId].warehouses.push({
-          id: warehouseId,
-          name: warehouseName,
-          stock: stock
-        });
+        problemProductsMap[productId] = {
+          id: productId,
+          name: productName,
+          status: 'low_stock',
+          image: mainImage,
+          warehouses: []
+        };
+      }
+
+      problemProductsMap[productId].warehouses.push({
+        id: warehouseId,
+        name: warehouseName,
+        stock: stock
       });
+    });
 
-      // 2. Productos con errores de publicación
-      const errorProducts = await ProductPublishingTask.findAll({
-        include: [
-          {
-            model: Product,
-            as: 'product',
-            where: { company_id: companyId },
-            attributes: ['id', 'name', 'images']
-          }
-        ],
-        where: {
-          status: 'failed'
-        },
-        attributes: ['product_id'],
-        limit: limit * 2,
-        raw: true
-      });
-
-      errorProducts.forEach(task => {
-        const productId = task['product.id'];
-        const productName = task['product.name'];
-        const productImages = task['product.images'];
-
-        if (!problemProductsMap[productId]) {
-          let mainImage = null;
-          try {
-            const images = typeof productImages === 'string' 
-              ? JSON.parse(productImages) 
-              : productImages;
-            mainImage = images && images.length > 0 ? images[0] : null;
-          } catch (e) {
-            mainImage = null;
-          }
-
-          problemProductsMap[productId] = {
-            id: productId,
-            name: productName,
-            status: 'error',
-            image: mainImage,
-            warehouses: []
-          };
+    // 2. Productos con errores de publicación
+    const errorProducts = await ProductPublishingTask.findAll({
+      include: [
+        {
+          model: Product,
+          as: 'product',
+          where: { 
+            company_id: companyId,
+            id: { [Op.ne]: null }
+          },
+          attributes: ['id', 'name', 'images']
         }
-      });
+      ],
+      where: {
+        status: 'failed'
+      },
+      attributes: ['product_id'],
+      limit: limit * 2,
+      raw: true
+    });
 
-      // Convertir mapa a array
-      const problemProducts = Object.values(problemProductsMap);
+    errorProducts.forEach(task => {
+      const productId = task['product.id'];
+      
+      // Validación: saltar tareas sin producto asociado válido
+      if (!productId || !task['product.name']) {
+        logger.warn(`[DashboardRepository] Tarea de publicación con producto inválido omitida: product_id=${task.product_id}`);
+        return;
+      }
 
-      // Calcular stock total y ordenar: primero por status (error primero), luego por stock total ascendente
-      problemProducts.sort((a, b) => {
-        if (a.status === 'error' && b.status !== 'error') return -1;
-        if (a.status !== 'error' && b.status === 'error') return 1;
-        
-        // Si ambos son low_stock, ordenar por stock total (menor primero)
-        const stockA = a.warehouses.reduce((sum, w) => sum + w.stock, 0);
-        const stockB = b.warehouses.reduce((sum, w) => sum + w.stock, 0);
-        return stockA - stockB;
-      });
+      const productName = task['product.name'];
+      const productImages = task['product.images'];
 
-      return problemProducts.slice(0, limit);
-    } catch (error) {
-      logger.error('[DashboardRepository] Error en getProblemProducts:', error.message);
-      throw error;
-    }
-  },
+      if (!problemProductsMap[productId]) {
+        let mainImage = null;
+        try {
+          const images = typeof productImages === 'string' 
+            ? JSON.parse(productImages) 
+            : productImages;
+          mainImage = images && images.length > 0 ? images[0] : null;
+        } catch (e) {
+          mainImage = null;
+        }
+
+        problemProductsMap[productId] = {
+          id: productId,
+          name: productName,
+          status: 'error',
+          image: mainImage,
+          warehouses: []
+        };
+      }
+    });
+
+    // Convertir mapa a array
+    const problemProducts = Object.values(problemProductsMap);
+
+    // Calcular stock total y ordenar: primero por status (error primero), luego por stock total ascendente
+    problemProducts.sort((a, b) => {
+      if (a.status === 'error' && b.status !== 'error') return -1;
+      if (a.status !== 'error' && b.status === 'error') return 1;
+      
+      const stockA = a.warehouses.reduce((sum, w) => sum + w.stock, 0);
+      const stockB = b.warehouses.reduce((sum, w) => sum + w.stock, 0);
+      return stockA - stockB;
+    });
+
+    return problemProducts.slice(0, limit);
+  } catch (error) {
+    logger.error('[DashboardRepository] Error en getProblemProducts:', error.message);
+    throw error;
+  }
+},
 
   /**
    * Obtiene el estado de los marketplaces conectados por el usuario (o de la empresa si no se pasa userId)

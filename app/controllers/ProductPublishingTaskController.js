@@ -25,6 +25,7 @@ const MarketplaceTransformer = require('../services/MarketplaceTransformer');
 const PublishingService = require('../services/PublishingService');
 const { getRequestMetadata } = require('../util/requestUtil');
 const PublishingAdapterFactory = require('../services/adapters/PublishingAdapterFactory');
+const MercadoLibreCapabilitiesService = require('../services/MercadoLibreCapabilitiesService');
 
 const ProductPublishingTaskController = {
   // 1. Registrar publicación (simula envío a API)
@@ -59,7 +60,7 @@ async warehouseMarketplaces(req, res) {
     const refreshedCredentials = await ProductPublishingTaskController.refreshExpiredTokens(credentials, userId);
 
     // 4. Transformar resultados (igual que antes, pero con credenciales actualizadas)
-    const marketplaces = refreshedCredentials.map(credential => {
+    /*const marketplaces = refreshedCredentials.map(credential => {
       const mp = credential.marketplace;
 
       // Opcional: limpiar espacios en domain
@@ -93,8 +94,87 @@ async warehouseMarketplaces(req, res) {
         country: credential.country,
         fieldMappings: credential.fieldMappings
       };
-    });
+    });*/
+     const marketplaces = await Promise.all(refreshedCredentials.map(async (credential) => {
+      const mp = credential.marketplace;
 
+      // Limpiar espacios en domain
+      if (typeof mp.domain === 'string') {
+        mp.domain = mp.domain.trim();
+      }
+
+      // ✅ Base del objeto marketplace
+      const marketplaceData = {
+        id: credential.id,
+        name: credential.name || `${mp.name} (${credential.seller_email || 'Sin nombre'})`,
+        description: mp.description || 'Integración con marketplace',
+        marketplace_id: mp.id,
+        marketplace_name: mp.name,
+        type: mp.type,
+        domain: mp.domain,
+        config: mp.config,
+        active: mp.active,
+        client_id: mp.client_id,
+        client_secret: mp.client_secret,
+        redirect_uri: mp.redirect_uri,
+        scopes: mp.scopes,
+        createdAt: mp.createdAt,
+        updatedAt: mp.updatedAt,
+        credential_id: credential.id,
+        access_token: credential.access_token ? 'Token existente' : null,
+        seller_id: credential.seller_id,
+        seller_email: credential.seller_email,
+        api_key: credential.api_key,
+        expires_at: credential.expires_at,
+        is_expired: credential.expires_at ? new Date(credential.expires_at) < new Date() : false,
+        country: credential.country,
+        fieldMappings: credential.fieldMappings
+      };
+
+      // ✅ NUEVO: Agregar opciones dinámicas SOLO si es MercadoLibre
+      if (MercadoLibreCapabilitiesService.isMercadoLibreCredential(credential)) {
+        try {
+          // Obtener capabilities en paralelo (no bloqueante para el resto)
+          const [listingTypes, shippingModes, logisticTypes] = await Promise.all([
+            MercadoLibreCapabilitiesService.getAvailableListingTypes(credential),
+            MercadoLibreCapabilitiesService.getAvailableShippingModes(credential),
+            MercadoLibreCapabilitiesService.getAvailableLogisticTypes(credential)
+          ]);
+
+          marketplaceData.options = {
+            listing_types: listingTypes,
+            shipping_modes: shippingModes,
+            logistic_types: logisticTypes,
+            source: 'dynamic', // Indicar que son opciones dinámicas
+            ml_user_id: MercadoLibreCapabilitiesService.getMercadoLibreUserId(credential)
+          };
+          
+          logger.debug(`[warehouseMarketplaces] Capabilities cargadas para credencial ML ${credential.id}`);
+          
+        } catch (capError) {
+          logger.warn(`[warehouseMarketplaces] Error cargando capabilities para ML ${credential.id}: ${capError.message}`);
+          // Fallback a opciones estáticas
+          marketplaceData.options = {
+            listing_types: MercadoLibreCapabilitiesService.getFallbackListingTypes(),
+            shipping_modes: MercadoLibreCapabilitiesService.getFallbackShippingModes(),
+            logistic_types: MercadoLibreCapabilitiesService.getFallbackLogisticTypes(),
+            source: 'fallback',
+            warning: 'No se pudieron cargar opciones dinámicas'
+          };
+        }
+      } else {
+        // Para otros marketplaces, usar opciones estáticas o vacío
+        marketplaceData.options = {
+          listing_types: [],
+          shipping_modes: [],
+          logistic_types: [],
+          source: 'static',
+          note: 'Este marketplace usa configuración manual'
+        };
+      }
+
+      return marketplaceData;
+    }));
     const categories = await ProductCategoryRepository.findActive();
 
     res.status(200).json({ 

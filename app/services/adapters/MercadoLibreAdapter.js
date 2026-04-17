@@ -29,6 +29,9 @@ class MercadoLibreAdapter extends BaseAdapter {
 
     const marketId = Object.keys(productData.mercado_libre)[0];
     const mlData = productData.mercado_libre[marketId];
+    const listingTypeOverride = mlData?.listing_type_id || null;
+    const shippingModeOverride = mlData?.shipping_mode || null;
+    const logisticTypeOverride = mlData?.logistic_type || null;
 
     if (!mlData?.category?.category_id) {
       throw new Error('Falta category_id para MercadoLibre');
@@ -53,7 +56,8 @@ class MercadoLibreAdapter extends BaseAdapter {
       currency_id: 'CLP',
       available_quantity: Number(productData.totalStock) || 0,
       buying_mode: 'buy_it_now',
-      listing_type_id: 'gold_special',
+      // Default histórico del adapter (publish() lo enviaba fijo). Solo se sobreescribe si el frontend envía listing_type_id.
+      listing_type_id: 'bronze',
       condition: productData.condition?.toLowerCase() === 'new' ? 'new' : 'used',
       description: {
         plain_text: productData.description?.trim() || productData.name?.trim() || ''
@@ -70,6 +74,17 @@ class MercadoLibreAdapter extends BaseAdapter {
       __ml_has_variation_attributes: hasVariationAttributes,
       __ml_is_catalog_product: isCatalogProduct
     };
+
+    // Overrides opcionales (solo MercadoLibre): si vienen del frontend, usarlos; si no, mantener defaults.
+    if (listingTypeOverride) {
+      prepared.listing_type_id = listingTypeOverride;
+    }
+    if (shippingModeOverride) {
+      prepared.shipping_mode = shippingModeOverride;
+    }
+    if (logisticTypeOverride) {
+      prepared.logistic_type = logisticTypeOverride;
+    }
     
     if (productData.economic_config) {
       const config = productData.economic_config;
@@ -740,10 +755,19 @@ class MercadoLibreAdapter extends BaseAdapter {
           0,
         currency_id: "CLP",
         buying_mode: "buy_it_now",
-        listing_type_id: "bronze",
+        listing_type_id: transformedProduct.listing_type_id || "bronze",
         condition: transformedProduct.condition || "new", // ✅ Usar condition del producto
         pictures: transformedProduct.pictures || []
       };
+
+      // Solo incluir config de shipping/logística cuando el frontend la envía (publishing-task -> MercadoLibre)
+      // Si solo viene uno de los valores, completar el faltante con defaults.
+      if (transformedProduct.shipping_mode || transformedProduct.logistic_type) {
+        productToPublish.shipping = {
+          mode: transformedProduct.shipping_mode || "me2",
+          logistic_type: transformedProduct.logistic_type || "drop_off"
+        };
+      }
 
       if (Array.isArray(transformedProduct.attributes)) {
         productToPublish.attributes = transformedProduct.attributes;
