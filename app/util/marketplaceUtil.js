@@ -6,7 +6,20 @@
  * @param {string} domain - Dominio del marketplace
  * @returns {string} site_id de MercadoLibre (MLC, MLA, MLM, etc.)
  */
-function getMercadoLibreSiteId(countryCode, domain) {
+function getMercadoLibreSiteId(countryCodeOrDomain, domainArg) {
+  // Compatibilidad: llamadas existentes pasan solo `domain`
+  let countryCode = countryCodeOrDomain;
+  let domain = domainArg;
+
+  if (
+    !domainArg &&
+    typeof countryCodeOrDomain === "string" &&
+    countryCodeOrDomain.toLowerCase().includes("mercado")
+  ) {
+    domain = countryCodeOrDomain;
+    countryCode = null;
+  }
+
   // Prioridad 1: country code desde config
   const countryMap = {
     CL: "MLC", AR: "MLA", MX: "MLM", CO: "MCO", 
@@ -16,8 +29,9 @@ function getMercadoLibreSiteId(countryCode, domain) {
     NI: "MNI", SV: "MSV", CU: "MCU"
   };
   
-  if (countryCode && countryMap[countryCode]) {
-    return countryMap[countryCode];
+  const normalizedCountryCode = String(countryCode || "").trim().toUpperCase();
+  if (normalizedCountryCode && countryMap[normalizedCountryCode]) {
+    return countryMap[normalizedCountryCode];
   }
   
   // Prioridad 2: domain

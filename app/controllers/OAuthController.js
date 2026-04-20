@@ -936,12 +936,42 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
 
     const marketplace_id = credential.marketplace_id;
     const site_id = getMercadoLibreSiteId(credential.marketplace?.domain);
+    const getMercadoLibreUserIdFromCredential = (cred) => {
+      if (!cred) return null;
+      if (cred.ml_user_id) return cred.ml_user_id;
+      const additional = cred.additional_data;
+      if (!additional) return null;
+      if (typeof additional === 'object') return additional.ml_user_id || null;
+      if (typeof additional === 'string') {
+        try {
+          const parsed = JSON.parse(additional);
+          return parsed?.ml_user_id || null;
+        } catch (e) {
+          return null;
+        }
+      }
+      return null;
+    };
+    const fetchMercadoLibreUserId = async (accessToken) => {
+      if (!accessToken) return null;
+      try {
+        const meResponse = await axios.get('https://api.mercadolibre.com/users/me', {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          timeout: 8000
+        });
+        return meResponse.data?.id || null;
+      } catch (e) {
+        return null;
+      }
+    };
+    const mlUserId = getMercadoLibreUserIdFromCredential(credential) || await fetchMercadoLibreUserId(credential.access_token);
 
     const suggestions = [];
     let cacheHits = 0;
     let apiCalls = 0;
     let pricingCalls = 0;
     let shippingCalls = 0;
+    let listingTypesCalls = 0;
 
     // === PROCESAR CADA PRODUCTO ===
     for (const product of products) {
@@ -969,7 +999,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
         }
       }
       
-      const cachedProductResult = getFromCache(`credential_${credential_id}`, `product_suggestion_${site_id}`, nameFixed);
+      const cachedProductResult = getFromCache(`credential_${credential_id}`, `product_suggestion_${site_id}_v2`, nameFixed);
 
       if (cachedProductResult) {
         logger.info(`[CACHE HIT] Producto "${nameFixed}" en credential ${credential_id}`);
@@ -1016,7 +1046,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
         if (!cat.category_id) continue;
 
         // === Cache de categoría con atributos ===
-        const cachedCategory = getFromCache(`credential_${credential_id}`, `category_attributes_${site_id}`, cat.category_id);
+        const cachedCategory = getFromCache(`credential_${credential_id}`, `category_attributes_${site_id}_v2`, cat.category_id);
 
         if (cachedCategory) {
           logger.info(`[CACHE HIT] Categoría ${cat.category_id} en credential ${credential_id}`);
@@ -1039,20 +1069,72 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
           logger.error(`Error al cargar atributos para categoría ${cat.category_id}: ${attrErr.message}`);
         }
 
+        // === NUEVO: Listing types permitidos por usuario + categoría ===
+        let listingTypesForCategory = [];
+        let effectiveListingType = listingType;
+        try {
+          if (mlUserId) {
+            const listingTypesCacheKey = `listing_types_${site_id}_${cat.category_id}`;
+            const cachedListingTypes = getFromCache(`credential_${credential_id}`, 'category_listing_types', listingTypesCacheKey);
+
+            if (cachedListingTypes && Array.isArray(cachedListingTypes)) {
+              listingTypesForCategory = cachedListingTypes;
+            } else {
+              listingTypesCalls++;
+              const userLtResponse = await axios.get(
+                `https://api.mercadolibre.com/users/${mlUserId}/available_listing_types`,
+                {
+                  params: { category_id: cat.category_id },
+                  headers: { Authorization: `Bearer ${credential.access_token}` },
+                  timeout: 12000
+                }
+              );
+
+              const availableData = userLtResponse.data?.available || userLtResponse.data || [];
+              if (Array.isArray(availableData)) {
+                listingTypesForCategory = availableData
+                  .filter(lt => lt?.id)
+                  .map(lt => ({
+                    value: lt.id,
+                    title: lt.id,
+                    description: lt.name || `Tipo ${lt.id}`,
+                    ml_metadata: {
+                      name: lt.name || null,
+                      site_id: lt.site_id || site_id,
+                      remaining_listings: lt.remaining_listings ?? null,
+                      user_specific: true
+                    }
+                  }));
+              }
+
+              saveToCache(`credential_${credential_id}`, 'category_listing_types', listingTypesCacheKey, listingTypesForCategory, 1800);
+            }
+
+            if (listingTypesForCategory.length > 0) {
+              const requestedAvailable = listingTypesForCategory.some(lt => lt.value === listingType);
+              effectiveListingType = requestedAvailable ? listingType : listingTypesForCategory[0].value;
+            }
+          }
+        } catch (ltError) {
+          logger.warn(`No se pudieron obtener listing types para categoría ${cat.category_id}: ${ltError.message}`);
+          listingTypesForCategory = [];
+          effectiveListingType = listingType;
+        }
+
         // === 💰 Obtener pricing/comisiones ===
           let pricing = null;
 
           if (productPrice !== null) {
             // ✅ CORRECCIÓN 1: Incluir site_id en la clave para evitar colisiones entre países
-            const pricingCacheKey = `pricing_${site_id}_${cat.category_id}_${productPrice}_${listingType}`;
+            const pricingCacheKey = `pricing_${site_id}_${cat.category_id}_${productPrice}_${effectiveListingType}`;
             
-            logger.info(`[PRICING] Cache key: ${pricingCacheKey} | listing_type_id efectivo: ${listingType}`);
+            logger.info(`[PRICING] Cache key: ${pricingCacheKey} | listing_type_id efectivo: ${effectiveListingType}`);
             
             const cachedPricing = getFromCache(`credential_${credential_id}`, 'category_pricing', pricingCacheKey);
 
             if (cachedPricing) {
-              logger.info(`[CACHE HIT PRICING] Categoría ${cat.category_id} con listing ${listingType}`);
-              pricing = cachedPricing;
+                logger.info(`[CACHE HIT PRICING] Categoría ${cat.category_id} con listing ${listingType}`);
+                pricing = cachedPricing;
             } else {
               try {
                 pricingCalls++;
@@ -1063,7 +1145,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
                 logger.info(`[PRICING API] Params:`, {
                   price: productPrice,
                   category_id: cat.category_id,
-                  listing_type_id: listingType,
+                  listing_type_id: effectiveListingType,
                   site_id: site_id
                 });
                 
@@ -1071,7 +1153,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
                   params: {
                     price: productPrice,
                     category_id: cat.category_id,
-                    listing_type_id: listingType
+                    listing_type_id: effectiveListingType
                   },
                   headers: { Authorization: `Bearer ${credential.access_token}` },
                   timeout: 15000
@@ -1086,7 +1168,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
                   sale_fee_amount: fees.sale_fee_amount || 0,
                   listing_fee_amount: fees.listing_fee_amount || 0,
                   total_fee_amount: fees.total_fee_amount || 0,
-                  listing_type_id: listingType,
+                  listing_type_id: fees.listing_type_id || effectiveListingType,
                   input_price: productPrice,
                   net_amount: parseFloat((productPrice - (fees.sale_fee_amount || 0)).toFixed(2)),
                   fee_percentage: productPrice > 0 
@@ -1113,7 +1195,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
           // ✅ CORRECCIÓN: Incluir listing_type_id, logistic_type y shipping_mode en la clave
           const effectiveLogisticType = logistic_type || 'drop_off';
           const effectiveShippingMode = shipping_mode || 'me2';
-          const shippingCacheKey = `shipping_${site_id}_${cat.category_id}_${productPrice}_${dimensionsFormatted}_${listingType}_${effectiveLogisticType}_${effectiveShippingMode}`;
+          const shippingCacheKey = `shipping_${site_id}_${cat.category_id}_${productPrice}_${dimensionsFormatted}_${effectiveListingType}_${effectiveLogisticType}_${effectiveShippingMode}`;
           
           logger.info(`[SHIPPING] Cache key: ${shippingCacheKey}`);
           
@@ -1131,7 +1213,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
                 { ...product, price: productPrice },
                 cat.category_id,
                 site_id,
-                listing_type_id,
+                effectiveListingType,
                 logistic_type,  // ← Pasar explícitamente
                 shipping_mode   // ← Pasar explícitamente
               );
@@ -1155,16 +1237,17 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
           domain_id: cat.domain_id,
           domain_name: cat.domain_name,
           path: cat.path,
+          listing_types: listingTypesForCategory,
           attributes,
           ...(productPrice !== null && { pricing }),
           ...(productPrice !== null && dimensionsFormatted && { shipping })
         };
 
-        saveToCache(`credential_${credential_id}`, `category_attributes_${site_id}`, cat.category_id, categoryData);
+        saveToCache(`credential_${credential_id}`, `category_attributes_${site_id}_v2`, cat.category_id, categoryData);
         categoriesWithAttrs.push(categoryData);
       }
 
-      saveToCache(`credential_${credential_id}`, `product_suggestion_${site_id}`, nameFixed, categoriesWithAttrs);
+      saveToCache(`credential_${credential_id}`, `product_suggestion_${site_id}_v2`, nameFixed, categoriesWithAttrs);
 
       suggestions.push({
         product_id: product.id,
@@ -1183,6 +1266,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
         cache_hits: cacheHits,
         api_calls: apiCalls,
         pricing_calls: pricingCalls,
+        listing_types_calls: listingTypesCalls,
         shipping_calls: shippingCalls,
         cache_hit_rate: products.length > 0 
           ? ((cacheHits / products.length) * 100).toFixed(2) + '%'

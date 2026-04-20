@@ -501,9 +501,6 @@ const MercadoLibreCapabilitiesService = {
   getFallbackListingTypes() {
     return [
       { value: "free", title: "free", description: "Publicación gratuita", _is_static_fallback: true, ml_metadata: null },
-      { value: "bronze", title: "bronze", description: "Publicación básica", _is_static_fallback: true, ml_metadata: null },
-      { value: "silver", title: "silver", description: "Nivel intermedio", _is_static_fallback: true, ml_metadata: null },
-      { value: "gold", title: "gold", description: "Publicación premium", _is_static_fallback: true, ml_metadata: null },
       { value: "gold_special", title: "gold_special", description: "Destacada/promocionada", _is_static_fallback: true, ml_metadata: null },
       { value: "gold_pro", title: "gold_pro", description: "Nivel profesional", _is_static_fallback: true, ml_metadata: null },
     ];
