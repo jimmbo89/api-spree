@@ -132,7 +132,7 @@ async warehouseMarketplaces(req, res) {
       };
 
       // ✅ NUEVO: Agregar opciones dinámicas SOLO si es MercadoLibre
-      if (MercadoLibreCapabilitiesService.isMercadoLibreCredential(credential)) {
+      /*if (MercadoLibreCapabilitiesService.isMercadoLibreCredential(credential)) {
         try {
           // Obtener capabilities en paralelo (no bloqueante para el resto)
           const [listingTypes, shippingModes, logisticTypes] = await Promise.all([
@@ -171,7 +171,7 @@ async warehouseMarketplaces(req, res) {
           source: 'static',
           note: 'Este marketplace usa configuración manual'
         };
-      }
+      }*/
 
       return marketplaceData;
     }));
