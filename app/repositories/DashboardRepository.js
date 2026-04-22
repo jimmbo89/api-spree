@@ -10,6 +10,7 @@ const {
   ProductMarketplaceLink,
   JobProduct,
   Job,
+  User,
   InventoryMovement,
   MarketplaceCredential
 } = require('../models');
@@ -368,68 +369,11 @@ async getProblemProducts(companyId, limit = 3) {
         stock: stock
       });
     });
-
-    // 2. Productos con errores de publicación
-    const errorProducts = await ProductPublishingTask.findAll({
-      include: [
-        {
-          model: Product,
-          as: 'product',
-          where: { 
-            company_id: companyId,
-            id: { [Op.ne]: null }
-          },
-          attributes: ['id', 'name', 'images']
-        }
-      ],
-      where: {
-        status: 'failed'
-      },
-      attributes: ['product_id'],
-      limit: limit * 2,
-      raw: true
-    });
-
-    errorProducts.forEach(task => {
-      const productId = task['product.id'];
-      
-      // Validación: saltar tareas sin producto asociado válido
-      if (!productId || !task['product.name']) {
-        logger.warn(`[DashboardRepository] Tarea de publicación con producto inválido omitida: product_id=${task.product_id}`);
-        return;
-      }
-
-      const productName = task['product.name'];
-      const productImages = task['product.images'];
-
-      if (!problemProductsMap[productId]) {
-        let mainImage = null;
-        try {
-          const images = typeof productImages === 'string' 
-            ? JSON.parse(productImages) 
-            : productImages;
-          mainImage = images && images.length > 0 ? images[0] : null;
-        } catch (e) {
-          mainImage = null;
-        }
-
-        problemProductsMap[productId] = {
-          id: productId,
-          name: productName,
-          status: 'error',
-          image: mainImage,
-          warehouses: []
-        };
-      }
-    });
-
     // Convertir mapa a array
     const problemProducts = Object.values(problemProductsMap);
 
-    // Calcular stock total y ordenar: primero por status (error primero), luego por stock total ascendente
+    // Calcular stock total y ordenar por stock total ascendente
     problemProducts.sort((a, b) => {
-      if (a.status === 'error' && b.status !== 'error') return -1;
-      if (a.status !== 'error' && b.status === 'error') return 1;
       
       const stockA = a.warehouses.reduce((sum, w) => sum + w.stock, 0);
       const stockB = b.warehouses.reduce((sum, w) => sum + w.stock, 0);
@@ -451,13 +395,13 @@ async getProblemProducts(companyId, limit = 3) {
    */
   async getMarketplaces(companyId, userId = null) {
     try {
-      // 👇 Construir where dinámico para credenciales
+      // Construir where dinamico para credenciales
       const credentialWhere = { active: true };
       if (userId) {
-        credentialWhere.user_id = userId; // 👈 Filtrar solo credenciales de este usuario
+        credentialWhere.user_id = userId; // Filtrar solo credenciales de este usuario
       }
 
-      // 👇 Decidir si es INNER o LEFT JOIN según si filtramos por usuario
+      // Decidir si es INNER o LEFT JOIN segun si filtramos por usuario
       const credentialsRequired = !!userId; // true = solo marketplaces con credenciales del usuario
 
       // 1. Obtener marketplaces con sus links y credenciales
@@ -471,9 +415,9 @@ async getProblemProducts(companyId, limit = 3) {
         }, {
           model: MarketplaceCredential,
           as: 'credentials',
-          where: credentialWhere, // 👈 Where dinámico con user_id si aplica
-          required: credentialsRequired, // 👈 INNER JOIN si filtramos por usuario
-          attributes: ['id', 'active', 'expires_at', 'seller_email', 'api_key', 'user_id']
+          where: credentialWhere,
+          required: credentialsRequired,
+          attributes: ['id', 'active', 'access_token', 'refresh_token', 'expires_at', 'seller_email', 'api_key', 'user_id']
         }],
         where: { active: true },
         attributes: ['id', 'name', 'domain'],
@@ -510,37 +454,29 @@ async getProblemProducts(companyId, limit = 3) {
       const result = marketplaces.map(marketplace => {
         const mpId = marketplace.id;
         const links = marketplace.productLinks || [];
-        const credentials = marketplace.credentials || [];
         const jobStats = jobProductsByMarketplace[mpId] || {
           success: 0, error: 0, pending: 0, processing: 0, retrying: 0
         };
-
-        const publishedCount = links.filter(l => 
+        const publishedCount = links.filter(l =>
           l.status === 'published' || l.status === 'published_with_warnings'
         ).length;
-        
         const errors = jobStats.error;
         const pending = jobStats.pending + jobStats.processing + jobStats.retrying;
         const connectionStatus = checkConnectionStatus(marketplace);
 
-        let status = 'healthy';
+        let status = 'warning';
+        if (connectionStatus.state === 'connected') status = 'healthy';
+        if (connectionStatus.state === 'error') status = 'error';
+        
         let summary = '';
-
-        if (!connectionStatus.isConnected) {
-          status = 'error';
-          summary = connectionStatus.reason;
-        } else if (errors > 0) {
-          status = 'error';
-          summary = `${errors} error${errors > 1 ? 'es' : ''} de publicación`;
+        if (errors > 0) {
+          summary = `${errors} error${errors > 1 ? 'es' : ''} de publicacion`;
         } else if (pending > 5) {
-          status = 'warning';
-          summary = `${pending} pendientes de sincronización`;
+          summary = `${pending} pendientes de sincronizacion`;
         } else if (publishedCount > 0) {
-          status = 'healthy';
           summary = `${publishedCount} publicacione${publishedCount > 1 ? 's' : ''} activa${publishedCount > 1 ? 's' : ''}`;
         } else {
-          status = 'healthy';
-          summary = 'Sin publicaciones';
+          summary = connectionStatus.reason === 'Conectado' ? 'Sin publicaciones' : connectionStatus.reason;
         }
 
         const domainSlug = marketplace.domain
@@ -554,7 +490,6 @@ async getProblemProducts(companyId, limit = 3) {
           summary: summary,
           link: `/marketplace-credentials?marketplace=${domainSlug}`,
           connectionStatus: connectionStatus.isConnected
-          // 👈 hasUserCredential ya no es necesario, porque el filtro está en la consulta
         };
       });
 
@@ -564,11 +499,94 @@ async getProblemProducts(companyId, limit = 3) {
       throw error;
     }
   },
-
   /**
-   * Obtiene la actividad reciente de la empresa (publicaciones, errores, jobs, órdenes, stock)
+   * Obtiene procesos finalizados con problemas para dashboard
    * @param {number} companyId - ID de la empresa
-   * @param {number} limit - Límite de actividades (default: 5)
+   * @param {number} limit - Limite (default: 5)
+   * @returns {Promise<Array<Object>>}
+   */
+  async getProblemProcesses(companyId, limit = 5) {
+    try {
+      const jobs = await Job.findAll({
+        where: {
+          company_id: companyId,
+          job_type: 'publish',
+          status: {
+            [Op.in]: ['completed_with_errors', 'failed']
+          }
+        },
+        attributes: [
+          'id',
+          'batch_id',
+          'status',
+          'total_products',
+          'successful',
+          'errors_count',
+          'percentage',
+          'draft_name',
+          'completed_at',
+          'createdAt'
+        ],
+        include: [{
+          model: User,
+          as: 'user',
+          attributes: ['id', 'name'],
+          required: false
+        }],
+        order: [['completed_at', 'DESC'], ['createdAt', 'DESC']],
+        limit: limit,
+        raw: false
+      });
+
+      const jobIds = jobs.map(job => job.id);
+      const channelsByJob = {};
+      if (jobIds.length > 0) {
+        const channelRows = await JobProduct.findAll({
+          where: {
+            job_id: { [Op.in]: jobIds }
+          },
+          attributes: [
+            'job_id',
+            [fn('COUNT', fn('DISTINCT', col('credential_id'))), 'channelsCount']
+          ],
+          group: ['job_id'],
+          raw: true
+        });
+
+        channelRows.forEach(row => {
+          channelsByJob[row.job_id] = parseInt(row.channelsCount || 0);
+        });
+      }
+
+      return jobs.map(jobModel => {
+        const job = jobModel.get({ plain: true });
+        const date = new Date(job.completed_at || job.createdAt);
+        return {
+          id: job.id,
+          batch_id: job.batch_id,
+          display_id: `J-${String(job.id).padStart(5, '0')}`,
+          name: formatProcessDateTime(date),
+          status: job.status,
+          createdAt: job.completed_at || job.createdAt,
+          user_name: job.user?.name || 'N/A',
+          channelsCount: channelsByJob[job.id] || 0,
+          productsTotal: parseInt(job.total_products || 0),
+          publishedCount: parseInt(job.successful || 0),
+          errorCount: parseInt(job.errors_count || 0),
+          percentage: parseInt(job.percentage || 0),
+          draft_name: job.draft_name || null,
+          link: `/procesos/${job.id}`
+        };
+      });
+    } catch (error) {
+      logger.error('[DashboardRepository] Error en getProblemProcesses:', error.message);
+      throw error;
+    }
+  },
+  /**
+   * Obtiene la actividad reciente de la empresa (publicaciones, errores, jobs, ordenes, stock)
+   * @param {number} companyId - ID de la empresa
+   * @param {number} limit - Limite de actividades (default: 5)
    * @returns {Promise<Array<{message: string, type: string, timestamp: string, link: string}>>}
    */
   async getRecentActivities(companyId, limit = 5) {
@@ -794,78 +812,79 @@ async getProblemProducts(companyId, limit = 3) {
 function checkConnectionStatus(marketplace) {
   const now = new Date();
   const credentials = marketplace.credentials || [];
-  const domain = marketplace.domain || '';
+  const domain = (marketplace.domain || '').toLowerCase();
+  const isMercadoLibre = domain.includes('mercadolibre');
+  const isFalabella = domain.includes('falabella');
 
   // Si no hay credenciales activas
   if (credentials.length === 0) {
     return {
+      state: 'disconnected',
       isConnected: false,
-      reason: 'Sin conexión configurada'
+      reason: 'No conectado'
     };
   }
 
-  // Verificar cada credencial (puede haber múltiples conexiones)
-  for (const credential of credentials) {
-    // Para marketplaces con OAuth (Mercado Libre)
-    if (domain.includes('mercadolibre') || domain.includes('mercadolibre')) {
-      if (!credential.expires_at) {
-        continue; // Token sin expiración, asumir válido
-      }
+  const hasValue = (value) => value !== null && value !== undefined && String(value).trim() !== '';
+  let hasInvalidEssentialData = false;
 
-      const expiresAt = new Date(credential.expires_at);
-      if (expiresAt < now) {
-        // Token expirado, pero puede haber otra credencial válida
+  for (const credential of credentials) {
+    if (isMercadoLibre) {
+      const hasTokens = hasValue(credential.access_token) && hasValue(credential.refresh_token);
+      const hasExpiry = !!credential.expires_at;
+
+      if (!hasTokens || !hasExpiry) {
+        hasInvalidEssentialData = true;
         continue;
       }
 
-      // Token válido
-      return {
-        isConnected: true,
-        reason: ''
-      };
-    }
-
-    // Para marketplaces con API Key (Falabella)
-    if (domain.includes('falabella')) {
-      if (credential.seller_email && credential.api_key) {
-        // Falabella usa API Key + Email, no expira
+      const expiresAt = new Date(credential.expires_at);
+      if (expiresAt >= now) {
         return {
+          state: 'connected',
           isConnected: true,
-          reason: ''
+          reason: 'Conectado'
         };
       }
+
+      continue;
     }
 
-    // Para otros marketplaces, verificar si tiene algún método de autenticación
-    if (credential.access_token || credential.api_key) {
+    if (isFalabella) {
+      if (!hasValue(credential.api_key)) {
+        hasInvalidEssentialData = true;
+        continue;
+      }
+
       return {
+        state: 'connected',
         isConnected: true,
-        reason: ''
+        reason: 'Conectado'
+      };
+    }
+
+    // Fallback para otros marketplaces
+    if (hasValue(credential.access_token) || hasValue(credential.refresh_token) || hasValue(credential.api_key)) {
+      return {
+        state: 'connected',
+        isConnected: true,
+        reason: 'Conectado'
       };
     }
   }
 
-  // Si llegamos aquí, ninguna credencial es válida
-  const isOAuth = domain.includes('mercadolibre');
-  const isApiKey = domain.includes('falabella');
-
-  if (isOAuth) {
+  if (hasInvalidEssentialData) {
     return {
+      state: 'error',
       isConnected: false,
-      reason: 'Token OAuth expirado'
-    };
-  }
-
-  if (isApiKey) {
-    return {
-      isConnected: false,
-      reason: 'API Key no configurada'
+      reason: 'Error de configuracion'
     };
   }
 
   return {
+    state: 'disconnected',
     isConnected: false,
-    reason: 'Credenciales inválidas'
+    reason: 'No conectado'
   };
 }
 
@@ -898,4 +917,21 @@ function formatRelativeTime(date) {
   }
 }
 
+/**
+ * Formatea fecha/hora para nombre de proceso (YYYY-MM-DD HH:mm)
+ * @param {Date} date
+ * @returns {string}
+ */
+function formatProcessDateTime(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day} ${hours}:${minutes}`;
+}
+
 module.exports = DashboardRepository;
+
+
+

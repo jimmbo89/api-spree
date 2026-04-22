@@ -42,7 +42,10 @@ const DashboardController = {
       const products = await calculateProducts(companyId, currentPeriodStart, now);
 
       // === 6. Actividad reciente ===
-      const activities = await calculateActivities(companyId);
+      // const activities = await calculateActivities(companyId);
+
+      // === 7. Procesos con problemas ===
+      const processes = await calculateProblemProcesses(companyId);
 
       return res.status(200).json({
         success: true,
@@ -52,7 +55,8 @@ const DashboardController = {
           alerts,
           marketplaces,
           products,
-          activities
+          // activities,
+          processes
         }
       });
 
@@ -195,6 +199,13 @@ async function calculateProducts(companyId, fromDate, toDate) {
  */
 async function calculateActivities(companyId) {
   return await DashboardRepository.getRecentActivities(companyId, 5);
+}
+
+/**
+ * Calcula procesos finalizados con problemas
+ */
+async function calculateProblemProcesses(companyId) {
+  return await DashboardRepository.getProblemProcesses(companyId, 5);
 }
 
 module.exports = DashboardController;
