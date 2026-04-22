@@ -364,7 +364,7 @@ const CompanyController = {
         phone: company.phone,
         image: company.image,
         business_type_id: company.business_type_id,
-        businessTypeName: company.businessType.name,
+        businessTypeName: company.businessType?.name || null,
         email: company.email,
         currency: company.currency
       };

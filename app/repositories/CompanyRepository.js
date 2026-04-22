@@ -36,7 +36,7 @@ const CompanyRepository = {
     return companies.map(company => ({
       id: company.id,
       business_type_id: company.business_type_id,
-      businessbusinessTypeName: company.businessType.name,
+      businessbusinessTypeName: company.businessType?.name || null,
       plan_id: company.plan_id,
       planName: company.plan?.name || null, // 👈 NUEVO
       name: company.name,

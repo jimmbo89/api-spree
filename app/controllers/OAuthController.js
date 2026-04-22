@@ -28,6 +28,124 @@ const timestampMinus03 = (date = new Date()) => {
   );
 };
 
+const ML_SUPPORTED_LISTING_TYPES = ["gold_pro", "gold_special", "free"];
+const ML_STRATEGY = {
+  CONVERSION: "CONVERSION",
+  MARGIN: "MARGIN",
+};
+
+const normalizeStrategy = (strategy, legacyListingTypeId) => {
+  const raw = String(strategy || "").trim().toUpperCase();
+  if (raw === ML_STRATEGY.CONVERSION) return ML_STRATEGY.CONVERSION;
+  if (raw === ML_STRATEGY.MARGIN || raw === "PROFIT") return ML_STRATEGY.MARGIN;
+
+  // Compatibilidad legacy: si frontend aún envía listing_type_id, inferir estrategia.
+  if (legacyListingTypeId === "gold_pro") return ML_STRATEGY.CONVERSION;
+  if (legacyListingTypeId) return ML_STRATEGY.MARGIN;
+
+  return ML_STRATEGY.CONVERSION;
+};
+
+const normalizeInstallments = (installments) => {
+  if (!installments || typeof installments !== "object") {
+    return {
+      enabled: false,
+      interest_free: false,
+      max_installments: null,
+    };
+  }
+
+  const enabled = Boolean(installments.enabled);
+  const interestFree = enabled && Boolean(installments.interest_free);
+  const maxInstallments = enabled
+    ? Number.isFinite(Number(installments.max_installments))
+      ? Math.max(1, Math.trunc(Number(installments.max_installments)))
+      : null
+    : null;
+
+  return {
+    enabled,
+    interest_free: interestFree,
+    max_installments: maxInstallments,
+  };
+};
+
+const buildInstallmentsSaleTermsPreview = (installments) => {
+  if (!installments?.enabled || !installments?.max_installments) return [];
+  return [
+    {
+      id: "INSTALLMENTS",
+      value_name: String(installments.max_installments),
+    },
+  ];
+};
+
+const normalizeSupportedListingTypes = (availableData, siteId) => {
+  if (!Array.isArray(availableData)) return [];
+
+  const map = new Map();
+
+  for (const lt of availableData) {
+    const rawId = typeof lt === "string" ? lt : lt?.id;
+    if (!rawId) continue;
+
+    const normalizedId = rawId === "bronze" ? "gold_special" : rawId;
+    if (!ML_SUPPORTED_LISTING_TYPES.includes(normalizedId)) continue;
+    if (map.has(normalizedId)) continue;
+
+    map.set(normalizedId, {
+      value: normalizedId,
+      title: normalizedId,
+      description:
+        (typeof lt === "object" ? lt?.name : null) || `Tipo ${normalizedId}`,
+      ml_metadata: {
+        name: typeof lt === "object" ? lt?.name || null : null,
+        site_id: typeof lt === "object" ? lt?.site_id || siteId : siteId,
+        remaining_listings:
+          typeof lt === "object" ? lt?.remaining_listings ?? null : null,
+        user_specific: true,
+      },
+    });
+  }
+
+  return Array.from(map.values());
+};
+
+const resolveListingTypeByStrategy = (strategy, listingTypesForCategory) => {
+  const availableValues = Array.isArray(listingTypesForCategory)
+    ? listingTypesForCategory.map((t) => t.value).filter(Boolean)
+    : [];
+
+  if (strategy === ML_STRATEGY.CONVERSION && availableValues.includes("gold_pro")) {
+    return {
+      listing_type_id: "gold_pro",
+      fallback_applied: false,
+      note: "Mayor exposición activada",
+    };
+  }
+
+  if (availableValues.includes("gold_special")) {
+    return {
+      listing_type_id: "gold_special",
+      fallback_applied: strategy === ML_STRATEGY.CONVERSION,
+      note:
+        strategy === ML_STRATEGY.CONVERSION
+          ? "No hay opción de máxima exposición en esta categoría. Se aplicó la mejor alternativa disponible."
+          : "Publicación optimizada a menor costo",
+    };
+  }
+
+  if (availableValues.includes("free")) {
+    return {
+      listing_type_id: "free",
+      fallback_applied: true,
+      note: "Solo puedes publicar gratis en esta categoría",
+    };
+  }
+
+  throw new Error("No valid listing type");
+};
+
 const OAuthController = {
 async mercadoLibreCallback(req, res) {
   const { code, state } = req.body;
@@ -891,8 +1009,17 @@ async mercadoLibreShippingCosts(req, res) {
 async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
   logger.info(`Datos recibidos para categorías sugeridas con atributos, pricing y shipping en MercadoLibre:\n ${JSON.stringify(req.body)}`);
 
-  const { credential_id, products, listing_type_id, logistic_type, shipping_mode } = req.body;
+  const { credential_id, products, listing_type_id, logistic_type, shipping_mode, strategy, installments } = req.body;
   const user_id = req.user?.id || req.body.user_id;
+  let selectedStrategy = normalizeStrategy(strategy, listing_type_id);
+  const normalizedInstallments = normalizeInstallments(installments);
+  const strategyWarnings = [];
+
+  // Regla funcional: interés sin interés solo en estrategia CONVERSION.
+  if (normalizedInstallments.interest_free && selectedStrategy !== ML_STRATEGY.CONVERSION) {
+    selectedStrategy = ML_STRATEGY.CONVERSION;
+    strategyWarnings.push("interest_free_installments_forces_conversion");
+  }
 
   if (!credential_id) {
     return res.status(400).json({ success: false, error: "credential_id es requerido" });
@@ -1040,7 +1167,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
         }
       }
       
-      const productCacheKey = `${nameFixed}__${productPrice ?? 'np'}__${dimensionsFormatted || 'nd'}__${listing_type_id || 'auto'}__${shipping_mode || 'auto'}__${logistic_type || 'auto'}`;
+      const productCacheKey = `${nameFixed}__${productPrice ?? 'np'}__${dimensionsFormatted || 'nd'}__strategy_${selectedStrategy}__installments_${normalizedInstallments.enabled ? (normalizedInstallments.max_installments || 'na') : 'off'}__ifree_${normalizedInstallments.interest_free ? '1' : '0'}__${shipping_mode || 'auto'}__${logistic_type || 'auto'}`;
       const cachedProductResult = getFromCache(`credential_${credential_id}`, `product_suggestion_${site_id}_v4`, productCacheKey);
 
       if (cachedProductResult) {
@@ -1088,7 +1215,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
         if (!cat.category_id) continue;
 
         // === Cache de categoría con atributos ===
-        const categoryCacheKey = `${cat.category_id}__${productPrice ?? 'np'}__${dimensionsFormatted || 'nd'}__${listing_type_id || 'auto'}__${shipping_mode || 'auto'}__${logistic_type || 'auto'}`;
+        const categoryCacheKey = `${cat.category_id}__${productPrice ?? 'np'}__${dimensionsFormatted || 'nd'}__strategy_${selectedStrategy}__installments_${normalizedInstallments.enabled ? (normalizedInstallments.max_installments || 'na') : 'off'}__ifree_${normalizedInstallments.interest_free ? '1' : '0'}__${shipping_mode || 'auto'}__${logistic_type || 'auto'}`;
         const cachedCategory = getFromCache(`credential_${credential_id}`, `category_attributes_${site_id}_v4`, categoryCacheKey);
 
         if (cachedCategory) {
@@ -1133,21 +1260,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
               );
 
               const availableData = userLtResponse.data?.available || userLtResponse.data || [];
-              if (Array.isArray(availableData)) {
-                listingTypesForCategory = availableData
-                  .filter(lt => lt?.id)
-                  .map(lt => ({
-                    value: lt.id,
-                    title: lt.id,
-                    description: lt.name || `Tipo ${lt.id}`,
-                    ml_metadata: {
-                      name: lt.name || null,
-                      site_id: lt.site_id || site_id,
-                      remaining_listings: lt.remaining_listings ?? null,
-                      user_specific: true
-                    }
-                  }));
-              }
+              listingTypesForCategory = normalizeSupportedListingTypes(availableData, site_id);
 
               saveToCache(`credential_${credential_id}`, 'category_listing_types', listingTypesCacheKey, listingTypesForCategory, 1800);
             }
@@ -1157,7 +1270,22 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
           logger.warn(`No se pudieron obtener listing types para categoría ${cat.category_id}: ${ltError.message}`);
           listingTypesForCategory = [];
         }
-        const effectiveListingType = pickDefaultListingType(listingTypesForCategory, listing_type_id);
+        let listingResolution = null;
+        let effectiveListingType = null;
+        try {
+          listingResolution = resolveListingTypeByStrategy(selectedStrategy, listingTypesForCategory);
+          effectiveListingType = listingResolution.listing_type_id;
+        } catch (listingError) {
+          logger.warn(`No se pudo resolver listing type para categoría ${cat.category_id}: ${listingError.message}`);
+          // Fallback defensivo cuando ML no devolvió tipos válidos
+          effectiveListingType = "gold_special";
+          listingResolution = {
+            listing_type_id: effectiveListingType,
+            fallback_applied: true,
+            note: "No se pudieron validar tipos de publicación para esta categoría. Se aplicó fallback por defecto.",
+            error: listingError.message
+          };
+        }
         let filteredShippingModes = shippingModesCatalog;
         let effectiveShippingMode = pickDefaultShippingMode(shipping_mode);
         let logisticTypesForCategory = logisticTypesCatalog.filter(lt => isLogisticCompatibleWithMode(lt, effectiveShippingMode));
@@ -1350,10 +1478,14 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
           shipping_modes: filteredShippingModes,
           logistic_types: logisticTypesForCategory,
           defaults: {
+            strategy: selectedStrategy,
             listing_type_id: effectiveListingType,
             shipping_mode: effectiveShippingMode,
-            logistic_type: effectiveLogisticType
+            logistic_type: effectiveLogisticType,
+            installments: normalizedInstallments,
+            sale_terms_preview: buildInstallmentsSaleTermsPreview(normalizedInstallments)
           },
+          listing_resolution: listingResolution,
           attributes,
           ...(productPrice !== null && { pricing_options }),
           ...(productPrice !== null && { pricing }),
@@ -1370,12 +1502,35 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
         product_id: product.id,
         credential_id: credential_id,
         marketplace_id: marketplace_id,
+        selection_context: {
+          strategy: selectedStrategy,
+          installments: normalizedInstallments,
+          warnings: strategyWarnings
+        },
         categories: categoriesWithAttrs
       });
     }
 
     return res.status(200).json({
       success: true,
+      selection_model: {
+        strategies: [
+          {
+            value: ML_STRATEGY.MARGIN,
+            label: "Ganar más por producto",
+            description: "Menor comisión"
+          },
+          {
+            value: ML_STRATEGY.CONVERSION,
+            label: "Vender más rápido",
+            description: "Mayor exposición"
+          }
+        ],
+        strategy: selectedStrategy,
+        installments: normalizedInstallments,
+        sale_terms_preview: buildInstallmentsSaleTermsPreview(normalizedInstallments),
+        warnings: strategyWarnings
+      },
       suggestions,
       count: suggestions.length,
       stats: {

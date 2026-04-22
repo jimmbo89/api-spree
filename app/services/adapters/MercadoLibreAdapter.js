@@ -6,6 +6,51 @@ const axios = require('axios');
 const MarketplaceTransformerMercadoLibre = require("../MarketplaceTransformerMercadoLibre");
 const MercadoLibreAttributesService = require('../MercadoLibreAttributesService');
 
+const ML_SUPPORTED_LISTING_TYPES = ['gold_pro', 'gold_special', 'free'];
+const ML_STRATEGY = {
+  CONVERSION: 'CONVERSION',
+  MARGIN: 'MARGIN'
+};
+
+function normalizeListingTypeId(listingType) {
+  const normalized = listingType === 'bronze' ? 'gold_special' : listingType;
+  if (!normalized) return 'gold_special';
+  return ML_SUPPORTED_LISTING_TYPES.includes(normalized) ? normalized : 'gold_special';
+}
+
+function normalizeStrategyForPublish(strategy, legacyListingTypeId) {
+  const raw = String(strategy || '').trim().toUpperCase();
+  if (raw === ML_STRATEGY.CONVERSION) return ML_STRATEGY.CONVERSION;
+  if (raw === ML_STRATEGY.MARGIN || raw === 'PROFIT') return ML_STRATEGY.MARGIN;
+  if (legacyListingTypeId === 'gold_pro') return ML_STRATEGY.CONVERSION;
+  if (legacyListingTypeId) return ML_STRATEGY.MARGIN;
+  return ML_STRATEGY.CONVERSION;
+}
+
+function normalizeInstallmentsForPublish(installments) {
+  if (!installments || typeof installments !== 'object') {
+    return {
+      enabled: false,
+      interest_free: false,
+      max_installments: null
+    };
+  }
+
+  const enabled = Boolean(installments.enabled);
+  const interestFree = enabled && Boolean(installments.interest_free);
+  const maxInstallments = enabled
+    ? Number.isFinite(Number(installments.max_installments))
+      ? Math.max(1, Math.trunc(Number(installments.max_installments)))
+      : null
+    : null;
+
+  return {
+    enabled,
+    interest_free: interestFree,
+    max_installments: maxInstallments
+  };
+}
+
 class MercadoLibreAdapter extends BaseAdapter {
   static supportsCategoryPrediction() {
     return true;
@@ -29,20 +74,34 @@ class MercadoLibreAdapter extends BaseAdapter {
 
     const marketId = Object.keys(productData.mercado_libre)[0];
     const mlData = productData.mercado_libre[marketId];
-    const listingTypeOverride = mlData?.listing_type_id || null;
+    const listingTypeOverride = normalizeListingTypeId(mlData?.listing_type_id || null);
     const shippingModeOverride = mlData?.shipping_mode || null;
     const logisticTypeOverride = mlData?.logistic_type || null;
+    const installmentsConfig = normalizeInstallmentsForPublish(mlData?.installments);
+    let strategy = normalizeStrategyForPublish(mlData?.strategy, mlData?.listing_type_id || null);
+    if (installmentsConfig.interest_free && strategy !== ML_STRATEGY.CONVERSION) {
+      strategy = ML_STRATEGY.CONVERSION;
+    }
 
     if (!mlData?.category?.category_id) {
       throw new Error('Falta category_id para MercadoLibre');
     }
 
     // ✅ PASO 1: Obtener SOLO metadatos de la categoría (catalog_domain, settings, allow_variations)
-    const credential = await this.ensureValidCredentials();
+    await this.ensureValidCredentials();
     const categoryInfo = await this.getCategoryMetadata(
       mlData.category.category_id,
-      credential.access_token
+      this.credential?.access_token
     );
+    const availableListingTypes = await this.getAvailableListingTypeIdsForCategory(
+      mlData.category.category_id,
+      this.credential?.access_token
+    );
+    const listingResolution = this.resolveListingTypeForPublish({
+      strategy,
+      requestedListingTypeId: listingTypeOverride,
+      availableTypeIds: availableListingTypes
+    });
 
     // ✅ PASO 2: Determinar si es producto de catálogo
     const catalogDomain = categoryInfo.settings?.catalog_domain;
@@ -56,8 +115,8 @@ class MercadoLibreAdapter extends BaseAdapter {
       currency_id: 'CLP',
       available_quantity: Number(productData.totalStock) || 0,
       buying_mode: 'buy_it_now',
-      // Default histórico del adapter (publish() lo enviaba fijo). Solo se sobreescribe si el frontend envía listing_type_id.
-      listing_type_id: 'bronze',
+      // Tipo por defecto soportado oficialmente.
+      listing_type_id: 'gold_special',
       condition: productData.condition?.toLowerCase() === 'new' ? 'new' : 'used',
       description: {
         plain_text: productData.description?.trim() || productData.name?.trim() || ''
@@ -75,15 +134,25 @@ class MercadoLibreAdapter extends BaseAdapter {
       __ml_is_catalog_product: isCatalogProduct
     };
 
-    // Overrides opcionales (solo MercadoLibre): si vienen del frontend, usarlos; si no, mantener defaults.
-    if (listingTypeOverride) {
-      prepared.listing_type_id = listingTypeOverride;
-    }
+    // Resolver tipo de publicación automáticamente según estrategia y disponibilidad real.
+    prepared.listing_type_id = listingResolution.listing_type_id;
     if (shippingModeOverride) {
       prepared.shipping_mode = shippingModeOverride;
     }
     if (logisticTypeOverride) {
       prepared.logistic_type = logisticTypeOverride;
+    }
+    prepared.__ml_selection = {
+      strategy,
+      installments: installmentsConfig,
+      listing_resolution: listingResolution
+    };
+
+    if (installmentsConfig.enabled && installmentsConfig.max_installments) {
+      prepared.sale_terms.push({
+        id: 'INSTALLMENTS',
+        value_name: String(installmentsConfig.max_installments)
+      });
     }
     
     if (productData.economic_config) {
@@ -297,6 +366,127 @@ class MercadoLibreAdapter extends BaseAdapter {
     });
 
     return prepared;
+  }
+
+  async getAvailableListingTypeIdsForCategory(categoryId, accessToken) {
+    try {
+      if (!categoryId || !accessToken) return [];
+      const mlUserId = await this.getMercadoLibreUserId(accessToken);
+      if (!mlUserId) return [];
+
+      const response = await axios.get(
+        `https://api.mercadolibre.com/users/${mlUserId}/available_listing_types`,
+        {
+          params: { category_id: categoryId },
+          headers: { Authorization: `Bearer ${accessToken}` },
+          timeout: 12000
+        }
+      );
+
+      const availableData = response.data?.available || response.data || [];
+      if (!Array.isArray(availableData)) return [];
+
+      const normalized = [];
+      for (const lt of availableData) {
+        const rawId = typeof lt === 'string' ? lt : lt?.id;
+        if (!rawId) continue;
+        const id = normalizeListingTypeId(rawId);
+        if (!ML_SUPPORTED_LISTING_TYPES.includes(id)) continue;
+        if (!normalized.includes(id)) normalized.push(id);
+      }
+
+      return normalized;
+    } catch (error) {
+      logger.warn(`[ML Adapter] No se pudieron obtener listing types disponibles para ${categoryId}: ${error.message}`);
+      return [];
+    }
+  }
+
+  async getMercadoLibreUserId(accessToken) {
+    if (this.__mlUserId) return this.__mlUserId;
+
+    const fromCredential = this.extractMlUserIdFromCredential(this.credential);
+    if (fromCredential) {
+      this.__mlUserId = fromCredential;
+      return this.__mlUserId;
+    }
+
+    if (!accessToken) return null;
+
+    try {
+      const response = await axios.get('https://api.mercadolibre.com/users/me', {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        timeout: 8000
+      });
+      this.__mlUserId = response.data?.id || null;
+      return this.__mlUserId;
+    } catch (error) {
+      logger.warn(`[ML Adapter] No se pudo obtener users/me para listing types: ${error.message}`);
+      return null;
+    }
+  }
+
+  extractMlUserIdFromCredential(credential) {
+    if (!credential) return null;
+    if (credential.ml_user_id) return credential.ml_user_id;
+    const additionalData = credential.additional_data;
+    if (!additionalData) return null;
+    if (typeof additionalData === 'object') return additionalData.ml_user_id || null;
+    if (typeof additionalData === 'string') {
+      try {
+        const parsed = JSON.parse(additionalData);
+        return parsed?.ml_user_id || null;
+      } catch (e) {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  resolveListingTypeForPublish({ strategy, requestedListingTypeId, availableTypeIds }) {
+    const requested = normalizeListingTypeId(requestedListingTypeId);
+    const available = Array.isArray(availableTypeIds) ? availableTypeIds : [];
+    const hasAvailable = available.length > 0;
+
+    if (!hasAvailable) {
+      return {
+        listing_type_id: requested || 'gold_special',
+        fallback_applied: true,
+        note: 'No se pudo validar disponibilidad de listing types. Se usa fallback.'
+      };
+    }
+
+    if (strategy === ML_STRATEGY.CONVERSION && available.includes('gold_pro')) {
+      return {
+        listing_type_id: 'gold_pro',
+        fallback_applied: false,
+        note: 'Mayor exposición activada'
+      };
+    }
+
+    if (available.includes('gold_special')) {
+      return {
+        listing_type_id: 'gold_special',
+        fallback_applied: strategy === ML_STRATEGY.CONVERSION,
+        note: strategy === ML_STRATEGY.CONVERSION
+          ? 'No hay opción de máxima exposición. Se aplicó mejor alternativa.'
+          : 'Publicación optimizada a menor costo'
+      };
+    }
+
+    if (available.includes('free')) {
+      return {
+        listing_type_id: 'free',
+        fallback_applied: true,
+        note: 'Solo puedes publicar gratis en esta categoría'
+      };
+    }
+
+    return {
+      listing_type_id: requested || 'gold_special',
+      fallback_applied: true,
+      note: 'No hay listing type soportado disponible; se aplicó fallback.'
+    };
   }
 
   // ✅ NUEVO MÉTODO: Generar GTIN válido
@@ -755,7 +945,7 @@ class MercadoLibreAdapter extends BaseAdapter {
           0,
         currency_id: "CLP",
         buying_mode: "buy_it_now",
-        listing_type_id: transformedProduct.listing_type_id || "bronze",
+        listing_type_id: normalizeListingTypeId(transformedProduct.listing_type_id),
         condition: transformedProduct.condition || "new", // ✅ Usar condition del producto
         pictures: transformedProduct.pictures || []
       };
