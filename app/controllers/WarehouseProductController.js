@@ -495,7 +495,7 @@ const WarehouseProductController = {
                   reference_type: 'warehouse_product_update',
                   reference_id: referenceId,
                   user_id: metadata.user_id,
-                  notes: `Actualizacion de stock - warehouse_product_update ID: ${id}`,
+                  notes: `Se agregaron ${parseInt(stock) || 0} unidades al stock existente.`,
                   meta: {
                     operation: 'warehouse_product_update',
                     warehouse_product_id: id,
@@ -549,7 +549,7 @@ const WarehouseProductController = {
                 reference_type: 'warehouse_product_update',
                 reference_id: referenceId,
                 user_id: metadata.user_id,
-                notes: `Creacion de nuevo lote - warehouse_product_update ID: ${id}`,
+                notes: `Se registró un nuevo lote con ${parseInt(stock) || 0} unidades.`,
                 meta: {
                   operation: 'warehouse_product_update',
                   warehouse_product_id: id,

@@ -67,7 +67,8 @@ async findFiltered({ companyId, userId, branchId, warehouseId }) {
           'id', 'sku', 'name', 'description', 'brand', 'model', 
           'condition', 'gtin', 'mpn', 'attributes', 'warranty_months', 
           'warranty_text', 'weight_grams', 'length_cm', 'width_cm', 
-          'height_cm', 'images', 'category_id', 'user_id', 'company_id'
+          'height_cm', 'product_measurements', 'packaging_measurements',
+          'images', 'category_id', 'user_id', 'company_id'
         ],
         include: [
           { 
@@ -186,6 +187,20 @@ async findFiltered({ companyId, userId, branchId, warehouseId }) {
       }
     }
 
+    const parseJsonObjectField = (value) => {
+      if (value == null) return {};
+      if (typeof value === 'string') {
+        try {
+          return JSON.parse(value);
+        } catch (error) {
+          logger.warn('Invalid JSON field in warehouse product response:', error.message);
+          return {};
+        }
+      }
+      if (typeof value === 'object') return value;
+      return {};
+    };
+
     // Procesar variantes del almacén
     const warehouseVariants = wpJson.warehouseVariants || [];
 
@@ -223,8 +238,10 @@ async findFiltered({ companyId, userId, branchId, warehouseId }) {
       };
     });
 
-    // Calcular stock total
-    const totalStock = variantsWithStock.reduce((sum, v) => sum + (v.stock || 0), 0);
+    // Calcular stock total solo de variantes activas
+    const totalStock = variantsWithStock
+      .filter(v => v.active)
+      .reduce((sum, v) => sum + (v.stock || 0), 0);
 
     const result = {
       id: wpJson.id,
@@ -251,6 +268,8 @@ async findFiltered({ companyId, userId, branchId, warehouseId }) {
       length_cm: product?.length_cm || null,
       width_cm: product?.width_cm || null,
       height_cm: product?.height_cm || null,
+      product_measurements: parseJsonObjectField(product?.product_measurements),
+      packaging_measurements: parseJsonObjectField(product?.packaging_measurements),
       product_images: productImages,
       product_images_with_version: productImagesWithVersion,
       product_image: productImages[0] || null,
@@ -609,7 +628,8 @@ async findProductsByWarehouseIds({ companyId, warehouseIds }) {
         attributes: [
           'id', 'sku', 'name', 'description', 'brand', 'model', 'condition', 'gtin', 'mpn',
           'attributes', 'warranty_months', 'warranty_text', 'weight_grams', 'length_cm',
-          'width_cm', 'height_cm', 'images', 'category_id', 'user_id', 'company_id'
+          'width_cm', 'height_cm', 'product_measurements', 'packaging_measurements',
+          'images', 'category_id', 'user_id', 'company_id'
         ],
         include: [{
           model: ProductVariant,
@@ -707,6 +727,20 @@ async findProductsByWarehouseIds({ companyId, warehouseIds }) {
         }
       }
 
+      const parseJsonObjectField = (value) => {
+        if (value == null) return {};
+        if (typeof value === 'string') {
+          try {
+            return JSON.parse(value);
+          } catch (error) {
+            logger.warn(`Error parsing JSON field for product ${productId}:`, error.message);
+            return {};
+          }
+        }
+        if (typeof value === 'object') return value;
+        return {};
+      };
+
       productMap.set(productId, {
         id: productId,
         sku: productData.sku || '',
@@ -725,6 +759,8 @@ async findProductsByWarehouseIds({ companyId, warehouseIds }) {
         length_cm: productData.length_cm,
         width_cm: productData.width_cm,
         height_cm: productData.height_cm,
+        product_measurements: parseJsonObjectField(productData.product_measurements),
+        packaging_measurements: parseJsonObjectField(productData.packaging_measurements),
         images: images,
         images_with_version: imagesWithVersion,
         image_version: imagesWithVersion[0]?.version || null,
@@ -994,9 +1030,9 @@ async getWarehouseSummaryByCompanyId(companyId) {
       w.name AS warehouse_name,
       COUNT(DISTINCT wp.product_id) AS total_products,
       COUNT(DISTINCT wp.id) AS total_warehouse_products,
-      COALESCE(SUM(wpv.stock), 0) AS total_stock,
-      COALESCE(SUM(wpv.stock * wpv.purchase_price), 0) AS total_inventory_value,
-      COALESCE(AVG(wpv.purchase_price), 0) AS avg_purchase_price
+      COALESCE(SUM(CASE WHEN wpv.active = 1 THEN wpv.stock ELSE 0 END), 0) AS total_stock,
+      COALESCE(SUM(CASE WHEN wpv.active = 1 THEN (wpv.stock * wpv.purchase_price) ELSE 0 END), 0) AS total_inventory_value,
+      COALESCE(AVG(CASE WHEN wpv.active = 1 THEN wpv.purchase_price ELSE NULL END), 0) AS avg_purchase_price
     FROM warehouse_products wp
     INNER JOIN warehouses w ON wp.warehouse_id = w.id
     INNER JOIN warehouse_product_variants wpv ON wpv.warehouse_product_id = wp.id
