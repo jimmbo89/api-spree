@@ -373,6 +373,32 @@ class PublishingService {
  */
 static async republishProduct(task, marketplace, credential, userId) {
   try {
+    const normalizePayload = (rawPayload) => {
+      if (!rawPayload) return null;
+      let parsed = rawPayload;
+      if (typeof parsed === 'string') {
+        try {
+          parsed = JSON.parse(parsed);
+        } catch (e) {
+          return null;
+        }
+      }
+      if (parsed && typeof parsed === 'object' && parsed.payload && typeof parsed.payload === 'object') {
+        parsed = parsed.payload;
+      }
+      return (parsed && typeof parsed === 'object') ? parsed : null;
+    };
+
+    const effectivePayload = normalizePayload(task.payload);
+    if (!effectivePayload) {
+      return {
+        success: false,
+        error: 'validation_failed',
+        details: ['payload inválido para republicar']
+      };
+    }
+    task.payload = effectivePayload;
+
     // 1. Obtener adapter correcto
     const adapter = PublishingAdapterFactory.getAdapter(
       marketplace,

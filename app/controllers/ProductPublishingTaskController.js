@@ -1682,7 +1682,26 @@ async retryBatch(req, res) {
   const user_id = req.user.id;
   const results = [];
 
-  for (const { task_id, job_id } of tasks) {
+  const normalizeRetryPayload = (rawPayload) => {
+    if (!rawPayload) return null;
+    let parsed = rawPayload;
+
+    if (typeof parsed === 'string') {
+      try {
+        parsed = JSON.parse(parsed);
+      } catch (e) {
+        return null;
+      }
+    }
+
+    if (parsed && typeof parsed === 'object' && parsed.payload && typeof parsed.payload === 'object') {
+      parsed = parsed.payload;
+    }
+
+    return (parsed && typeof parsed === 'object') ? parsed : null;
+  };
+
+  for (const { task_id, job_id, payload: incomingPayload } of tasks) {
     try {
       // 1. Obtener task
       const task = await ProductPublishingTaskRepository.findById(task_id);
@@ -1720,7 +1739,28 @@ async retryBatch(req, res) {
         continue; // Continuar con el siguiente task
       }
 
-      // 4. ✅ REPUBLICAR con credencial actualizada
+      // 4. ✅ Resolver payload efectivo para reintento
+      const effectivePayload = normalizeRetryPayload(incomingPayload) || normalizeRetryPayload(task.payload);
+      if (!effectivePayload) {
+        results.push({
+          task_id,
+          success: false,
+          error: 'invalid_retry_payload',
+          error_details: ['payload inválido o vacío para reintento']
+        });
+        continue;
+      }
+
+      // Persistir payload efectivo para trazabilidad del retry
+      if (normalizeRetryPayload(incomingPayload)) {
+        await ProductPublishingTaskRepository.updatePayload(task, effectivePayload);
+      }
+
+      task.payload = effectivePayload;
+
+      logger.info(`[retryBatch] Task ${task_id} payload keys: ${Object.keys(effectivePayload).join(', ')}`);
+
+      // 5. ✅ REPUBLICAR con credencial actualizada
       const result = await PublishingService.republishProduct(
         task,
         marketplace,
@@ -1728,7 +1768,7 @@ async retryBatch(req, res) {
         user_id
       );
 
-      // 5. ✅ Actualizar JobProduct si hay job_id
+      // 6. ✅ Actualizar JobProduct si hay job_id
       if (job_id) {
         try {
           // Buscar JobProduct por job_id + product_id + marketplace_id + credential_id

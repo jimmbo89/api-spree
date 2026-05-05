@@ -148,11 +148,19 @@ class MercadoLibreAdapter extends BaseAdapter {
       listing_resolution: listingResolution
     };
 
+    const categorySaleTermIds = new Set(categoryInfo.sale_term_ids || []);
+    const supportsInstallments = categorySaleTermIds.has('INSTALLMENTS');
     if (installmentsConfig.enabled && installmentsConfig.max_installments) {
-      prepared.sale_terms.push({
-        id: 'INSTALLMENTS',
-        value_name: String(installmentsConfig.max_installments)
-      });
+      if (supportsInstallments) {
+        prepared.sale_terms.push({
+          id: 'INSTALLMENTS',
+          value_name: String(installmentsConfig.max_installments)
+        });
+      } else {
+        logger.warn(
+          `[ML Adapter] Categoría ${prepared.category_id} no soporta INSTALLMENTS; se omite sale_term para evitar validation_error.`
+        );
+      }
     }
     
     if (productData.economic_config) {
@@ -580,6 +588,9 @@ class MercadoLibreAdapter extends BaseAdapter {
         success: true,
         attributes,
         settings: categoryData.settings || {},
+        sale_term_ids: Array.isArray(categoryData.sale_terms)
+          ? categoryData.sale_terms.map(st => st?.id).filter(Boolean)
+          : [],
         hasVariationAttributes,
         variationAttributeIds,
         isCatalog: !!(categoryData.settings?.catalog_domain && categoryData.settings.catalog_domain !== "MLC-UNCLASSIFIED_PRODUCTS")
@@ -963,8 +974,31 @@ class MercadoLibreAdapter extends BaseAdapter {
         productToPublish.attributes = transformedProduct.attributes;
       }
 
-      if (Array.isArray(transformedProduct.sale_terms)) {
-        productToPublish.sale_terms = transformedProduct.sale_terms;
+      if (Array.isArray(transformedProduct.sale_terms) && transformedProduct.sale_terms.length > 0) {
+        const allowedSaleTermIds = await this.getCategorySaleTermIds(
+          categoryId,
+          this.credential?.access_token
+        );
+
+        const filteredSaleTerms = allowedSaleTermIds
+          ? transformedProduct.sale_terms.filter(st => st?.id && allowedSaleTermIds.has(st.id))
+          : transformedProduct.sale_terms;
+
+        const removedTerms = allowedSaleTermIds
+          ? transformedProduct.sale_terms
+            .filter(st => st?.id && !allowedSaleTermIds.has(st.id))
+            .map(st => st.id)
+          : [];
+
+        if (removedTerms.length > 0) {
+          logger.warn(
+            `[ML Adapter] Sale terms no soportados para categoría ${categoryId}, omitidos: ${removedTerms.join(', ')}`
+          );
+        }
+
+        if (filteredSaleTerms.length > 0) {
+          productToPublish.sale_terms = filteredSaleTerms;
+        }
       }
 
       if (hasVariations) {
@@ -1036,6 +1070,27 @@ class MercadoLibreAdapter extends BaseAdapter {
       }
       
       return this.handlePublishError(error);
+    }
+  }
+
+  async getCategorySaleTermIds(categoryId, accessToken) {
+    try {
+      const categoryRes = await axios.get(`https://api.mercadolibre.com/categories/${categoryId}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        timeout: 10000
+      });
+
+      const saleTerms = Array.isArray(categoryRes.data?.sale_terms)
+        ? categoryRes.data.sale_terms
+        : [];
+
+      return new Set(saleTerms.map(st => st?.id).filter(Boolean));
+    } catch (error) {
+      logger.warn(
+        `[ML Adapter] No se pudieron obtener sale_terms de categoría ${categoryId}. Se enviarán sale_terms originales. Error: ${error.message}`
+      );
+      // Fallback permisivo: no bloquear publicación por falla de consulta metadata.
+      return null;
     }
   }
 

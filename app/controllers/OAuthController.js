@@ -773,7 +773,15 @@ async calculateMercadoLibreShippingCosts(credential, product, categoryId, siteId
     }
   };
 
-  const dimensions = OAuthController.formatDimensionsForAPI(product.package, { strict: false });
+  let dimensions = null;
+  try {
+    if (product?.package) {
+      dimensions = OAuthController.formatDimensionsForAPI(product.package, { strict: false });
+    }
+  } catch (e) {
+    dimensions = null;
+  }
+  const itemId = product?.ml_item_id || product?.item_id || null;
   const mlUserIdFromCredential = getMercadoLibreUserIdFromCredential(credential);
   const mlUserId = mlUserIdFromCredential || (await fetchMercadoLibreUserId(credential?.access_token));
 
@@ -810,7 +818,6 @@ async calculateMercadoLibreShippingCosts(credential, product, categoryId, siteId
   }
   
   const baseParams = {
-    dimensions: dimensions,
     item_price: product.price,
     category_id: categoryId,
     listing_type_id: listingType,
@@ -819,6 +826,17 @@ async calculateMercadoLibreShippingCosts(credential, product, categoryId, siteId
     logistic_type: logistic_type || 'drop_off',
     verbose: true
   };
+  if (dimensions) baseParams.dimensions = dimensions;
+  if (itemId) baseParams.item_id = itemId;
+
+  if (!baseParams.dimensions && !baseParams.item_id) {
+    const currencyId = getCurrencyIdFromSite(siteId);
+    const errMsg = 'No se puede calcular shipping: faltan dimensions o item_id.';
+    return {
+      buyer_pays: { cost: 0, currency_id: currencyId, paid_by: 'buyer', error: errMsg },
+      seller_pays: { cost: 0, currency_id: currencyId, paid_by: 'seller', error: errMsg }
+    };
+  }
 
   try {
     // Consulta 1: Comprador paga el envío
@@ -1213,6 +1231,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
       
       for (const cat of categories) {
         if (!cat.category_id) continue;
+        const categoryWarnings = [];
 
         // === Cache de categoría con atributos ===
         const categoryCacheKey = `${cat.category_id}__${productPrice ?? 'np'}__${dimensionsFormatted || 'nd'}__strategy_${selectedStrategy}__installments_${normalizedInstallments.enabled ? (normalizedInstallments.max_installments || 'na') : 'off'}__ifree_${normalizedInstallments.interest_free ? '1' : '0'}__${shipping_mode || 'auto'}__${logistic_type || 'auto'}`;
@@ -1367,6 +1386,19 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
                   : logisticTypesForCategory[0].value));
           }
         }
+        if (shipping_mode && shipping_mode !== effectiveShippingMode) {
+          categoryWarnings.push(`shipping_mode_normalized:${shipping_mode}->${effectiveShippingMode}`);
+        }
+        if (logistic_type && logistic_type !== effectiveLogisticType) {
+          categoryWarnings.push(`logistic_type_normalized:${logistic_type}->${effectiveLogisticType}`);
+        }
+        if (
+          normalizedInstallments?.enabled &&
+          normalizedInstallments?.interest_free &&
+          strategyWarnings.includes("interest_free_installments_forces_conversion")
+        ) {
+          categoryWarnings.push("installments_interest_free_normalized_for_strategy");
+        }
 
         // === 💰 Obtener pricing/comisiones ===
         let pricing = null;
@@ -1430,9 +1462,11 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
         // === 📦 NUEVO: Calcular costos de envío ===
         let shipping = null;
 
-        if (productPrice !== null && dimensionsFormatted) {
+        const hasShippingInput = productPrice !== null && !!(dimensionsFormatted || product?.ml_item_id || product?.item_id);
+        if (hasShippingInput) {
           // ✅ CORRECCIÓN: Incluir listing_type_id, logistic_type y shipping_mode en la clave
-          const shippingCacheKey = `shipping_${site_id}_${cat.category_id}_${productPrice}_${dimensionsFormatted}_${effectiveListingType}_${effectiveLogisticType}_${effectiveShippingMode}`;
+          const shippingBasis = dimensionsFormatted || product?.ml_item_id || product?.item_id;
+          const shippingCacheKey = `shipping_${site_id}_${cat.category_id}_${productPrice}_${shippingBasis}_${effectiveListingType}_${effectiveLogisticType}_${effectiveShippingMode}`;
           
           logger.info(`[SHIPPING] Cache key: ${shippingCacheKey}`);
           
@@ -1466,6 +1500,23 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
             }
           }
         }
+        const shippingRequested = hasShippingInput;
+        const sellerShippingCost = shipping?.seller_pays?.cost ?? null;
+        if (pricing && !pricing.error) {
+          pricing.shipping_requested = shippingRequested;
+          if (shippingRequested && Number.isFinite(Number(sellerShippingCost))) {
+            pricing.seller_shipping_cost = Number(sellerShippingCost);
+            pricing.net_amount_after_shipping = parseFloat(
+              (Number(pricing.net_amount || 0) - Number(sellerShippingCost || 0)).toFixed(2)
+            );
+          } else if (shippingRequested && (!shipping || shipping.error)) {
+            categoryWarnings.push("pricing_incomplete_shipping_not_calculated");
+            pricing.warning = "Estimación incompleta: no se pudo calcular shipping.";
+          } else if (!shippingRequested) {
+            categoryWarnings.push("pricing_incomplete_shipping_not_requested");
+            pricing.warning = "Estimación incompleta: falta cálculo de shipping para neto final.";
+          }
+        }
 
         // === Construir objeto de categoría completo ===
         const categoryData = {
@@ -1485,11 +1536,12 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
             installments: normalizedInstallments,
             sale_terms_preview: buildInstallmentsSaleTermsPreview(normalizedInstallments)
           },
+          selection_warnings: categoryWarnings,
           listing_resolution: listingResolution,
           attributes,
           ...(productPrice !== null && { pricing_options }),
           ...(productPrice !== null && { pricing }),
-          ...(productPrice !== null && dimensionsFormatted && { shipping })
+          ...(hasShippingInput && { shipping })
         };
 
         saveToCache(`credential_${credential_id}`, `category_attributes_${site_id}_v4`, categoryCacheKey, categoryData);
@@ -1511,6 +1563,12 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
       });
     }
 
+    const shippingRequested = products.some(
+      p =>
+        p.price !== undefined &&
+        p.price !== null &&
+        (p.package !== undefined || p.item_id !== undefined || p.ml_item_id !== undefined)
+    );
     return res.status(200).json({
       success: true,
       selection_model: {
@@ -1545,8 +1603,11 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
           ? ((cacheHits / products.length) * 100).toFixed(2) + '%'
           : '0%',
         pricing_requested: products.some(p => p.price !== undefined && p.price !== null),
-        shipping_requested: products.some(p => p.package !== undefined && p.price !== undefined)
-      }
+        shipping_requested: shippingRequested
+      },
+      warnings: shippingRequested
+        ? []
+        : ["Estimación incompleta: shipping_requested=false, neto final puede variar por costo de envío."]
     });
 
   } catch (error) {
