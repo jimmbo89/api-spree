@@ -1433,15 +1433,20 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
               });
 
               const fees = pricingResponse.data || {};
+              const saleFeeAmount = Number(fees.sale_fee_amount || 0);
+              const listingFeeAmount = Number(fees.listing_fee_amount || 0);
+              const totalFeeAmount = fees.total_fee_amount !== undefined && fees.total_fee_amount !== null
+                ? Number(fees.total_fee_amount)
+                : saleFeeAmount + listingFeeAmount;
               const pricingOption = {
-                sale_fee_amount: fees.sale_fee_amount || 0,
-                listing_fee_amount: fees.listing_fee_amount || 0,
-                total_fee_amount: fees.total_fee_amount || 0,
+                sale_fee_amount: saleFeeAmount,
+                listing_fee_amount: listingFeeAmount,
+                total_fee_amount: totalFeeAmount,
                 listing_type_id: fees.listing_type_id || pricingTypeId,
                 input_price: productPrice,
-                net_amount: parseFloat((productPrice - (fees.sale_fee_amount || 0)).toFixed(2)),
+                net_amount: parseFloat((productPrice - saleFeeAmount).toFixed(2)),
                 fee_percentage: productPrice > 0
-                  ? parseFloat((((fees.sale_fee_amount || 0) / productPrice) * 100).toFixed(2))
+                  ? parseFloat(((saleFeeAmount / productPrice) * 100).toFixed(2))
                   : 0,
                 listing_type_name: listingCandidate.description || listingCandidate.title || pricingTypeId
               };
@@ -1509,6 +1514,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
             pricing.net_amount_after_shipping = parseFloat(
               (Number(pricing.net_amount || 0) - Number(sellerShippingCost || 0)).toFixed(2)
             );
+            if (pricing.warning) delete pricing.warning;
           } else if (shippingRequested && (!shipping || shipping.error)) {
             categoryWarnings.push("pricing_incomplete_shipping_not_calculated");
             pricing.warning = "Estimación incompleta: no se pudo calcular shipping.";
@@ -1535,6 +1541,19 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
             logistic_type: effectiveLogisticType,
             installments: normalizedInstallments,
             sale_terms_preview: buildInstallmentsSaleTermsPreview(normalizedInstallments)
+          },
+          installments_rules: {
+            source: "backend_policy",
+            scope: "category",
+            user_can_choose: true,
+            requires_strategy_conversion_for_interest_free: true,
+            strategy_selected: selectedStrategy,
+            enabled: normalizedInstallments.enabled,
+            interest_free: normalizedInstallments.interest_free,
+            max_installments_requested: normalizedInstallments.max_installments ?? null,
+            max_installments_allowed: null,
+            allowed_values: null,
+            note: "Mercado Libre puede ajustar cuotas permitidas por categoría/listing_type/campaña/cuenta. Validación final ocurre en publicación."
           },
           selection_warnings: categoryWarnings,
           listing_resolution: listingResolution,
@@ -1586,6 +1605,28 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
         ],
         strategy: selectedStrategy,
         installments: normalizedInstallments,
+        installments_rules: {
+          source: "backend_policy",
+          scope: "request",
+          user_can_choose: true,
+          requires_strategy_conversion_for_interest_free: true,
+          strategy_selected: selectedStrategy,
+          enabled: normalizedInstallments.enabled,
+          interest_free: normalizedInstallments.interest_free,
+          max_installments_requested: normalizedInstallments.max_installments ?? null,
+          max_installments_allowed: null,
+          allowed_values: null,
+          note: "No hay endpoint estándar en este flujo que devuelva catálogo cerrado de cuotas por categoría. Se recomienda confirmar contra respuesta de publicación."
+        },
+        selection_scope: {
+          strategy: "request",
+          installments: "request",
+          shipping_mode_requested: "request",
+          logistic_type_requested: "request",
+          listing_type_effective: "category",
+          shipping_mode_effective: "category",
+          logistic_type_effective: "category"
+        },
         sale_terms_preview: buildInstallmentsSaleTermsPreview(normalizedInstallments),
         warnings: strategyWarnings
       },
