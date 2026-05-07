@@ -62,11 +62,15 @@ const normalizeInstallments = (installments) => {
       ? Math.max(1, Math.trunc(Number(installments.max_installments)))
       : null
     : null;
+  const campaignTag = enabled && installments.campaign_tag
+    ? String(installments.campaign_tag).trim()
+    : null;
 
   return {
     enabled,
     interest_free: interestFree,
     max_installments: maxInstallments,
+    campaign_tag: campaignTag || null,
   };
 };
 
@@ -157,6 +161,202 @@ const resolveListingTypeByStrategy = (strategy, listingTypesForCategory) => {
   }
 
   throw new Error("No valid listing type");
+};
+
+const normalizeCampaignTagValue = (tag) => {
+  if (!tag) return null;
+  if (typeof tag === "string") return tag;
+  if (typeof tag === "object") {
+    return tag.tag || tag.id || tag.value || tag.name || null;
+  }
+  return null;
+};
+
+const extractCampaignTags = (campaignsResponse) => {
+  if (!Array.isArray(campaignsResponse)) return [];
+  const tags = [];
+  for (const entry of campaignsResponse) {
+    const available = Array.isArray(entry?.available_campaigns) ? entry.available_campaigns : [];
+    for (const campaign of available) {
+      const tagValue = normalizeCampaignTagValue(campaign);
+      if (tagValue) tags.push(tagValue);
+    }
+  }
+  return Array.from(new Set(tags));
+};
+
+const toNumberOrZero = (value) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+};
+
+const toNumberOrNull = (value) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+};
+
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+
+const resolveProductCostBasis = (product) => {
+  const candidates = [
+    product?.purchase_price,
+    product?.cost_price,
+    product?.cost,
+    product?.unit_cost,
+    product?.base_cost
+  ];
+
+  for (const candidate of candidates) {
+    const parsed = toNumberOrNull(candidate);
+    if (parsed !== null && parsed >= 0) return parsed;
+  }
+  return null;
+};
+
+const extractCoverageSubsidy = (coverage) => {
+  const discount = coverage?.discount;
+  if (!discount) return 0;
+  if (typeof discount === "number") return toNumberOrZero(discount);
+  if (typeof discount === "object") {
+    const direct = toNumberOrNull(discount.promoted_amount);
+    if (direct !== null) return Math.max(0, direct);
+    const amount = toNumberOrNull(discount.amount);
+    if (amount !== null) return Math.max(0, amount);
+  }
+  return 0;
+};
+
+const normalizeShippingScenarios = ({
+  shippingMode,
+  logisticType,
+  buyerPays,
+  sellerPays,
+  requestedFreeShipping,
+  mandatoryFreeShipping
+}) => {
+  const buyerCost = toNumberOrZero(buyerPays?.cost);
+  const sellerCost = toNumberOrZero(sellerPays?.cost);
+  const subsidy = Math.max(0, extractCoverageSubsidy(sellerPays));
+
+  const scenarios = {
+    buyer_pays_shipping: {
+      scenario: "buyer_pays_shipping",
+      free_shipping: false,
+      mandatory_free_shipping: Boolean(mandatoryFreeShipping),
+      buyer_shipping_cost: buyerCost,
+      seller_shipping_cost: 0,
+      shipping_subsidy: 0,
+      who_pays: "buyer"
+    },
+    seller_free_shipping: {
+      scenario: "seller_free_shipping",
+      free_shipping: true,
+      mandatory_free_shipping: false,
+      buyer_shipping_cost: 0,
+      seller_shipping_cost: sellerCost,
+      shipping_subsidy: subsidy,
+      who_pays: "seller"
+    },
+    mandatory_free_shipping: {
+      scenario: "mandatory_free_shipping",
+      free_shipping: true,
+      mandatory_free_shipping: true,
+      buyer_shipping_cost: 0,
+      seller_shipping_cost: sellerCost,
+      shipping_subsidy: subsidy,
+      who_pays: subsidy > 0 ? "shared" : "seller"
+    },
+    subsidized_shipping: {
+      scenario: "subsidized_shipping",
+      free_shipping: true,
+      mandatory_free_shipping: Boolean(mandatoryFreeShipping),
+      buyer_shipping_cost: 0,
+      seller_shipping_cost: sellerCost,
+      shipping_subsidy: subsidy,
+      who_pays: subsidy > 0 ? "shared" : "seller"
+    }
+  };
+
+  let selectedScenario = "buyer_pays_shipping";
+  if (mandatoryFreeShipping) {
+    selectedScenario = subsidy > 0 ? "subsidized_shipping" : "mandatory_free_shipping";
+  } else if (requestedFreeShipping === true) {
+    selectedScenario = subsidy > 0 ? "subsidized_shipping" : "seller_free_shipping";
+  } else if (requestedFreeShipping === false) {
+    selectedScenario = "buyer_pays_shipping";
+  } else if (subsidy > 0) {
+    selectedScenario = "subsidized_shipping";
+  }
+
+  const selected = scenarios[selectedScenario];
+
+  return {
+    shipping_summary: {
+      shipping_mode: shippingMode,
+      logistic_type: logisticType,
+      free_shipping: selected.free_shipping,
+      mandatory_free_shipping: selected.mandatory_free_shipping,
+      buyer_shipping_cost: selected.buyer_shipping_cost,
+      seller_shipping_cost: selected.seller_shipping_cost,
+      shipping_subsidy: selected.shipping_subsidy,
+      who_pays: selected.who_pays,
+      scenario: selected.scenario
+    },
+    shipping_scenarios: scenarios,
+    selected_scenario_key: selectedScenario
+  };
+};
+
+const buildProfitabilityMetrics = ({ pricing, shippingSummary, productPrice, productCost }) => {
+  if (!pricing || pricing.error || !Number.isFinite(Number(productPrice))) return null;
+
+  const price = toNumberOrZero(productPrice);
+  const totalFee = toNumberOrZero(pricing.total_fee_amount);
+  const listingCharge = toNumberOrZero(pricing.listing_fee_amount);
+  const shippingCost = toNumberOrZero(shippingSummary?.seller_shipping_cost);
+  const netWithoutShipping = price - totalFee;
+  const netWithShipping = netWithoutShipping - shippingCost;
+  const costBasis = toNumberOrZero(productCost);
+  const utilityFinal = productCost === null ? null : netWithShipping - costBasis;
+  const marginRaw = utilityFinal === null || price <= 0 ? null : (utilityFinal / price) * 100;
+  const marginReal = marginRaw === null ? null : Number(clamp(marginRaw, -300, 300).toFixed(2));
+
+  const profitable = utilityFinal === null ? null : utilityFinal >= 0;
+  const criticalLoss = utilityFinal === null ? false : utilityFinal < 0 && (marginReal !== null && marginReal <= -30);
+  const profitabilityStatus = utilityFinal === null
+    ? "unknown_cost_basis"
+    : profitable
+      ? "profitable"
+      : (criticalLoss ? "critical_loss" : "loss");
+
+  const recommendedMinimumPrice = productCost === null
+    ? null
+    : Number((costBasis + totalFee + shippingCost).toFixed(2));
+  const estimatedBreakEvenPrice = recommendedMinimumPrice;
+
+  const shippingRiskLevel = !shippingSummary
+    ? "unknown"
+    : shippingSummary.mandatory_free_shipping
+      ? "high"
+      : (shippingSummary.shipping_subsidy > 0 ? "medium" : "low");
+
+  return {
+    commission_amount: toNumberOrZero(pricing.sale_fee_amount),
+    listing_charge_amount: listingCharge,
+    total_fee_amount: totalFee,
+    net_amount_without_shipping: Number(netWithoutShipping.toFixed(2)),
+    net_amount_with_shipping: Number(netWithShipping.toFixed(2)),
+    product_cost_basis: productCost,
+    final_profit: utilityFinal === null ? null : Number(utilityFinal.toFixed(2)),
+    real_margin_percentage: marginReal,
+    profitable,
+    warning: profitable === false,
+    critical_loss: criticalLoss,
+    recommended_minimum_price: recommendedMinimumPrice,
+    estimated_break_even_price: estimatedBreakEvenPrice,
+    shipping_risk_level: shippingRiskLevel,
+    profitability_status: profitabilityStatus
+  };
 };
 
 const OAuthController = {
@@ -795,8 +995,24 @@ async calculateMercadoLibreShippingCosts(credential, product, categoryId, siteId
     dimensions = null;
   }
   const itemId = product?.ml_item_id || product?.item_id || null;
+  const requestedFreeShipping =
+    typeof product?.shipping?.free_shipping === "boolean"
+      ? product.shipping.free_shipping
+      : (typeof product?.free_shipping === "boolean" ? product.free_shipping : null);
   const mlUserIdFromCredential = getMercadoLibreUserIdFromCredential(credential);
   const mlUserId = mlUserIdFromCredential || (await fetchMercadoLibreUserId(credential?.access_token));
+
+  const baseParams = {
+    item_price: product.price,
+    category_id: categoryId,
+    listing_type_id: listingType,
+    mode: shipping_mode || 'me2',
+    condition: product.condition || 'new',
+    logistic_type: logistic_type || 'drop_off',
+    verbose: true
+  };
+  if (dimensions) baseParams.dimensions = dimensions;
+  if (itemId) baseParams.item_id = itemId;
 
   // Si se tuvo que consultar a ML, persistir para próximas llamadas (best-effort)
   if (!mlUserIdFromCredential && mlUserId && credential?.id) {
@@ -824,31 +1040,37 @@ async calculateMercadoLibreShippingCosts(credential, product, categoryId, siteId
     const currencyId = getCurrencyIdFromSite(siteId);
     const errMsg = 'No se pudo determinar el ml_user_id para calcular shipping (falta additional_data.ml_user_id).';
     logger.error(errMsg, { site_id: siteId, category_id: categoryId, credential_id: credential?.id });
-    return {
+    const fallback = {
       buyer_pays: { cost: 0, currency_id: currencyId, paid_by: 'buyer', error: errMsg },
       seller_pays: { cost: 0, currency_id: currencyId, paid_by: 'seller', error: errMsg }
     };
+    const normalized = normalizeShippingScenarios({
+      shippingMode: baseParams.mode,
+      logisticType: baseParams.logistic_type,
+      buyerPays: fallback.buyer_pays,
+      sellerPays: fallback.seller_pays,
+      requestedFreeShipping,
+      mandatoryFreeShipping: false
+    });
+    return { ...fallback, ...normalized, requested_free_shipping: requestedFreeShipping, warning: errMsg };
   }
-  
-  const baseParams = {
-    item_price: product.price,
-    category_id: categoryId,
-    listing_type_id: listingType,
-    mode: shipping_mode || 'me2',
-    condition: product.condition || 'new',
-    logistic_type: logistic_type || 'drop_off',
-    verbose: true
-  };
-  if (dimensions) baseParams.dimensions = dimensions;
-  if (itemId) baseParams.item_id = itemId;
 
   if (!baseParams.dimensions && !baseParams.item_id) {
     const currencyId = getCurrencyIdFromSite(siteId);
     const errMsg = 'No se puede calcular shipping: faltan dimensions o item_id.';
-    return {
+    const fallback = {
       buyer_pays: { cost: 0, currency_id: currencyId, paid_by: 'buyer', error: errMsg },
       seller_pays: { cost: 0, currency_id: currencyId, paid_by: 'seller', error: errMsg }
     };
+    const normalized = normalizeShippingScenarios({
+      shippingMode: baseParams.mode,
+      logisticType: baseParams.logistic_type,
+      buyerPays: fallback.buyer_pays,
+      sellerPays: fallback.seller_pays,
+      requestedFreeShipping,
+      mandatoryFreeShipping: false
+    });
+    return { ...fallback, ...normalized, requested_free_shipping: requestedFreeShipping, warning: errMsg };
   }
 
   try {
@@ -874,8 +1096,37 @@ async calculateMercadoLibreShippingCosts(credential, product, categoryId, siteId
 
     const buyerCoverage = buyerPaysResponse.data?.coverage?.all_country || {};
     const sellerCoverage = sellerPaysResponse.data?.coverage?.all_country || {};
+    const buyerTags = Array.isArray(buyerPaysResponse.data?.tags) ? buyerPaysResponse.data.tags : [];
+    const sellerTags = Array.isArray(sellerPaysResponse.data?.tags) ? sellerPaysResponse.data.tags : [];
+    let mandatoryFreeShipping = ['mandatory_free_shipping'].some(tag =>
+      buyerTags.includes(tag) || sellerTags.includes(tag)
+    );
+    if (!mandatoryFreeShipping && itemId) {
+      try {
+        const itemShippingCacheKey = `item_shipping_policy_${itemId}`;
+        const cachedItemShipping = getFromCache(`credential_${credential?.id}`, 'item_shipping_policy', itemShippingCacheKey);
+        let itemShippingData = cachedItemShipping;
+        if (!itemShippingData) {
+          const itemShippingResponse = await axios.get(
+            `https://api.mercadolibre.com/items/${itemId}/shipping`,
+            {
+              headers: { Authorization: `Bearer ${credential.access_token}` },
+              timeout: 12000
+            }
+          );
+          itemShippingData = itemShippingResponse.data || null;
+          saveToCache(`credential_${credential?.id}`, 'item_shipping_policy', itemShippingCacheKey, itemShippingData, 900);
+        }
+        const itemTags = Array.isArray(itemShippingData?.tags) ? itemShippingData.tags : [];
+        if (itemTags.includes('mandatory_free_shipping')) {
+          mandatoryFreeShipping = true;
+        }
+      } catch (itemShippingErr) {
+        logger.warn(`[ML] No se pudo validar shipping policy del item ${itemId}: ${itemShippingErr.message}`);
+      }
+    }
 
-    return {
+    const result = {
       buyer_pays: {
         // Mantener compatibilidad: "cost" = list_cost
         cost: buyerCoverage.list_cost || 0,
@@ -898,6 +1149,20 @@ async calculateMercadoLibreShippingCosts(credential, product, categoryId, siteId
         free_shipping: true
       }
     };
+    const normalized = normalizeShippingScenarios({
+      shippingMode: baseParams.mode,
+      logisticType: baseParams.logistic_type,
+      buyerPays: result.buyer_pays,
+      sellerPays: result.seller_pays,
+      requestedFreeShipping,
+      mandatoryFreeShipping
+    });
+    return {
+      ...result,
+      ...normalized,
+      requested_free_shipping: requestedFreeShipping,
+      mandatory_free_shipping_detected: mandatoryFreeShipping
+    };
   } catch (error) {
     logger.error(`Error calculando envío para categoría ${categoryId}: ${error.message}`, {
       status: error.response?.status,
@@ -910,10 +1175,19 @@ async calculateMercadoLibreShippingCosts(credential, product, categoryId, siteId
     const errMsg = error.response?.data?.message
       ? `${error.message}: ${error.response.data.message}`
       : error.message;
-    return {
+    const fallback = {
       buyer_pays: { cost: 0, currency_id: currencyId, paid_by: 'buyer', error: errMsg },
       seller_pays: { cost: 0, currency_id: currencyId, paid_by: 'seller', error: errMsg }
     };
+    const normalized = normalizeShippingScenarios({
+      shippingMode: baseParams.mode,
+      logisticType: baseParams.logistic_type,
+      buyerPays: fallback.buyer_pays,
+      sellerPays: fallback.seller_pays,
+      requestedFreeShipping,
+      mandatoryFreeShipping: false
+    });
+    return { ...fallback, ...normalized, requested_free_shipping: requestedFreeShipping, warning: errMsg };
   }
 },
 
@@ -1185,6 +1459,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
       const productPrice = (product.price !== undefined && product.price !== null && !isNaN(product.price))
         ? parseFloat(product.price)
         : null;
+      const productCostBasis = resolveProductCostBasis(product);
       
       // Validar y formatear dimensiones si existen
       let dimensionsFormatted = null;
@@ -1279,13 +1554,22 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
 
         // === Obtener atributos de la categoría ===
         let attributes = [];
+        let categoryInfo = null;
         try {
           const attrUrl = `https://api.mercadolibre.com/categories/${cat.category_id}/attributes`;
-          const attrResponse = await axios.get(attrUrl, {
-            headers: { Authorization: `Bearer ${credential.access_token}` },
-            timeout: 20000
-          });
+          const categoryUrl = `https://api.mercadolibre.com/categories/${cat.category_id}`;
+          const [attrResponse, categoryResponse] = await Promise.all([
+            axios.get(attrUrl, {
+              headers: { Authorization: `Bearer ${credential.access_token}` },
+              timeout: 20000
+            }),
+            axios.get(categoryUrl, {
+              headers: { Authorization: `Bearer ${credential.access_token}` },
+              timeout: 20000
+            })
+          ]);
           attributes = attrResponse.data || [];
+          categoryInfo = categoryResponse.data || null;
         } catch (attrErr) {
           logger.error(`Error al cargar atributos para categoría ${cat.category_id}: ${attrErr.message}`);
         }
@@ -1435,6 +1719,57 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
         // === 💰 Obtener pricing/comisiones ===
         let pricing = null;
         let pricing_options = [];
+        let campaignTags = [];
+        let campaignTagsByListingType = {
+          gold_pro: [],
+          gold_special: [],
+          free: []
+        };
+
+        if (productPrice !== null && site_id === 'MLA') {
+          const campaignsCacheKey = `installments_campaigns_${site_id}_${cat.category_id}`;
+          const cachedCampaigns = getFromCache(`credential_${credential_id}`, 'special_installments_campaigns', campaignsCacheKey);
+          if (cachedCampaigns) {
+            campaignTags = Array.isArray(cachedCampaigns.tags) ? cachedCampaigns.tags : [];
+            campaignTagsByListingType = cachedCampaigns.tags_by_listing_type || campaignTagsByListingType;
+          } else {
+            try {
+              const campaignParams = {
+                category_id: cat.category_id,
+                channel: 'marketplace'
+              };
+              if (product?.brand) campaignParams.brand = String(product.brand);
+              if (product?.model) campaignParams.model = String(product.model);
+
+              const campaignsResponse = await axios.get(
+                `https://api.mercadolibre.com/special_installments/campaigns`,
+                {
+                  params: campaignParams,
+                  headers: { Authorization: `Bearer ${credential.access_token}` },
+                  timeout: 12000
+                }
+              );
+
+              const allTags = extractCampaignTags(campaignsResponse.data);
+              campaignTags = allTags;
+              campaignTagsByListingType = {
+                gold_pro: allTags.filter(t => ['3x_campaign', 'cuota-simple-3', 'cuota-simple-6', '9x_campaign', '12x_campaign', 'cuota-simple-12'].includes(t)),
+                gold_special: allTags.filter(t => ['pcj-co-funded', 'cuota-simple-paid-by-buyer'].includes(t)),
+                free: []
+              };
+
+              saveToCache(
+                `credential_${credential_id}`,
+                'special_installments_campaigns',
+                campaignsCacheKey,
+                { tags: campaignTags, tags_by_listing_type: campaignTagsByListingType },
+                1800
+              );
+            } catch (campaignErr) {
+              logger.warn(`No se pudieron obtener campañas de cuotas para categoría ${cat.category_id}: ${campaignErr.message}`);
+            }
+          }
+        }
 
         if (productPrice !== null) {
           const pricingCandidates = listingTypesForCategory.length > 0
@@ -1454,12 +1789,24 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
             try {
               pricingCalls++;
               const pricingUrl = `https://api.mercadolibre.com/sites/${site_id}/listing_prices`;
+              const pricingParams = {
+                price: productPrice,
+                category_id: cat.category_id,
+                listing_type_id: pricingTypeId
+              };
+              if (cat.domain_id) pricingParams.domain_id = cat.domain_id;
+
+              const listingCampaignTags = Array.isArray(campaignTagsByListingType?.[pricingTypeId])
+                ? campaignTagsByListingType[pricingTypeId]
+                : [];
+              const campaignTagRequested = normalizeCampaignTagValue(normalizedInstallments?.campaign_tag);
+              const campaignTagSelected = campaignTagRequested && listingCampaignTags.includes(campaignTagRequested)
+                ? campaignTagRequested
+                : listingCampaignTags[0] || null;
+              if (campaignTagSelected) pricingParams.tags = campaignTagSelected;
+
               const pricingResponse = await axios.get(pricingUrl, {
-                params: {
-                  price: productPrice,
-                  category_id: cat.category_id,
-                  listing_type_id: pricingTypeId
-                },
+                params: pricingParams,
                 headers: { Authorization: `Bearer ${credential.access_token}` },
                 timeout: 15000
               });
@@ -1476,11 +1823,17 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
                 total_fee_amount: totalFeeAmount,
                 listing_type_id: fees.listing_type_id || pricingTypeId,
                 input_price: productPrice,
-                net_amount: parseFloat((productPrice - saleFeeAmount).toFixed(2)),
+                net_amount: parseFloat((productPrice - totalFeeAmount).toFixed(2)),
                 fee_percentage: productPrice > 0
                   ? parseFloat(((saleFeeAmount / productPrice) * 100).toFixed(2))
                   : 0,
-                listing_type_name: listingCandidate.description || listingCandidate.title || pricingTypeId
+                total_fee_percentage: productPrice > 0
+                  ? parseFloat(((totalFeeAmount / productPrice) * 100).toFixed(2))
+                  : 0,
+                listing_type_name: listingCandidate.description || listingCandidate.title || pricingTypeId,
+                campaign_tag_applied: campaignTagSelected,
+                campaign_tag_requested: campaignTagRequested || null,
+                campaign_pricing_applied: Boolean(campaignTagSelected)
               };
 
               saveToCache(`credential_${credential_id}`, 'category_pricing', pricingCacheKey, pricingOption, 1800);
@@ -1538,7 +1891,8 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
           }
         }
         const shippingRequested = hasShippingInput;
-        const sellerShippingCost = shipping?.seller_pays?.cost ?? null;
+        const shippingSummary = shipping?.shipping_summary || null;
+        const sellerShippingCost = shippingSummary?.seller_shipping_cost ?? null;
         if (pricing && !pricing.error) {
           pricing.shipping_requested = shippingRequested;
           if (shippingRequested && Number.isFinite(Number(sellerShippingCost))) {
@@ -1546,6 +1900,10 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
             pricing.net_amount_after_shipping = parseFloat(
               (Number(pricing.net_amount || 0) - Number(sellerShippingCost || 0)).toFixed(2)
             );
+            pricing.shipping_scenario = shippingSummary?.scenario || null;
+            pricing.shipping_who_pays = shippingSummary?.who_pays || null;
+            pricing.buyer_shipping_cost = toNumberOrZero(shippingSummary?.buyer_shipping_cost);
+            pricing.shipping_subsidy = toNumberOrZero(shippingSummary?.shipping_subsidy);
             if (pricing.warning) delete pricing.warning;
           } else if (shippingRequested && (!shipping || shipping.error)) {
             categoryWarnings.push("pricing_incomplete_shipping_not_calculated");
@@ -1555,8 +1913,32 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
             pricing.warning = "Estimación incompleta: falta cálculo de shipping para neto final.";
           }
         }
+        if (pricing && !pricing.error) {
+          const profitability = buildProfitabilityMetrics({
+            pricing,
+            shippingSummary,
+            productPrice,
+            productCost: productCostBasis
+          });
+          if (profitability) {
+            pricing.profitability = profitability;
+          }
+        }
 
         // === Construir objeto de categoría completo ===
+        const installmentTerm = Array.isArray(categoryInfo?.sale_terms)
+          ? categoryInfo.sale_terms.find(st => st?.id === "INSTALLMENTS")
+          : null;
+        const installmentAllowedValues = Array.isArray(installmentTerm?.values)
+          ? installmentTerm.values
+              .map(v => Number(v?.id ?? v?.name ?? v?.value_name))
+              .filter(Number.isFinite)
+              .sort((a, b) => a - b)
+          : [];
+        const maxInstallmentsAllowed = installmentAllowedValues.length > 0
+          ? installmentAllowedValues[installmentAllowedValues.length - 1]
+          : null;
+
         const categoryData = {
           category_id: cat.category_id,
           category_name: cat.category_name,
@@ -1583,16 +1965,36 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
             enabled: normalizedInstallments.enabled,
             interest_free: normalizedInstallments.interest_free,
             max_installments_requested: normalizedInstallments.max_installments ?? null,
-            max_installments_allowed: null,
-            allowed_values: null,
+            max_installments_allowed: maxInstallmentsAllowed,
+            allowed_values: installmentAllowedValues.length > 0 ? installmentAllowedValues : null,
+            campaign_tags_available: campaignTags.length > 0 ? campaignTags : null,
+            campaign_tags_by_listing_type: {
+              gold_pro: campaignTagsByListingType.gold_pro || [],
+              gold_special: campaignTagsByListingType.gold_special || [],
+              free: campaignTagsByListingType.free || []
+            },
             note: "Mercado Libre puede ajustar cuotas permitidas por categoría/listing_type/campaña/cuenta. Validación final ocurre en publicación."
           },
           selection_warnings: categoryWarnings,
           listing_resolution: listingResolution,
           attributes,
+          ...(categoryInfo && { category_settings: categoryInfo.settings || {} }),
           ...(productPrice !== null && { pricing_options }),
           ...(productPrice !== null && { pricing }),
-          ...(hasShippingInput && { shipping })
+          ...(hasShippingInput && { shipping }),
+          ...(hasShippingInput && { shipping_summary: shipping?.shipping_summary || null }),
+          ...(hasShippingInput && { shipping_scenarios: shipping?.shipping_scenarios || null }),
+          ...(hasShippingInput && { shipping_selected_scenario: shipping?.selected_scenario_key || null }),
+          ...(hasShippingInput && { shipping_recommendations: {
+            for_conversion: shipping?.mandatory_free_shipping_detected
+              ? "mandatory_free_shipping"
+              : "seller_free_shipping",
+            for_margin: "buyer_pays_shipping"
+          }}),
+          ...(hasShippingInput && { shipping_policy: {
+            requested_free_shipping: shipping?.requested_free_shipping ?? null,
+            mandatory_free_shipping_detected: shipping?.mandatory_free_shipping_detected ?? false
+          }})
         };
 
         saveToCache(`credential_${credential_id}`, `category_attributes_${site_id}_v4`, categoryCacheKey, categoryData);
@@ -1620,6 +2022,20 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
         p.price !== null &&
         (p.package !== undefined || p.item_id !== undefined || p.ml_item_id !== undefined)
     );
+    const allCategoriesFlattened = suggestions.flatMap(s => Array.isArray(s.categories) ? s.categories : []);
+    const firstCategoryWithInstallments = allCategoriesFlattened.find(
+      c => Array.isArray(c?.installments_rules?.allowed_values) && c.installments_rules.allowed_values.length > 0
+    );
+    const firstCategoryWithCampaigns = allCategoriesFlattened.find(
+      c => c?.installments_rules?.campaign_tags_by_listing_type
+    );
+    const uiInstallmentsAllowedValues = firstCategoryWithInstallments?.installments_rules?.allowed_values || null;
+    const uiMaxInstallmentsAllowed = firstCategoryWithInstallments?.installments_rules?.max_installments_allowed ?? null;
+    const uiCampaignTagsByListingType = firstCategoryWithCampaigns?.installments_rules?.campaign_tags_by_listing_type || {
+      gold_pro: [],
+      gold_special: [],
+      free: []
+    };
     return res.status(200).json({
       success: true,
       selection_model: {
@@ -1646,8 +2062,9 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
           enabled: normalizedInstallments.enabled,
           interest_free: normalizedInstallments.interest_free,
           max_installments_requested: normalizedInstallments.max_installments ?? null,
-          max_installments_allowed: null,
-          allowed_values: null,
+          max_installments_allowed: uiMaxInstallmentsAllowed,
+          allowed_values: uiInstallmentsAllowedValues,
+          campaign_tags_by_listing_type: uiCampaignTagsByListingType,
           note: "No hay endpoint estándar en este flujo que devuelva catálogo cerrado de cuotas por categoría. Se recomienda confirmar contra respuesta de publicación."
         },
         selection_scope: {
@@ -1660,6 +2077,12 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
           logistic_type_effective: "category"
         },
         sale_terms_preview: buildInstallmentsSaleTermsPreview(normalizedInstallments),
+        ui_hints: {
+          show_installments_select: Array.isArray(uiInstallmentsAllowedValues) && uiInstallmentsAllowedValues.length > 0,
+          installments_options: uiInstallmentsAllowedValues || [],
+          show_campaign_tag_select: Object.values(uiCampaignTagsByListingType).some(v => Array.isArray(v) && v.length > 0),
+          campaign_tag_options_by_listing_type: uiCampaignTagsByListingType
+        },
         warnings: strategyWarnings
       },
       suggestions,
