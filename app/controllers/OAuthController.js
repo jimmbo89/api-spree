@@ -80,6 +80,19 @@ const buildInstallmentsSaleTermsPreview = (installments) => {
   ];
 };
 
+const stableStringify = (value) => {
+  if (value === null || value === undefined) return String(value);
+  if (typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  }
+  const keys = Object.keys(value).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(",")}}`;
+};
+
+const buildRequestFingerprint = (payload) =>
+  crypto.createHash("sha1").update(stableStringify(payload)).digest("hex");
+
 const normalizeSupportedListingTypes = (availableData, siteId) => {
   if (!Array.isArray(availableData)) return [];
 
@@ -1185,7 +1198,26 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
         }
       }
       
-      const productCacheKey = `${nameFixed}__${productPrice ?? 'np'}__${dimensionsFormatted || 'nd'}__strategy_${selectedStrategy}__installments_${normalizedInstallments.enabled ? (normalizedInstallments.max_installments || 'na') : 'off'}__ifree_${normalizedInstallments.interest_free ? '1' : '0'}__${shipping_mode || 'auto'}__${logistic_type || 'auto'}`;
+      const productCondition = String(product.condition || "new").toLowerCase();
+      const requestFingerprint = buildRequestFingerprint({
+        credential_id,
+        site_id,
+        strategy: selectedStrategy,
+        installments: normalizedInstallments,
+        listing_type_id: listing_type_id || null,
+        shipping_mode: shipping_mode || null,
+        logistic_type: logistic_type || null,
+        product: {
+          id: product.id,
+          name: nameFixed,
+          condition: productCondition,
+          price: productPrice,
+          package: product.package || null,
+          item_id: product.item_id || null,
+          ml_item_id: product.ml_item_id || null
+        }
+      });
+      const productCacheKey = `${nameFixed}__${requestFingerprint}`;
       const cachedProductResult = getFromCache(`credential_${credential_id}`, `product_suggestion_${site_id}_v4`, productCacheKey);
 
       if (cachedProductResult) {
@@ -1234,7 +1266,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
         const categoryWarnings = [];
 
         // === Cache de categoría con atributos ===
-        const categoryCacheKey = `${cat.category_id}__${productPrice ?? 'np'}__${dimensionsFormatted || 'nd'}__strategy_${selectedStrategy}__installments_${normalizedInstallments.enabled ? (normalizedInstallments.max_installments || 'na') : 'off'}__ifree_${normalizedInstallments.interest_free ? '1' : '0'}__${shipping_mode || 'auto'}__${logistic_type || 'auto'}`;
+        const categoryCacheKey = `${cat.category_id}__${requestFingerprint}`;
         const cachedCategory = getFromCache(`credential_${credential_id}`, `category_attributes_${site_id}_v4`, categoryCacheKey);
 
         if (cachedCategory) {
@@ -1322,7 +1354,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
 
             for (const logisticEntry of logisticCandidates) {
               const logisticValue = logisticEntry.value;
-              const comboCacheKey = `combo_${site_id}_${cat.category_id}_${productPrice}_${dimensionsFormatted}_${effectiveListingType}_${modeValue}_${logisticValue}`;
+              const comboCacheKey = `combo_${site_id}_${cat.category_id}_${requestFingerprint}_${effectiveListingType}_${modeValue}_${logisticValue}`;
               const cachedCombo = getFromCache(`credential_${credential_id}`, 'shipping_combo_validation', comboCacheKey);
 
               if (cachedCombo && typeof cachedCombo.valid === 'boolean') {
@@ -1411,7 +1443,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
 
           for (const listingCandidate of pricingCandidates) {
             const pricingTypeId = listingCandidate.value;
-            const pricingCacheKey = `pricing_${site_id}_${cat.category_id}_${productPrice}_${pricingTypeId}`;
+            const pricingCacheKey = `pricing_${site_id}_${cat.category_id}_${requestFingerprint}_${pricingTypeId}`;
             const cachedPricingOption = getFromCache(`credential_${credential_id}`, 'category_pricing', pricingCacheKey);
 
             if (cachedPricingOption) {
@@ -1471,7 +1503,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
         if (hasShippingInput) {
           // ✅ CORRECCIÓN: Incluir listing_type_id, logistic_type y shipping_mode en la clave
           const shippingBasis = dimensionsFormatted || product?.ml_item_id || product?.item_id;
-          const shippingCacheKey = `shipping_${site_id}_${cat.category_id}_${productPrice}_${shippingBasis}_${effectiveListingType}_${effectiveLogisticType}_${effectiveShippingMode}`;
+          const shippingCacheKey = `shipping_${site_id}_${cat.category_id}_${shippingBasis}_${requestFingerprint}_${effectiveListingType}_${effectiveLogisticType}_${effectiveShippingMode}`;
           
           logger.info(`[SHIPPING] Cache key: ${shippingCacheKey}`);
           

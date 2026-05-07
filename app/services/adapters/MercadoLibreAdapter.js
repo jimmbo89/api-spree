@@ -51,6 +51,31 @@ function normalizeInstallmentsForPublish(installments) {
   };
 }
 
+function normalizeCredentialKey(value) {
+  if (value === undefined || value === null) return null;
+  const asNumber = Number(value);
+  if (Number.isFinite(asNumber) && asNumber > 0) {
+    return String(asNumber);
+  }
+  const asString = String(value).trim();
+  return asString || null;
+}
+
+function pickMlDataForCredential(mlConfigByCredential, credentialId) {
+  if (!mlConfigByCredential || typeof mlConfigByCredential !== 'object') return null;
+
+  const normalizedCredentialKey = normalizeCredentialKey(credentialId);
+  if (normalizedCredentialKey && mlConfigByCredential[normalizedCredentialKey]) {
+    return mlConfigByCredential[normalizedCredentialKey];
+  }
+
+  const allKeys = Object.keys(mlConfigByCredential);
+  if (allKeys.length === 0) return null;
+
+  // Fallback legacy: usar primer bloque disponible si no coincide credential_id.
+  return mlConfigByCredential[allKeys[0]];
+}
+
 class MercadoLibreAdapter extends BaseAdapter {
   static supportsCategoryPrediction() {
     return true;
@@ -72,11 +97,22 @@ class MercadoLibreAdapter extends BaseAdapter {
       throw new Error('No se encontró información de MercadoLibre para el producto');
     }
 
-    const marketId = Object.keys(productData.mercado_libre)[0];
-    const mlData = productData.mercado_libre[marketId];
+    const mlData = pickMlDataForCredential(productData.mercado_libre, this.credentialId);
+    if (!mlData || typeof mlData !== 'object') {
+      throw new Error('No se encontró configuración de MercadoLibre para la credencial seleccionada');
+    }
+
+    const shippingEffective = mlData?.shipping?.effective || {};
+    const shippingRequested = mlData?.shipping?.requested || {};
     const listingTypeOverride = normalizeListingTypeId(mlData?.listing_type_id || null);
-    const shippingModeOverride = mlData?.shipping_mode || null;
-    const logisticTypeOverride = mlData?.logistic_type || null;
+    const shippingModeOverride = shippingEffective.shipping_mode
+      || shippingRequested.shipping_mode
+      || mlData?.shipping_mode
+      || null;
+    const logisticTypeOverride = shippingEffective.logistic_type
+      || shippingRequested.logistic_type
+      || mlData?.logistic_type
+      || null;
     const installmentsConfig = normalizeInstallmentsForPublish(mlData?.installments);
     let strategy = normalizeStrategyForPublish(mlData?.strategy, mlData?.listing_type_id || null);
     if (installmentsConfig.interest_free && strategy !== ML_STRATEGY.CONVERSION) {
