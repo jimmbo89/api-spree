@@ -2,6 +2,7 @@
 const logger = require('../config/logger');
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const { requireRoles } = require('./policies/RolePolicity.js')
 const validateSchema = require("./middlewares/validateSchema");
 const auth = require("./middlewares/auth");
@@ -68,7 +69,7 @@ const BillingOrderController = require("./controllers/BillingOrderController.js"
 const { listNotificationsSchema, idNotificationSchema, markAsReadSchema } = require("./middlewares/validations/notificationValidation.js");
 const NotificationController = require("./controllers/NotificationController.js");
 const multerDisk = require("./middlewares/multerDisk.js");
-const { UPLOAD_BASE_PATH } = require("../config/upload.js");
+const { UPLOAD_BASE_PATH, getUploadPathDiagnostics } = require("../config/upload.js");
 const { getMimeTypeFromExtension } = require("./util/fileUtils.js");
 const { companyPreferenceSchema } = require("./middlewares/validations/companyPreferenceValidation.js");
 const CompanyPreferenceController = require("./controllers/CompanyPreferenceController.js");
@@ -158,6 +159,23 @@ router.post("/reports-commissions", MarketplaceReportController.commissions);
 router.post("/reports-commissions-stats", MarketplaceReportController.commissionStats);
 router.post("/reports-profits", MarketplaceReportController.profits);
 router.post("/reports-profits-stats", MarketplaceReportController.profitStats);
+router.get("/upload-diagnostics", async (req, res) => {
+  try {
+    const diagnostics = await getUploadPathDiagnostics(['products', 'certificates', 'tmp']);
+    return res.status(200).json({
+      success: true,
+      hostname: os.hostname(),
+      pid: process.pid,
+      diagnostics
+    });
+  } catch (error) {
+    logger.error(`[upload-diagnostics] ${error.message}`);
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
 
 router.get("/images-protect/:foldername/:filename", (req, res) => {
   const { foldername, filename } = req.params;

@@ -1086,12 +1086,28 @@ async store(req, res) {
     );
 
     // 6. Actualizar task
+    const hasWarnings = result.has_warnings === true ||
+      (Array.isArray(result.warnings) && result.warnings.length > 0);
+    const draftStatus = result.status || (hasWarnings ? 'published_with_warnings' : (result.success ? 'published' : 'failed'));
+    const warningMessage = hasWarnings
+      ? `Advertencias del marketplace: ${result.warnings.map(w => {
+          const field = w.field ? `${w.field}` : '';
+          const message = w.message || 'Sin detalle';
+          return field ? `${field}: ${message}` : message;
+        }).join('; ')}`
+      : null;
+    const warningDetails = hasWarnings ? {
+      has_warnings: true,
+      warnings: result.warnings,
+      published_successfully: true
+    } : null;
+
     await ProductPublishingTaskRepository.updateTask(task, {
-      status: result.success ? 'published' : 'failed',
-      error_message: result.success ? null : result.error,
-      error_details: result.success ? null : result.details,
+      status: draftStatus,
+      error_message: result.success ? warningMessage : result.error,
+      error_details: result.success ? warningDetails : result.details,
       external_id: result.success ? result.external_id : task.external_id,
-      external_url: result.success ? result.data?.permalink : task.external_url,
+      external_url: result.success ? (result.external_url || result.data?.permalink) : task.external_url,
       attempt_count: (task.attempt_count || 0) + 1,
       last_attempt_at: new Date(),
       api_response: result.data || task.api_response,
@@ -1117,7 +1133,10 @@ async store(req, res) {
           task_id: task.id,
           product_id: task.product_id,
           external_id: result.external_id,
-          external_url: result.external_url
+          external_url: result.external_url || result.data?.permalink,
+          status: draftStatus,
+          has_warnings: hasWarnings,
+          warnings: hasWarnings ? result.warnings : null
         }
       });
     } else {

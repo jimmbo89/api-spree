@@ -6,6 +6,7 @@ const app = express();
 const { sequelize } = require('./models/index');
 const cors = require('cors');
 const logger = require('../config/logger');
+const { getUploadPathDiagnostics } = require('../config/upload');
 const JobBackgroundProcessor = require('./services/JobBackgroundProcessor');
 const FalabellaOrderReconciliationService = require('./services/FalabellaOrderReconciliationService');
 
@@ -46,6 +47,13 @@ app.use(cors({
   credentials: true
 }));
 
+app.use((req, res, next) => {
+  if (req.path === '/api/product' || req.path === '/api/product-update' || req.path === '/api/certificate-upload') {
+    logger.info(`[request-trace] ${req.method} ${req.path} origin=${req.headers.origin || 'N/A'} content-type=${req.headers['content-type'] || 'N/A'} auth=${req.headers.authorization ? 'present' : 'missing'} x-company-id=${req.headers['x-company-id'] || 'N/A'}`);
+  }
+  next();
+});
+
 // Parseo de cuerpo
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
@@ -56,6 +64,9 @@ app.use('/api', require('./routes'));
 const server = app.listen(PORT, '0.0.0.0', async () => {
   try {
     logger.info(`🚀 Servidor escuchando en http://0.0.0.0:${PORT}/api`);
+
+    const uploadDiagnostics = await getUploadPathDiagnostics(['products', 'certificates', 'tmp']);
+    logger.info(`[upload] Diagnostico inicial: ${JSON.stringify(uploadDiagnostics)}`);
 
     // ✅ Conectar a la base de datos
     await sequelize.authenticate();

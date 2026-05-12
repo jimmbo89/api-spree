@@ -68,6 +68,167 @@ class FalabellaAdapter extends BaseAdapter {
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&apos;');
   }
+
+  buildSignedQuery(params) {
+    const sortedKeys = Object.keys(params).sort();
+    const canonicalQuery = sortedKeys
+      .map(k => `${this.rfc3986Encode(k)}=${this.rfc3986Encode(String(params[k]))}`)
+      .join('&');
+
+    const signatureHex = crypto
+      .createHmac('sha256', this.credential.api_key.trim())
+      .update(canonicalQuery, 'utf8')
+      .digest('hex');
+
+    return {
+      canonicalQuery,
+      signatureHex,
+      signatureEncoded: this.rfc3986Encode(signatureHex)
+    };
+  }
+
+  async fetchFeedStatus(feedId) {
+    const params = {
+      Action: 'FeedStatus',
+      FeedID: feedId,
+      Format: 'JSON',
+      Timestamp: this.timestampMinus03(),
+      UserID: this.credential.seller_email.trim(),
+      Version: '1.0'
+    };
+
+    const { canonicalQuery, signatureEncoded } = this.buildSignedQuery(params);
+    const apiUrl = `https://sellercenter-api.falabella.com?${canonicalQuery}&Signature=${signatureEncoded}`;
+    const response = await axios.get(apiUrl, { timeout: 15000 });
+
+    return response.data?.SuccessResponse?.Body?.Feed || null;
+  }
+
+  normalizeFeedMessages(items) {
+    if (!items) return [];
+
+    const list = Array.isArray(items) ? items : [items];
+    return list
+      .filter(Boolean)
+      .map(item => {
+        if (typeof item === 'string') {
+          return { field: null, sku: null, message: item, value: null };
+        }
+
+        return {
+          field: item.Field || item.Attribute || null,
+          sku: item.SellerSku || item.SKU || null,
+          message: item.Message || item.Error || item.Warning || item.Description || 'Sin detalle',
+          value: item.Value || null
+        };
+      });
+  }
+
+  async pollFeedStatus(feedId, options = {}) {
+    const maxAttempts = Number(options.maxAttempts || process.env.FALABELLA_FEED_STATUS_MAX_ATTEMPTS || 10);
+    const intervalMs = Number(options.intervalMs || process.env.FALABELLA_FEED_STATUS_INTERVAL_MS || 3000);
+    let lastFeed = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      lastFeed = await this.fetchFeedStatus(feedId);
+
+      const currentStatus = String(lastFeed?.Status || '').toLowerCase();
+      logger.info(`[FalabellaAdapter] Feed ${feedId} intento ${attempt}/${maxAttempts}: ${currentStatus || 'unknown'}`);
+
+      if (['finished', 'error', 'canceled'].includes(currentStatus)) {
+        return { feed: lastFeed, timedOut: false };
+      }
+
+      if (attempt < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, intervalMs));
+      }
+    }
+
+    return { feed: lastFeed, timedOut: true };
+  }
+
+  buildFeedDrivenResult({ transformedProduct, requestId, feed, timedOut }) {
+    const feedStatus = feed?.Status || 'unknown';
+    const warnings = this.normalizeFeedMessages(feed?.FeedWarnings?.Warning);
+    const errors = this.normalizeFeedMessages(feed?.FeedErrors?.Error);
+    const processedRecords = parseInt(feed?.ProcessedRecords || '0', 10);
+    const failedRecords = parseInt(feed?.FailedRecords || '0', 10);
+    const totalRecords = parseInt(feed?.TotalRecords || '0', 10);
+    const feedData = {
+      id: transformedProduct.sku,
+      request_id: requestId,
+      feed_id: feed?.FeedID || requestId,
+      feed_status: feedStatus,
+      action: feed?.Action || 'ProductCreate',
+      source: feed?.Source || 'api',
+      total_records: totalRecords,
+      processed_records: processedRecords,
+      failed_records: failedRecords,
+      category_id: transformedProduct.PrimaryCategory,
+      category_name: transformedProduct.categoryName,
+      warnings,
+      errors
+    };
+
+    if (timedOut) {
+      return {
+        success: false,
+        error: 'Falabella sigue procesando el feed; no se pudo confirmar el estado final dentro del tiempo de espera',
+        details: {
+          error_code: 'feed_status_timeout',
+          pending_review: true,
+          feed: feedData
+        },
+        status_code: 202,
+        external_id: transformedProduct.sku,
+        data: feedData
+      };
+    }
+
+    if (String(feedStatus).toLowerCase() === 'finished') {
+      if (failedRecords > 0 || errors.length > 0) {
+        return {
+          success: false,
+          error: 'Falabella rechazó o procesó con errores la creación del producto',
+          details: {
+            error_code: 'feed_failed',
+            feed: feedData
+          },
+          external_id: transformedProduct.sku,
+          data: feedData
+        };
+      }
+
+      if (warnings.length > 0) {
+        logger.warn(`[FalabellaAdapter] Producto publicado con advertencias confirmadas por FeedStatus`, warnings);
+        return {
+          success: true,
+          external_id: transformedProduct.sku,
+          has_warnings: true,
+          warnings,
+          data: feedData
+        };
+      }
+
+      logger.info(`[FalabellaAdapter] Producto publicado exitosamente según FeedStatus`);
+      return {
+        success: true,
+        external_id: transformedProduct.sku,
+        data: feedData
+      };
+    }
+
+    return {
+      success: false,
+      error: `Falabella devolvió estado final no exitoso para el feed: ${feedStatus}`,
+      details: {
+        error_code: 'feed_not_successful',
+        feed: feedData
+      },
+      external_id: transformedProduct.sku,
+      data: feedData
+    };
+  }
 // ✅ CORREGIDO: Usar this.credentialId consistentemente para extraer categoría
 getFalabellaCategory(productData) {
   // ✅ PRIMERO: Intentar con credentialId (ej: 2) - estructura principal
@@ -626,27 +787,12 @@ buildProductXml(product) {
       Version: '1.0'
     };
 
-    // ✅ 1) Ordenar alfabéticamente
-    const sortedKeys = Object.keys(params).sort();
-
-    // ✅ 2) CONSTRUIR QUERY ENCODEADA (igual que falabellaCategories) ← ¡CORREGIDO!
-    const canonicalQuery = sortedKeys
-      .map(k => `${this.rfc3986Encode(k)}=${this.rfc3986Encode(String(params[k]))}`)
-      .join('&');
+    const { canonicalQuery, signatureHex, signatureEncoded } = this.buildSignedQuery(params);
 
     logger.info(`[FalabellaAdapter] 🔍 String to sign (ENCODEADO):`);
     logger.info(canonicalQuery);
 
-    // ✅ 3) FIRMAR LA QUERY ENCODEADA (igual que falabellaCategories) ← ¡CORREGIDO!
-    const signatureHex = crypto
-      .createHmac('sha256', this.credential.api_key.trim())
-      .update(canonicalQuery, 'utf8')  // ← FIRMA VALORES ENCODEADOS
-      .digest('hex');
-
     logger.info(`[FalabellaAdapter] ✅ Firma generada (HEX): ${signatureHex}`);
-
-    // ✅ 4) Encodear la firma para la URL
-    const signatureEncoded = this.rfc3986Encode(signatureHex);
 
     // ✅ 5) Construir URL final: canonicalQuery + &Signature=firma_encodeada
     const urlQueryString = `${canonicalQuery}&Signature=${signatureEncoded}`;
@@ -676,65 +822,29 @@ buildProductXml(product) {
       logger.info(`[FalabellaAdapter] ✅ Respuesta HTTP ${response.status}:`);
       logger.info(response.data);
 
-      // ✅ Procesar respuesta
       const responseBody = response.data;
-      
-      // ✅ CÓDIGO CORREGIDO: Detectar warnings en SuccessResponse
-if (responseBody.includes('<SuccessResponse>')) {
-  const requestIdMatch = responseBody.match(/<RequestId>([^<]+)<\/RequestId>/);
-  
-  // ✅ EXTRAER WARNINGS (si existen)
-  const warnings = [];
-  const warningRegex = /<WarningDetail>([\s\S]*?)<\/WarningDetail>/g;
-  let warningMatch;
-  
-  while ((warningMatch = warningRegex.exec(responseBody)) !== null) {
-    const fieldMatch = warningMatch[1].match(/<Field>([^<]+)<\/Field>/);
-    const messageMatch = warningMatch[1].match(/<Message>([^<]+)<\/Message>/);
-    const valueMatch = warningMatch[1].match(/<Value>([^<]*)<\/Value>/);
-    
-    if (fieldMatch && messageMatch) {
-      warnings.push({
-        field: fieldMatch[1],
-        message: messageMatch[1],
-        value: valueMatch ? valueMatch[1] : null
-      });
-    }
-  }
-  
-  // ✅ SI HAY WARNINGS → Incluirlos en la respuesta (sin cambiar status)
-  if (warnings.length > 0) {
-  logger.warn(`[FalabellaAdapter] ⚠️ Producto publicado con ${warnings.length} advertencias:`, warnings);
-  
-  return {
-    success: true,              // ← ✅ CAMBIAR: success=true (el producto SÍ se publicó)
-    external_id: transformedProduct.sku,
-    has_warnings: true,         // ← ✅ NUEVO: Flag para identificar warnings
-    warnings: warnings,         // ← ✅ Incluir warnings completos
-    data: {
-      id: transformedProduct.sku,
-      request_id: requestIdMatch ? requestIdMatch[1] : null,
-      category_id: transformedProduct.PrimaryCategory,
-      category_name: transformedProduct.categoryName,
-      warnings: warnings
-    }
-  };
-}
-  
-  // ✅ SIN WARNINGS → Éxito total
-  logger.info(`[FalabellaAdapter] ✅ Producto publicado exitosamente`);
-  
-  return {
-    success: true,
-    external_id: transformedProduct.sku,
-     data: {
-      id: transformedProduct.sku,
-      request_id: requestIdMatch ? requestIdMatch[1] : null,
-      category_id: transformedProduct.PrimaryCategory,
-      category_name: transformedProduct.categoryName
-    }
-  };
-} else if (responseBody.includes('<ErrorResponse>')) {
+
+      if (responseBody.includes('<SuccessResponse>')) {
+        const requestIdMatch = responseBody.match(/<RequestId>([^<]+)<\/RequestId>/);
+        const requestId = requestIdMatch ? requestIdMatch[1] : null;
+
+        if (!requestId) {
+          logger.warn('[FalabellaAdapter] SuccessResponse sin RequestId; no se puede consultar FeedStatus');
+          return {
+            success: false,
+            error: 'Falabella respondió éxito técnico, pero no devolvió RequestId para validar el feed',
+            details: { error_code: 'missing_request_id' }
+          };
+        }
+
+        const { feed, timedOut } = await this.pollFeedStatus(requestId);
+        return this.buildFeedDrivenResult({
+          transformedProduct,
+          requestId,
+          feed,
+          timedOut
+        });
+      } else if (responseBody.includes('<ErrorResponse>')) {
         const errorMsgMatch = responseBody.match(/<ErrorMessage>([^<]+)<\/ErrorMessage>/);
         const errorCodeMatch = responseBody.match(/<ErrorCode>([^<]+)<\/ErrorCode>/);
         const errorMsg = errorMsgMatch ? errorMsgMatch[1] : 'Error desconocido en API de Falabella';
