@@ -45,6 +45,11 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: 'order_id',
         as: 'events'
       });
+
+      MarketplaceOrder.hasOne(models.MarketplaceOrderCustomer, {
+        foreignKey: 'order_id',
+        as: 'customerSnapshot'
+      });
     }
 
     /**

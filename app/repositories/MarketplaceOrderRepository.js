@@ -71,7 +71,8 @@ const MarketplaceOrderRepository = {
       include: [
         { association: 'items' },
         { association: 'fees' },
-        { association: 'events' }
+        { association: 'events' },
+        { association: 'customerSnapshot' }
       ]
     });
   },
@@ -134,6 +135,7 @@ const MarketplaceOrderRepository = {
         order: [['createdAt', 'DESC']],
         include: [
           { association: 'items', limit: 10 },
+          { association: 'customerSnapshot' },
           { association: 'company' },
           { association: 'user', attributes: ['id', 'name', 'email'] }
         ]

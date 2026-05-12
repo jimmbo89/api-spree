@@ -4,6 +4,30 @@ const DailyRotateFile = require('winston-daily-rotate-file');
 const path = require('path');
 const fs = require('fs');
 
+const RESERVED_LOG_KEYS = new Set(['level', 'message', 'timestamp', 'stack']);
+
+const stringifyLogMeta = (info) => {
+  const extra = Object.keys(info).reduce((acc, key) => {
+    if (!RESERVED_LOG_KEYS.has(key)) {
+      acc[key] = info[key];
+    }
+    return acc;
+  }, {});
+
+  if (Object.keys(extra).length === 0) return '';
+
+  try {
+    return ` ${JSON.stringify(extra)}`;
+  } catch (error) {
+    return ` ${String(extra)}`;
+  }
+};
+
+const lineFormatter = format.printf(info => {
+  const stackSuffix = info.stack ? `\n${info.stack}` : '';
+  return `${info.timestamp} ${info.level}: ${info.message}${stringifyLogMeta(info)}${stackSuffix}`;
+});
+
 // 1. Definir rutas
 const logDir = path.join(process.cwd(), 'logs');
 const errorLogDir = path.join(logDir, 'errors');
@@ -31,13 +55,15 @@ const logger = winston.createLogger({
   format: format.combine(
     format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
     format.errors({ stack: true }),
-    format.printf(info => `${info.timestamp} ${info.level}: ${info.message}`)
+    lineFormatter
   ),
   transports: [
     new winston.transports.Console({
       format: format.combine(
         format.colorize(),
-        format.simple()
+        format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+        format.errors({ stack: true }),
+        lineFormatter
       )
     }),
     new DailyRotateFile({

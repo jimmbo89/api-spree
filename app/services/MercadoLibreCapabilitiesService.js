@@ -418,6 +418,125 @@ const MercadoLibreCapabilitiesService = {
   },
 
   /**
+   * Preferencias de shipping por usuario
+   * Endpoint oficial: GET /users/{user_id}/shipping_preferences
+   */
+  async getUserShippingPreferences(credential, mlUserId) {
+    const TRACE_ID = `[ML-USP-${Date.now()}]`;
+
+    try {
+      if (!credential?.access_token || !mlUserId) {
+        return null;
+      }
+
+      const cacheNamespace = `credential_${credential.id}`;
+      const cacheKey = `user_shipping_preferences_${mlUserId}`;
+      const cached = getFromCache(cacheNamespace, 'capabilities', cacheKey);
+      if (cached) {
+        logger.info(`${TRACE_ID} [CACHE HIT] User shipping preferences`, {
+          credential_id: credential.id,
+          ml_user_id: mlUserId
+        });
+        return cached;
+      }
+
+      const response = await axios.get(
+        `https://api.mercadolibre.com/users/${mlUserId}/shipping_preferences`,
+        {
+          headers: {
+            Authorization: `Bearer ${credential.access_token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+
+      const result = response.data || null;
+      if (result) {
+        saveToCache(cacheNamespace, 'capabilities', cacheKey, result, 1800);
+      }
+
+      logger.info(`${TRACE_ID} [ML API] User shipping preferences loaded`, {
+        credential_id: credential.id,
+        ml_user_id: mlUserId,
+        modes: Array.isArray(result?.modes) ? result.modes : [],
+        custom_calculator: result?.custom_calculator ?? null
+      });
+
+      return result;
+    } catch (error) {
+      logger.warn(`${TRACE_ID} [ML API WARN] No se pudieron obtener user shipping preferences`, {
+        credential_id: credential?.id,
+        ml_user_id: mlUserId,
+        status: error.response?.status,
+        error: error.message,
+        response_data: error.response?.data || null
+      });
+      return null;
+    }
+  },
+
+  /**
+   * Preferencias de shipping por categoría
+   * Endpoint oficial: GET /categories/{category_id}/shipping_preferences
+   */
+  async getCategoryShippingPreferences(credential, categoryId) {
+    const TRACE_ID = `[ML-CSP-${Date.now()}]`;
+
+    try {
+      if (!credential?.access_token || !categoryId) {
+        return null;
+      }
+
+      const cacheNamespace = `credential_${credential.id}`;
+      const cacheKey = `category_shipping_preferences_${categoryId}`;
+      const cached = getFromCache(cacheNamespace, 'capabilities', cacheKey);
+      if (cached) {
+        logger.info(`${TRACE_ID} [CACHE HIT] Category shipping preferences`, {
+          credential_id: credential.id,
+          category_id: categoryId
+        });
+        return cached;
+      }
+
+      const response = await axios.get(
+        `https://api.mercadolibre.com/categories/${categoryId}/shipping_preferences`,
+        {
+          headers: {
+            Authorization: `Bearer ${credential.access_token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+
+      const result = response.data || null;
+      if (result) {
+        saveToCache(cacheNamespace, 'capabilities', cacheKey, result, 1800);
+      }
+
+      logger.info(`${TRACE_ID} [ML API] Category shipping preferences loaded`, {
+        credential_id: credential.id,
+        category_id: categoryId,
+        restricted: result?.restricted ?? null,
+        logistics: Array.isArray(result?.logistics) ? result.logistics : [],
+        me2_restrictions: result?.me2_restrictions ?? null
+      });
+
+      return result;
+    } catch (error) {
+      logger.warn(`${TRACE_ID} [ML API WARN] No se pudieron obtener category shipping preferences`, {
+        credential_id: credential?.id,
+        category_id: categoryId,
+        status: error.response?.status,
+        error: error.message,
+        response_data: error.response?.data || null
+      });
+      return null;
+    }
+  },
+
+  /**
    * Helper: Construir respuesta de fallback con metadata clara
    */
   _buildFallbackResponse(resourceType, reason, errorMessage = null) {

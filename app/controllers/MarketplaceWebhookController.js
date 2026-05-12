@@ -17,6 +17,7 @@ const {
   MarketplaceOrderItemRepository,
   MarketplaceOrderFeeRepository,
   MarketplaceOrderEventRepository,
+  MarketplaceOrderCustomerRepository,
   CompanyRepository,
   UserCompanyRepository
 } = require("../repositories");
@@ -154,6 +155,28 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
     return;
   }
 
+  const shipmentId = order?.shipping?.id || null;
+  const [shipmentData, shipmentCostsData, billingInfoData] = await Promise.all([
+    shipmentId
+      ? fetchMercadoLibreShipmentWithRetry(shipmentId, credential.access_token)
+      : Promise.resolve(null),
+    shipmentId
+      ? fetchMercadoLibreShipmentCostsWithRetry(shipmentId, credential.access_token)
+      : Promise.resolve(null),
+    fetchMercadoLibreBillingInfoWithRetry(orderId, credential.access_token)
+  ]);
+  const shippingFinancials = normalizeMercadoLibreShipmentCosts(
+    shipmentCostsData,
+    order,
+    shipmentData
+  );
+
+  const customerSnapshot = buildMercadoLibreCustomerSnapshot({
+    order,
+    shipment: shipmentData,
+    billingInfo: billingInfoData
+  });
+
   const items = Array.isArray(order.order_items) ? order.order_items : [];
   if (items.length === 0) {
     await MarketplaceWebhookEventRepository.updateById(event.id, {
@@ -181,20 +204,32 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
     order_status: mapMercadoLibreOrderStatus(order.order_status),
     payment_status: mapMercadoLibrePaymentStatus(order.payment_status),
     subtotal: order.total_amount || 0,
-    shipping_total: order?.shipping?.shipping_cost || 0,
-    discount_total: order?.shipping?.shipping_discount || 0,
+    shipping_total: shippingFinancials.seller_cost,
+    discount_total: shippingFinancials.shipping_subsidy,
     tax_total: 0, // ML no devuelve impuestos separados
     total_amount: order.total_amount || 0,
     currency: order.currency_id || 'CLP',
-    buyer_id: order?.buyer?.id?.toString() || null,
-    buyer_name: order?.buyer?.nickname || null,
-    buyer_email: null, // ML no expone email completo
+    buyer_id: customerSnapshot.marketplace_customer_id || order?.buyer?.id?.toString() || null,
+    buyer_name: customerSnapshot.full_name || order?.buyer?.nickname || null,
+    buyer_email: customerSnapshot.email || null,
+    buyer_document: customerSnapshot.document_number || null,
     payment_method: order?.payments?.[0]?.payment_type || null,
     payment_date: order?.payments?.[0]?.date_created || null,
-    shipping_address: buildShippingAddress(order.shipping),
-    shipping_city: order?.shipping?.receiver_address?.city_name || null,
-    shipping_region: order?.shipping?.receiver_address?.state_name || null,
-    raw_payload: order
+    shipping_address:
+      buildAddressLine([
+        customerSnapshot.shipping_address_line,
+        customerSnapshot.shipping_address_line_2,
+        customerSnapshot.shipping_reference
+      ]) || buildShippingAddress(order.shipping),
+    shipping_city: customerSnapshot.shipping_city || order?.shipping?.receiver_address?.city_name || null,
+    shipping_region: customerSnapshot.shipping_state || order?.shipping?.receiver_address?.state_name || null,
+    raw_payload: {
+      order,
+      shipment: shipmentData,
+      shipment_costs: shipmentCostsData,
+      billing_info: billingInfoData,
+      shipping_financials: shippingFinancials
+    }
   };
 
   let savedOrder;
@@ -226,13 +261,20 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
     );
   }
 
+  await persistMarketplaceOrderCustomerSnapshot(savedOrder, customerSnapshot, "ML Webhook");
+
   // ✅ DATOS DE SHIPPING PARA TODA LA ORDEN
   const shippingData = {
-    shippingCost: order?.shipping?.shipping_cost || 0,
-    logisticType: order?.shipping?.logistic_type || null,
-    shippingDiscount: order?.shipping?.shipping_discount || 0,
+    shippingGrossAmount: shippingFinancials.gross_amount,
+    sellerShippingCost: shippingFinancials.seller_cost,
+    buyerShippingCost: shippingFinancials.buyer_cost,
+    shippingSubsidy: shippingFinancials.shipping_subsidy,
+    logisticType: shippingFinancials.logistic_type,
+    freeShipping: shippingFinancials.free_shipping,
+    whoPays: shippingFinancials.who_pays,
     shippingOption: order?.shipping?.shipping_option || null
   };
+  const totalQuantity = items.reduce((sum, item) => sum + (Number(item?.quantity || 0) || 0), 0);
 
   const errors = [];
   const savedItems = [];
@@ -248,10 +290,15 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
         orderIdLocal: savedOrder.id,
         // Datos financieros de la orden completa
         totalAmount: order.total_amount || 0,
-        shippingCost: shippingData.shippingCost,
+        shippingGrossAmount: shippingData.shippingGrossAmount,
+        sellerShippingCost: shippingData.sellerShippingCost,
+        buyerShippingCost: shippingData.buyerShippingCost,
+        shippingSubsidy: shippingData.shippingSubsidy,
         logisticType: shippingData.logisticType,
-        shippingDiscount: shippingData.shippingDiscount,
-        totalItems: items.length
+        freeShipping: shippingData.freeShipping,
+        shippingWhoPays: shippingData.whoPays,
+        totalItems: items.length,
+        totalQuantity
       });
       
       if (itemResult) {
@@ -295,14 +342,58 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
 }
 
 async function fetchMercadoLibreOrderWithRetry(orderId, accessToken) {
+  return await fetchMercadoLibreResourceWithRetry({
+    resourcePath: `orders/${orderId}`,
+    accessToken,
+    resourceLabel: `orden ${orderId}`
+  });
+}
+
+async function fetchMercadoLibreShipmentWithRetry(shipmentId, accessToken) {
+  return await fetchMercadoLibreResourceWithRetry({
+    resourcePath: `shipments/${shipmentId}`,
+    accessToken,
+    resourceLabel: `shipment ${shipmentId}`
+  });
+}
+
+async function fetchMercadoLibreShipmentCostsWithRetry(shipmentId, accessToken) {
+  return await fetchMercadoLibreResourceWithRetry({
+    resourcePath: `shipments/${shipmentId}/costs`,
+    accessToken,
+    resourceLabel: `shipment_costs ${shipmentId}`,
+    allowNotFound: true,
+    extraHeaders: {
+      "x-format-new": "true"
+    }
+  });
+}
+
+async function fetchMercadoLibreBillingInfoWithRetry(orderId, accessToken) {
+  return await fetchMercadoLibreResourceWithRetry({
+    resourcePath: `marketplace/orders/${orderId}/billing_info`,
+    accessToken,
+    resourceLabel: `billing_info ${orderId}`,
+    allowNotFound: true
+  });
+}
+
+async function fetchMercadoLibreResourceWithRetry({
+  resourcePath,
+  accessToken,
+  resourceLabel,
+  allowNotFound = false,
+  extraHeaders = {}
+}) {
   let lastError = null;
+  const safeLabel = resourceLabel || resourcePath;
 
   for (let attempt = 1; attempt <= ML_FETCH_RETRY_MAX; attempt++) {
     try {
       const response = await axios.get(
-        `https://api.mercadolibre.com/orders/${orderId}`,
+        `https://api.mercadolibre.com/${resourcePath}`,
         {
-          headers: { Authorization: `Bearer ${accessToken}` },
+          headers: { Authorization: `Bearer ${accessToken}`, ...extraHeaders },
           timeout: 10000
         }
       );
@@ -312,12 +403,13 @@ async function fetchMercadoLibreOrderWithRetry(orderId, accessToken) {
       const status = error?.response?.status;
 
       if (status === 404) {
-        logger.warn(`[ML Webhook] Orden ${orderId} no encontrada (404)`);
+        const level = allowNotFound ? "info" : "warn";
+        logger[level](`[ML Webhook] Recurso ${safeLabel} no encontrado (404)`);
         return null;
       }
 
       if (status === 401 || status === 403) {
-        logger.error(`[ML Webhook] Error de autenticacion ${status} para orden ${orderId}`);
+        logger.error(`[ML Webhook] Error autenticacion ${status} para ${safeLabel}`);
         return null;
       }
 
@@ -327,7 +419,7 @@ async function fetchMercadoLibreOrderWithRetry(orderId, accessToken) {
           ML_FETCH_RETRY_MAX_DELAY_MS
         );
         logger.warn(
-          `[ML Webhook] Intento ${attempt}/${ML_FETCH_RETRY_MAX} fallido para orden ${orderId}. Reintentando en ${delayMs}ms...`
+          `[ML Webhook] Intento ${attempt}/${ML_FETCH_RETRY_MAX} fallido para ${safeLabel}. Reintentando en ${delayMs}ms...`
         );
         await sleep(delayMs);
       }
@@ -335,9 +427,66 @@ async function fetchMercadoLibreOrderWithRetry(orderId, accessToken) {
   }
 
   logger.error(
-    `[ML Webhook] Error obteniendo orden ${orderId} despues de ${ML_FETCH_RETRY_MAX} intentos: ${lastError?.message || "unknown"}`
+    `[ML Webhook] Error obteniendo ${safeLabel} despues de ${ML_FETCH_RETRY_MAX} intentos: ${lastError?.message || "unknown"}`
   );
   return null;
+}
+
+function normalizeMercadoLibreShipmentCosts(shipmentCosts, order, shipment) {
+  const toAmount = (value) => {
+    const amount = Number(value);
+    return Number.isFinite(amount) ? amount : 0;
+  };
+
+  const sumDiscounts = (discounts) => {
+    if (!Array.isArray(discounts)) return 0;
+    return discounts.reduce((sum, discount) => {
+      if (!discount || typeof discount !== "object") return sum;
+      const amount = Number(
+        discount.promoted_amount ??
+        discount.amount ??
+        discount.value ??
+        0
+      );
+      return sum + (Number.isFinite(amount) ? amount : 0);
+    }, 0);
+  };
+
+  const senders = Array.isArray(shipmentCosts?.senders) ? shipmentCosts.senders : [];
+  const receiver = shipmentCosts?.receiver || {};
+  const grossAmount = toAmount(shipmentCosts?.gross_amount ?? order?.shipping?.shipping_cost ?? 0);
+  const sellerCost = senders.reduce((sum, sender) => sum + toAmount(sender?.cost), 0);
+  const sellerDiscount = senders.reduce((sum, sender) => {
+    return sum + sumDiscounts(sender?.discounts) + sumDiscounts(sender?.discount);
+  }, 0);
+  const buyerCost = toAmount(receiver?.cost);
+  const shippingSubsidy = Math.max(
+    sellerDiscount,
+    grossAmount > 0 ? grossAmount - sellerCost - buyerCost : 0
+  );
+  const freeShipping = typeof shipment?.free_shipping === "boolean"
+    ? shipment.free_shipping
+    : (typeof order?.shipping?.free_shipping === "boolean" ? order.shipping.free_shipping : null);
+
+  let whoPays = "unknown";
+  if (buyerCost > 0 && sellerCost > 0) whoPays = "shared";
+  else if (buyerCost > 0) whoPays = "buyer";
+  else if (sellerCost > 0) whoPays = "seller";
+
+  return {
+    shipment_id: shipment?.id || order?.shipping?.id || null,
+    logistic_type: shipment?.logistic_type || order?.shipping?.logistic_type || null,
+    free_shipping: freeShipping,
+    gross_amount: grossAmount,
+    buyer_cost: buyerCost,
+    seller_cost: sellerCost,
+    seller_discount: sellerDiscount,
+    shipping_subsidy: shippingSubsidy,
+    who_pays: whoPays,
+    senders,
+    receiver,
+    raw: shipmentCosts || null
+  };
 }
 
 async function processFalabellaWebhook(payload, options = {}) {
@@ -433,17 +582,10 @@ async function processFalabellaEvent({ event, payload, orderId }) {
     return;
   }
 
-  // ✅ RESOLVER COMPAÑÍA DESDE EL PRIMER SKU DE LA ORDEN
-  // Las credenciales son globales, el company_id viene del producto/link
-  const firstSku = items[0]?.sku;
-  const companyInfo = await resolveCompanyFromListing(FB_MARKETPLACE_KEY, firstSku);
-  const companyId = companyInfo?.company_id || null;
-  const branchId = companyInfo?.branch_id || null;
-
   // ✅ PARSEAR DATOS DE LA ORDEN COMPLETA
   const orderInfo = parseFalabellaOrderInfo(orderData);
   const items = parseFalabellaOrderItems(orderData);
-  
+
   if (items.length === 0) {
     await MarketplaceWebhookEventRepository.updateById(event.id, {
       status: "processed_with_errors",
@@ -452,6 +594,18 @@ async function processFalabellaEvent({ event, payload, orderId }) {
     });
     return;
   }
+
+  // ✅ RESOLVER COMPAÑÍA DESDE EL PRIMER SKU DE LA ORDEN
+  // Las credenciales son globales, el company_id viene del producto/link
+  const firstSku = items[0]?.sku;
+  const companyInfo = await resolveCompanyFromListing(FB_MARKETPLACE_KEY, firstSku);
+  const companyId = companyInfo?.company_id || null;
+  const branchId = companyInfo?.branch_id || null;
+  const customerSnapshot = buildFalabellaCustomerSnapshot({
+    orderData,
+    orderInfo,
+    orderId
+  });
 
   // ✅ GUARDAR ORDEN EN marketplace_orders
   const orderDataToSave = {
@@ -468,11 +622,18 @@ async function processFalabellaEvent({ event, payload, orderId }) {
     tax_total: orderInfo.taxTotal || 0,
     total_amount: orderInfo.totalAmount || 0,
     currency: 'CLP',
-    buyer_name: orderInfo.buyerName || null,
-    buyer_email: null,
-    shipping_address: orderInfo.shippingAddress || null,
-    shipping_city: orderInfo.shippingCity || null,
-    shipping_region: orderInfo.shippingRegion || null,
+    buyer_id: customerSnapshot.marketplace_customer_id || null,
+    buyer_name: customerSnapshot.full_name || orderInfo.buyerName || null,
+    buyer_email: customerSnapshot.email || null,
+    buyer_document: customerSnapshot.document_number || null,
+    shipping_address:
+      buildAddressLine([
+        customerSnapshot.shipping_address_line,
+        customerSnapshot.shipping_address_line_2,
+        customerSnapshot.shipping_reference
+      ]) || orderInfo.shippingAddress || null,
+    shipping_city: customerSnapshot.shipping_city || orderInfo.shippingCity || null,
+    shipping_region: customerSnapshot.shipping_state || orderInfo.shippingRegion || null,
     raw_payload: orderData
   };
 
@@ -504,6 +665,8 @@ async function processFalabellaEvent({ event, payload, orderId }) {
       { company_id: companyId }
     );
   }
+
+  await persistMarketplaceOrderCustomerSnapshot(savedOrder, customerSnapshot, "FB Webhook");
 
   const errors = [];
   const savedItems = [];
@@ -738,10 +901,7 @@ function parseFalabellaOrderItems(orderData) {
  * Parsea información general de una orden de Falabella
  */
 function parseFalabellaOrderInfo(orderData) {
-  const order =
-    orderData?.SuccessResponse?.Body?.Order ||
-    orderData?.SuccessResponse?.Body?.Orders?.Order ||
-    null;
+  const order = extractFalabellaOrderRoot(orderData);
 
   if (!order) return {};
 
@@ -779,18 +939,35 @@ function parseFalabellaOrderInfo(orderData) {
 
   // Información del comprador
   const customer = order?.Customer || order?.Buyer || {};
-  const buyerName = [
-    customer?.FirstName,
-    customer?.LastName
-  ].filter(Boolean).join(' ') || null;
+  const buyerName = buildFullName(
+    customer?.FirstName || order?.CustomerFirstName,
+    customer?.LastName || order?.CustomerLastName
+  );
 
   // Dirección de envío
-  const shippingAddress = order?.ShippingAddress || {};
-  const addressParts = [];
-  if (shippingAddress?.Street) addressParts.push(shippingAddress.Street);
-  if (shippingAddress?.City) addressParts.push(shippingAddress.City);
-  if (shippingAddress?.State || shippingAddress?.Region) addressParts.push(shippingAddress.State || shippingAddress.Region);
-  if (shippingAddress?.ZipCode) addressParts.push(shippingAddress.ZipCode);
+  const shippingAddress = extractFalabellaShippingAddress(order);
+  const addressParts = [
+    pickString(
+      shippingAddress?.Street,
+      shippingAddress?.Address1,
+      shippingAddress?.address1
+    ),
+    pickString(
+      shippingAddress?.Address2,
+      shippingAddress?.address2
+    ),
+    pickString(shippingAddress?.City, shippingAddress?.city),
+    pickString(
+      shippingAddress?.State,
+      shippingAddress?.Region,
+      shippingAddress?.region
+    ),
+    pickString(
+      shippingAddress?.ZipCode,
+      shippingAddress?.PostCode,
+      shippingAddress?.postcode
+    )
+  ];
 
   return {
     status: order?.OrderStatus || order?.Status || 'pending',
@@ -801,11 +978,437 @@ function parseFalabellaOrderInfo(orderData) {
     commission: commissionTotal,
     totalAmount,
     buyerName,
-    shippingAddress: addressParts.join(', ') || null,
-    shippingCity: shippingAddress?.City || null,
-    shippingRegion: shippingAddress?.State || shippingAddress?.Region || null,
+    shippingAddress: buildAddressLine(addressParts),
+    shippingCity: pickString(shippingAddress?.City, shippingAddress?.city),
+    shippingRegion: pickString(
+      shippingAddress?.State,
+      shippingAddress?.Region,
+      shippingAddress?.region
+    ),
     createdAt: order?.CreatedDate || order?.CreatedAt || null
   };
+}
+
+async function persistMarketplaceOrderCustomerSnapshot(savedOrder, snapshot, logPrefix) {
+  if (!savedOrder?.id || !snapshot) {
+    return;
+  }
+
+  if (!hasMeaningfulCustomerSnapshot(snapshot)) {
+    logger.info(`[${logPrefix}] Snapshot comprador omitido por falta de datos. order_id=${savedOrder.id}`);
+    return;
+  }
+
+  try {
+    await MarketplaceOrderCustomerRepository.upsertByOrderId(savedOrder.id, snapshot);
+  } catch (error) {
+    logger.warn(
+      `[${logPrefix}] Error guardando snapshot comprador para order_id=${savedOrder.id}: ${error.message}`
+    );
+  }
+}
+
+function buildMercadoLibreCustomerSnapshot({ order, shipment, billingInfo }) {
+  const buyer = order?.buyer || billingInfo?.buyer || {};
+  const billing = billingInfo?.billing_info || billingInfo?.billingInfo || billingInfo || {};
+  const billingAddress = billing?.address || {};
+  const billingIdentification = billing?.identification || {};
+  const billingAttributes = billing?.attributes || {};
+  const shippingAddress = shipment?.receiver_address || order?.shipping?.receiver_address || {};
+  const shipmentReceiver = shipment?.receiver || order?.shipping?.receiver || {};
+  const receiverName = pickString(
+    shipment?.receiver_name,
+    shipmentReceiver?.name,
+    shippingAddress?.receiver_name
+  );
+  const fullName = buildFullName(
+    pickString(billing?.name, buyer?.first_name),
+    pickString(billing?.last_name, buyer?.last_name)
+  ) || pickString(billing?.business_name, buyer?.nickname);
+  const documentParts = splitDocumentNumber(billingIdentification?.number || billing?.doc_number);
+  const customerType = normalizeCustomerType(
+    billingAttributes?.cust_type === 'BU'
+      ? 'business'
+      : billingAttributes?.cust_type === 'CO'
+        ? 'person'
+        : null,
+    billing?.business_name
+  );
+
+  return finalizeCustomerSnapshot({
+    marketplace: ML_MARKETPLACE_KEY,
+    marketplace_customer_id: stringOrNull(buyer?.cust_id || buyer?.id),
+    first_name: pickString(billing?.name, buyer?.first_name),
+    last_name: pickString(billing?.last_name, buyer?.last_name),
+    full_name: fullName,
+    email: pickString(
+      billing?.email,
+      buyer?.email,
+      buyer?.contact?.email
+    ),
+    phone: pickString(
+      buyer?.phone?.number,
+      shipmentReceiver?.phone,
+      shipment?.receiver_phone
+    ),
+    phone_secondary: pickString(buyer?.alternative_phone?.number),
+    document_type: stringOrNull(billingIdentification?.type),
+    document_number: documentParts.number,
+    document_verifier: documentParts.verifier,
+    customer_type: customerType,
+    legal_name: pickString(billing?.business_name, fullName),
+    receiver_name: receiverName,
+    invoice_required: null,
+    billing_address_line: pickString(
+      billingAddress?.address_line,
+      buildStreetAddress(billingAddress?.street_name, billingAddress?.street_number)
+    ),
+    billing_address_line_2: pickString(billingAddress?.comment),
+    billing_city: pickString(billingAddress?.city_name),
+    billing_municipality: pickString(billingAddress?.municipality_name),
+    billing_state: pickString(billingAddress?.state?.name, billingAddress?.state_name),
+    billing_state_code: pickString(billingAddress?.state?.code),
+    billing_zip_code: pickString(billingAddress?.zip_code),
+    billing_country_code: pickString(billingAddress?.country_id, billingAddress?.country_code),
+    billing_comment: pickString(billingAddress?.comment),
+    shipping_address_line: pickString(
+      shippingAddress?.address_line,
+      buildStreetAddress(shippingAddress?.street_name, shippingAddress?.street_number)
+    ),
+    shipping_address_line_2: pickString(shippingAddress?.comment),
+    shipping_city: pickString(shippingAddress?.city?.name, shippingAddress?.city_name),
+    shipping_municipality: pickString(shippingAddress?.municipality_name),
+    shipping_state: pickString(shippingAddress?.state?.name, shippingAddress?.state_name),
+    shipping_state_code: pickString(shippingAddress?.state?.id, shippingAddress?.state_code),
+    shipping_zip_code: pickString(shippingAddress?.zip_code),
+    shipping_country_code: pickString(
+      shippingAddress?.country?.id,
+      shippingAddress?.country?.name,
+      shippingAddress?.country_id
+    ),
+    shipping_comment: pickString(shippingAddress?.comment),
+    shipping_reference: pickString(order?.shipping?.shipping_option?.name, shippingAddress?.comment),
+    source_updated_at: parseDateOrNull(order?.last_updated || order?.date_created || shipment?.last_updated),
+    raw_order_payload: order || null,
+    raw_billing_payload: billingInfo || null,
+    raw_shipping_payload: shipment || null
+  });
+}
+
+function buildFalabellaCustomerSnapshot({ orderData, orderInfo }) {
+  const order = extractFalabellaOrderRoot(orderData);
+  const customer = order?.Customer || order?.Buyer || {};
+  const billingAddress = extractFalabellaBillingAddress(order);
+  const shippingAddress = extractFalabellaShippingAddress(order);
+  const extraBilling = normalizeFalabellaAttributes(
+    order?.ExtraBillingAttributes ||
+    order?.extraBillingAttributes ||
+    order?.BillingExtraAttributes
+  );
+  const extra = normalizeFalabellaAttributes(
+    order?.ExtraAttributes ||
+    order?.extraAttributes
+  );
+  const firstName = pickString(customer?.FirstName, order?.CustomerFirstName, extra.CustomerFirstName);
+  const lastName = pickString(customer?.LastName, order?.CustomerLastName, extra.CustomerLastName);
+  const fullName = buildFullName(firstName, lastName) || orderInfo?.buyerName;
+  const documentParts = splitDocumentNumber(
+    extraBilling.LegalId ||
+    order?.NationalRegistrationNumber ||
+    extra.NationalRegistrationNumber
+  );
+  const invoiceRequired = toBoolean(order?.InvoiceRequired);
+  const legalName = pickString(
+    extraBilling.ReceiverLegalName,
+    extra.ReceiverLegalName,
+    fullName
+  );
+
+  return finalizeCustomerSnapshot({
+    marketplace: FB_MARKETPLACE_KEY,
+    marketplace_customer_id: stringOrNull(
+      customer?.CustomerID ||
+      customer?.CustomerId ||
+      order?.CustomerId ||
+      order?.BuyerId
+    ),
+    first_name: firstName,
+    last_name: lastName,
+    full_name: fullName,
+    email: pickString(
+      customer?.Email,
+      order?.CustomerEmail,
+      billingAddress?.Email,
+      shippingAddress?.Email
+    ),
+    phone: pickString(
+      customer?.Phone,
+      billingAddress?.Phone,
+      shippingAddress?.Phone
+    ),
+    phone_secondary: pickString(
+      billingAddress?.Phone2,
+      shippingAddress?.Phone2
+    ),
+    document_type: pickString(extraBilling.DocumentType, extra.DocumentType),
+    document_number: documentParts.number,
+    document_verifier: pickString(extraBilling.CustomerVerifierDigit, documentParts.verifier),
+    customer_type: normalizeCustomerType(
+      invoiceRequired ? 'business' : null,
+      legalName
+    ),
+    legal_name: legalName,
+    receiver_name: pickString(
+      shippingAddress?.FirstName && shippingAddress?.LastName
+        ? `${shippingAddress.FirstName} ${shippingAddress.LastName}`
+        : null,
+      fullName
+    ),
+    invoice_required: invoiceRequired,
+    billing_address_line: pickString(billingAddress?.Address1, billingAddress?.Street),
+    billing_address_line_2: pickString(billingAddress?.Address2),
+    billing_city: pickString(
+      extraBilling.ReceiverMunicipality,
+      billingAddress?.City
+    ),
+    billing_municipality: pickString(
+      extraBilling.ReceiverMunicipality,
+      billingAddress?.City
+    ),
+    billing_state: pickString(
+      extraBilling.ReceiverRegion,
+      billingAddress?.Region,
+      billingAddress?.State
+    ),
+    billing_state_code: null,
+    billing_zip_code: pickString(
+      extraBilling.ReceiverPostcode,
+      billingAddress?.PostCode,
+      billingAddress?.ZipCode
+    ),
+    billing_country_code: pickString(billingAddress?.Country),
+    billing_comment: pickString(order?.Remarks, extra.Remarks),
+    shipping_address_line: pickString(shippingAddress?.Address1, shippingAddress?.Street),
+    shipping_address_line_2: pickString(shippingAddress?.Address2),
+    shipping_city: pickString(shippingAddress?.City),
+    shipping_municipality: pickString(shippingAddress?.City),
+    shipping_state: pickString(shippingAddress?.Region, shippingAddress?.State),
+    shipping_state_code: null,
+    shipping_zip_code: pickString(shippingAddress?.PostCode, shippingAddress?.ZipCode),
+    shipping_country_code: pickString(shippingAddress?.Country),
+    shipping_comment: pickString(order?.Remarks),
+    shipping_reference: pickString(order?.DeliveryInfo, extra.DeliveryInfo),
+    source_updated_at: parseDateOrNull(order?.UpdatedAt || order?.CreatedAt || orderInfo?.createdAt),
+    raw_order_payload: orderData || null,
+    raw_billing_payload: {
+      billing_address: billingAddress || null,
+      extra_billing_attributes: extraBilling
+    },
+    raw_shipping_payload: shippingAddress || null
+  });
+}
+
+function finalizeCustomerSnapshot(snapshot) {
+  const normalized = {
+    marketplace: snapshot.marketplace,
+    marketplace_customer_id: stringOrNull(snapshot.marketplace_customer_id),
+    first_name: stringOrNull(snapshot.first_name),
+    last_name: stringOrNull(snapshot.last_name),
+    full_name: stringOrNull(snapshot.full_name),
+    email: stringOrNull(snapshot.email),
+    phone: stringOrNull(snapshot.phone),
+    phone_secondary: stringOrNull(snapshot.phone_secondary),
+    document_type: stringOrNull(snapshot.document_type),
+    document_number: stringOrNull(snapshot.document_number),
+    document_verifier: stringOrNull(snapshot.document_verifier),
+    customer_type: stringOrNull(snapshot.customer_type),
+    legal_name: stringOrNull(snapshot.legal_name),
+    receiver_name: stringOrNull(snapshot.receiver_name),
+    invoice_required:
+      typeof snapshot.invoice_required === 'boolean' ? snapshot.invoice_required : null,
+    billing_address_line: stringOrNull(snapshot.billing_address_line),
+    billing_address_line_2: stringOrNull(snapshot.billing_address_line_2),
+    billing_city: stringOrNull(snapshot.billing_city),
+    billing_municipality: stringOrNull(snapshot.billing_municipality),
+    billing_state: stringOrNull(snapshot.billing_state),
+    billing_state_code: stringOrNull(snapshot.billing_state_code),
+    billing_zip_code: stringOrNull(snapshot.billing_zip_code),
+    billing_country_code: stringOrNull(snapshot.billing_country_code),
+    billing_comment: stringOrNull(snapshot.billing_comment),
+    shipping_address_line: stringOrNull(snapshot.shipping_address_line),
+    shipping_address_line_2: stringOrNull(snapshot.shipping_address_line_2),
+    shipping_city: stringOrNull(snapshot.shipping_city),
+    shipping_municipality: stringOrNull(snapshot.shipping_municipality),
+    shipping_state: stringOrNull(snapshot.shipping_state),
+    shipping_state_code: stringOrNull(snapshot.shipping_state_code),
+    shipping_zip_code: stringOrNull(snapshot.shipping_zip_code),
+    shipping_country_code: stringOrNull(snapshot.shipping_country_code),
+    shipping_comment: stringOrNull(snapshot.shipping_comment),
+    shipping_reference: stringOrNull(snapshot.shipping_reference),
+    source_updated_at: snapshot.source_updated_at || null,
+    raw_order_payload: snapshot.raw_order_payload || null,
+    raw_billing_payload: snapshot.raw_billing_payload || null,
+    raw_shipping_payload: snapshot.raw_shipping_payload || null
+  };
+
+  normalized.data_completeness = calculateCustomerDataCompleteness(normalized);
+  return normalized;
+}
+
+function calculateCustomerDataCompleteness(snapshot) {
+  const keys = [
+    snapshot.full_name,
+    snapshot.email,
+    snapshot.phone,
+    snapshot.document_number,
+    snapshot.billing_address_line,
+    snapshot.billing_city,
+    snapshot.shipping_address_line,
+    snapshot.shipping_city,
+    snapshot.shipping_state,
+    snapshot.shipping_zip_code
+  ];
+  const count = keys.filter(Boolean).length;
+  if (count >= 8) return 'full';
+  if (count >= 4) return 'medium';
+  return 'partial';
+}
+
+function hasMeaningfulCustomerSnapshot(snapshot) {
+  return Boolean(
+    snapshot?.marketplace_customer_id ||
+    snapshot?.full_name ||
+    snapshot?.email ||
+    snapshot?.phone ||
+    snapshot?.document_number ||
+    snapshot?.billing_address_line ||
+    snapshot?.shipping_address_line ||
+    snapshot?.raw_order_payload
+  );
+}
+
+function extractFalabellaOrderRoot(orderData) {
+  return (
+    orderData?.SuccessResponse?.Body?.Order ||
+    orderData?.SuccessResponse?.Body?.Orders?.Order ||
+    null
+  );
+}
+
+function extractFalabellaBillingAddress(order) {
+  return (
+    order?.AddressBilling ||
+    order?.BillingAddress ||
+    order?.Billing?.Address ||
+    {}
+  );
+}
+
+function extractFalabellaShippingAddress(order) {
+  return (
+    order?.AddressShipping ||
+    order?.ShippingAddress ||
+    order?.Shipping?.Address ||
+    {}
+  );
+}
+
+function normalizeFalabellaAttributes(attributes) {
+  if (!attributes) return {};
+  if (Array.isArray(attributes)) {
+    return attributes.reduce((acc, entry) => {
+      const key = pickString(entry?.Name, entry?.name, entry?.Key, entry?.key);
+      const value = pickString(entry?.Value, entry?.value, entry?.Text, entry?.text);
+      if (key) acc[key] = value;
+      return acc;
+    }, {});
+  }
+  if (typeof attributes === 'string') {
+    try {
+      const parsed = JSON.parse(attributes);
+      return normalizeFalabellaAttributes(parsed);
+    } catch (error) {
+      return {};
+    }
+  }
+  if (typeof attributes === 'object') {
+    return attributes;
+  }
+  return {};
+}
+
+function buildFullName(firstName, lastName) {
+  const fullName = [stringOrNull(firstName), stringOrNull(lastName)]
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+  return fullName || null;
+}
+
+function buildStreetAddress(streetName, streetNumber) {
+  return buildAddressLine([streetName, streetNumber]);
+}
+
+function buildAddressLine(parts) {
+  if (!Array.isArray(parts)) return null;
+  const line = parts
+    .map((part) => stringOrNull(part))
+    .filter(Boolean)
+    .join(', ')
+    .trim();
+  return line || null;
+}
+
+function pickString(...values) {
+  for (const value of values) {
+    const normalized = stringOrNull(value);
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
+function stringOrNull(value) {
+  if (value == null) return null;
+  const normalized = String(value).trim();
+  return normalized ? normalized : null;
+}
+
+function splitDocumentNumber(value) {
+  const normalized = stringOrNull(value);
+  if (!normalized) {
+    return { number: null, verifier: null };
+  }
+
+  const clean = normalized.replace(/\s+/g, '');
+  const parts = clean.split('-');
+  if (parts.length >= 2) {
+    return {
+      number: parts.slice(0, -1).join('-') || clean,
+      verifier: parts[parts.length - 1] || null
+    };
+  }
+
+  return { number: clean, verifier: null };
+}
+
+function parseDateOrNull(value) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function toBoolean(value) {
+  if (typeof value === 'boolean') return value;
+  const normalized = stringOrNull(value);
+  if (!normalized) return null;
+  if (['true', '1', 'yes', 'si', 'sí'].includes(normalized.toLowerCase())) return true;
+  if (['false', '0', 'no'].includes(normalized.toLowerCase())) return false;
+  return null;
+}
+
+function normalizeCustomerType(initialType) {
+  const normalized = stringOrNull(initialType);
+  return normalized || null;
 }
 
 async function processFalabellaOrderItem(item, ctx) {
@@ -905,11 +1508,11 @@ async function processFalabellaOrderItem(item, ctx) {
 
   // ✅ GUARDAR ITEM EN marketplace_order_items
   let savedItem = null;
+  const itemCompanyId = link?.company_id || ctx.companyId;
+  const itemBranchId = link?.branch_id || ctx.branchId;
   if (ctx.orderIdLocal && exitResults.length > 0) {
     try {
       const inventoryMovementId = exitResults[0]?.inventoryMovementId || null;
-      const itemCompanyId = link?.company_id || ctx.companyId;
-      const itemBranchId = link?.branch_id || ctx.branchId;
 
       savedItem = await MarketplaceOrderItemRepository.create({
         order_id: ctx.orderIdLocal,
@@ -1021,8 +1624,13 @@ async function processOrderItem(orderItem, ctx) {
   }
 
   let shippingCostForItem = 0;
-  if (ctx.logisticType === 'dropoff' && !ctx.shippingDiscount) {
-    shippingCostForItem = (ctx.shippingCost || 0) / (ctx.totalItems || 1);
+  const orderSellerShippingCost = Number(ctx.sellerShippingCost || 0);
+  if (orderSellerShippingCost > 0) {
+    const denominator = Number(ctx.totalQuantity || 0) > 0
+      ? Number(ctx.totalQuantity)
+      : Number(ctx.totalItems || 1);
+    const weight = Number(ctx.totalQuantity || 0) > 0 ? quantity : 1;
+    shippingCostForItem = (orderSellerShippingCost * weight) / denominator;
   }
 
   const totalCost = allocation.plan.reduce((sum, entry) => {
@@ -1039,6 +1647,10 @@ async function processOrderItem(orderItem, ctx) {
     total_price: totalPrice,
     sale_fee: saleFee,
     shipping_cost_item: Math.round(shippingCostForItem),
+    shipping_cost_order_seller: Math.round(orderSellerShippingCost),
+    shipping_cost_order_buyer: Math.round(Number(ctx.buyerShippingCost || 0)),
+    shipping_cost_order_gross: Math.round(Number(ctx.shippingGrossAmount || 0)),
+    shipping_subsidy_order: Math.round(Number(ctx.shippingSubsidy || 0)),
     cost_price: costPrice,
     total_cost: totalCost,
     gross_profit: Math.round(grossProfit),
@@ -1064,17 +1676,23 @@ async function processOrderItem(orderItem, ctx) {
       gross_profit: Math.round(grossProfit),
       margin_percentage: Math.round(marginPercentage * 100) / 100,
       logistic_type: ctx.logisticType,
+      shipping_cost_order_seller: Math.round(orderSellerShippingCost),
+      shipping_cost_order_buyer: Math.round(Number(ctx.buyerShippingCost || 0)),
+      shipping_cost_order_gross: Math.round(Number(ctx.shippingGrossAmount || 0)),
+      shipping_subsidy_order: Math.round(Number(ctx.shippingSubsidy || 0)),
+      shipping_free: ctx.freeShipping,
+      shipping_who_pays: ctx.shippingWhoPays,
       calculated_at: new Date().toISOString()
     }
   });
 
   // ✅ GUARDAR ITEM EN marketplace_order_items
   let savedItem = null;
+  const itemCompanyId = link.company_id || ctx.companyId;
+  const itemBranchId = link.branch_id || ctx.branchId;
   if (ctx.orderIdLocal && exitResults.length > 0) {
     try {
       const inventoryMovementId = exitResults[0]?.inventoryMovementId || null;
-      const itemCompanyId = link.company_id || ctx.companyId;
-      const itemBranchId = link.branch_id || ctx.branchId;
       
       savedItem = await MarketplaceOrderItemRepository.create({
         order_id: ctx.orderIdLocal,
@@ -1810,5 +2428,3 @@ module.exports = MarketplaceWebhookController;
 MarketplaceWebhookController._processFalabellaEvent = processFalabellaEvent;
 MarketplaceWebhookController._fetchFalabellaOrdersV2 = fetchFalabellaOrdersV2;
 MarketplaceWebhookController._parseFalabellaOrderIds = parseFalabellaOrderIds;
-
-

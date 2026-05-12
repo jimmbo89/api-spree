@@ -226,6 +226,34 @@ const extractCoverageSubsidy = (coverage) => {
   return 0;
 };
 
+const extractCoverageCost = (coverage) => {
+  const finalCost = toNumberOrNull(coverage?.cost);
+  if (finalCost !== null) return finalCost;
+  return toNumberOrZero(coverage?.list_cost);
+};
+
+const extractProductZipCode = (product) => {
+  const candidates = [
+    product?.zip_code,
+    product?.zipcode,
+    product?.postal_code,
+    product?.shipping_zip_code,
+    product?.shipping?.zip_code,
+    product?.shipping?.zipcode,
+    product?.shipping?.postal_code,
+    product?.receiver_address?.zip_code,
+    product?.address?.zip_code
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate === null || candidate === undefined) continue;
+    const normalized = String(candidate).trim();
+    if (normalized) return normalized;
+  }
+
+  return null;
+};
+
 const normalizeShippingScenarios = ({
   shippingMode,
   logisticType,
@@ -995,6 +1023,7 @@ async calculateMercadoLibreShippingCosts(credential, product, categoryId, siteId
     dimensions = null;
   }
   const itemId = product?.ml_item_id || product?.item_id || null;
+  const zipCode = extractProductZipCode(product);
   const requestedFreeShipping =
     typeof product?.shipping?.free_shipping === "boolean"
       ? product.shipping.free_shipping
@@ -1074,6 +1103,25 @@ async calculateMercadoLibreShippingCosts(credential, product, categoryId, siteId
   }
 
   try {
+    let actualItemShippingOption = null;
+    if (itemId && zipCode) {
+      try {
+        const shippingOptionsResponse = await axios.get(
+          `https://api.mercadolibre.com/items/${itemId}/shipping_options`,
+          {
+            params: { zip_code: zipCode },
+            headers: { Authorization: `Bearer ${credential.access_token}` },
+            timeout: 15000
+          }
+        );
+        actualItemShippingOption = Array.isArray(shippingOptionsResponse.data?.options)
+          ? shippingOptionsResponse.data.options[0] || null
+          : null;
+      } catch (shippingOptionsErr) {
+        logger.warn(`[ML] No se pudo obtener shipping_options para item ${itemId} y zip ${zipCode}: ${shippingOptionsErr.message}`);
+      }
+    }
+
     // Consulta 1: Comprador paga el envío
     const buyerPaysResponse = await axios.get(
       `https://api.mercadolibre.com/users/${mlUserId}/shipping_options/free`,
@@ -1101,25 +1149,32 @@ async calculateMercadoLibreShippingCosts(credential, product, categoryId, siteId
     let mandatoryFreeShipping = ['mandatory_free_shipping'].some(tag =>
       buyerTags.includes(tag) || sellerTags.includes(tag)
     );
+    let effectiveRequestedFreeShipping = requestedFreeShipping;
     if (!mandatoryFreeShipping && itemId) {
       try {
-        const itemShippingCacheKey = `item_shipping_policy_${itemId}`;
-        const cachedItemShipping = getFromCache(`credential_${credential?.id}`, 'item_shipping_policy', itemShippingCacheKey);
-        let itemShippingData = cachedItemShipping;
-        if (!itemShippingData) {
-          const itemShippingResponse = await axios.get(
-            `https://api.mercadolibre.com/items/${itemId}/shipping`,
+        const itemCacheKey = `item_shipping_policy_${itemId}`;
+        const cachedItemData = getFromCache(`credential_${credential?.id}`, 'item_shipping_policy', itemCacheKey);
+        let itemData = cachedItemData;
+        if (!itemData) {
+          const itemResponse = await axios.get(
+            `https://api.mercadolibre.com/items/${itemId}`,
             {
               headers: { Authorization: `Bearer ${credential.access_token}` },
               timeout: 12000
             }
           );
-          itemShippingData = itemShippingResponse.data || null;
-          saveToCache(`credential_${credential?.id}`, 'item_shipping_policy', itemShippingCacheKey, itemShippingData, 900);
+          itemData = itemResponse.data || null;
+          saveToCache(`credential_${credential?.id}`, 'item_shipping_policy', itemCacheKey, itemData, 900);
         }
-        const itemTags = Array.isArray(itemShippingData?.tags) ? itemShippingData.tags : [];
+        const itemTags = Array.isArray(itemData?.tags) ? itemData.tags : [];
         if (itemTags.includes('mandatory_free_shipping')) {
           mandatoryFreeShipping = true;
+        }
+        if (effectiveRequestedFreeShipping === null || effectiveRequestedFreeShipping === undefined) {
+          const itemFreeShipping = itemData?.shipping?.free_shipping;
+          if (typeof itemFreeShipping === 'boolean') {
+            effectiveRequestedFreeShipping = itemFreeShipping;
+          }
         }
       } catch (itemShippingErr) {
         logger.warn(`[ML] No se pudo validar shipping policy del item ${itemId}: ${itemShippingErr.message}`);
@@ -1128,23 +1183,30 @@ async calculateMercadoLibreShippingCosts(credential, product, categoryId, siteId
 
     const result = {
       buyer_pays: {
-        // Mantener compatibilidad: "cost" = list_cost
-        cost: buyerCoverage.list_cost || 0,
-        list_cost: buyerCoverage.list_cost || 0,
+        cost: actualItemShippingOption
+          ? toNumberOrZero(actualItemShippingOption.list_cost)
+          : extractCoverageCost(buyerCoverage),
+        list_cost: actualItemShippingOption
+          ? toNumberOrZero(actualItemShippingOption.list_cost)
+          : (buyerCoverage.list_cost || 0),
         currency_id: buyerCoverage.currency_id || getCurrencyIdFromSite(siteId),
         billable_weight: buyerCoverage.billable_weight,
-        discount: buyerCoverage.discount,
-        shipping_method_id: buyerCoverage.shipping_method_id,
+        discount: actualItemShippingOption?.discount || buyerCoverage.discount,
+        shipping_method_id: actualItemShippingOption?.shipping_method_id || buyerCoverage.shipping_method_id,
         paid_by: 'buyer',
         free_shipping: false
       },
       seller_pays: {
-        cost: sellerCoverage.list_cost || 0,
-        list_cost: sellerCoverage.list_cost || 0,
+        cost: actualItemShippingOption
+          ? toNumberOrZero(actualItemShippingOption.cost)
+          : extractCoverageCost(sellerCoverage),
+        list_cost: actualItemShippingOption
+          ? toNumberOrZero(actualItemShippingOption.list_cost)
+          : (sellerCoverage.list_cost || 0),
         currency_id: sellerCoverage.currency_id || getCurrencyIdFromSite(siteId),
         billable_weight: sellerCoverage.billable_weight,
-        discount: sellerCoverage.discount,
-        shipping_method_id: sellerCoverage.shipping_method_id,
+        discount: actualItemShippingOption?.discount || sellerCoverage.discount,
+        shipping_method_id: actualItemShippingOption?.shipping_method_id || sellerCoverage.shipping_method_id,
         paid_by: 'seller',
         free_shipping: true
       }
@@ -1154,14 +1216,16 @@ async calculateMercadoLibreShippingCosts(credential, product, categoryId, siteId
       logisticType: baseParams.logistic_type,
       buyerPays: result.buyer_pays,
       sellerPays: result.seller_pays,
-      requestedFreeShipping,
+      requestedFreeShipping: effectiveRequestedFreeShipping,
       mandatoryFreeShipping
     });
     return {
       ...result,
       ...normalized,
-      requested_free_shipping: requestedFreeShipping,
-      mandatory_free_shipping_detected: mandatoryFreeShipping
+      requested_free_shipping: effectiveRequestedFreeShipping,
+      mandatory_free_shipping_detected: mandatoryFreeShipping,
+      zip_code_used: zipCode,
+      item_shipping_option_used: actualItemShippingOption
     };
   } catch (error) {
     logger.error(`Error calculando envío para categoría ${categoryId}: ${error.message}`, {
@@ -1438,6 +1502,64 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
       return logisticsByMode[0]?.value || 'drop_off';
     };
 
+    const buildShippingPreferenceCandidates = (userPreferences, categoryPreferences) => {
+      const userModes = Array.isArray(userPreferences?.modes) ? userPreferences.modes : [];
+      const categoryLogistics = Array.isArray(categoryPreferences?.logistics) ? categoryPreferences.logistics : [];
+      const categoryModes = categoryLogistics
+        .map(entry => entry?.mode)
+        .filter(Boolean);
+
+      if (userModes.length === 0 || categoryModes.length === 0) {
+        return null;
+      }
+
+      const allowedModes = userModes.filter(mode => categoryModes.includes(mode));
+      if (allowedModes.length === 0) {
+        return {
+          shippingModes: [],
+          logisticTypes: [],
+          combos: []
+        };
+      }
+
+      const userLogistics = Array.isArray(userPreferences?.logistics) ? userPreferences.logistics : [];
+      const combos = [];
+
+      for (const mode of allowedModes) {
+        const categoryEntry = categoryLogistics.find(entry => entry?.mode === mode);
+        const userEntry = userLogistics.find(entry => entry?.mode === mode);
+
+        const categoryTypes = Array.isArray(categoryEntry?.types)
+          ? categoryEntry.types.map(type => typeof type === 'string' ? type : type?.type).filter(Boolean)
+          : [];
+        const userTypes = Array.isArray(userEntry?.types)
+          ? userEntry.types.map(type => typeof type === 'string' ? type : type?.type).filter(Boolean)
+          : [];
+
+        const effectiveTypes = userTypes.length > 0
+          ? categoryTypes.filter(type => userTypes.includes(type))
+          : categoryTypes;
+
+        if (effectiveTypes.length === 0) {
+          combos.push({ shipping_mode: mode, logistic_type: null });
+          continue;
+        }
+
+        for (const type of effectiveTypes) {
+          combos.push({ shipping_mode: mode, logistic_type: type });
+        }
+      }
+
+      const allowedModeSet = new Set(combos.map(combo => combo.shipping_mode));
+      const allowedTypeSet = new Set(combos.map(combo => combo.logistic_type).filter(Boolean));
+
+      return {
+        shippingModes: shippingModesCatalog.filter(sm => allowedModeSet.has(sm.value)),
+        logisticTypes: logisticTypesCatalog.filter(lt => allowedTypeSet.has(lt.value)),
+        combos
+      };
+    };
+
     const suggestions = [];
     let cacheHits = 0;
     let apiCalls = 0;
@@ -1625,14 +1747,75 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
         let effectiveShippingMode = pickDefaultShippingMode(shipping_mode);
         let logisticTypesForCategory = logisticTypesCatalog.filter(lt => isLogisticCompatibleWithMode(lt, effectiveShippingMode));
         let effectiveLogisticType = pickDefaultLogisticType(logistic_type, effectiveShippingMode);
+        let userShippingPreferences = null;
+        let categoryShippingPreferences = null;
+
+        if (mlUserId) {
+          try {
+            [userShippingPreferences, categoryShippingPreferences] = await Promise.all([
+              MercadoLibreCapabilitiesService.getUserShippingPreferences(credential, mlUserId),
+              MercadoLibreCapabilitiesService.getCategoryShippingPreferences(credential, cat.category_id)
+            ]);
+          } catch (shippingPreferencesError) {
+            logger.warn(`[ML SHIPPING PREFS] No se pudieron cargar preferencias oficiales para categoría ${cat.category_id}: ${shippingPreferencesError.message}`);
+          }
+        }
+
+        const preferenceCandidates = buildShippingPreferenceCandidates(
+          userShippingPreferences,
+          categoryShippingPreferences
+        );
+
+        if (preferenceCandidates) {
+          if (preferenceCandidates.shippingModes.length > 0) {
+            filteredShippingModes = preferenceCandidates.shippingModes;
+            effectiveShippingMode = filteredShippingModes.some(sm => sm.value === shipping_mode)
+              ? shipping_mode
+              : (filteredShippingModes.some(sm => sm.value === 'me2') ? 'me2' : filteredShippingModes[0]?.value || effectiveShippingMode);
+          } else {
+            categoryWarnings.push('shipping_modes_empty_by_preferences');
+          }
+
+          if (preferenceCandidates.logisticTypes.length > 0) {
+            const preferredLogisticsForMode = preferenceCandidates.combos
+              .filter(combo => combo.shipping_mode === effectiveShippingMode && combo.logistic_type)
+              .map(combo => combo.logistic_type);
+            const preferredLogisticSet = new Set(preferredLogisticsForMode);
+
+            logisticTypesForCategory = logisticTypesCatalog.filter(lt => preferredLogisticSet.has(lt.value));
+            if (logisticTypesForCategory.length > 0) {
+              effectiveLogisticType = logisticTypesForCategory.some(lt => lt.value === logistic_type)
+                ? logistic_type
+                : (logisticTypesForCategory.some(lt => lt.value === 'drop_off')
+                  ? 'drop_off'
+                  : (logisticTypesForCategory.some(lt => lt.value === 'default')
+                    ? 'default'
+                    : logisticTypesForCategory[0]?.value || effectiveLogisticType));
+            }
+          }
+
+          logger.info(`[ML SHIPPING PREFS] category=${cat.category_id} product=${product.id}`, {
+            credential_id,
+            user_modes: Array.isArray(userShippingPreferences?.modes) ? userShippingPreferences.modes : [],
+            category_logistics: Array.isArray(categoryShippingPreferences?.logistics) ? categoryShippingPreferences.logistics : [],
+            category_restricted: categoryShippingPreferences?.restricted ?? null,
+            category_me2_restrictions: categoryShippingPreferences?.me2_restrictions ?? null,
+            filtered_modes_from_preferences: filteredShippingModes.map(sm => sm.value),
+            filtered_logistics_from_preferences: logisticTypesForCategory.map(lt => lt.value)
+          });
+        }
 
         if (mlUserId && productPrice !== null && dimensionsFormatted) {
           const validCombos = [];
-          const shippingModesCandidates = shippingModesCatalog.filter(sm => !['not_specified'].includes(sm.value));
+          const shippingModesCandidatesBase = filteredShippingModes.length > 0 ? filteredShippingModes : shippingModesCatalog;
+          const shippingModesCandidates = shippingModesCandidatesBase.filter(sm => !['not_specified'].includes(sm.value));
 
           for (const modeEntry of shippingModesCandidates) {
             const modeValue = modeEntry.value;
-            const logisticCandidates = logisticTypesCatalog.filter(
+            const logisticCandidatesBase = logisticTypesForCategory.length > 0
+              ? logisticTypesForCategory
+              : logisticTypesCatalog;
+            const logisticCandidates = logisticCandidatesBase.filter(
               lt => isLogisticCompatibleWithMode(lt, modeValue) && !['not_specified'].includes(lt.value)
             );
 
@@ -1671,6 +1854,17 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
                 comboValid = true;
               } catch (comboErr) {
                 comboValid = false;
+                logger.info(
+                  `[ML SHIPPING COMBO INVALID] product=${product.id} category=${cat.category_id} listing=${effectiveListingType} mode=${modeValue} logistic=${logisticValue}`,
+                  {
+                    credential_id,
+                    product_name: nameFixed,
+                    status: comboErr?.response?.status || null,
+                    error: comboErr?.message || null,
+                    ml_error: comboErr?.response?.data || null,
+                    params: comboParams
+                  }
+                );
               }
 
               saveToCache(`credential_${credential_id}`, 'shipping_combo_validation', comboCacheKey, { valid: comboValid }, 900);
