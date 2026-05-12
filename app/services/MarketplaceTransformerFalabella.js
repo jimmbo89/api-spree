@@ -3,12 +3,84 @@ const { MarketplaceRepository } = require('../repositories');
 const logger = require('../../config/logger');
 
 class MarketplaceTransformerFalabella {
+  static coerceNumber(value) {
+    if (value === null || value === undefined) return null;
+    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+    if (typeof value === 'string') {
+      const parsed = Number(value.trim().replace(',', '.'));
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    if (typeof value === 'object' && value !== null && 'value' in value) {
+      return this.coerceNumber(value.value);
+    }
+    return null;
+  }
+
+  static toCentimeters(measurement) {
+    if (!measurement) return null;
+    const value = this.coerceNumber(measurement);
+    if (value === null) return null;
+    const unit = String(measurement?.unit || 'cm').toLowerCase();
+
+    switch (unit) {
+      case 'm': return value * 100;
+      case 'mm': return value / 10;
+      case 'in': return value * 2.54;
+      case 'ft': return value * 30.48;
+      case 'cm':
+      default: return value;
+    }
+  }
+
+  static toKilograms(measurement) {
+    if (!measurement) return null;
+    const value = this.coerceNumber(measurement);
+    if (value === null) return null;
+    const unit = String(measurement?.unit || 'g').toLowerCase();
+
+    switch (unit) {
+      case 'kg': return value;
+      case 'g': return value / 1000;
+      case 'lb': return value * 0.453592;
+      case 'oz': return value * 0.0283495;
+      default: return value;
+    }
+  }
+
+  static resolvePackageMeasurements(product) {
+    const productMeasurements = product?.product_measurements || {};
+    const dimensions = productMeasurements?.dimensions || {};
+
+    const height = this.toCentimeters(dimensions.height) ??
+      this.coerceNumber(product.package_height) ??
+      this.coerceNumber(product.height_cm) ??
+      this.coerceNumber(product.height) ??
+      10;
+    const width = this.toCentimeters(dimensions.width) ??
+      this.coerceNumber(product.package_width) ??
+      this.coerceNumber(product.width_cm) ??
+      this.coerceNumber(product.width) ??
+      10;
+    const length = this.toCentimeters(dimensions.length ?? dimensions.depth) ??
+      this.coerceNumber(product.package_length) ??
+      this.coerceNumber(product.length_cm) ??
+      this.coerceNumber(product.length) ??
+      10;
+    const weight = this.toKilograms(productMeasurements?.weight) ??
+      this.coerceNumber(product.package_weight) ??
+      (product.weight_grams != null ? this.coerceNumber(product.weight_grams) / 1000 : null) ??
+      0.5;
+
+    return { height, width, length, weight };
+  }
+
   static async transformProducts(products, marketplaceId) {
     const mappings = await MarketplaceRepository.findMappingsByMarketplace(marketplaceId);
     const exportMappings = mappings.filter(m => m.direction !== 'import');
 
     return products.map(product => {
       const transformed = {};
+      const packageMeasurements = this.resolvePackageMeasurements(product);
 
       // 🔑 PRESERVAR CAMPOS OBLIGATORIOS DE FALABELLA (SIEMPRE)
       transformed.sku = product.sku || product.SellerSku || `PROD-${product.productId || product.id}`;
@@ -20,10 +92,10 @@ class MarketplaceTransformerFalabella {
       transformed.description = product.description || product.Description || 'Producto sin descripción';
       
       // 🔑 Package dimensions (obligatorios para Falabella)
-      transformed.package_height = product.package_height || product.height_cm || product.height || 10;
-      transformed.package_width = product.package_width || product.width_cm || product.width || 10;
-      transformed.package_length = product.package_length || product.length_cm || product.length || 10;
-      transformed.package_weight = product.package_weight || (product.weight_grams ? product.weight_grams / 1000 : 0.5);
+      transformed.package_height = packageMeasurements.height;
+      transformed.package_width = packageMeasurements.width;
+      transformed.package_length = packageMeasurements.length;
+      transformed.package_weight = packageMeasurements.weight;
 
       // 🔑🔑 PRESERVAR ATRIBUTOS PROCESADOS (CORRECCIÓN CLAVE)
       // Los atributos YA vienen procesados desde prepareProduct, solo copiarlos manteniendo estructura

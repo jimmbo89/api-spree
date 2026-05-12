@@ -14,6 +14,7 @@ const CONFIG = {
 
 let processorInterval = null;
 let isRunning = false;
+const activeJobIds = new Set();
 
 const JobBackgroundProcessor = {
 
@@ -85,6 +86,10 @@ const JobBackgroundProcessor = {
     //logger.debug(`[JobProcessor] ${jobs.length} jobs encontrados para procesar`);
 
     for (const job of jobs) {
+      if (activeJobIds.has(job.id)) {
+        logger.debug(`[JobProcessor] Job ${job.id} ya está en ejecución, saltando ciclo duplicado`);
+        continue;
+      }
       // Verificar timeout para jobs colgados
       if (job.started_at) {
         const elapsedMin = (Date.now() - new Date(job.started_at)) / 60000;
@@ -95,9 +100,13 @@ const JobBackgroundProcessor = {
         }
       }
 
+      activeJobIds.add(job.id);
+
       // Procesar sin await para no bloquear el ciclo
       this._processJob(job).catch(err => {
         logger.error(`[JobProcessor] Error en job ${job.id}:`, err.message);
+      }).finally(() => {
+        activeJobIds.delete(job.id);
       });
     }
   },

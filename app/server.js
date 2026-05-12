@@ -65,8 +65,8 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
   try {
     logger.info(`🚀 Servidor escuchando en http://0.0.0.0:${PORT}/api`);
 
-    const uploadDiagnostics = await getUploadPathDiagnostics(['products', 'certificates', 'tmp']);
-    logger.info(`[upload] Diagnostico inicial: ${JSON.stringify(uploadDiagnostics)}`);
+    //const uploadDiagnostics = await getUploadPathDiagnostics(['products', 'certificates', 'tmp']);
+    //logger.info(`[upload] Diagnostico inicial: ${JSON.stringify(uploadDiagnostics)}`);
 
     // ✅ Conectar a la base de datos
     await sequelize.authenticate();
