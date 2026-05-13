@@ -88,7 +88,7 @@ class MarketplaceTransformerFalabella {
       transformed.brand = product.brand || 'Genérica';
       transformed.price = product.price || product.Price || 0;
       transformed.stock = product.stock || product.Stock || product.available_quantity || 0;
-      transformed.PrimaryCategory = product.PrimaryCategory || product.category_id || product.category?.category_id;
+      transformed.PrimaryCategory = product.PrimaryCategory || product.category_id || product.category?.category_id || product.category?.id;
       transformed.description = product.description || product.Description || 'Producto sin descripción';
       
       // 🔑 Package dimensions (obligatorios para Falabella)

@@ -2,6 +2,7 @@
 const BaseAdapter = require('./BaseAdapter');
 const axios = require('axios');
 const crypto = require('crypto');
+const { parseStringPromise } = require('xml2js');
 const logger = require('../../../config/logger');
 const { MarketplaceCredentialRepository } = require('../../repositories');
 const MarketplaceTransformerFalabella = require('../MarketplaceTransformerFalabella');
@@ -69,6 +70,74 @@ class FalabellaAdapter extends BaseAdapter {
       .replace(/'/g, '&apos;');
   }
 
+  coerceNumber(value) {
+    if (value === null || value === undefined) return null;
+    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+    if (typeof value === 'string') {
+      const parsed = Number(value.trim().replace(',', '.'));
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    if (typeof value === 'object' && value !== null && 'value' in value) {
+      return this.coerceNumber(value.value);
+    }
+    return null;
+  }
+
+  toCentimeters(measurement) {
+    if (!measurement) return null;
+    const value = this.coerceNumber(measurement);
+    if (value === null) return null;
+    const unit = String(measurement?.unit || 'cm').toLowerCase();
+
+    switch (unit) {
+      case 'm': return value * 100;
+      case 'mm': return value / 10;
+      case 'in': return value * 2.54;
+      case 'ft': return value * 30.48;
+      case 'cm':
+      default: return value;
+    }
+  }
+
+  toKilograms(measurement) {
+    if (!measurement) return null;
+    const value = this.coerceNumber(measurement);
+    if (value === null) return null;
+    const unit = String(measurement?.unit || 'g').toLowerCase();
+
+    switch (unit) {
+      case 'kg': return value;
+      case 'g': return value / 1000;
+      case 'lb': return value * 0.453592;
+      case 'oz': return value * 0.0283495;
+      default: return value;
+    }
+  }
+
+  resolvePackageMeasurements(productData) {
+    const productMeasurements = productData?.product_measurements || {};
+    const dimensions = productMeasurements?.dimensions || {};
+
+    const heightFromMeasurements = this.toCentimeters(dimensions.height);
+    const widthFromMeasurements = this.toCentimeters(dimensions.width);
+    const lengthFromMeasurements = this.toCentimeters(dimensions.length ?? dimensions.depth);
+    const weightFromMeasurements = this.toKilograms(productMeasurements?.weight);
+
+    const legacyHeight = this.coerceNumber(productData?.height_cm);
+    const legacyWidth = this.coerceNumber(productData?.width_cm);
+    const legacyLength = this.coerceNumber(productData?.length_cm);
+    const legacyWeightKg = productData?.weight_grams != null
+      ? this.coerceNumber(productData.weight_grams) / 1000
+      : null;
+
+    return {
+      package_height: heightFromMeasurements ?? legacyHeight ?? 10,
+      package_width: widthFromMeasurements ?? legacyWidth ?? 10,
+      package_length: lengthFromMeasurements ?? legacyLength ?? 10,
+      package_weight: weightFromMeasurements ?? legacyWeightKg ?? 0.5
+    };
+  }
+
   buildSignedQuery(params) {
     const sortedKeys = Object.keys(params).sort();
     const canonicalQuery = sortedKeys
@@ -87,6 +156,122 @@ class FalabellaAdapter extends BaseAdapter {
     };
   }
 
+  toArray(value) {
+    if (value === null || value === undefined) return [];
+    return Array.isArray(value) ? value : [value];
+  }
+
+  getFirstDefined(...values) {
+    for (const value of values) {
+      if (value !== null && value !== undefined) {
+        if (Array.isArray(value)) {
+          if (value.length > 0) return value[0];
+          continue;
+        }
+        return value;
+      }
+    }
+    return null;
+  }
+
+  resolveMarketplaceProductId(product) {
+    const candidates = [
+      product?.ProductId,
+      product?.productIdentifier,
+      product?.gtin,
+      product?.ean,
+      product?.upc,
+      product?.isbn
+    ];
+
+    for (const candidate of candidates) {
+      if (candidate === null || candidate === undefined) continue;
+      const normalized = String(candidate).trim();
+      if (!normalized) continue;
+      if (normalized === String(product?.productId || '').trim()) continue;
+      if (/^[0-9A-Za-z\-]{8,32}$/.test(normalized)) {
+        return normalized;
+      }
+    }
+
+    return null;
+  }
+
+  extractFeedNode(body) {
+    if (!body || typeof body !== 'object') return null;
+
+    return this.getFirstDefined(
+      body.FeedDetail,
+      body.Feed,
+      body.Feeds?.FeedDetail,
+      body.Feeds?.Feed,
+      body.FeedDetails?.FeedDetail,
+      body.FeedDetails?.Feed
+    );
+  }
+
+  unwrapFeedSection(section) {
+    if (!section || typeof section !== 'object' || Array.isArray(section)) {
+      return section;
+    }
+
+    if (section.Error !== undefined) return section.Error;
+    if (section.Errors !== undefined) return section.Errors;
+    if (section.Warning !== undefined) return section.Warning;
+    if (section.Warnings !== undefined) return section.Warnings;
+    if (section.FeedError !== undefined) return section.FeedError;
+    if (section.FeedErrors !== undefined) return section.FeedErrors;
+    if (section.FeedWarning !== undefined) return section.FeedWarning;
+    if (section.FeedWarnings !== undefined) return section.FeedWarnings;
+    if (section.Item !== undefined) return section.Item;
+
+    return section;
+  }
+
+  async parseFeedStatusResponse(responseData) {
+    let parsed = responseData;
+
+    if (typeof parsed === 'string') {
+      const raw = parsed.trim();
+      if (raw.startsWith('<')) {
+        parsed = await parseStringPromise(raw, {
+          explicitArray: false,
+          trim: true
+        });
+      } else {
+        try {
+          parsed = JSON.parse(raw);
+        } catch (error) {
+          logger.warn(`[FalabellaAdapter] FeedStatus string no es XML ni JSON válido: ${raw.substring(0, 300)}`);
+          return null;
+        }
+      }
+    }
+
+    const success = parsed?.SuccessResponse || parsed?.successResponse || parsed;
+    const body = success?.Body || success?.body || parsed?.Body || parsed?.body;
+    const feedDetail = this.extractFeedNode(body);
+
+    if (feedDetail) {
+      return {
+        FeedID: this.getFirstDefined(feedDetail.Feed, feedDetail.FeedID, feedDetail.FeedId),
+        Status: this.getFirstDefined(feedDetail.Status, feedDetail.FeedStatus),
+        Action: this.getFirstDefined(feedDetail.Action, feedDetail.RequestAction),
+        CreationDate: this.getFirstDefined(feedDetail.CreationDate, feedDetail.CreatedAt),
+        UpdatedDate: this.getFirstDefined(feedDetail.UpdatedDate, feedDetail.UpdatedAt),
+        Source: this.getFirstDefined(feedDetail.Source, feedDetail.Channel),
+        TotalRecords: this.getFirstDefined(feedDetail.TotalRecords, feedDetail.TotalRecord, feedDetail.RecordsTotal),
+        ProcessedRecords: this.getFirstDefined(feedDetail.ProcessedRecords, feedDetail.ProcessedRecord, feedDetail.RecordsProcessed),
+        FailedRecords: this.getFirstDefined(feedDetail.FailedRecords, feedDetail.FailedRecord, feedDetail.RecordsFailed),
+        FeedErrors: this.unwrapFeedSection(feedDetail.FeedErrors || feedDetail.Errors || feedDetail.Error),
+        FeedWarnings: this.unwrapFeedSection(feedDetail.FeedWarnings || feedDetail.Warnings || feedDetail.Warning)
+      };
+    }
+
+    logger.warn(`[FalabellaAdapter] FeedStatus respuesta no reconocida: ${JSON.stringify(parsed).substring(0, 1000)}`);
+    return null;
+  }
+
   async fetchFeedStatus(feedId) {
     const params = {
       Action: 'FeedStatus',
@@ -100,14 +285,33 @@ class FalabellaAdapter extends BaseAdapter {
     const { canonicalQuery, signatureEncoded } = this.buildSignedQuery(params);
     const apiUrl = `https://sellercenter-api.falabella.com?${canonicalQuery}&Signature=${signatureEncoded}`;
     const response = await axios.get(apiUrl, { timeout: 15000 });
+    const rawResponse = typeof response.data === 'string'
+      ? response.data
+      : JSON.stringify(response.data);
 
-    return response.data?.SuccessResponse?.Body?.Feed || null;
+    logger.info(`[FalabellaAdapter] FeedStatus raw response (${feedId}):`);
+    logger.info(rawResponse);
+
+    const parsedFeed = await this.parseFeedStatusResponse(response.data);
+
+    logger.info(`[FalabellaAdapter] FeedStatus parsed response (${feedId}):`);
+    logger.info(JSON.stringify(parsedFeed));
+
+    return parsedFeed;
   }
 
   normalizeFeedMessages(items) {
     if (!items) return [];
 
-    const list = Array.isArray(items) ? items : [items];
+    let list = this.toArray(items);
+
+    if (list.length === 1 && list[0] && typeof list[0] === 'object' && !Array.isArray(list[0])) {
+      const nested = this.unwrapFeedSection(list[0]);
+      if (nested !== list[0]) {
+        list = this.toArray(nested);
+      }
+    }
+
     return list
       .filter(Boolean)
       .map(item => {
@@ -116,10 +320,10 @@ class FalabellaAdapter extends BaseAdapter {
         }
 
         return {
-          field: item.Field || item.Attribute || null,
-          sku: item.SellerSku || item.SKU || null,
-          message: item.Message || item.Error || item.Warning || item.Description || 'Sin detalle',
-          value: item.Value || null
+          field: item.Field || item.Attribute || item.Name || null,
+          sku: item.SellerSku || item.SKU || item.SellerSKU || null,
+          message: item.Message || item.Error || item.Warning || item.Description || item.Detail || 'Sin detalle',
+          value: item.Value || item.Code || null
         };
       });
   }
@@ -149,8 +353,8 @@ class FalabellaAdapter extends BaseAdapter {
 
   buildFeedDrivenResult({ transformedProduct, requestId, feed, timedOut }) {
     const feedStatus = feed?.Status || 'unknown';
-    const warnings = this.normalizeFeedMessages(feed?.FeedWarnings?.Warning);
-    const errors = this.normalizeFeedMessages(feed?.FeedErrors?.Error);
+    const warnings = this.normalizeFeedMessages(feed?.FeedWarnings);
+    const errors = this.normalizeFeedMessages(feed?.FeedErrors);
     const processedRecords = parseInt(feed?.ProcessedRecords || '0', 10);
     const failedRecords = parseInt(feed?.FailedRecords || '0', 10);
     const totalRecords = parseInt(feed?.TotalRecords || '0', 10);
@@ -186,10 +390,16 @@ class FalabellaAdapter extends BaseAdapter {
     }
 
     if (String(feedStatus).toLowerCase() === 'finished') {
+      logger.info(`[FalabellaAdapter] Feed ${requestId} finalizado. Totales=${totalRecords} procesados=${processedRecords} fallidos=${failedRecords} warnings=${warnings.length} errors=${errors.length}`);
+
       if (failedRecords > 0 || errors.length > 0) {
+        const errorMessage = errors.length > 0
+          ? errors.map(item => item?.message).filter(Boolean).join(' | ')
+          : 'Falabella rechazó o procesó con errores la creación del producto';
+
         return {
           success: false,
-          error: 'Falabella rechazó o procesó con errores la creación del producto',
+          error: errorMessage,
           details: {
             error_code: 'feed_failed',
             feed: feedData
@@ -229,49 +439,58 @@ class FalabellaAdapter extends BaseAdapter {
       data: feedData
     };
   }
-// ✅ CORREGIDO: Usar this.credentialId consistentemente para extraer categoría
-getFalabellaCategory(productData) {
-  // ✅ PRIMERO: Intentar con credentialId (ej: 2) - estructura principal
-  const falabellaData = productData.falabella?.[this.credentialId];
-  
-  if (falabellaData?.category?.category_id) {
-    return {
-      id: falabellaData.category.category_id,
-      name: falabellaData.category.category_name || ''
-    };
+getFalabellaConfig(productData) {
+  const falabellaConfigs = productData?.falabella;
+  if (!falabellaConfigs || typeof falabellaConfigs !== 'object') {
+    return null;
   }
-  
-  // ✅ SEGUNDO: Fallback a estructura alternativa dentro de credentialId
-  if (falabellaData?.category_id) {
-    return {
-      id: falabellaData.category_id,
-      name: falabellaData.category_name || ''
-    };
-  }
-  
-  // ✅ TERCERO: Buscar por marketplace_id como último recurso (compatibilidad legacy)
-  const fallbackData = productData.falabella?.[this.marketplaceId];
-  if (fallbackData?.category?.id) {
-    return {
-      id: fallbackData.category.id,
-      name: fallbackData.category.name || ''
-    };
-  }
-  
-  // ✅ CUARTO: Buscar en cualquier clave de falabella si todo lo anterior falla
-  if (productData.falabella) {
-    for (const key of Object.keys(productData.falabella)) {
-      const data = productData.falabella[key];
-      if (data?.category?.id || data?.category?.category_id) {
-        return {
-          id: data.category.category_id || data.category.id,
-          name: data.category.category_name || data.category.name || ''
-        };
-      }
+
+  const candidateKeys = [
+    this.credentialId,
+    String(this.credentialId),
+    Number.isFinite(Number(this.credentialId)) ? Number(this.credentialId) : null,
+    this.marketplaceId,
+    String(this.marketplaceId),
+    Number.isFinite(Number(this.marketplaceId)) ? Number(this.marketplaceId) : null
+  ].filter(value => value !== null && value !== undefined && value !== '');
+
+  for (const key of candidateKeys) {
+    if (Object.prototype.hasOwnProperty.call(falabellaConfigs, key)) {
+      return falabellaConfigs[key];
     }
   }
-  
-  return null;
+
+  const configs = Object.values(falabellaConfigs).filter(item => item && typeof item === 'object');
+  return configs[0] || null;
+}
+
+// ✅ Usar categoría marketplace-específica, no categoría general de Spree
+getFalabellaCategory(productData) {
+  const falabellaData = this.getFalabellaConfig(productData);
+  if (!falabellaData) {
+    return null;
+  }
+
+  const categoryId =
+    falabellaData?.category?.category_id ||
+    falabellaData?.category?.id ||
+    falabellaData?.category_id ||
+    null;
+
+  if (!categoryId) {
+    return null;
+  }
+
+  const categoryName =
+    falabellaData?.category?.category_name ||
+    falabellaData?.category?.name ||
+    falabellaData?.category_name ||
+    '';
+
+  return {
+    id: categoryId,
+    name: categoryName
+  };
 }
 
 // 🔑 NUEVO MÉTODO: Transformar imágenes a formato compatible con Falabella
@@ -349,7 +568,7 @@ async prepareProduct(productData) {
   let attributes = [];
   
   // ✅ PRIMERO: Intentar obtener desde falabella[credentialId].attributes (configuración manual del usuario)
-  const falabellaConfig = productData.falabella?.[this.credentialId];
+  const falabellaConfig = this.getFalabellaConfig(productData);
   if (falabellaConfig?.attributes && Array.isArray(falabellaConfig.attributes) && falabellaConfig.attributes.length > 0) {
     attributes = falabellaConfig.attributes.map(attr => ({
       id: attr.id,
@@ -372,6 +591,8 @@ async prepareProduct(productData) {
     }));
   }
 
+  const packageMeasurements = this.resolvePackageMeasurements(productData);
+
   const prepared = {
     // Campos obligatorios Falabella
     sku: productData.sku || `PROD-${productData.id}`,
@@ -385,10 +606,10 @@ async prepareProduct(productData) {
     description: (productData.description || 'Producto sin descripción').trim(),
     
     // Package dimensions (requeridos)
-    package_height: productData.height_cm || 10,
-    package_width: productData.width_cm || 10,
-    package_length: productData.length_cm || 10,
-    package_weight: productData.weight_grams ? (productData.weight_grams / 1000) : 0.5,
+    package_height: packageMeasurements.package_height,
+    package_width: packageMeasurements.package_width,
+    package_length: packageMeasurements.package_length,
+    package_weight: packageMeasurements.package_weight,
     
     // 🔑 ATRIBUTOS PROCESADOS (NUNCA vacío si hay obligatorios de tipo list auto-asignados)
     attributes: attributes,
@@ -450,6 +671,7 @@ buildProductXml(product) {
   const categoryId = Number(product.PrimaryCategory);
   const price = Number(product.price).toFixed(2);
   const stock = Math.max(0, Math.round(Number(product.stock)));
+  const marketplaceProductId = this.resolveMarketplaceProductId(product);
 
   // Dimensiones del paquete
   const height = Math.max(1, Number(product.package_height || 10));
@@ -480,7 +702,7 @@ buildProductXml(product) {
   if (Array.isArray(product.attributes)) {
     for (const attr of product.attributes) {
       // Saltar campos base y Variation (va fuera de ProductData)
-      if (['SellerSku', 'Name', 'Brand', 'Description', 'PrimaryCategory', 'Variation', 'images', 'productId', 'categoryName'].includes(attr.id)) {
+      if (['SellerSku', 'Name', 'Brand', 'Description', 'PrimaryCategory', 'Variation', 'ProductId', 'images', 'productId', 'categoryName'].includes(attr.id)) {
         continue;
       }
 
@@ -537,7 +759,7 @@ buildProductXml(product) {
     <Name>${name}</Name>
     <PrimaryCategory>${categoryId}</PrimaryCategory>
     <Description>${description}</Description>
-    <Brand>${brand}</Brand>${variationXml}
+    <Brand>${brand}</Brand>${variationXml}${marketplaceProductId ? `\n    <ProductId>${escape(marketplaceProductId)}</ProductId>` : ''}
     <BusinessUnits>
       <BusinessUnit>
         <OperatorCode>facl</OperatorCode>
@@ -659,8 +881,9 @@ buildProductXml(product) {
   const categoryId = Number(product.PrimaryCategory);
   const price = Number(product.price).toFixed(2);
   const stock = Math.max(0, Math.round(Number(product.stock)));
+  const marketplaceProductId = this.resolveMarketplaceProductId(product);
 
-  // Dimensiones del paquete
+  // Dimensiones del producto
   const height = Math.max(1, Number(product.package_height || 10));
   const width = Math.max(1, Number(product.package_width || 10));
   const length = Math.max(1, Number(product.package_length || 10));
@@ -689,7 +912,7 @@ buildProductXml(product) {
   if (Array.isArray(product.attributes)) {
     for (const attr of product.attributes) {
       // Saltar campos base y Variation (va fuera de ProductData)
-      if (['SellerSku', 'Name', 'Brand', 'Description', 'PrimaryCategory', 'Variation'].includes(attr.id)) {
+      if (['SellerSku', 'Name', 'Brand', 'Description', 'PrimaryCategory', 'Variation', 'ProductId', 'images', 'productId', 'categoryName'].includes(attr.id)) {
         continue;
       }
 
@@ -739,7 +962,7 @@ buildProductXml(product) {
     <Name>${name}</Name>
     <PrimaryCategory>${categoryId}</PrimaryCategory>
     <Description>${description}</Description>
-    <Brand>${brand}</Brand>${variationXml}
+    <Brand>${brand}</Brand>${variationXml}${marketplaceProductId ? `\n    <ProductId>${escape(marketplaceProductId)}</ProductId>` : ''}
     <BusinessUnits>
       <BusinessUnit>
         <OperatorCode>facl</OperatorCode>
