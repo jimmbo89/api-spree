@@ -403,7 +403,24 @@ const ProductRepository = {
 
   async update(product, body, files = []) {
     try {
-      let finalImages = Array.isArray(product.images) ? [...product.images] : [];
+      let currentImages = [];
+      if (Array.isArray(product.images)) {
+        currentImages = [...product.images];
+      } else if (typeof product.images === 'string') {
+        try {
+          const parsedImages = JSON.parse(product.images);
+          currentImages = Array.isArray(parsedImages) ? parsedImages : [];
+        } catch (error) {
+          logger.warn(`[ProductRepository] No se pudo parsear images de producto ${product.id}: ${error.message}`);
+        }
+      }
+
+      let finalImages = [...currentImages];
+      const hasImageChanges =
+        Array.isArray(files) && files.length > 0 ||
+        body.images_order !== undefined ||
+        body.images_to_remove !== undefined ||
+        body.images !== undefined;
 
       // 👇 LÓGICA DE ELIMINACIÓN (solo si NO viene images_order)
       // Si viene images_order, el frontend ya excluyó las imágenes a eliminar
@@ -480,7 +497,9 @@ const ProductRepository = {
       for (const key of fieldsToUpdate) {
         if (body[key] !== undefined) updatedData[key] = body[key];
       }
-      updatedData.images = finalImages;
+      if (hasImageChanges) {
+        updatedData.images = finalImages;
+      }
 
       await product.update(updatedData);
       logger.info(`Producto actualizado (ID: ${product.id})`);

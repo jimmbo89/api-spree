@@ -35,6 +35,17 @@ const FB_FETCH_RETRY_MAX = 3;
 const FB_FETCH_RETRY_BASE_DELAY_MS = 1500;
 const FB_FETCH_RETRY_MAX_DELAY_MS = 8000;
 const FB_ORDER_TOPICS = new Set(["onordercreated", "ordercreated", "onorderitemsstatuschanged"]);
+const FB_FEED_TOPICS = new Set(["onfeedcompleted", "onfeedcreated"]);
+const FB_PRODUCT_TOPICS = new Set([
+  "onproductcreated",
+  "onproductqcstatuschanged",
+  "onproductupdated"
+]);
+const FB_KNOWN_TOPICS = new Set([
+  ...FB_ORDER_TOPICS,
+  ...FB_FEED_TOPICS,
+  ...FB_PRODUCT_TOPICS
+]);
 const FB_API_VERSION = process.env.FB_API_VERSION || "2.0";
 const FB_USER_AGENT = process.env.FB_USER_AGENT || "Spree/1.0";
 
@@ -53,6 +64,15 @@ const MarketplaceWebhookController = {
 
   async falabella(req, res) {
     const payload = req.body || {};
+    const topicRaw =
+      payload?.event ||
+      payload?.event_type ||
+      payload?.topic ||
+      payload?.type ||
+      null;
+
+    logger.info(`[FB Webhook] Request recibida ip=${req.ip || req.socket?.remoteAddress || 'unknown'} ua=${req.headers['user-agent'] || 'unknown'} ct=${req.headers['content-type'] || 'unknown'} topic=${topicRaw || 'unknown'}`);
+    logger.info(`[FB Webhook] Payload recibido: ${JSON.stringify(payload).substring(0, 2000)}`);
 
     res.status(200).json({ success: true });
 
@@ -504,8 +524,13 @@ async function processFalabellaWebhook(payload, options = {}) {
     null;
 
   const normalizedTopic = topicRaw ? String(topicRaw).toLowerCase() : null;
-  if (normalizedTopic && !FB_ORDER_TOPICS.has(normalizedTopic)) {
+  if (normalizedTopic && !FB_KNOWN_TOPICS.has(normalizedTopic)) {
     logger.info(`[FB Webhook] Ignorado topic: ${topicRaw}`);
+    return;
+  }
+
+  if (normalizedTopic && !FB_ORDER_TOPICS.has(normalizedTopic)) {
+    logger.info(`[FB Webhook] Evento no-order recibido: ${topicRaw}`);
     return;
   }
 
@@ -2209,11 +2234,6 @@ function validateFalabellaPayload(payload) {
 
   if (!topicRaw) {
     return { ok: false, reason: "topic_missing" };
-  }
-
-  const orderId = extractFalabellaOrderId(payload);
-  if (!orderId) {
-    return { ok: false, reason: "order_id_missing" };
   }
 
   return { ok: true };
