@@ -591,6 +591,17 @@ async prepareProduct(productData) {
     }));
   }
 
+  const categoryAttributesResponse = await this.getCategoryAttributes(category.id);
+  const categoryAttributes = Array.isArray(categoryAttributesResponse?.attributes)
+    ? categoryAttributesResponse.attributes
+    : [];
+  const categoryAttributeMap = new Map(categoryAttributes.map(attr => [attr.id, attr]));
+
+  attributes = attributes.map(attr => {
+    const metadata = categoryAttributeMap.get(attr.id);
+    return metadata ? { ...metadata, ...attr } : attr;
+  });
+
   const packageMeasurements = this.resolvePackageMeasurements(productData);
 
   const prepared = {
@@ -619,7 +630,8 @@ async prepareProduct(productData) {
     
     // Metadatos
     productId: productData.id,
-    categoryName: category.name
+    categoryName: category.name,
+    category_attributes: categoryAttributes
   };
 
   // ✅ Ajuste de precio por configuración económica (si aplica)
@@ -652,126 +664,78 @@ async prepareProduct(productData) {
   return prepared;
 }
 
-buildProductXml(product) {
-  const escape = (str) => {
-    if (typeof str !== 'string') return String(str || '');
-    return str
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&apos;');
-  };
+normalizeFalabellaAttributeValue(attr) {
+  if (!attr) return '';
 
-  // Valores básicos obligatorios
-  const sku = escape((product.sku || '').substring(0, 50));
-  const name = escape((product.productName || 'Producto sin nombre').substring(0, 255));
-  const brand = escape((product.brand || 'Genérica').substring(0, 50));
-  const description = escape((product.description || 'Producto sin descripción').substring(0, 25000));
-  const categoryId = Number(product.PrimaryCategory);
-  const price = Number(product.price).toFixed(2);
-  const stock = Math.max(0, Math.round(Number(product.stock)));
-  const marketplaceProductId = this.resolveMarketplaceProductId(product);
+  const isOptionAttr =
+    ['option', 'multi_option'].includes(attr?.attribute_type) ||
+    ['dropdown', 'multiselect'].includes(
+      String(attr?.input_type || '').toLowerCase()
+    );
 
-  // Dimensiones del paquete
-  const height = Math.max(1, Number(product.package_height || 10));
-  const width = Math.max(1, Number(product.package_width || 10));
-  const length = Math.max(1, Number(product.package_length || 10));
-  const weight = Math.max(0.001, Number(product.package_weight || 0.5));
+  // 🔑 Falabella ProductCreate espera LABEL visible
+  // NO IDs internos
+  let value;
 
-  // ✅ Atributos que van DENTRO de ProductData
-  const productDataAttrs = {};
-
-  // Siempre incluir ConditionType
-  let conditionType = 'Nuevo';
-  const conditionAttr = product.attributes?.find(a => 
-    ['condition_type', 'ConditionType'].includes(a.id)
-  );
-  if (conditionAttr && conditionAttr.value_name === 'Usado') {
-    conditionType = 'Usado';
-  }
-  productDataAttrs['ConditionType'] = conditionType;
-
-  // Incluir dimensiones del paquete
-  productDataAttrs['PackageHeight'] = height;
-  productDataAttrs['PackageWidth'] = width;
-  productDataAttrs['PackageLength'] = length;
-  productDataAttrs['PackageWeight'] = weight.toFixed(3);
-
-  // ✅🔑 AÑADIR ATRIBUTOS DE CATEGORÍA CON MAPEO CORRECTO PARA FALABELLA
-  if (Array.isArray(product.attributes)) {
-    for (const attr of product.attributes) {
-      // Saltar campos base y Variation (va fuera de ProductData)
-      if (['SellerSku', 'Name', 'Brand', 'Description', 'PrimaryCategory', 'Variation', 'ProductId', 'images', 'productId', 'categoryName'].includes(attr.id)) {
-        continue;
-      }
-
-      // 🔑 PRIORIDAD: value_id para atributos con valores predefinidos (listas)
-      // Falabella espera el ID del valor, no el nombre, para atributos de opción
-      let value = attr.value_id || attr.value_name || attr.value || '';
-      
-      // ✅ Manejo especial para atributos numéricos con texto (ej: "3 meses" → "3")
-      const numericAttrs = [
-        'DuracionEnCondicionesPrevisiblesDeUso',
-        'PlazoDeDisponibilidadDeRepuestos', 
-        'PlazoDeDisponibilidadDeServicioTecnico',
-        'WarrantyTime',
-        'WarrantyMonths'
-      ];
-      
-      if (numericAttrs.includes(attr.id) && typeof value === 'string') {
-        const match = value.match(/^\d+/);
-        if (match) value = match[0];
-      }
-
-      // ✅ Solo agregar si tiene valor válido y no vacío
-      if (value !== '' && value !== null && value !== undefined) {
-        productDataAttrs[attr.id] = value;
-      }
-    }
-  }
-
-  // ✅ Construir XML de ProductData
-  let productDataXml = '';
-  for (const [key, value] of Object.entries(productDataAttrs)) {
-    // Validar que la clave sea un nombre XML válido
-    if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key)) {
-      productDataXml += `\n      <${key}>${escape(String(value))}</${key}>`;
-    }
-  }
-
-  // ✅ Manejo de Variation (va en <Product>, no en ProductData)
-  let variationXml = '';
-  const variationAttr = product.attributes?.find(a => a.id === 'Variation');
-  if (variationAttr) {
-    let variationValue = variationAttr.value_name || variationAttr.value || '...';
-    variationXml = `\n    <Variation>${escape(String(variationValue))}</Variation>`;
+  if (isOptionAttr) {
+    value =
+      attr?.value_name ??
+      attr?.value ??
+      '';
   } else {
-    // Si no se envió, pero la categoría lo requiere, forzar "..." como fallback seguro
-    variationXml = `\n    <Variation>...</Variation>`;
+    value =
+      attr?.value ??
+      attr?.value_name ??
+      '';
   }
 
-  // ✅ XML final completo
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<Request>
-  <Product>
-    <SellerSku>${sku}</SellerSku>
-    <Name>${name}</Name>
-    <PrimaryCategory>${categoryId}</PrimaryCategory>
-    <Description>${description}</Description>
-    <Brand>${brand}</Brand>${variationXml}${marketplaceProductId ? `\n    <ProductId>${escape(marketplaceProductId)}</ProductId>` : ''}
-    <BusinessUnits>
-      <BusinessUnit>
-        <OperatorCode>facl</OperatorCode>
-        <Price>${price}</Price>
-        <Stock>${stock}</Stock>
-        <Status>active</Status>
-      </BusinessUnit>
-    </BusinessUnits>
-    <ProductData>${productDataXml}
-    </ProductData>
-  </Product>
-</Request>`;
+  if (
+    value === null ||
+    value === undefined
+  ) {
+    return '';
+  }
+
+  const values =
+    Array.isArray(value)
+      ? value
+      : [value];
+
+  return values
+    .map(v => String(v ?? '').trim())
+    .filter(Boolean)
+    .join(', ');
+}
+
+isVariationAttribute(attr) {
+  return attr?.group_name === 'Variation' && attr?.is_global_attribute === false;
+}
+
+async hydrateAttributesForPublish(product) {
+  if (!product || !product.PrimaryCategory || !Array.isArray(product.attributes) || product.attributes.length === 0) {
+    return product;
+  }
+
+  const categoryAttributesResponse = await this.getCategoryAttributes(product.PrimaryCategory);
+  const categoryAttributes = Array.isArray(categoryAttributesResponse?.attributes)
+    ? categoryAttributesResponse.attributes
+    : [];
+
+  if (categoryAttributes.length === 0) {
+    return product;
+  }
+
+  const categoryAttributeMap = new Map(categoryAttributes.map(attr => [attr.id, attr]));
+  const mergedAttributes = product.attributes.map(attr => {
+    const metadata = categoryAttributeMap.get(attr.id);
+    return metadata ? { ...metadata, ...attr } : attr;
+  });
+
+  return {
+    ...product,
+    attributes: mergedAttributes,
+    category_attributes: product.category_attributes || categoryAttributes
+  };
 }
 // 🔑 NUEVO MÉTODO: Obtener atributos de categoría
 async getCategoryAttributes(categoryId) {
@@ -819,7 +783,12 @@ async getCategoryAttributes(categoryId) {
           id: attr.FeedName || attr.Name,
           name: attr.Label,
           is_mandatory: attr.isMandatory === "1" || attr.isMandatory === true,
-          value_type: attr.AttributeType === 'option' ? 'list' : 'string',
+          value_type: ['option', 'multi_option'].includes(attr.AttributeType) ? 'list' : 'string',
+          attribute_type: attr.AttributeType || 'string',
+          input_type: attr.InputType || '',
+          group_name: attr.GroupName || '',
+          is_global_attribute: attr.IsGlobalAttribute === "1" || attr.IsGlobalAttribute === 1 || attr.IsGlobalAttribute === true,
+          example_value: attr.ExampleValue || '',
           values: attr.Options?.Option 
             ? (Array.isArray(attr.Options.Option) 
                 ? attr.Options.Option.map(opt => ({ id: opt.id, name: opt.Name }))
@@ -861,7 +830,7 @@ async getCategoryAttributes(categoryId) {
       errors
     };
   }
-// ✅ Publicar producto con firma correcta (igual que GetCategorySuggestion que funcionó)
+// ✅ Publicar producto con firma correcta (igual que GetCategorySuggestion que funcionó
 buildProductXml(product) {
   const escape = (str) => {
     if (typeof str !== 'string') return String(str || '');
@@ -873,7 +842,6 @@ buildProductXml(product) {
       .replace(/'/g, '&apos;');
   };
 
-  // Valores básicos obligatorios
   const sku = escape((product.sku || '').substring(0, 50));
   const name = escape((product.productName || 'Producto sin nombre').substring(0, 255));
   const brand = escape((product.brand || 'Genérica').substring(0, 50));
@@ -883,58 +851,50 @@ buildProductXml(product) {
   const stock = Math.max(0, Math.round(Number(product.stock)));
   const marketplaceProductId = this.resolveMarketplaceProductId(product);
 
-  // Dimensiones del producto
   const height = Math.max(1, Number(product.package_height || 10));
   const width = Math.max(1, Number(product.package_width || 10));
   const length = Math.max(1, Number(product.package_length || 10));
   const weight = Math.max(0.001, Number(product.package_weight || 0.5));
 
-  // ✅ Atributos que van DENTRO de ProductData
-  const productDataAttrs = {};
+  const productDataAttrs = {
+    ConditionType: this.normalizeFalabellaAttributeValue(
+      product.attributes?.find(a => ['condition_type', 'ConditionType'].includes(a.id))
+    ) || 'Nuevo',
+    PackageHeight: height,
+    PackageWidth: width,
+    PackageLength: length,
+    PackageWeight: weight.toFixed(3)
+  };
 
-  // Siempre incluir ConditionType
-  let conditionType = 'Nuevo';
-  const conditionAttr = product.attributes?.find(a => 
-    ['condition_type', 'ConditionType'].includes(a.id)
-  );
-  if (conditionAttr && conditionAttr.value_name === 'Usado') {
-    conditionType = 'Usado';
-  }
-  productDataAttrs['ConditionType'] = conditionType;
-
-  // Incluir dimensiones
-  productDataAttrs['PackageHeight'] = height;
-  productDataAttrs['PackageWidth'] = width;
-  productDataAttrs['PackageLength'] = length;
-  productDataAttrs['PackageWeight'] = weight.toFixed(3);
-
-  // ✅ Añadir atributos específicos de categoría a ProductData
   if (Array.isArray(product.attributes)) {
     for (const attr of product.attributes) {
-      // Saltar campos base y Variation (va fuera de ProductData)
       if (['SellerSku', 'Name', 'Brand', 'Description', 'PrimaryCategory', 'Variation', 'ProductId', 'images', 'productId', 'categoryName'].includes(attr.id)) {
         continue;
       }
 
-      // Para atributos de categoría, usar value_id si existe, sino value_name
-      let value = attr.value_id || attr.value_name || attr.value || '';
-      
-      // Convertir valores numéricos si es necesario (ej: "3 meses" → "3")
-      if (attr.id === 'DuracionEnCondicionesPrevisiblesDeUso' ||
-          attr.id === 'PlazoDeDisponibilidadDeRepuestos' ||
-          attr.id === 'PlazoDeDisponibilidadDeServicioTecnico') {
-        // Extraer solo el número
+      if (this.isVariationAttribute(attr)) {
+        continue;
+      }
+
+      let value = this.normalizeFalabellaAttributeValue(attr);
+
+      if ([
+        'DuracionEnCondicionesPrevisiblesDeUso',
+        'PlazoDeDisponibilidadDeRepuestos',
+        'PlazoDeDisponibilidadDeServicioTecnico',
+        'WarrantyTime',
+        'WarrantyMonths'
+      ].includes(attr.id) && typeof value === 'string') {
         const match = value.match(/^\d+/);
         if (match) value = match[0];
       }
 
-      if (value !== '') {
+      if (value !== '' && value !== null && value !== undefined) {
         productDataAttrs[attr.id] = value;
       }
     }
   }
 
-  // ✅ Construir XML de ProductData
   let productDataXml = '';
   for (const [key, value] of Object.entries(productDataAttrs)) {
     if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key)) {
@@ -942,19 +902,27 @@ buildProductXml(product) {
     }
   }
 
-  // ✅ Manejo de Variation (va en <Product>, no en ProductData)
   let variationXml = '';
-  const variationAttr = product.attributes?.find(a => a.id === 'Variation');
-  if (variationAttr) {
-    let variationValue = variationAttr.value_name || variationAttr.value || '...';
-    variationXml = `\n    <Variation>${escape(String(variationValue))}</Variation>`;
+  const variationProductAttrs = Array.isArray(product.attributes)
+    ? product.attributes
+        .filter(attr => this.isVariationAttribute(attr))
+        .map(attr => ({ key: attr.id, value: this.normalizeFalabellaAttributeValue(attr) }))
+        .filter(attr => attr.value)
+    : [];
+
+  if (variationProductAttrs.length > 0) {
+    variationXml = variationProductAttrs
+      .filter(attr => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(attr.key))
+      .map(attr => `\n    <${attr.key}>${escape(String(attr.value))}</${attr.key}>`)
+      .join('');
   } else {
-    // Si no se envió, pero la categoría lo requiere (como en tu caso), forzar "..."
-    // Esto cubre el caso donde el atributo es obligatorio pero no fue enviado explícitamente
-    variationXml = `\n    <Variation>...</Variation>`;
+    const variationAttr = product.attributes?.find(a => a.id === 'Variation');
+    const variationValue = variationAttr
+      ? (this.normalizeFalabellaAttributeValue(variationAttr) || '...')
+      : '...';
+    variationXml = `\n    <Variation>${escape(String(variationValue))}</Variation>`;
   }
 
-  // ✅ XML final
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Request>
   <Product>
@@ -976,12 +944,15 @@ buildProductXml(product) {
   </Product>
 </Request>`;
 }
+
   async publish(transformedProduct) {
     try {
       const credentialStatus = await this.ensureValidCredentials();
       if (!credentialStatus.valid) {
         return credentialStatus;
       }
+
+      transformedProduct = await this.hydrateAttributesForPublish(transformedProduct);
 
       // Validar producto
       // Validar producto
@@ -1068,19 +1039,72 @@ buildProductXml(product) {
           timedOut
         });
       } else if (responseBody.includes('<ErrorResponse>')) {
-        const errorMsgMatch = responseBody.match(/<ErrorMessage>([^<]+)<\/ErrorMessage>/);
-        const errorCodeMatch = responseBody.match(/<ErrorCode>([^<]+)<\/ErrorCode>/);
-        const errorMsg = errorMsgMatch ? errorMsgMatch[1] : 'Error desconocido en API de Falabella';
-        const errorCode = errorCodeMatch ? errorCodeMatch[1] : 'UNKNOWN';
-        
-        logger.error(`[FalabellaAdapter] ❌ Error API Falabella (Código ${errorCode}): ${errorMsg}`);
-        return { 
-          success: false, 
-          error: `Falabella API Error ${errorCode}: ${errorMsg}`,
-          status_code: response.status,
-          payload: xmlPayload
-        };
-      } else {
+
+  const errorMsgMatch =
+    responseBody.match(/<ErrorMessage>([^<]+)<\/ErrorMessage>/);
+
+  const errorCodeMatch =
+    responseBody.match(/<ErrorCode>([^<]+)<\/ErrorCode>/);
+
+  const errorMsg = errorMsgMatch
+    ? errorMsgMatch[1]
+    : 'Error desconocido en API de Falabella';
+
+  const errorCode = errorCodeMatch
+    ? errorCodeMatch[1]
+    : 'UNKNOWN';
+
+  logger.error(
+    `[FalabellaAdapter] ❌ Error API Falabella (Código ${errorCode}): ${errorMsg}`
+  );
+
+  // 🔑 ERROR 1000 = payload duplicado aún procesándose
+  if (
+    errorCode === '1000' &&
+    errorMsg.includes('FeedID:')
+  ) {
+
+    const feedMatch =
+      errorMsg.match(/FeedID:\s*([a-zA-Z0-9\-]+)/);
+
+    const duplicatedFeedId =
+      feedMatch?.[1];
+
+    if (duplicatedFeedId) {
+
+      logger.warn(
+        `[FalabellaAdapter] Feed duplicado detectado. Consultando estado real ${duplicatedFeedId}`
+      );
+
+      try {
+
+        const { feed, timedOut } =
+          await this.pollFeedStatus(duplicatedFeedId);
+
+        return this.buildFeedDrivenResult({
+          transformedProduct,
+          requestId: duplicatedFeedId,
+          feed,
+          timedOut
+        });
+
+      } catch (feedErr) {
+
+        logger.error(
+          `[FalabellaAdapter] Error consultando FeedStatus`,
+          feedErr
+        );
+      }
+    }
+  }
+
+  return {
+    success: false,
+    error: `Falabella API Error ${errorCode}: ${errorMsg}`,
+    status_code: response.status,
+    payload: xmlPayload
+  };
+} else {
         logger.warn('[FalabellaAdapter] ⚠️ Respuesta inesperada:', responseBody.substring(0, 300));
         return { 
           success: false, 
