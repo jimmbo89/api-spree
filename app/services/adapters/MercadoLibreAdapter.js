@@ -27,27 +27,30 @@ function normalizeStrategyForPublish(strategy, legacyListingTypeId) {
   return ML_STRATEGY.CONVERSION;
 }
 
-function normalizeInstallmentsForPublish(installments) {
-  if (!installments || typeof installments !== 'object') {
+function resolveInstallmentsForPublish(siteId, listingTypeId) {
+  if (siteId !== 'MLA') {
     return {
+      source: 'official_listing_type_policy',
       enabled: false,
       interest_free: false,
       max_installments: null
     };
   }
 
-  const enabled = Boolean(installments.enabled);
-  const interestFree = enabled && Boolean(installments.interest_free);
-  const maxInstallments = enabled
-    ? Number.isFinite(Number(installments.max_installments))
-      ? Math.max(1, Math.trunc(Number(installments.max_installments)))
-      : null
-    : null;
+  if (listingTypeId === 'gold_pro') {
+    return {
+      source: 'official_listing_type_policy',
+      enabled: true,
+      interest_free: true,
+      max_installments: 6
+    };
+  }
 
   return {
-    enabled,
-    interest_free: interestFree,
-    max_installments: maxInstallments
+    source: 'official_listing_type_policy',
+    enabled: false,
+    interest_free: false,
+    max_installments: null
   };
 }
 
@@ -113,11 +116,7 @@ class MercadoLibreAdapter extends BaseAdapter {
       || shippingRequested.logistic_type
       || mlData?.logistic_type
       || null;
-    const installmentsConfig = normalizeInstallmentsForPublish(mlData?.installments);
     let strategy = normalizeStrategyForPublish(mlData?.strategy, mlData?.listing_type_id || null);
-    if (installmentsConfig.interest_free && strategy !== ML_STRATEGY.CONVERSION) {
-      strategy = ML_STRATEGY.CONVERSION;
-    }
 
     if (!mlData?.category?.category_id) {
       throw new Error('Falta category_id para MercadoLibre');
@@ -172,6 +171,7 @@ class MercadoLibreAdapter extends BaseAdapter {
 
     // Resolver tipo de publicación automáticamente según estrategia y disponibilidad real.
     prepared.listing_type_id = listingResolution.listing_type_id;
+    const installmentsConfig = resolveInstallmentsForPublish(this.getSiteId(), prepared.listing_type_id);
     if (shippingModeOverride) {
       prepared.shipping_mode = shippingModeOverride;
     }
@@ -183,21 +183,6 @@ class MercadoLibreAdapter extends BaseAdapter {
       installments: installmentsConfig,
       listing_resolution: listingResolution
     };
-
-    const categorySaleTermIds = new Set(categoryInfo.sale_term_ids || []);
-    const supportsInstallments = categorySaleTermIds.has('INSTALLMENTS');
-    if (installmentsConfig.enabled && installmentsConfig.max_installments) {
-      if (supportsInstallments) {
-        prepared.sale_terms.push({
-          id: 'INSTALLMENTS',
-          value_name: String(installmentsConfig.max_installments)
-        });
-      } else {
-        logger.warn(
-          `[ML Adapter] Categoría ${prepared.category_id} no soporta INSTALLMENTS; se omite sale_term para evitar validation_error.`
-        );
-      }
-    }
     
     if (productData.economic_config) {
       const config = productData.economic_config;

@@ -822,42 +822,46 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
         if (product_variants) {
           const parsedVariants = JSON.parse(product_variants);
           if (Array.isArray(parsedVariants)) {
-            // 1. Obtener variantes existentes del producto
             const existingVariants =
               await ProductVariantRepository.findByProductId(id);
-            const existingById = new Map(); // si el frontend envía ID de variante
-            const existingBySku = new Map(); // SKU es único → mejor clave
-            const existingByAttrs = new Map(); // fallback (pero problemático)
+            const existingById = new Map();
+            const existingBySku = new Map();
+            const existingByAttrs = new Map();
+            const matchedVariantIds = new Set();
 
             for (const v of existingVariants) {
-              // existingById.set(v.id, v);       // solo si usas ID real (no del frontend)
+              existingById.set(Number(v.id), v);
               existingBySku.set(v.sku, v);
               existingByAttrs.set(JSON.stringify(v.attributes), v);
             }
 
-            // 2. Actualizar o crear variantes
             for (const variantData of parsedVariants) {
               let existing = null;
+              const variantId =
+                variantData.id !== undefined &&
+                variantData.id !== null &&
+                variantData.id !== ""
+                  ? Number(variantData.id)
+                  : null;
 
-              // Opción 1: si el frontend envía un ID de variante real (no recomendado si es solo índice)
-              // if (variantData.id && !isNaN(variantData.id)) {
-              //   existing = existingById.get(Number(variantData.id));
-              // }
+              if (variantId !== null && !Number.isNaN(variantId)) {
+                existing = existingById.get(variantId) || null;
+              }
 
-              // Opción 2: buscar por SKU (¡el más confiable!)
-              if (variantData.sku) {
+              if (!existing && variantData.sku) {
                 existing = existingBySku.get(variantData.sku);
               }
 
-              // Opción 3: fallback por atributos (solo si NO hay SKU)
               if (!existing && !variantData.sku && variantData.attributes) {
                 const attrKey = JSON.stringify(variantData.attributes);
                 existing = existingByAttrs.get(attrKey);
               }
 
               if (existing) {
-                // Actualizar solo si hay cambios
+                matchedVariantIds.add(Number(existing.id));
+
                 const updates = {};
+                const previousSku = existing.sku;
                 if (variantData.sku && existing.sku !== variantData.sku) {
                   updates.sku = variantData.sku;
                 }
@@ -870,9 +874,8 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
                 }
                 if (Object.keys(updates).length > 0) {
                   await existing.update(updates, { transaction });
-                  // Si el SKU cambió, actualiza el mapa
                   if (updates.sku) {
-                    existingBySku.delete(existing.sku);
+                    existingBySku.delete(previousSku);
                     existingBySku.set(updates.sku, existing);
                   }
                 }
@@ -885,10 +888,9 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
                   );
                 }
               } else {
-                // Crear nueva variante
                 const newVariant = await ProductVariantRepository.create(
                   {
-                    product_id: product.id, // usa el ID validado
+                    product_id: product.id,
                     sku: variantData.sku,
                     attributes: variantData.attributes || {},
                   },
@@ -902,14 +904,13 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
                     { transaction, companyId: product.company_id }
                   );
                 }
+
+                matchedVariantIds.add(Number(newVariant.id));
               }
             }
 
-            // 3. ✅ Eliminar variantes que ya NO están en el array (¡sincronización completa!)
-            const newSkus = new Set(parsedVariants.map((v) => v.sku));
             for (const existing of existingVariants) {
-              if (!newSkus.has(existing.sku)) {
-                // ⚠️ Aquí podrías validar stock, pero si decides forzar:
+              if (!matchedVariantIds.has(Number(existing.id))) {
                 await existing.destroy({ transaction });
               }
             }

@@ -49,9 +49,11 @@ const normalizeStrategy = (strategy, legacyListingTypeId) => {
 const normalizeInstallments = (installments) => {
   if (!installments || typeof installments !== "object") {
     return {
+      requested: false,
       enabled: false,
       interest_free: false,
       max_installments: null,
+      campaign_tag: null,
     };
   }
 
@@ -67,6 +69,7 @@ const normalizeInstallments = (installments) => {
     : null;
 
   return {
+    requested: true,
     enabled,
     interest_free: interestFree,
     max_installments: maxInstallments,
@@ -82,6 +85,70 @@ const buildInstallmentsSaleTermsPreview = (installments) => {
       value_name: String(installments.max_installments),
     },
   ];
+};
+
+const buildAutomaticInstallmentsResolution = ({
+  siteId,
+  listingTypeId,
+  requestedCampaignTag,
+  campaignTagsByListingType,
+}) => {
+  const availableCampaignTags = Array.isArray(campaignTagsByListingType?.[listingTypeId])
+    ? campaignTagsByListingType[listingTypeId]
+    : [];
+  const selectedCampaignTag = requestedCampaignTag && availableCampaignTags.includes(requestedCampaignTag)
+    ? requestedCampaignTag
+    : null;
+
+  const result = {
+    source: "official_listing_type_policy",
+    site_id: siteId,
+    listing_type_id: listingTypeId,
+    enabled: false,
+    interest_free: false,
+    max_installments: null,
+    campaign_tag_requested: requestedCampaignTag || null,
+    campaign_tag_applied: selectedCampaignTag,
+    available_campaign_tags: availableCampaignTags,
+    seller_fee_focus: true,
+    note: "Resolución automática orientada a costo/comisión del vendedor según listing_type y campañas oficiales.",
+  };
+
+  if (siteId !== "MLA") {
+    result.note = "Documentación oficial de cuotas diferenciadas aplica para Argentina (MLA).";
+    return result;
+  }
+
+  if (listingTypeId === "gold_pro") {
+    result.enabled = true;
+    result.interest_free = true;
+    result.max_installments = 6;
+    result.note = "gold_pro impacta costo vendedor con esquema de cuotas al mismo precio; default backend usa 6.";
+
+    if (selectedCampaignTag === "3x_campaign" || selectedCampaignTag === "cuota-simple-3") {
+      result.max_installments = 3;
+    }
+    if (selectedCampaignTag === "cuota-simple-6") {
+      result.max_installments = 6;
+    }
+    return result;
+  }
+
+  if (listingTypeId === "gold_special") {
+    result.enabled = false;
+    result.interest_free = false;
+    result.max_installments = null;
+    result.note = selectedCampaignTag === "pcj-co-funded"
+      ? "gold_special con pcj-co-funded aplica costo/comisión promocional para vendedor."
+      : "gold_special usa esquema base sin cuotas promocionales resueltas por backend para vendedor.";
+    return result;
+  }
+
+  if (listingTypeId === "free") {
+    result.note = "free no resuelve cuotas promocionales en este flujo.";
+  }
+
+  return result;
 };
 
 const stableStringify = (value) => {
@@ -384,6 +451,82 @@ const buildProfitabilityMetrics = ({ pricing, shippingSummary, productPrice, pro
     estimated_break_even_price: estimatedBreakEvenPrice,
     shipping_risk_level: shippingRiskLevel,
     profitability_status: profitabilityStatus
+  };
+};
+
+const buildSellerShippingView = (shippingSummary) => {
+  if (!shippingSummary || typeof shippingSummary !== "object") return null;
+
+  return {
+    shipping_mode: shippingSummary.shipping_mode || null,
+    logistic_type: shippingSummary.logistic_type || null,
+    scenario: shippingSummary.scenario || null,
+    free_shipping: Boolean(shippingSummary.free_shipping),
+    mandatory_free_shipping: Boolean(shippingSummary.mandatory_free_shipping),
+    seller_shipping_cost: toNumberOrZero(shippingSummary.seller_shipping_cost),
+    shipping_subsidy: toNumberOrZero(shippingSummary.shipping_subsidy),
+    seller_pays_shipping: toNumberOrZero(shippingSummary.seller_shipping_cost) > 0,
+  };
+};
+
+const buildEconomicSummary = ({
+  productId,
+  categoryId,
+  categoryName,
+  listingTypeId,
+  strategy,
+  price,
+  pricing,
+  resolvedInstallments,
+  sellerShippingView,
+  profitability,
+  warnings
+}) => {
+  if (!Number.isFinite(Number(price)) || !pricing || pricing.error) return null;
+
+  return {
+    product_id: productId,
+    category_id: categoryId,
+    category_name: categoryName,
+    listing_type_id: listingTypeId,
+    strategy,
+    price: Number(price),
+    fees: {
+      sale_fee_amount: toNumberOrZero(pricing.sale_fee_amount),
+      listing_fee_amount: toNumberOrZero(pricing.listing_fee_amount),
+      total_fee_amount: toNumberOrZero(pricing.total_fee_amount),
+      fee_percentage: toNumberOrZero(pricing.fee_percentage)
+    },
+    installments: {
+      enabled: Boolean(resolvedInstallments?.enabled),
+      interest_free: Boolean(resolvedInstallments?.interest_free),
+      max_installments: resolvedInstallments?.max_installments ?? null,
+      seller_fee_focus: true
+    },
+    shipping: sellerShippingView ? {
+      shipping_mode: sellerShippingView.shipping_mode,
+      logistic_type: sellerShippingView.logistic_type,
+      free_shipping: sellerShippingView.free_shipping,
+      mandatory_free_shipping: sellerShippingView.mandatory_free_shipping,
+      seller_shipping_cost: toNumberOrZero(sellerShippingView.seller_shipping_cost),
+      shipping_subsidy: toNumberOrZero(sellerShippingView.shipping_subsidy)
+    } : null,
+    net: {
+      net_amount_before_shipping: toNumberOrZero(pricing.net_amount),
+      net_amount_after_shipping: pricing.net_amount_after_shipping !== undefined && pricing.net_amount_after_shipping !== null
+        ? toNumberOrZero(pricing.net_amount_after_shipping)
+        : toNumberOrZero(pricing.net_amount)
+    },
+    profitability: profitability ? {
+      product_cost: profitability.product_cost_basis,
+      estimated_profit: profitability.final_profit,
+      margin_percent: profitability.real_margin_percentage
+    } : {
+      product_cost: null,
+      estimated_profit: null,
+      margin_percent: null
+    },
+    warnings: Array.isArray(warnings) ? warnings : []
   };
 };
 
@@ -1383,11 +1526,8 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
   let selectedStrategy = normalizeStrategy(strategy, listing_type_id);
   const normalizedInstallments = normalizeInstallments(installments);
   const strategyWarnings = [];
-
-  // Regla funcional: interés sin interés solo en estrategia CONVERSION.
-  if (normalizedInstallments.interest_free && selectedStrategy !== ML_STRATEGY.CONVERSION) {
-    selectedStrategy = ML_STRATEGY.CONVERSION;
-    strategyWarnings.push("interest_free_installments_forces_conversion");
+  if (normalizedInstallments.requested) {
+    strategyWarnings.push("installments_request_ignored_backend_resolves_by_listing_type");
   }
 
   if (!credential_id) {
@@ -1600,7 +1740,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
         credential_id,
         site_id,
         strategy: selectedStrategy,
-        installments: normalizedInstallments,
+        campaign_tag: normalizeCampaignTagValue(normalizedInstallments?.campaign_tag),
         listing_type_id: listing_type_id || null,
         shipping_mode: shipping_mode || null,
         logistic_type: logistic_type || null,
@@ -1747,6 +1887,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
         let effectiveShippingMode = pickDefaultShippingMode(shipping_mode);
         let logisticTypesForCategory = logisticTypesCatalog.filter(lt => isLogisticCompatibleWithMode(lt, effectiveShippingMode));
         let effectiveLogisticType = pickDefaultLogisticType(logistic_type, effectiveShippingMode);
+        let validatedShippingCombos = [];
         let userShippingPreferences = null;
         let categoryShippingPreferences = null;
 
@@ -1875,6 +2016,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
           }
 
           if (validCombos.length > 0) {
+            validatedShippingCombos = validCombos.slice();
             const validModeSet = new Set(validCombos.map(c => c.shipping_mode));
             filteredShippingModes = shippingModesCatalog.filter(sm => validModeSet.has(sm.value));
             effectiveShippingMode = filteredShippingModes.some(sm => sm.value === shipping_mode)
@@ -1902,12 +2044,8 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
         if (logistic_type && logistic_type !== effectiveLogisticType) {
           categoryWarnings.push(`logistic_type_normalized:${logistic_type}->${effectiveLogisticType}`);
         }
-        if (
-          normalizedInstallments?.enabled &&
-          normalizedInstallments?.interest_free &&
-          strategyWarnings.includes("interest_free_installments_forces_conversion")
-        ) {
-          categoryWarnings.push("installments_interest_free_normalized_for_strategy");
+        if (normalizedInstallments.requested) {
+          categoryWarnings.push("installments_request_ignored_backend_resolves_by_listing_type");
         }
 
         // === 💰 Obtener pricing/comisiones ===
@@ -1996,7 +2134,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
               const campaignTagRequested = normalizeCampaignTagValue(normalizedInstallments?.campaign_tag);
               const campaignTagSelected = campaignTagRequested && listingCampaignTags.includes(campaignTagRequested)
                 ? campaignTagRequested
-                : listingCampaignTags[0] || null;
+                : null;
               if (campaignTagSelected) pricingParams.tags = campaignTagSelected;
 
               const pricingResponse = await axios.get(pricingUrl, {
@@ -2086,6 +2224,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
         }
         const shippingRequested = hasShippingInput;
         const shippingSummary = shipping?.shipping_summary || null;
+        const sellerShippingView = buildSellerShippingView(shippingSummary);
         const sellerShippingCost = shippingSummary?.seller_shipping_cost ?? null;
         if (pricing && !pricing.error) {
           pricing.shipping_requested = shippingRequested;
@@ -2095,9 +2234,8 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
               (Number(pricing.net_amount || 0) - Number(sellerShippingCost || 0)).toFixed(2)
             );
             pricing.shipping_scenario = shippingSummary?.scenario || null;
-            pricing.shipping_who_pays = shippingSummary?.who_pays || null;
-            pricing.buyer_shipping_cost = toNumberOrZero(shippingSummary?.buyer_shipping_cost);
             pricing.shipping_subsidy = toNumberOrZero(shippingSummary?.shipping_subsidy);
+            pricing.seller_shipping = sellerShippingView;
             if (pricing.warning) delete pricing.warning;
           } else if (shippingRequested && (!shipping || shipping.error)) {
             categoryWarnings.push("pricing_incomplete_shipping_not_calculated");
@@ -2118,6 +2256,19 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
             pricing.profitability = profitability;
           }
         }
+        const economicSummary = buildEconomicSummary({
+          productId: product.id,
+          categoryId: cat.category_id,
+          categoryName: cat.category_name,
+          listingTypeId: effectiveListingType,
+          strategy: selectedStrategy,
+          price: productPrice,
+          pricing,
+          resolvedInstallments: null,
+          sellerShippingView,
+          profitability: pricing?.profitability || null,
+          warnings: categoryWarnings
+        });
 
         // === Construir objeto de categoría completo ===
         const installmentTerm = Array.isArray(categoryInfo?.sale_terms)
@@ -2133,6 +2284,41 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
           ? installmentAllowedValues[installmentAllowedValues.length - 1]
           : null;
 
+        const resolvedInstallments = buildAutomaticInstallmentsResolution({
+          siteId: site_id,
+          listingTypeId: effectiveListingType,
+          requestedCampaignTag: normalizeCampaignTagValue(normalizedInstallments?.campaign_tag),
+          campaignTagsByListingType
+        });
+        const categoryEconomicSummary = economicSummary
+          ? {
+              ...economicSummary,
+              installments: {
+                enabled: Boolean(resolvedInstallments?.enabled),
+                interest_free: Boolean(resolvedInstallments?.interest_free),
+                max_installments: resolvedInstallments?.max_installments ?? null,
+                seller_fee_focus: true
+              }
+            }
+          : null;
+        const shippingCombinations = (() => {
+          if (validatedShippingCombos.length > 0) {
+            return validatedShippingCombos;
+          }
+
+          const combos = [];
+          for (const modeEntry of filteredShippingModes) {
+            for (const logisticEntry of logisticTypesForCategory) {
+              if (!isLogisticCompatibleWithMode(logisticEntry, modeEntry.value)) continue;
+              combos.push({
+                shipping_mode: modeEntry.value,
+                logistic_type: logisticEntry.value
+              });
+            }
+          }
+          return combos;
+        })();
+
         const categoryData = {
           category_id: cat.category_id,
           category_name: cat.category_name,
@@ -2141,25 +2327,29 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
           path: cat.path,
           listing_types: listingTypesForCategory,
           shipping_modes: filteredShippingModes,
+          shipping_modes_scope: "valid_modes_for_this_product_and_category",
+          shipping_modes_filtered_by_product: true,
+          shipping_modes_count: filteredShippingModes.length,
           logistic_types: logisticTypesForCategory,
           defaults: {
             strategy: selectedStrategy,
             listing_type_id: effectiveListingType,
             shipping_mode: effectiveShippingMode,
             logistic_type: effectiveLogisticType,
-            installments: normalizedInstallments,
-            sale_terms_preview: buildInstallmentsSaleTermsPreview(normalizedInstallments)
+            installments: resolvedInstallments,
+            sale_terms_preview: buildInstallmentsSaleTermsPreview(resolvedInstallments)
           },
           installments_rules: {
-            source: "backend_policy",
+            source: resolvedInstallments.source,
             scope: "category",
-            user_can_choose: true,
-            requires_strategy_conversion_for_interest_free: true,
+            user_can_choose: false,
+            requires_strategy_conversion_for_interest_free: false,
             strategy_selected: selectedStrategy,
-            enabled: normalizedInstallments.enabled,
-            interest_free: normalizedInstallments.interest_free,
+            enabled: resolvedInstallments.enabled,
+            interest_free: resolvedInstallments.interest_free,
             max_installments_requested: normalizedInstallments.max_installments ?? null,
             max_installments_allowed: maxInstallmentsAllowed,
+            max_installments_resolved: resolvedInstallments.max_installments ?? null,
             allowed_values: installmentAllowedValues.length > 0 ? installmentAllowedValues : null,
             campaign_tags_available: campaignTags.length > 0 ? campaignTags : null,
             campaign_tags_by_listing_type: {
@@ -2167,7 +2357,11 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
               gold_special: campaignTagsByListingType.gold_special || [],
               free: campaignTagsByListingType.free || []
             },
-            note: "Mercado Libre puede ajustar cuotas permitidas por categoría/listing_type/campaña/cuenta. Validación final ocurre en publicación."
+            campaign_tag_requested: resolvedInstallments.campaign_tag_requested,
+            campaign_tag_applied: resolvedInstallments.campaign_tag_applied,
+            request_ignored: normalizedInstallments.requested,
+            seller_fee_focus: true,
+            note: resolvedInstallments.note
           },
           selection_warnings: categoryWarnings,
           listing_resolution: listingResolution,
@@ -2175,15 +2369,17 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
           ...(categoryInfo && { category_settings: categoryInfo.settings || {} }),
           ...(productPrice !== null && { pricing_options }),
           ...(productPrice !== null && { pricing }),
+          ...(categoryEconomicSummary && { economic_summary: categoryEconomicSummary }),
+          ...(shippingCombinations.length > 0 && { shipping_combinations: shippingCombinations }),
           ...(hasShippingInput && { shipping }),
-          ...(hasShippingInput && { shipping_summary: shipping?.shipping_summary || null }),
-          ...(hasShippingInput && { shipping_scenarios: shipping?.shipping_scenarios || null }),
+          ...(hasShippingInput && { shipping_summary: sellerShippingView }),
           ...(hasShippingInput && { shipping_selected_scenario: shipping?.selected_scenario_key || null }),
-          ...(hasShippingInput && { shipping_recommendations: {
+          ...(hasShippingInput && { shipping_seller_view: sellerShippingView }),
+          ...(hasShippingInput && { shipping_economic_recommendations: {
             for_conversion: shipping?.mandatory_free_shipping_detected
               ? "mandatory_free_shipping"
               : "seller_free_shipping",
-            for_margin: "buyer_pays_shipping"
+            for_margin: "lowest_seller_shipping_cost"
           }}),
           ...(hasShippingInput && { shipping_policy: {
             requested_free_shipping: shipping?.requested_free_shipping ?? null,
@@ -2201,9 +2397,13 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
         product_id: product.id,
         credential_id: credential_id,
         marketplace_id: marketplace_id,
+        response_focus: "economic_summary",
         selection_context: {
           strategy: selectedStrategy,
-          installments: normalizedInstallments,
+          installments: {
+            request_ignored: normalizedInstallments.requested,
+            campaign_tag_requested: normalizeCampaignTagValue(normalizedInstallments?.campaign_tag)
+          },
           warnings: strategyWarnings
         },
         categories: categoriesWithAttrs
@@ -2223,12 +2423,26 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
     const firstCategoryWithCampaigns = allCategoriesFlattened.find(
       c => c?.installments_rules?.campaign_tags_by_listing_type
     );
+    const firstCategoryWithResolvedInstallments = allCategoriesFlattened.find(
+      c => c?.defaults?.installments
+    );
     const uiInstallmentsAllowedValues = firstCategoryWithInstallments?.installments_rules?.allowed_values || null;
     const uiMaxInstallmentsAllowed = firstCategoryWithInstallments?.installments_rules?.max_installments_allowed ?? null;
     const uiCampaignTagsByListingType = firstCategoryWithCampaigns?.installments_rules?.campaign_tags_by_listing_type || {
       gold_pro: [],
       gold_special: [],
       free: []
+    };
+    const uiResolvedInstallments = firstCategoryWithResolvedInstallments?.defaults?.installments || {
+      source: "official_listing_type_policy",
+      enabled: false,
+      interest_free: false,
+      max_installments: null,
+      campaign_tag_requested: normalizeCampaignTagValue(normalizedInstallments?.campaign_tag),
+      campaign_tag_applied: null,
+      available_campaign_tags: [],
+      seller_fee_focus: true,
+      note: "Resolución automática por categoría/listing_type."
     };
     return res.status(200).json({
       success: true,
@@ -2246,35 +2460,40 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
           }
         ],
         strategy: selectedStrategy,
-        installments: normalizedInstallments,
+        installments: uiResolvedInstallments,
         installments_rules: {
-          source: "backend_policy",
+          source: uiResolvedInstallments.source,
           scope: "request",
-          user_can_choose: true,
-          requires_strategy_conversion_for_interest_free: true,
+          user_can_choose: false,
+          requires_strategy_conversion_for_interest_free: false,
           strategy_selected: selectedStrategy,
-          enabled: normalizedInstallments.enabled,
-          interest_free: normalizedInstallments.interest_free,
+          enabled: uiResolvedInstallments.enabled,
+          interest_free: uiResolvedInstallments.interest_free,
           max_installments_requested: normalizedInstallments.max_installments ?? null,
           max_installments_allowed: uiMaxInstallmentsAllowed,
+          max_installments_resolved: uiResolvedInstallments.max_installments ?? null,
           allowed_values: uiInstallmentsAllowedValues,
           campaign_tags_by_listing_type: uiCampaignTagsByListingType,
-          note: "No hay endpoint estándar en este flujo que devuelva catálogo cerrado de cuotas por categoría. Se recomienda confirmar contra respuesta de publicación."
+          campaign_tag_requested: uiResolvedInstallments.campaign_tag_requested,
+          campaign_tag_applied: uiResolvedInstallments.campaign_tag_applied,
+          request_ignored: normalizedInstallments.requested,
+          seller_fee_focus: true,
+          note: uiResolvedInstallments.note
         },
         selection_scope: {
           strategy: "request",
-          installments: "request",
+          installments: "category",
           shipping_mode_requested: "request",
           logistic_type_requested: "request",
           listing_type_effective: "category",
           shipping_mode_effective: "category",
           logistic_type_effective: "category"
         },
-        sale_terms_preview: buildInstallmentsSaleTermsPreview(normalizedInstallments),
+        sale_terms_preview: buildInstallmentsSaleTermsPreview(uiResolvedInstallments),
         ui_hints: {
-          show_installments_select: Array.isArray(uiInstallmentsAllowedValues) && uiInstallmentsAllowedValues.length > 0,
-          installments_options: uiInstallmentsAllowedValues || [],
-          show_campaign_tag_select: Object.values(uiCampaignTagsByListingType).some(v => Array.isArray(v) && v.length > 0),
+          show_installments_select: false,
+          installments_options: [],
+          show_campaign_tag_select: false,
           campaign_tag_options_by_listing_type: uiCampaignTagsByListingType
         },
         warnings: strategyWarnings
