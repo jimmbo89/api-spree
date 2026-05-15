@@ -1628,18 +1628,50 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
       return compatibleMode === mode;
     };
 
-    const pickDefaultShippingMode = (requestedMode) => {
-      if (requestedMode && shippingModesCatalog.some(sm => sm.value === requestedMode)) return requestedMode;
-      if (shippingModesCatalog.some(sm => sm.value === 'me2')) return 'me2';
-      return shippingModesCatalog[0]?.value || 'me2';
+    const pickFirstValue = (entries, requestedValue, fallbackValue = null) => {
+      if (requestedValue && entries.some(entry => entry?.value === requestedValue)) {
+        return requestedValue;
+      }
+      return entries[0]?.value || fallbackValue;
     };
 
-    const pickDefaultLogisticType = (requestedType, selectedShippingMode) => {
-      const logisticsByMode = logisticTypesCatalog.filter(lt => isLogisticCompatibleWithMode(lt, selectedShippingMode));
-      if (requestedType && logisticsByMode.some(lt => lt.value === requestedType)) return requestedType;
-      if (logisticsByMode.some(lt => lt.value === 'drop_off')) return 'drop_off';
-      if (logisticsByMode.some(lt => lt.value === 'default')) return 'default';
-      return logisticsByMode[0]?.value || 'drop_off';
+    const pickDefaultShippingMode = (requestedMode, availableModes = shippingModesCatalog) => {
+      return pickFirstValue(availableModes, requestedMode, shippingModesCatalog[0]?.value || 'me2');
+    };
+
+    const pickDefaultLogisticType = (requestedType, selectedShippingMode, availableLogistics = logisticTypesCatalog) => {
+      const logisticsByMode = availableLogistics.filter(lt => isLogisticCompatibleWithMode(lt, selectedShippingMode));
+      return pickFirstValue(logisticsByMode, requestedType, logisticsByMode[0]?.value || availableLogistics[0]?.value || 'drop_off');
+    };
+
+    const buildShippingOptionsFromCombos = (combos) => {
+      if (!Array.isArray(combos) || combos.length === 0) return [];
+
+      return combos.map((combo) => {
+        const modeEntry = shippingModesCatalog.find(sm => sm.value === combo.shipping_mode) || null;
+        const logisticEntry = logisticTypesCatalog.find(lt => lt.value === combo.logistic_type) || null;
+        const isFlex = combo.logistic_type === 'self_service';
+        const serviceCode = isFlex
+          ? 'flex'
+          : (combo.logistic_type || combo.shipping_mode || 'unknown');
+        const serviceName = isFlex
+          ? 'Envios Flex'
+          : (logisticEntry?.description || logisticEntry?.title || modeEntry?.description || modeEntry?.title || combo.logistic_type || combo.shipping_mode);
+        const group = isFlex ? 'seller_logistics' : 'mercado_envios';
+        return {
+          shipping_mode: combo.shipping_mode,
+          logistic_type: combo.logistic_type,
+          id: `${combo.shipping_mode}:${combo.logistic_type || 'none'}`,
+          title: serviceName,
+          service_code: serviceCode,
+          service_name: serviceName,
+          group,
+          shipping_mode_label: modeEntry?.description || modeEntry?.title || combo.shipping_mode,
+          logistic_type_label: logisticEntry?.description || logisticEntry?.title || combo.logistic_type || null,
+          is_flex: isFlex,
+          is_default: false
+        };
+      });
     };
 
     const buildShippingPreferenceCandidates = (userPreferences, categoryPreferences) => {
@@ -1910,9 +1942,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
         if (preferenceCandidates) {
           if (preferenceCandidates.shippingModes.length > 0) {
             filteredShippingModes = preferenceCandidates.shippingModes;
-            effectiveShippingMode = filteredShippingModes.some(sm => sm.value === shipping_mode)
-              ? shipping_mode
-              : (filteredShippingModes.some(sm => sm.value === 'me2') ? 'me2' : filteredShippingModes[0]?.value || effectiveShippingMode);
+            effectiveShippingMode = pickDefaultShippingMode(shipping_mode, filteredShippingModes);
           } else {
             categoryWarnings.push('shipping_modes_empty_by_preferences');
           }
@@ -1925,13 +1955,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
 
             logisticTypesForCategory = logisticTypesCatalog.filter(lt => preferredLogisticSet.has(lt.value));
             if (logisticTypesForCategory.length > 0) {
-              effectiveLogisticType = logisticTypesForCategory.some(lt => lt.value === logistic_type)
-                ? logistic_type
-                : (logisticTypesForCategory.some(lt => lt.value === 'drop_off')
-                  ? 'drop_off'
-                  : (logisticTypesForCategory.some(lt => lt.value === 'default')
-                    ? 'default'
-                    : logisticTypesForCategory[0]?.value || effectiveLogisticType));
+              effectiveLogisticType = pickDefaultLogisticType(logistic_type, effectiveShippingMode, logisticTypesForCategory);
             }
           }
 
@@ -2019,9 +2043,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
             validatedShippingCombos = validCombos.slice();
             const validModeSet = new Set(validCombos.map(c => c.shipping_mode));
             filteredShippingModes = shippingModesCatalog.filter(sm => validModeSet.has(sm.value));
-            effectiveShippingMode = filteredShippingModes.some(sm => sm.value === shipping_mode)
-              ? shipping_mode
-              : (filteredShippingModes.some(sm => sm.value === 'me2') ? 'me2' : filteredShippingModes[0].value);
+            effectiveShippingMode = pickDefaultShippingMode(shipping_mode, filteredShippingModes);
 
             const validLogisticSet = new Set(
               validCombos
@@ -2029,13 +2051,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
                 .map(c => c.logistic_type)
             );
             logisticTypesForCategory = logisticTypesCatalog.filter(lt => validLogisticSet.has(lt.value));
-            effectiveLogisticType = logisticTypesForCategory.some(lt => lt.value === logistic_type)
-              ? logistic_type
-              : (logisticTypesForCategory.some(lt => lt.value === 'drop_off')
-                ? 'drop_off'
-                : (logisticTypesForCategory.some(lt => lt.value === 'default')
-                  ? 'default'
-                  : logisticTypesForCategory[0].value));
+            effectiveLogisticType = pickDefaultLogisticType(logistic_type, effectiveShippingMode, logisticTypesForCategory);
           }
         }
         if (shipping_mode && shipping_mode !== effectiveShippingMode) {
@@ -2319,6 +2335,12 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
           return combos;
         })();
 
+        const shippingOptions = buildShippingOptionsFromCombos(shippingCombinations).map(option => ({
+          ...option,
+          is_default: option.shipping_mode === effectiveShippingMode
+            && option.logistic_type === effectiveLogisticType
+        }));
+
         const categoryData = {
           category_id: cat.category_id,
           category_name: cat.category_name,
@@ -2331,6 +2353,7 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
           shipping_modes_filtered_by_product: true,
           shipping_modes_count: filteredShippingModes.length,
           logistic_types: logisticTypesForCategory,
+          shipping_options: shippingOptions,
           defaults: {
             strategy: selectedStrategy,
             listing_type_id: effectiveListingType,
