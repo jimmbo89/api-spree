@@ -293,10 +293,45 @@ const extractCoverageSubsidy = (coverage) => {
   return 0;
 };
 
-const extractCoverageCost = (coverage) => {
+const extractCoverageCostDetails = (coverage) => {
   const finalCost = toNumberOrNull(coverage?.cost);
-  if (finalCost !== null) return finalCost;
-  return toNumberOrZero(coverage?.list_cost);
+  if (finalCost !== null) {
+    return {
+      cost: finalCost,
+      source: "coverage.cost",
+      used_fallback: false
+    };
+  }
+
+  return {
+    cost: toNumberOrZero(coverage?.list_cost),
+    source: "coverage.list_cost_fallback",
+    used_fallback: true
+  };
+};
+
+const deriveLogisticModel = (shippingMode, logisticType) => {
+  if (logisticType === "fulfillment") {
+    return "full";
+  }
+  if (shippingMode === "custom") {
+    return "custom";
+  }
+  if (shippingMode === "me2") {
+    return "mercado_envios";
+  }
+  if (shippingMode === "me1") {
+    return "mercado_envios_1";
+  }
+  return "unspecified";
+};
+
+const deriveShippingOperation = (shippingMode, logisticType) => {
+  if (logisticType === "self_service") return "flex";
+  if (logisticType === "xd_drop_off") return "places";
+  if (logisticType) return logisticType;
+  if (shippingMode === "custom") return "manual_rates";
+  return "unspecified";
 };
 
 const extractProductZipCode = (product) => {
@@ -389,6 +424,8 @@ const normalizeShippingScenarios = ({
     shipping_summary: {
       shipping_mode: shippingMode,
       logistic_type: logisticType,
+      logistic_model: deriveLogisticModel(shippingMode, logisticType),
+      shipping_operation: deriveShippingOperation(shippingMode, logisticType),
       free_shipping: selected.free_shipping,
       mandatory_free_shipping: selected.mandatory_free_shipping,
       buyer_shipping_cost: selected.buyer_shipping_cost,
@@ -460,6 +497,8 @@ const buildSellerShippingView = (shippingSummary) => {
   return {
     shipping_mode: shippingSummary.shipping_mode || null,
     logistic_type: shippingSummary.logistic_type || null,
+    logistic_model: shippingSummary.logistic_model || null,
+    shipping_operation: shippingSummary.shipping_operation || null,
     scenario: shippingSummary.scenario || null,
     free_shipping: Boolean(shippingSummary.free_shipping),
     mandatory_free_shipping: Boolean(shippingSummary.mandatory_free_shipping),
@@ -1514,32 +1553,91 @@ async calculateMercadoLibreShippingCosts(credential, product, categoryId, siteId
       }
     }
 
+    const buyerCoverageCost = extractCoverageCostDetails(buyerCoverage);
+    const sellerCoverageCost = extractCoverageCostDetails(sellerCoverage);
+    const shippingCostSource = {
+      buyer: actualItemShippingOption
+        ? "item.shipping_options.list_cost"
+        : buyerCoverageCost.source,
+      seller: actualItemShippingOption
+        ? "item.shipping_options.cost"
+        : sellerCoverageCost.source
+    };
+    const shippingCostFallbacks = {
+      buyer_used_list_cost_fallback: !actualItemShippingOption && buyerCoverageCost.used_fallback,
+      seller_used_list_cost_fallback: !actualItemShippingOption && sellerCoverageCost.used_fallback
+    };
+
+    if (shippingCostFallbacks.buyer_used_list_cost_fallback || shippingCostFallbacks.seller_used_list_cost_fallback) {
+      logger.warn(`[ML SHIPPING COST FALLBACK] Se usó list_cost por falta de cost`, {
+        credential_id: credential?.id,
+        category_id: categoryId,
+        item_id: itemId,
+        shipping_mode: baseParams.mode,
+        logistic_type: baseParams.logistic_type,
+        buyer_source: shippingCostSource.buyer,
+        seller_source: shippingCostSource.seller,
+        buyer_coverage: buyerCoverage,
+        seller_coverage: sellerCoverage
+      });
+    }
+
+    logger.info(`[ML SHIPPING COST TRACE] category=${categoryId} item=${itemId || "none"}`, {
+      credential_id: credential?.id,
+      shipping_mode: baseParams.mode,
+      logistic_type: baseParams.logistic_type,
+      logistic_model: deriveLogisticModel(baseParams.mode, baseParams.logistic_type),
+      shipping_operation: deriveShippingOperation(baseParams.mode, baseParams.logistic_type),
+      requested_free_shipping: effectiveRequestedFreeShipping,
+      mandatory_free_shipping: mandatoryFreeShipping,
+      buyer_source: shippingCostSource.buyer,
+      seller_source: shippingCostSource.seller,
+      buyer_cost: actualItemShippingOption
+        ? toNumberOrZero(actualItemShippingOption.list_cost)
+        : buyerCoverageCost.cost,
+      seller_cost: actualItemShippingOption
+        ? toNumberOrZero(actualItemShippingOption.cost)
+        : sellerCoverageCost.cost,
+      buyer_list_cost: actualItemShippingOption
+        ? toNumberOrZero(actualItemShippingOption.list_cost)
+        : toNumberOrZero(buyerCoverage.list_cost),
+      seller_list_cost: actualItemShippingOption
+        ? toNumberOrZero(actualItemShippingOption.list_cost)
+        : toNumberOrZero(sellerCoverage.list_cost),
+      buyer_discount: actualItemShippingOption?.discount || buyerCoverage.discount || null,
+      seller_discount: actualItemShippingOption?.discount || sellerCoverage.discount || null,
+      buyer_tags: buyerTags,
+      seller_tags: sellerTags
+    });
+
     const result = {
       buyer_pays: {
         cost: actualItemShippingOption
           ? toNumberOrZero(actualItemShippingOption.list_cost)
-          : extractCoverageCost(buyerCoverage),
+          : buyerCoverageCost.cost,
         list_cost: actualItemShippingOption
           ? toNumberOrZero(actualItemShippingOption.list_cost)
-          : (buyerCoverage.list_cost || 0),
+          : toNumberOrZero(buyerCoverage.list_cost),
         currency_id: buyerCoverage.currency_id || getCurrencyIdFromSite(siteId),
         billable_weight: buyerCoverage.billable_weight,
         discount: actualItemShippingOption?.discount || buyerCoverage.discount,
         shipping_method_id: actualItemShippingOption?.shipping_method_id || buyerCoverage.shipping_method_id,
+        shipping_cost_source: shippingCostSource.buyer,
         paid_by: 'buyer',
         free_shipping: false
       },
       seller_pays: {
         cost: actualItemShippingOption
           ? toNumberOrZero(actualItemShippingOption.cost)
-          : extractCoverageCost(sellerCoverage),
+          : sellerCoverageCost.cost,
         list_cost: actualItemShippingOption
           ? toNumberOrZero(actualItemShippingOption.list_cost)
-          : (sellerCoverage.list_cost || 0),
+          : toNumberOrZero(sellerCoverage.list_cost),
         currency_id: sellerCoverage.currency_id || getCurrencyIdFromSite(siteId),
         billable_weight: sellerCoverage.billable_weight,
         discount: actualItemShippingOption?.discount || sellerCoverage.discount,
         shipping_method_id: actualItemShippingOption?.shipping_method_id || sellerCoverage.shipping_method_id,
+        shipping_cost_source: shippingCostSource.seller,
         paid_by: 'seller',
         free_shipping: true
       }
@@ -1555,6 +1653,10 @@ async calculateMercadoLibreShippingCosts(credential, product, categoryId, siteId
     return {
       ...result,
       ...normalized,
+      shipping_cost_source: shippingCostSource,
+      shipping_cost_fallbacks: shippingCostFallbacks,
+      logistic_model: deriveLogisticModel(baseParams.mode, baseParams.logistic_type),
+      shipping_operation: deriveShippingOperation(baseParams.mode, baseParams.logistic_type),
       requested_free_shipping: effectiveRequestedFreeShipping,
       mandatory_free_shipping_detected: mandatoryFreeShipping,
       zip_code_used: zipCode,
@@ -1828,6 +1930,8 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
         return {
           shipping_mode: combo.shipping_mode,
           logistic_type: combo.logistic_type,
+          logistic_model: deriveLogisticModel(combo.shipping_mode, combo.logistic_type),
+          shipping_operation: deriveShippingOperation(combo.shipping_mode, combo.logistic_type),
           id: `${combo.shipping_mode}:${combo.logistic_type || 'none'}`,
           title: serviceName,
           service_code: serviceCode,
@@ -2474,6 +2578,8 @@ async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
             listing_type_id: effectiveListingType,
             shipping_mode: effectiveShippingMode,
             logistic_type: effectiveLogisticType,
+            logistic_model: deriveLogisticModel(effectiveShippingMode, effectiveLogisticType),
+            shipping_operation: deriveShippingOperation(effectiveShippingMode, effectiveLogisticType),
             installments: resolvedInstallments,
             sale_terms_preview: buildInstallmentsSaleTermsPreview(resolvedInstallments)
           },
