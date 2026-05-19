@@ -132,7 +132,7 @@ async function calculateSalesChart(companyId, fromDate, toDate) {
 async function calculateAlerts(companyId) {
   // Contar productos SIN stock (stock = 0) para la alerta de "sin stock"
   const outOfStockCount = await DashboardRepository.getOutOfStockCount(companyId);
-  // Contar productos con stock bajo (stock <= 5) para referencia
+  // Contar productos con stock bajo segun minimum_stock configurado
   const lowStockCount = await DashboardRepository.getCriticalStockCount(companyId);
   
   const publishingErrors = await DashboardRepository.getPublishingIssuesCount(companyId,

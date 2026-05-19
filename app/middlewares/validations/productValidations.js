@@ -82,6 +82,7 @@ const warehouseConfigSchema = Joi.array().items(
     warehouse_id: Joi.number().integer().positive().required(),
     active: Joi.boolean().optional().default(true),
     code: Joi.string().max(100).optional().allow(null, ''),
+    minimum_stock: Joi.number().integer().min(0).optional().default(5),
     variants: Joi.array().items(warehouseVariantSchema).required()
   })
 );
@@ -138,6 +139,7 @@ const storeProductSchema = Joi.object({
     Joi.object({
       id: Joi.number().integer().positive().required(),
       published: Joi.boolean().optional().default(false),
+      minimum_stock: Joi.number().integer().min(0).optional().default(5),
       price: Joi.number().precision(2).min(0).optional().allow(null), // precio por almacén/variante (puede ser null, usa fallback del producto)
       stock: Joi.number().integer().min(0).required()    // stock por almacén/variante
     })

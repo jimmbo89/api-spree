@@ -13,6 +13,7 @@ const variantItemSchema = Joi.object({
 const storeWarehouseProductSchema = Joi.object({
   // ===== DATOS DE WAREHOUSE_PRODUCT =====
   warehouse_id: Joi.number().integer().positive().required(),
+  minimum_stock: Joi.number().integer().min(0).optional().default(5),
   company_id: Joi.number().integer().positive().optional(),
   branch_id: Joi.number().integer().positive().optional().allow(null),
   user_id: Joi.number().integer().positive().optional().allow(null),
@@ -88,6 +89,7 @@ const updateWarehouseProductSchema = Joi.object({
   id: Joi.number().required(),
   active: Joi.boolean().optional(),
   code: Joi.string().max(100).optional().allow(null, ''),
+  minimum_stock: Joi.number().integer().min(0).optional(),
   company_id: Joi.number().integer().positive().optional().allow(null),
   branch_id: Joi.number().integer().positive().optional().allow(null),
   user_id: Joi.number().integer().positive().optional().allow(null)

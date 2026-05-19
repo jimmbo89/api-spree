@@ -36,6 +36,11 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.STRING,
       allowNull: true
     },
+    minimum_stock: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 5
+    },
     company_id: {
       type: DataTypes.BIGINT,
       allowNull: true

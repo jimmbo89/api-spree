@@ -139,6 +139,7 @@ const WarehouseProductController = {
       product_id,
       active,
       code,
+      minimum_stock,
       variants: variantsString,
     } = req.body;
     const currentUserId = req.body.user_id || req.user.id;
@@ -174,6 +175,7 @@ const WarehouseProductController = {
           warehouse_id: warehouse.id,
           active: active !== false, // Default true
           code: code || null,
+          minimum_stock: minimum_stock !== undefined ? parseInt(minimum_stock, 10) || 0 : 5,
           company_id: warehouse.company_id || null,
           branch_id: warehouse.branch_id || null,
           user_id: currentUserId,
@@ -326,7 +328,7 @@ const WarehouseProductController = {
     logger.info("Datos recibidos del warehouse_product:");
     logger.info(JSON.stringify(req.body));
 
-    const { id, active, code, branch_id, variants: variantsString } = req.body;
+    const { id, active, code, branch_id, minimum_stock, variants: variantsString } = req.body;
     const metadata = getRequestMetadata(req);
     let transaction;
 
@@ -736,6 +738,7 @@ const WarehouseProductController = {
         product_id,
         warehouse_id: origin_warehouse_id,
         active: true,
+        minimum_stock: 5,
         company_id: originWarehouse.company_id,
         branch_id: originWarehouse.branch_id,
         user_id: currentUserId
@@ -751,6 +754,7 @@ const WarehouseProductController = {
           product_id,
           warehouse_id: destination_warehouse_id,
           active: true,
+          minimum_stock: 5,
           company_id: destWarehouse.company_id,
           branch_id: destWarehouse.branch_id,
           user_id: currentUserId
@@ -1403,6 +1407,7 @@ async function _processProductMovement({
       product_id,
       warehouse_id: originWarehouse.id,
       active: true,
+      minimum_stock: 5,
       company_id: originWarehouse.company_id,
       branch_id: originWarehouse.branch_id,
       user_id: currentUserId
@@ -1421,6 +1426,7 @@ async function _processProductMovement({
         product_id,
         warehouse_id: destWarehouse.id,
         active: true,
+        minimum_stock: 5,
         company_id: destWarehouse.company_id,
         branch_id: destWarehouse.branch_id,
         user_id: currentUserId

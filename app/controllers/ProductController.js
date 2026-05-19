@@ -260,18 +260,28 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
     // Normalizar configuración de almacenes
     let parsedWarehouseConfig = [];
     if (warehouse_config) {
-      try {
-        parsedWarehouseConfig = JSON.parse(warehouse_config);
-        if (!Array.isArray(parsedWarehouseConfig)) {
+      if (typeof warehouse_config === "string") {
+        try {
+          parsedWarehouseConfig = JSON.parse(warehouse_config);
+        } catch (e) {
           return res.status(400).json({
             success: false,
-            msg: "warehouse_config debe ser un array",
+            msg: "warehouse_configInvalidJSON",
           });
         }
-      } catch (e) {
+      } else if (Array.isArray(warehouse_config)) {
+        parsedWarehouseConfig = warehouse_config;
+      } else {
         return res.status(400).json({
           success: false,
-          msg: "warehouse_configInvalidJSON",
+          msg: "warehouse_config debe ser un array",
+        });
+      }
+
+      if (!Array.isArray(parsedWarehouseConfig)) {
+        return res.status(400).json({
+          success: false,
+          msg: "warehouse_config debe ser un array",
         });
       }
     }
@@ -377,6 +387,7 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
               warehouse_id: warehouse.id,
               active: whConfig.active !== false,
               code: whConfig.code || null,
+              minimum_stock: whConfig.minimum_stock !== undefined ? parseInt(whConfig.minimum_stock, 10) || 0 : 5,
               company_id: warehouse.company_id,
               branch_id: warehouse.branch_id,
               user_id,
@@ -964,7 +975,8 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
   logger.info("Datos recibidos:");
   logger.info(JSON.stringify(req.body));
 
-  const { product_id, company_id, warehouse_config } = req.body;
+  const { product_id, company_id } = req.body;
+  let { warehouse_config } = req.body;
 
   
   // ✅ Parsear warehouse_config si es una cadena
@@ -1013,6 +1025,7 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
             warehouse_id: warehouse.id,
             active: whConfig.active !== false,
             code: whConfig.code || null,
+            minimum_stock: whConfig.minimum_stock !== undefined ? parseInt(whConfig.minimum_stock, 10) || 0 : 5,
             company_id: warehouse.company_id,
             branch_id: warehouse.branch_id,
             user_id: req.user.id,
@@ -1025,6 +1038,7 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
           {
             active: whConfig.active !== false,
             code: whConfig.code || wp.code,
+            minimum_stock: whConfig.minimum_stock !== undefined ? parseInt(whConfig.minimum_stock, 10) || 0 : wp.minimum_stock,
           },
           { transaction }
         );

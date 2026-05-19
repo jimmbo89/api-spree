@@ -249,6 +249,7 @@ async findFiltered({ companyId, userId, branchId, warehouseId }) {
       warehouse_id: wpJson.warehouse_id,
       active: wpJson.active !== false,
       code: wpJson.code || null,
+      minimum_stock: parseInt(wpJson.minimum_stock, 10) || 0,
       company_id: wpJson.company_id,
       branch_id: wpJson.branch_id,
       user_id: wpJson.user_id,
@@ -342,6 +343,7 @@ async getProductWarehousesWithStock({ productIds, companyId, branchId }) {
     attributes: [
       'product_id',
       'id', // warehouse_product_id
+      'minimum_stock',
       [col('warehouse.id'), 'warehouse_id'],
       [col('warehouse.name'), 'warehouse_name'],
       [col('warehouse.image'), 'warehouse_image']
@@ -411,6 +413,7 @@ async getProductWarehousesWithStock({ productIds, companyId, branchId }) {
       image: wp.warehouse_image || null,
       stock: totalStock,
       warehouse_product_id: wp.id,
+      minimum_stock: parseInt(wp.minimum_stock, 10) || 0,
       variants: variants.map(v => {
         // ⭐ Procesar variant_values si existen
         const variantValuesRaw = Array.isArray(v.variant?.variantValues) ? v.variant.variantValues : [];
@@ -1096,13 +1099,14 @@ async getWarehouseSummaryByCompanyId(companyId) {
   async create(body, options = {}) {
         logger.info('Datos recibidos arehouseproductrepository.create:');
     logger.info(JSON.stringify(body));
-    const { product_id, warehouse_id, active, code, company_id, branch_id, user_id } = body;
+    const { product_id, warehouse_id, active, code, minimum_stock, company_id, branch_id, user_id } = body;
      try {
     return await WarehouseProduct.create({
       product_id,
       warehouse_id,
       active: active !== undefined ? active : true,
       code,
+      minimum_stock: minimum_stock !== undefined ? minimum_stock : 5,
       company_id,
       branch_id,
       user_id
@@ -1114,7 +1118,7 @@ async getWarehouseSummaryByCompanyId(companyId) {
   },
 
   async update(record, body, options = {}) {
-    const updatable = ['active', 'code',];
+    const updatable = ['active', 'code', 'minimum_stock'];
     const data = {};
     for (const key of updatable) {
       if (body[key] !== undefined) data[key] = body[key];
@@ -1136,6 +1140,7 @@ async getWarehouseSummaryByCompanyId(companyId) {
         product_id: productId,
         warehouse_id: warehouseId,
         active: true,
+        minimum_stock: options.minimum_stock !== undefined ? options.minimum_stock : 5,
         company_id: options.company_id,
         branch_id: options.branch_id,
         user_id: options.user_id

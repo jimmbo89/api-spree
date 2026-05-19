@@ -103,7 +103,7 @@ async getCriticalStockCount(companyId, threshold = 5) {
         model: WarehouseProduct,
         as: 'warehouseProduct',
         required: true,
-        attributes: ['id', 'product_id'],
+        attributes: ['id', 'product_id', 'minimum_stock'],
         include: [{
           model: Product,
           as: 'product',
@@ -113,22 +113,19 @@ async getCriticalStockCount(companyId, threshold = 5) {
           },
           attributes: ['id'],
           required: true
-        }],
-        attributes: []
+        }]
       }],
-      where: {
-        stock: {
-          [Op.lte]: threshold
-        }
-      },
-      attributes: [],
+      attributes: ['stock'],
       raw: true
     });
 
     const uniqueProductIds = new Set();
     lowStockVariants.forEach(variant => {
       const productId = variant['warehouseProduct.product.id'];
-      if (productId) {
+      const minimumStock = parseInt(variant['warehouseProduct.minimum_stock'], 10);
+      const stock = parseInt(variant.stock || 0, 10);
+      const effectiveMinimumStock = Number.isNaN(minimumStock) ? threshold : minimumStock;
+      if (productId && stock <= effectiveMinimumStock) {
         uniqueProductIds.add(productId);
       }
     });
@@ -298,7 +295,7 @@ async getProblemProducts(companyId, limit = 3) {
           model: WarehouseProduct,
           as: 'warehouseProduct',
           required: true,
-          attributes: ['id', 'product_id'],
+          attributes: ['id', 'product_id', 'minimum_stock'],
           include: [
             {
               model: Product,
@@ -318,11 +315,6 @@ async getProblemProducts(companyId, limit = 3) {
           ]
         }
       ],
-      where: {
-        stock: {
-          [Op.lte]: 5
-        }
-      },
       attributes: ['stock', 'warehouse_product_id'],
       raw: true
     });
@@ -330,6 +322,13 @@ async getProblemProducts(companyId, limit = 3) {
     // Agrupar por producto con validación estricta
     lowStockVariants.forEach(variant => {
       const productId = variant['warehouseProduct.product.id'];
+      const minimumStock = parseInt(variant['warehouseProduct.minimum_stock'], 10);
+      const effectiveMinimumStock = Number.isNaN(minimumStock) ? 5 : minimumStock;
+      const stock = parseInt(variant.stock || 0);
+
+      if (stock > effectiveMinimumStock) {
+        return;
+      }
       
       // Validación crítica: saltar variantes sin producto asociado válido
       if (!productId || !variant['warehouseProduct.product.name']) {
@@ -341,7 +340,6 @@ async getProblemProducts(companyId, limit = 3) {
       const productImages = variant['warehouseProduct.product.images'];
       const warehouseId = variant['warehouseProduct.warehouse.id'];
       const warehouseName = variant['warehouseProduct.warehouse.name'];
-      const stock = parseInt(variant.stock || 0);
 
       if (!problemProductsMap[productId]) {
         let mainImage = null;
@@ -366,7 +364,8 @@ async getProblemProducts(companyId, limit = 3) {
       problemProductsMap[productId].warehouses.push({
         id: warehouseId,
         name: warehouseName,
-        stock: stock
+        stock: stock,
+        minimum_stock: effectiveMinimumStock
       });
     });
     // Convertir mapa a array
@@ -932,6 +931,3 @@ function formatProcessDateTime(date) {
 }
 
 module.exports = DashboardRepository;
-
-
-
