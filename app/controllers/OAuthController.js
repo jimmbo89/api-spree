@@ -304,6 +304,35 @@ const resolveProductCostBasis = (product) => {
   return null;
 };
 
+const resolveEconomicInputs = (product) => {
+  const productCost = resolveProductCostBasis(product);
+  const packingCost = toNumberOrNull(product?.packing_cost);
+  const operationalCost = toNumberOrNull(product?.operational_cost);
+  const advertisingCost = toNumberOrNull(product?.advertising_cost);
+  const returnCostReserve = toNumberOrNull(product?.return_cost_reserve);
+  const desiredMarginPercent = toNumberOrNull(product?.desired_margin_percent);
+
+  const variableCostComponents = [
+    productCost,
+    packingCost,
+    operationalCost,
+    advertisingCost,
+    returnCostReserve
+  ].filter((value) => value !== null && value >= 0);
+
+  return {
+    product_cost: productCost,
+    packing_cost: packingCost,
+    operational_cost: operationalCost,
+    advertising_cost: advertisingCost,
+    return_cost_reserve: returnCostReserve,
+    desired_margin_percent: desiredMarginPercent,
+    total_cost_basis: variableCostComponents.length > 0
+      ? Number(variableCostComponents.reduce((sum, value) => sum + value, 0).toFixed(2))
+      : null
+  };
+};
+
 const extractCoverageSubsidy = (coverage) => {
   const discount = coverage?.discount;
   if (!discount) return 0;
@@ -356,6 +385,106 @@ const deriveShippingOperation = (shippingMode, logisticType) => {
   if (logisticType) return logisticType;
   if (shippingMode === "custom") return "manual_rates";
   return "unspecified";
+};
+
+const buildShippingMeasurementInput = (product) => {
+  if (!product || typeof product !== "object") return null;
+
+  if (product.package && typeof product.package === "object") {
+    return {
+      ...product.package,
+      volumetric_weight:
+        product.package.volumetric_weight ??
+        product.package.volumetric_weight_measurement ??
+        product.package.volumetric_weight_grams ??
+        product.volumetric_weight ??
+        product.volumetric_weight_measurement ??
+        product.volumetric_weight_grams ??
+        product.volumetric_weightolumetric_weight ??
+        null
+    };
+  }
+
+  const packagingMeasurements =
+    product.packaging_measurements && typeof product.packaging_measurements === "object"
+      ? product.packaging_measurements
+      : {};
+  const productMeasurements =
+    product.product_measurements && typeof product.product_measurements === "object"
+      ? product.product_measurements
+      : {};
+
+  return {
+    height_cm: product.height_cm,
+    width_cm: product.width_cm,
+    length_cm: product.length_cm,
+    weight_grams: product.weight_grams,
+    dimensions: Object.keys(packagingMeasurements.dimensions || {}).length > 0
+      ? packagingMeasurements.dimensions
+      : productMeasurements.dimensions,
+    weight: packagingMeasurements.weight || productMeasurements.weight || null,
+    volumetric_weight:
+      packagingMeasurements.volumetric_weight ||
+      productMeasurements.volumetric_weight ||
+      product.volumetric_weight ||
+      product.volumetric_weight_measurement ||
+      product.volumetric_weight_grams ||
+      product.volumetric_weightolumetric_weight ||
+      null
+  };
+};
+
+const buildPricingSummary = (pricing) => {
+  if (!pricing || pricing.error) return pricing || null;
+
+  return {
+    listing_type_id: pricing.listing_type_id || null,
+    listing_type_name: pricing.listing_type_name || null,
+    input_price: toNumberOrNull(pricing.input_price),
+    sale_fee_amount: toNumberOrZero(pricing.sale_fee_amount),
+    listing_fee_amount: toNumberOrZero(pricing.listing_fee_amount),
+    total_fee_amount: toNumberOrZero(pricing.total_fee_amount),
+    fee_percentage: toNumberOrZero(pricing.fee_percentage),
+    total_fee_percentage: toNumberOrZero(pricing.total_fee_percentage),
+    seller_shipping_cost: toNumberOrNull(pricing.seller_shipping_cost),
+    shipping_subsidy: toNumberOrZero(pricing.shipping_subsidy),
+    shipping_requested: Boolean(pricing.shipping_requested),
+    shipping_scenario: pricing.shipping_scenario || null,
+    campaign_tag_requested: pricing.campaign_tag_requested || null,
+    campaign_tag_applied: pricing.campaign_tag_applied || null,
+    campaign_pricing_applied: Boolean(pricing.campaign_pricing_applied),
+    net_amount_before_shipping: toNumberOrZero(pricing.net_amount),
+    net_amount_after_shipping:
+      pricing.net_amount_after_shipping !== undefined && pricing.net_amount_after_shipping !== null
+        ? toNumberOrZero(pricing.net_amount_after_shipping)
+        : toNumberOrZero(pricing.net_amount),
+    warning: pricing.warning || null
+  };
+};
+
+const buildPricingOptionsSummary = (pricingOptions = []) =>
+  Array.isArray(pricingOptions)
+    ? pricingOptions.map((option) => buildPricingSummary(option)).filter(Boolean)
+    : [];
+
+const buildCompactShippingView = (shipping, sellerShippingView) => {
+  if (!shipping) return null;
+
+  return {
+    buyer_pays: shipping.buyer_pays || null,
+    seller_pays: shipping.seller_pays || null,
+    selected_scenario_key: shipping.selected_scenario_key || null,
+    selected_summary: sellerShippingView || null,
+    requested_free_shipping: shipping.requested_free_shipping ?? null,
+    mandatory_free_shipping_detected: shipping.mandatory_free_shipping_detected ?? false,
+    logistic_model: shipping.logistic_model || sellerShippingView?.logistic_model || null,
+    shipping_operation: shipping.shipping_operation || sellerShippingView?.shipping_operation || null,
+    zip_code_used: shipping.zip_code_used || null,
+    item_shipping_option_used: shipping.item_shipping_option_used || null,
+    shipping_cost_source: shipping.shipping_cost_source || null,
+    shipping_cost_fallbacks: shipping.shipping_cost_fallbacks || null,
+    warning: shipping.warning || null
+  };
 };
 
 const extractProductZipCode = (product) => {
@@ -463,7 +592,7 @@ const normalizeShippingScenarios = ({
   };
 };
 
-const buildProfitabilityMetrics = ({ pricing, shippingSummary, productPrice, productCost }) => {
+const buildProfitabilityMetrics = ({ pricing, shippingSummary, productPrice, economicInputs }) => {
   if (!pricing || pricing.error || !Number.isFinite(Number(productPrice))) return null;
 
   const price = toNumberOrZero(productPrice);
@@ -472,8 +601,10 @@ const buildProfitabilityMetrics = ({ pricing, shippingSummary, productPrice, pro
   const shippingCost = toNumberOrZero(shippingSummary?.seller_shipping_cost);
   const netWithoutShipping = price - totalFee;
   const netWithShipping = netWithoutShipping - shippingCost;
-  const costBasis = toNumberOrZero(productCost);
-  const utilityFinal = productCost === null ? null : netWithShipping - costBasis;
+  const productCost = economicInputs?.product_cost ?? null;
+  const totalCostBasis = economicInputs?.total_cost_basis ?? null;
+  const costBasis = toNumberOrZero(totalCostBasis);
+  const utilityFinal = totalCostBasis === null ? null : netWithShipping - costBasis;
   const marginRaw = utilityFinal === null || price <= 0 ? null : (utilityFinal / price) * 100;
   const marginReal = marginRaw === null ? null : Number(clamp(marginRaw, -300, 300).toFixed(2));
 
@@ -485,7 +616,7 @@ const buildProfitabilityMetrics = ({ pricing, shippingSummary, productPrice, pro
       ? "profitable"
       : (criticalLoss ? "critical_loss" : "loss");
 
-  const recommendedMinimumPrice = productCost === null
+  const recommendedMinimumPrice = totalCostBasis === null
     ? null
     : Number((costBasis + totalFee + shippingCost).toFixed(2));
   const estimatedBreakEvenPrice = recommendedMinimumPrice;
@@ -503,6 +634,8 @@ const buildProfitabilityMetrics = ({ pricing, shippingSummary, productPrice, pro
     net_amount_without_shipping: Number(netWithoutShipping.toFixed(2)),
     net_amount_with_shipping: Number(netWithShipping.toFixed(2)),
     product_cost_basis: productCost,
+    total_cost_basis: totalCostBasis,
+    cost_components: economicInputs || null,
     final_profit: utilityFinal === null ? null : Number(utilityFinal.toFixed(2)),
     real_margin_percentage: marginReal,
     profitable,
@@ -694,18 +827,31 @@ const analyzeShippingPackage = (packageData) => {
     data.weight_g ??
     (data.weight_kg !== undefined && data.weight_kg !== null ? { unit: "kg", value: data.weight_kg } : null)
   );
+  const volumetricWeightInputGrams = toGrams(
+    data.volumetric_weight ??
+    data.volumetric_weight_measurement ??
+    data.volumetric_weight_grams ??
+    null
+  );
 
   if (![heightCm, widthCm, lengthCm, weightGrams].every(value => Number.isFinite(value) && value > 0)) {
     return null;
   }
 
-  const volumetricWeightGrams = (heightCm * widthCm * lengthCm) / 6;
+  const calculatedVolumetricWeightGrams = (heightCm * widthCm * lengthCm) / 6;
+  const volumetricWeightGrams = Number.isFinite(volumetricWeightInputGrams) && volumetricWeightInputGrams > 0
+    ? volumetricWeightInputGrams
+    : calculatedVolumetricWeightGrams;
   return {
     height_cm: heightCm,
     width_cm: widthCm,
     length_cm: lengthCm,
     weight_grams: weightGrams,
     volumetric_weight_grams: volumetricWeightGrams,
+    volumetric_weight_source: Number.isFinite(volumetricWeightInputGrams) && volumetricWeightInputGrams > 0
+      ? "input.volumetric_weight"
+      : "calculated_from_dimensions",
+    calculated_volumetric_weight_grams: calculatedVolumetricWeightGrams,
     billable_weight_grams: Math.max(weightGrams, volumetricWeightGrams),
     volumetric_ratio: volumetricWeightGrams / weightGrams
   };
@@ -722,6 +868,7 @@ const buildEconomicSummary = ({
   resolvedInstallments,
   sellerShippingView,
   profitability,
+  economicInputs,
   warnings
 }) => {
   if (!Number.isFinite(Number(price)) || !pricing || pricing.error) return null;
@@ -761,13 +908,16 @@ const buildEconomicSummary = ({
     },
     profitability: profitability ? {
       product_cost: profitability.product_cost_basis,
+      total_cost_basis: profitability.total_cost_basis ?? null,
       estimated_profit: profitability.final_profit,
       margin_percent: profitability.real_margin_percentage
     } : {
       product_cost: null,
+      total_cost_basis: null,
       estimated_profit: null,
       margin_percent: null
     },
+    economic_inputs: economicInputs || null,
     warnings: Array.isArray(warnings) ? warnings : []
   };
 };
@@ -1401,8 +1551,9 @@ async calculateMercadoLibreShippingCosts(credential, product, categoryId, siteId
 
   let dimensions = null;
   try {
-    if (product?.package) {
-      dimensions = OAuthController.formatDimensionsForAPI(product.package, { strict: false });
+    const shippingMeasurementInput = buildShippingMeasurementInput(product);
+    if (shippingMeasurementInput) {
+      dimensions = OAuthController.formatDimensionsForAPI(shippingMeasurementInput, { strict: true });
     }
   } catch (e) {
     dimensions = null;
@@ -2348,23 +2499,24 @@ async mercadoLibreShippingCosts(req, res) {
       }
 
       const nameFixed = product.name.trim();
+      const shippingMeasurementInput = buildShippingMeasurementInput(product);
       
       // Obtener price de cada producto
       const productPrice = (product.price !== undefined && product.price !== null && !isNaN(product.price))
         ? parseFloat(product.price)
         : null;
-      const productCostBasis = resolveProductCostBasis(product);
+      const economicInputs = resolveEconomicInputs(product);
       
       // Validar y formatear dimensiones si existen
       let dimensionsFormatted = null;
-      const packageAnalysis = analyzeShippingPackage(product.package);
-      if (product.package) {
+      const packageAnalysis = analyzeShippingPackage(shippingMeasurementInput);
+      if (shippingMeasurementInput) {
         try {
-          dimensionsFormatted = OAuthController.formatDimensionsForAPI(product.package, { strict: false });
+          dimensionsFormatted = OAuthController.formatDimensionsForAPI(shippingMeasurementInput, { strict: true });
           logger.info(`[Producto ${product.id}] Dimensiones formateadas: ${dimensionsFormatted}`);
         } catch (dimError) {
-          logger.warn(`[Producto ${product.id}] No se pudieron formatear dimensiones (best-effort): ${dimError.message}`);
-          dimensionsFormatted = "1x1x1,1";
+          logger.warn(`[Producto ${product.id}] Package inválido para shipping oficial ML: ${dimError.message}`);
+          dimensionsFormatted = null;
         }
       }
       
@@ -2382,13 +2534,13 @@ async mercadoLibreShippingCosts(req, res) {
           name: nameFixed,
           condition: productCondition,
           price: productPrice,
-          package: product.package || null,
+          shipping_measurements: shippingMeasurementInput || null,
           item_id: product.item_id || null,
           ml_item_id: product.ml_item_id || null
         }
       });
       const productCacheKey = `${nameFixed}__${requestFingerprint}`;
-      const cachedProductResult = getFromCache(`credential_${credential_id}`, `product_suggestion_${site_id}_v4`, productCacheKey);
+      const cachedProductResult = getFromCache(`credential_${credential_id}`, `product_suggestion_${site_id}_v7`, productCacheKey);
 
       if (cachedProductResult) {
         logger.info(`[CACHE HIT] Producto "${nameFixed}" en credential ${credential_id}`);
@@ -2451,7 +2603,7 @@ async mercadoLibreShippingCosts(req, res) {
 
         // === Cache de categoría con atributos ===
         const categoryCacheKey = `${cat.category_id}__${requestFingerprint}`;
-        const cachedCategory = getFromCache(`credential_${credential_id}`, `category_attributes_${site_id}_v4`, categoryCacheKey);
+        const cachedCategory = getFromCache(`credential_${credential_id}`, `category_attributes_${site_id}_v7`, categoryCacheKey);
 
         if (cachedCategory) {
           logger.info(`[CACHE HIT] Categoría ${cat.category_id} en credential ${credential_id}`);
@@ -2650,10 +2802,16 @@ async mercadoLibreShippingCosts(req, res) {
         if (normalizedInstallments.requested) {
           categoryWarnings.push("installments_request_ignored_backend_resolves_by_listing_type");
         }
+        if (shippingMeasurementInput && !dimensionsFormatted) {
+          categoryWarnings.push("shipping_input_invalid_package_data");
+        }
         if (packageAnalysis && packageAnalysis.volumetric_ratio >= 8) {
           categoryWarnings.push(
             `shipping_billable_weight_high:actual_${Math.round(packageAnalysis.weight_grams)}g_vs_volumetric_${Math.round(packageAnalysis.volumetric_weight_grams)}g`
           );
+        }
+        if (economicInputs.product_cost === null) {
+          categoryWarnings.push("profitability_unknown_missing_purchase_price");
         }
 
         // === 💰 Obtener pricing/comisiones ===
@@ -2774,7 +2932,7 @@ async mercadoLibreShippingCosts(req, res) {
             pricing,
             shippingSummary,
             productPrice,
-            productCost: productCostBasis
+            economicInputs
           });
           if (profitability) {
             pricing.profitability = profitability;
@@ -2791,6 +2949,7 @@ async mercadoLibreShippingCosts(req, res) {
           resolvedInstallments: null,
           sellerShippingView,
           profitability: pricing?.profitability || null,
+          economicInputs,
           warnings: categoryWarnings
         });
 
@@ -2833,7 +2992,45 @@ async mercadoLibreShippingCosts(req, res) {
             && option.logistic_type === effectiveLogisticType
         }));
 
+        const packageAnalysisView = packageAnalysis ? {
+          actual_weight_grams: Math.round(packageAnalysis.weight_grams),
+          volumetric_weight_grams: Math.round(packageAnalysis.volumetric_weight_grams),
+          calculated_volumetric_weight_grams: Math.round(packageAnalysis.calculated_volumetric_weight_grams),
+          volumetric_weight_source: packageAnalysis.volumetric_weight_source,
+          billable_weight_grams: Math.round(packageAnalysis.billable_weight_grams),
+          volumetric_ratio: Number(packageAnalysis.volumetric_ratio.toFixed(2))
+        } : null;
+        const quoteBlock = {
+          price: productPrice,
+          pricing: productPrice !== null ? buildPricingSummary(pricing) : null,
+          pricing_options: productPrice !== null ? buildPricingOptionsSummary(pricing_options) : [],
+          shipping: hasShippingInput ? buildCompactShippingView(shipping, sellerShippingView) : null,
+          package_analysis: packageAnalysisView,
+          profitability: pricing?.profitability || null,
+          economic_summary: categoryEconomicSummary,
+          shipping_policy: hasShippingInput ? {
+            requested_free_shipping: shipping?.requested_free_shipping ?? null,
+            mandatory_free_shipping_detected: shipping?.mandatory_free_shipping_detected ?? false
+          } : null
+        };
+
         const categoryData = {
+          response_format_version: "v2_compact",
+          requested: {
+            strategy: selectedStrategy,
+            listing_type_id: listing_type_id || null,
+            shipping_mode: shipping_mode || null,
+            logistic_type: logistic_type || null,
+            installments: normalizedInstallments,
+            economic_inputs: economicInputs
+          },
+          resolved: {
+            category_id: cat.category_id,
+            listing_type_id: effectiveListingType,
+            shipping_mode: effectiveShippingMode,
+            logistic_type: effectiveLogisticType,
+            strategy: selectedStrategy
+          },
           category_id: cat.category_id,
           category_name: cat.category_name,
           domain_id: cat.domain_id,
@@ -2884,37 +3081,16 @@ async mercadoLibreShippingCosts(req, res) {
           listing_resolution: listingResolution,
           attributes,
           ...(categoryInfo && { category_settings: categoryInfo.settings || {} }),
-          ...(productPrice !== null && { pricing_options }),
-          ...(productPrice !== null && { pricing }),
-          ...(categoryEconomicSummary && { economic_summary: categoryEconomicSummary }),
+          quote: quoteBlock,
           ...(shippingCombinations.length > 0 && { shipping_combinations: shippingCombinations }),
-          ...(hasShippingInput && { shipping }),
-          ...(hasShippingInput && { shipping_summary: sellerShippingView }),
-          ...(hasShippingInput && { shipping_selected_scenario: shipping?.selected_scenario_key || null }),
-          ...(hasShippingInput && { shipping_seller_view: sellerShippingView }),
-          ...(packageAnalysis && { shipping_package_analysis: {
-            actual_weight_grams: Math.round(packageAnalysis.weight_grams),
-            volumetric_weight_grams: Math.round(packageAnalysis.volumetric_weight_grams),
-            billable_weight_grams: Math.round(packageAnalysis.billable_weight_grams),
-            volumetric_ratio: Number(packageAnalysis.volumetric_ratio.toFixed(2))
-          }}),
-          ...(hasShippingInput && { shipping_economic_recommendations: {
-            for_conversion: shipping?.mandatory_free_shipping_detected
-              ? "mandatory_free_shipping"
-              : "seller_free_shipping",
-            for_margin: "lowest_seller_shipping_cost"
-          }}),
-          ...(hasShippingInput && { shipping_policy: {
-            requested_free_shipping: shipping?.requested_free_shipping ?? null,
-            mandatory_free_shipping_detected: shipping?.mandatory_free_shipping_detected ?? false
-          }})
+          ...(hasShippingInput && { shipping_policy: quoteBlock.shipping_policy })
         };
 
-        saveToCache(`credential_${credential_id}`, `category_attributes_${site_id}_v4`, categoryCacheKey, categoryData);
+        saveToCache(`credential_${credential_id}`, `category_attributes_${site_id}_v7`, categoryCacheKey, categoryData);
         categoriesWithAttrs.push(categoryData);
       }
 
-      saveToCache(`credential_${credential_id}`, `product_suggestion_${site_id}_v4`, productCacheKey, categoriesWithAttrs);
+      saveToCache(`credential_${credential_id}`, `product_suggestion_${site_id}_v7`, productCacheKey, categoriesWithAttrs);
 
       suggestions.push({
         product_id: product.id,
@@ -2937,7 +3113,7 @@ async mercadoLibreShippingCosts(req, res) {
       p =>
         p.price !== undefined &&
         p.price !== null &&
-        (p.package !== undefined || p.item_id !== undefined || p.ml_item_id !== undefined)
+        (buildShippingMeasurementInput(p) || p.item_id !== undefined || p.ml_item_id !== undefined)
     );
     const allCategoriesFlattened = suggestions.flatMap(s => Array.isArray(s.categories) ? s.categories : []);
     const firstCategoryWithInstallments = allCategoriesFlattened.find(
@@ -2969,6 +3145,7 @@ async mercadoLibreShippingCosts(req, res) {
     };
     return res.status(200).json({
       success: true,
+      response_format_version: "v2_compact",
       selection_model: {
         strategies: [
           {
