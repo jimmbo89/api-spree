@@ -50,6 +50,35 @@ const PRODUCT_AUDIT_FIELDS = [
   "sync_meta",
 ];
 
+function getDuplicateVariantSkuError(error) {
+  if (error?.name !== "SequelizeUniqueConstraintError") {
+    return null;
+  }
+
+  const duplicatedSku =
+    error?.errors?.find((item) => item.path === "product_variants_sku")?.value ||
+    error?.fields?.product_variants_sku ||
+    null;
+
+  const hasVariantSkuConstraint =
+    Boolean(duplicatedSku) ||
+    error?.errors?.some((item) => item.path === "product_variants_sku") ||
+    error?.parent?.sqlMessage?.includes("product_variants_sku");
+
+  if (!hasVariantSkuConstraint) {
+    return null;
+  }
+
+  return {
+    success: false,
+    msg: "DuplicateVariantSku",
+    details: duplicatedSku
+      ? `Ya existe una variante con el SKU ${duplicatedSku}. Debe usar un SKU unico para cada variante.`
+      : "Ya existe una variante con el SKU informado. Debe usar un SKU unico para cada variante.",
+    sku: duplicatedSku,
+  };
+}
+
 const ProductController = {
   async list(req, res) {
     logger.info(`${req.user?.name || "Unknown"} - Lista productos`);
@@ -604,6 +633,12 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
       if (transaction) await transaction.rollback();
       logger.error("ProductController->store - Error: " + error.message);
       logger.error("Stack: " + error.stack);
+
+      const duplicateVariantSkuError = getDuplicateVariantSkuError(error);
+      if (duplicateVariantSkuError) {
+        return res.status(409).json(duplicateVariantSkuError);
+      }
+
       res.status(500).json({
         success: false,
         error: "ServerError",
