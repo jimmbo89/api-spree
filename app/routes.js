@@ -369,7 +369,8 @@ router.post("/marketplace-update", requireRoles([ 'Backoffice', 'Admin', 'Seller
 router.post("/marketplace-destroy", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(idMarketplaceSchema), MarketplaceController.destroy);
 router.post("/marketplace-show", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(idMarketplaceSchema), MarketplaceController.show);
 router.post("/marketplace-list", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), MarketplaceController.list); // list no necesita schema (validación manual de company_id)
-router.post('/mercado-libre-suggested-categories', OAuthController.mercadoLibreSuggestedCategoriesWithAttributes);
+router.post('/mercado-libre-suggested-categories', OAuthController.mercadoLibreSuggestedCategoriesSelection);
+router.post('/mercado-libre-category-calculations', OAuthController.mercadoLibreSuggestedCategoriesWithAttributes);
 router.post("/mercado-libre-category", OAuthController.mercadoLibreCategory);
 router.post("/mercado-libre-attributes", OAuthController.mercadoLibreAttributes);
 router.post("/falabella-suggested-categories", OAuthController.falabellaSuggestedCategoriesWithAttributes);

@@ -487,6 +487,145 @@ const buildCompactShippingView = (shipping, sellerShippingView) => {
   };
 };
 
+const normalizeMlSuggestedCategoriesResponseDetail = (value) => {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (["full", "complete", "verbose"].includes(normalized)) return "full";
+  return "essential";
+};
+
+const buildMlSuggestedCategoryPayload = (categoryData, responseDetail) => {
+  if (responseDetail === "full") {
+    return categoryData;
+  }
+
+  return {
+    response_format_version: "v2_essential",
+    category_id: categoryData.category_id,
+    category_name: categoryData.category_name,
+    domain_id: categoryData.domain_id,
+    domain_name: categoryData.domain_name,
+    path: categoryData.path,
+    resolved: categoryData.resolved,
+    listing_resolution: categoryData.listing_resolution,
+    selection_warnings: Array.isArray(categoryData.selection_warnings) ? categoryData.selection_warnings : [],
+    attributes: Array.isArray(categoryData.attributes) ? categoryData.attributes : [],
+    available_choices: {
+      listing_types: Array.isArray(categoryData.listing_types)
+        ? categoryData.listing_types.map((item) => ({
+            value: item.value,
+            title: item.title,
+            description: item.description
+          }))
+        : [],
+      shipping_combinations: Array.isArray(categoryData.shipping_combinations)
+        ? categoryData.shipping_combinations
+        : [],
+      shipping_modes_count: categoryData.shipping_modes_count ?? 0
+    },
+    quote: categoryData.quote
+      ? {
+          price: categoryData.quote.price ?? null,
+          pricing: categoryData.quote.pricing || null,
+          shipping: categoryData.quote.shipping
+            ? {
+                selected_scenario_key: categoryData.quote.shipping.selected_scenario_key || null,
+                selected_summary: categoryData.quote.shipping.selected_summary || null,
+                shipping_cost_source: categoryData.quote.shipping.shipping_cost_source || null,
+                shipping_cost_fallbacks: categoryData.quote.shipping.shipping_cost_fallbacks || null,
+                warning: categoryData.quote.shipping.warning || null
+              }
+            : null,
+          profitability: categoryData.quote.profitability || null,
+          economic_summary: categoryData.quote.economic_summary || null,
+          shipping_policy: categoryData.quote.shipping_policy || null
+        }
+      : null
+  };
+};
+
+const buildMlSuggestedProductSuggestion = ({
+  product,
+  credentialId,
+  marketplaceId,
+  selectedStrategy,
+  normalizedInstallments,
+  strategyWarnings,
+  categories
+}) => ({
+  product_id: product.id,
+  credential_id: credentialId,
+  marketplace_id: marketplaceId,
+  response_focus: "economic_summary",
+  selection_context: {
+    strategy: selectedStrategy,
+    installments: {
+      request_ignored: normalizedInstallments.requested,
+      campaign_tag_requested: normalizeCampaignTagValue(normalizedInstallments?.campaign_tag)
+    },
+    warnings: strategyWarnings
+  },
+  categories
+});
+
+const buildMlSelectionCategoryPayload = ({
+  cat,
+  attributes,
+  listingTypesForCategory,
+  filteredShippingModes,
+  logisticTypesForCategory,
+  shippingCombinations,
+  shippingOptions,
+  selectedStrategy,
+  effectiveListingType,
+  effectiveShippingMode,
+  effectiveLogisticType,
+  selectionWarnings
+}) => {
+  const logisticTypesByShippingMode = {};
+
+  for (const combo of Array.isArray(shippingCombinations) ? shippingCombinations : []) {
+    if (!combo?.shipping_mode) continue;
+    if (!logisticTypesByShippingMode[combo.shipping_mode]) {
+      logisticTypesByShippingMode[combo.shipping_mode] = [];
+    }
+
+    if (!combo.logistic_type) continue;
+
+    const logisticEntry = logisticTypesForCategory.find((entry) => entry.value === combo.logistic_type);
+    if (!logisticEntry) continue;
+
+    const currentList = logisticTypesByShippingMode[combo.shipping_mode];
+    if (currentList.some((entry) => entry.value === logisticEntry.value)) continue;
+
+    currentList.push({
+      value: logisticEntry.value,
+      title: logisticEntry.title,
+      description: logisticEntry.description || null
+    });
+  }
+
+  return {
+    category_id: cat.category_id,
+    category_name: cat.category_name,
+    domain_id: cat.domain_id,
+    domain_name: cat.domain_name,
+    path: cat.path,
+    attributes: Array.isArray(attributes) ? attributes : [],
+    listing_types: Array.isArray(listingTypesForCategory) ? listingTypesForCategory : [],
+    shipping_modes: Array.isArray(filteredShippingModes) ? filteredShippingModes : [],
+    shipping_options: Array.isArray(shippingOptions) ? shippingOptions : [],
+    logistic_types_by_shipping_mode: logisticTypesByShippingMode,
+    shipping_combinations: Array.isArray(shippingCombinations) ? shippingCombinations : [],
+    defaults: {
+      strategy: selectedStrategy,
+      listing_type_id: effectiveListingType,
+      shipping_mode: effectiveShippingMode,
+      logistic_type: effectiveLogisticType
+    },
+    selection_warnings: Array.isArray(selectionWarnings) ? selectionWarnings : []
+  };
+};
+
 const extractProductZipCode = (product) => {
   const candidates = [
     product?.zip_code,
@@ -2039,14 +2178,536 @@ async mercadoLibreShippingCosts(req, res) {
   }
 },
 
+  async mercadoLibreSuggestedCategoriesSelection(req, res) {
+    logger.info(`Datos recibidos para categorías sugeridas de selección en MercadoLibre:\n ${JSON.stringify(req.body)}`);
+
+    const {
+      credential_id,
+      products,
+      listing_type_id,
+      logistic_type,
+      shipping_mode,
+      strategy
+    } = req.body;
+
+    const user_id = req.user?.id || req.body.user_id;
+    const selectedStrategy = normalizeStrategy(strategy, listing_type_id);
+
+    if (!credential_id) {
+      return res.status(400).json({ success: false, error: "credential_id es requerido" });
+    }
+
+    if (!Array.isArray(products) || products.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Se requiere un array no vacío de productos con 'id' y 'name'."
+      });
+    }
+
+    const invalidProducts = products.filter(product => !String(product?.name || "").trim());
+    if (invalidProducts.length > 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Todos los productos deben incluir 'name'."
+      });
+    }
+
+    try {
+      try {
+        await marketplaceRateLimiter.consume(user_id);
+      } catch (rateLimitError) {
+        logger.warn(`Rate limit excedido para usuario ${user_id}`);
+        return res.status(429).json({
+          success: false,
+          error: "Demasiadas solicitudes. Por favor, espera un momento."
+        });
+      }
+
+      const credential = await MarketplaceCredentialRepository.findById(credential_id);
+      if (!credential) {
+        return res.status(404).json({ success: false, error: "Credencial no encontrada" });
+      }
+
+      if (credential.user_id !== user_id) {
+        return res.status(403).json({ success: false, error: "No autorizado" });
+      }
+
+      const marketplace_id = credential.marketplace_id;
+      const site_id = getMercadoLibreSiteId(credential.marketplace?.domain);
+
+      const getMercadoLibreUserIdFromCredential = (cred) => {
+        if (!cred) return null;
+        if (cred.ml_user_id) return cred.ml_user_id;
+        const additional = cred.additional_data;
+        if (!additional) return null;
+        if (typeof additional === "object") return additional.ml_user_id || null;
+        if (typeof additional === "string") {
+          try {
+            const parsed = JSON.parse(additional);
+            return parsed?.ml_user_id || null;
+          } catch (e) {
+            return null;
+          }
+        }
+        return null;
+      };
+
+      const fetchMercadoLibreUserId = async (accessToken) => {
+        if (!accessToken) return null;
+        try {
+          const meResponse = await axios.get("https://api.mercadolibre.com/users/me", {
+            headers: { Authorization: `Bearer ${accessToken}` },
+            timeout: 8000
+          });
+          return meResponse.data?.id || null;
+        } catch (e) {
+          return null;
+        }
+      };
+
+      const mlUserId = getMercadoLibreUserIdFromCredential(credential) || await fetchMercadoLibreUserId(credential.access_token);
+
+      let shippingModesCatalog = [];
+      let logisticTypesCatalog = [];
+      try {
+        const [shippingModesResponse, logisticTypesResponse] = await Promise.all([
+          MercadoLibreCapabilitiesService.getAvailableShippingModes(credential),
+          MercadoLibreCapabilitiesService.getAvailableLogisticTypes(credential)
+        ]);
+        shippingModesCatalog = shippingModesResponse?.shipping_modes || [];
+        logisticTypesCatalog = logisticTypesResponse?.logistic_types || [];
+      } catch (capError) {
+        logger.warn(`[ML OPTIONS] No se pudieron cargar shipping/logistic: ${capError.message}`);
+        shippingModesCatalog = MercadoLibreCapabilitiesService.getFallbackShippingModes();
+        logisticTypesCatalog = MercadoLibreCapabilitiesService.getFallbackLogisticTypes();
+      }
+
+      const isLogisticCompatibleWithMode = (logisticEntry, mode) => {
+        const compatibleMode = logisticEntry?.ml_metadata?.compatible_shipping_mode;
+        if (!compatibleMode) return true;
+        return compatibleMode === mode;
+      };
+
+      const buildShippingPreferenceCandidates = (userPreferences, categoryPreferences) => {
+        const userModes = Array.isArray(userPreferences?.modes) ? userPreferences.modes : [];
+        const categoryLogistics = Array.isArray(categoryPreferences?.logistics) ? categoryPreferences.logistics : [];
+        const categoryModes = categoryLogistics
+          .map(entry => entry?.mode)
+          .filter(Boolean);
+
+        if (userModes.length === 0 || categoryModes.length === 0) {
+          return null;
+        }
+
+        const allowedModes = userModes.filter(mode => categoryModes.includes(mode));
+        if (allowedModes.length === 0) {
+          return {
+            shippingModes: [],
+            logisticTypes: [],
+            combos: []
+          };
+        }
+
+        const userLogistics = Array.isArray(userPreferences?.logistics) ? userPreferences.logistics : [];
+        const combos = [];
+
+        for (const mode of allowedModes) {
+          const categoryEntry = categoryLogistics.find(entry => entry?.mode === mode);
+          const userEntry = userLogistics.find(entry => entry?.mode === mode);
+
+          const categoryTypes = Array.isArray(categoryEntry?.types)
+            ? categoryEntry.types.map(type => typeof type === "string" ? type : type?.type).filter(Boolean)
+            : [];
+          const userTypes = Array.isArray(userEntry?.types)
+            ? userEntry.types.map(type => typeof type === "string" ? type : type?.type).filter(Boolean)
+            : [];
+
+          const effectiveTypes = userTypes.length > 0
+            ? categoryTypes.filter(type => userTypes.includes(type))
+            : categoryTypes;
+
+          if (effectiveTypes.length === 0) {
+            combos.push({ shipping_mode: mode, logistic_type: null });
+            continue;
+          }
+
+          for (const type of effectiveTypes) {
+            combos.push({ shipping_mode: mode, logistic_type: type });
+          }
+        }
+
+        const allowedModeSet = new Set(combos.map(combo => combo.shipping_mode));
+        const allowedTypeSet = new Set(combos.map(combo => combo.logistic_type).filter(Boolean));
+
+        return {
+          shippingModes: shippingModesCatalog.filter(sm => allowedModeSet.has(sm.value)),
+          logisticTypes: logisticTypesCatalog.filter(lt => allowedTypeSet.has(lt.value)),
+          combos: dedupeShippingCombos(combos)
+        };
+      };
+
+      const buildFallbackShippingCombos = (availableModes = shippingModesCatalog, availableLogistics = logisticTypesCatalog) => {
+        const combos = [];
+
+        for (const modeEntry of availableModes) {
+          const compatibleLogistics = availableLogistics.filter(lt => isLogisticCompatibleWithMode(lt, modeEntry.value));
+          if (compatibleLogistics.length === 0) {
+            combos.push({
+              shipping_mode: modeEntry.value,
+              logistic_type: null
+            });
+            continue;
+          }
+
+          for (const logisticEntry of compatibleLogistics) {
+            combos.push({
+              shipping_mode: modeEntry.value,
+              logistic_type: logisticEntry.value
+            });
+          }
+        }
+
+        return dedupeShippingCombos(combos);
+      };
+
+      const buildSelectionShippingOptions = (combos, effectiveMode, effectiveLogistic) => {
+        if (!Array.isArray(combos) || combos.length === 0) return [];
+
+        return dedupeShippingCombos(sortShippingCombos(combos)).map((combo) => {
+          const modeEntry = shippingModesCatalog.find(sm => sm.value === combo.shipping_mode) || null;
+          const logisticEntry = logisticTypesCatalog.find(lt => lt.value === combo.logistic_type) || null;
+          const shippingModeLabel = modeEntry?.description || modeEntry?.title || combo.shipping_mode;
+          const logisticTypeLabel = logisticEntry?.description || logisticEntry?.title || combo.logistic_type || "No especificado";
+          return {
+            shipping_mode: combo.shipping_mode,
+            logistic_type: combo.logistic_type,
+            title: shippingModeLabel,
+            subtitle: logisticTypeLabel,
+            shipping_mode_label: shippingModeLabel,
+            logistic_type_label: logisticTypeLabel,
+            id: `${combo.shipping_mode}:${combo.logistic_type || "none"}`,
+            is_default: combo.shipping_mode === effectiveMode && combo.logistic_type === effectiveLogistic
+          };
+        });
+      };
+
+      const suggestions = [];
+      let cacheHits = 0;
+      let apiCalls = 0;
+      let listingTypesCalls = 0;
+
+      for (const product of products) {
+        const nameFixed = product.name.trim();
+        const productCondition = String(product.condition || "new").toLowerCase();
+        const productPrice = Number.isFinite(Number(product.price)) ? Number(product.price) : null;
+        const shippingMeasurementInput = buildShippingMeasurementInput(product);
+        const requestFingerprint = stableStringify({
+          strategy: selectedStrategy,
+          listing_type_id: listing_type_id || null,
+          shipping_mode: shipping_mode || null,
+          logistic_type: logistic_type || null,
+          product: {
+            id: product.id,
+            name: nameFixed,
+            condition: productCondition,
+            price: productPrice,
+            shipping_measurements: shippingMeasurementInput || null,
+            item_id: product.item_id || null,
+            ml_item_id: product.ml_item_id || null
+          }
+        });
+
+        const productCacheKey = `${nameFixed}__${requestFingerprint}`;
+        const cachedProductResult = getFromCache(`credential_${credential_id}`, `product_selection_${site_id}_v1`, productCacheKey);
+
+        if (cachedProductResult) {
+          cacheHits++;
+          suggestions.push({
+            product_id: product.id,
+            credential_id,
+            marketplace_id,
+            categories: cachedProductResult
+          });
+          continue;
+        }
+
+        apiCalls++;
+
+        let categories = [];
+        try {
+          const catResponse = await axios.get(
+            `https://api.mercadolibre.com/sites/${site_id}/domain_discovery/search`,
+            {
+              params: { q: nameFixed, limit: 3 },
+              timeout: 20000
+            }
+          );
+
+          categories = (catResponse.data || []).map(cat => ({
+            category_id: cat.category_id,
+            category_name: cat.category_name,
+            domain_id: cat.domain_id,
+            domain_name: cat.domain_name,
+            path: cat.domain_name || ""
+          }));
+        } catch (catErr) {
+          logger.error(`Error al obtener categorías para "${nameFixed}": ${catErr.message}`);
+          suggestions.push({
+            product_id: product.id,
+            credential_id,
+            marketplace_id,
+            categories: []
+          });
+          continue;
+        }
+
+        const categoriesSelection = [];
+
+        for (const cat of categories) {
+          if (!cat.category_id) continue;
+
+          const categoryCacheKey = `${cat.category_id}__${requestFingerprint}`;
+          const cachedCategory = getFromCache(`credential_${credential_id}`, `category_selection_${site_id}_v1`, categoryCacheKey);
+          if (cachedCategory) {
+            categoriesSelection.push(cachedCategory);
+            continue;
+          }
+
+          const selectionWarnings = [];
+          let attributes = [];
+
+          try {
+            const attrResponse = await axios.get(
+              `https://api.mercadolibre.com/categories/${cat.category_id}/attributes`,
+              {
+                headers: { Authorization: `Bearer ${credential.access_token}` },
+                timeout: 20000
+              }
+            );
+            attributes = attrResponse.data || [];
+          } catch (attrErr) {
+            logger.error(`Error al cargar atributos para categoría ${cat.category_id}: ${attrErr.message}`);
+          }
+
+          let listingTypesForCategory = [];
+          try {
+            if (mlUserId) {
+              const listingTypesCacheKey = `listing_types_${site_id}_${cat.category_id}`;
+              const cachedListingTypes = getFromCache(`credential_${credential_id}`, "category_listing_types", listingTypesCacheKey);
+
+              if (cachedListingTypes && Array.isArray(cachedListingTypes)) {
+                listingTypesForCategory = cachedListingTypes;
+              } else {
+                listingTypesCalls++;
+                const userLtResponse = await axios.get(
+                  `https://api.mercadolibre.com/users/${mlUserId}/available_listing_types`,
+                  {
+                    params: { category_id: cat.category_id },
+                    headers: { Authorization: `Bearer ${credential.access_token}` },
+                    timeout: 12000
+                  }
+                );
+
+                const availableData = userLtResponse.data?.available || userLtResponse.data || [];
+                listingTypesForCategory = normalizeSupportedListingTypes(availableData, site_id);
+                saveToCache(`credential_${credential_id}`, "category_listing_types", listingTypesCacheKey, listingTypesForCategory, 1800);
+              }
+            }
+          } catch (ltError) {
+            logger.warn(`No se pudieron obtener listing types para categoría ${cat.category_id}: ${ltError.message}`);
+            listingTypesForCategory = [];
+          }
+
+          let listingResolution = null;
+          let effectiveListingType = null;
+          try {
+            listingResolution = resolveListingTypeByStrategy(selectedStrategy, listingTypesForCategory);
+            effectiveListingType = listingResolution.listing_type_id;
+          } catch (listingError) {
+            logger.warn(`No se pudo resolver listing type para categoría ${cat.category_id}: ${listingError.message}`);
+            effectiveListingType = "gold_special";
+            listingResolution = {
+              listing_type_id: effectiveListingType,
+              fallback_applied: true,
+              note: "No se pudieron validar tipos de publicación para esta categoría. Se aplicó fallback por defecto.",
+              error: listingError.message
+            };
+            selectionWarnings.push("listing_type_resolution_fallback_applied");
+          }
+
+          let filteredShippingModes = shippingModesCatalog;
+          let logisticTypesForCategory = [];
+          let availableShippingCombos = buildFallbackShippingCombos(filteredShippingModes, logisticTypesCatalog);
+          let effectiveShippingMode = null;
+          let effectiveLogisticType = null;
+          let userShippingPreferences = null;
+          let categoryShippingPreferences = null;
+
+          if (mlUserId) {
+            try {
+              [userShippingPreferences, categoryShippingPreferences] = await Promise.all([
+                MercadoLibreCapabilitiesService.getUserShippingPreferences(credential, mlUserId),
+                MercadoLibreCapabilitiesService.getCategoryShippingPreferences(credential, cat.category_id)
+              ]);
+            } catch (shippingPreferencesError) {
+              logger.warn(`[ML SHIPPING PREFS] No se pudieron cargar preferencias oficiales para categoría ${cat.category_id}: ${shippingPreferencesError.message}`);
+            }
+          }
+
+          const preferenceCandidates = buildShippingPreferenceCandidates(
+            userShippingPreferences,
+            categoryShippingPreferences
+          );
+
+          if (preferenceCandidates) {
+            if (preferenceCandidates.shippingModes.length > 0) {
+              filteredShippingModes = preferenceCandidates.shippingModes;
+            } else {
+              selectionWarnings.push("shipping_modes_empty_by_preferences");
+            }
+
+            if (preferenceCandidates.combos.length > 0) {
+              availableShippingCombos = preferenceCandidates.combos;
+            }
+          }
+
+          availableShippingCombos = dedupeShippingCombos(
+            availableShippingCombos.filter(combo =>
+              filteredShippingModes.some(modeEntry => modeEntry.value === combo.shipping_mode)
+            )
+          );
+
+          const shippingComboResolution = selectPreferredShippingCombo({
+            requestedMode: shipping_mode,
+            requestedLogisticType: logistic_type,
+            availableCombos: availableShippingCombos
+          });
+
+          if (shippingComboResolution.combo) {
+            effectiveShippingMode = shippingComboResolution.combo.shipping_mode;
+            effectiveLogisticType = shippingComboResolution.combo.logistic_type;
+          } else {
+            effectiveShippingMode = shipping_mode || filteredShippingModes[0]?.value || shippingModesCatalog[0]?.value || "me2";
+            const compatibleFallbackLogistic = logisticTypesCatalog.find(lt => isLogisticCompatibleWithMode(lt, effectiveShippingMode));
+            effectiveLogisticType = logistic_type || compatibleFallbackLogistic?.value || null;
+            selectionWarnings.push("shipping_combo_resolution_fallback_applied");
+          }
+
+          const filteredModeSet = new Set(availableShippingCombos.map(combo => combo.shipping_mode));
+          filteredShippingModes = shippingModesCatalog.filter(sm => filteredModeSet.has(sm.value));
+          const logisticTypeSetForSelectedMode = new Set(
+            availableShippingCombos
+              .filter(combo => combo.shipping_mode === effectiveShippingMode)
+              .map(combo => combo.logistic_type)
+              .filter(Boolean)
+          );
+          logisticTypesForCategory = logisticTypesCatalog.filter(lt => logisticTypeSetForSelectedMode.has(lt.value));
+          selectionWarnings.push(...shippingComboResolution.warnings);
+
+          const selectionShippingOptions = buildSelectionShippingOptions(
+            availableShippingCombos,
+            effectiveShippingMode,
+            effectiveLogisticType
+          );
+
+          const categoryPayload = buildMlSelectionCategoryPayload({
+            cat,
+            attributes,
+            listingTypesForCategory,
+            filteredShippingModes,
+            logisticTypesForCategory,
+            shippingCombinations: sortShippingCombos(availableShippingCombos),
+            shippingOptions: selectionShippingOptions,
+            selectedStrategy,
+            effectiveListingType,
+            effectiveShippingMode,
+            effectiveLogisticType,
+            selectionWarnings
+          });
+
+          saveToCache(`credential_${credential_id}`, `category_selection_${site_id}_v1`, categoryCacheKey, categoryPayload, 900);
+          categoriesSelection.push(categoryPayload);
+        }
+
+        saveToCache(`credential_${credential_id}`, `product_selection_${site_id}_v1`, productCacheKey, categoriesSelection, 900);
+        suggestions.push({
+          product_id: product.id,
+          credential_id,
+          marketplace_id,
+          categories: categoriesSelection
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        response_format_version: "v1_selection",
+        selection_model: {
+          strategies: [
+            {
+              value: ML_STRATEGY.MARGIN,
+              label: "Ganar más por producto",
+              description: "Menor comisión"
+            },
+            {
+              value: ML_STRATEGY.CONVERSION,
+              label: "Vender más rápido",
+              description: "Mayor exposición"
+            }
+          ],
+          strategy: selectedStrategy,
+          selection_scope: {
+            listing_type_effective: "category",
+            shipping_mode_effective: "category",
+            logistic_type_effective: "category"
+          },
+          warnings: []
+        },
+        suggestions,
+        count: suggestions.length,
+        stats: {
+          total_products: products.length,
+          cache_hits: cacheHits,
+          api_calls: apiCalls,
+          listing_types_calls: listingTypesCalls,
+          cache_hit_rate: products.length > 0
+            ? ((cacheHits / products.length) * 100).toFixed(2) + "%"
+            : "0%"
+        },
+        warnings: []
+      });
+    } catch (error) {
+      logger.error(`❌ Error general en mercadoLibreSuggestedCategoriesSelection: ${error.message}`, {
+        stack: error.stack,
+        body: req.body
+      });
+      return res.status(500).json({
+        success: false,
+        error: "Error interno al procesar categorías sugeridas de selección de MercadoLibre."
+      });
+    }
+  },
+
 // ✅ MÉTODO ACTUALIZADO - Ahora incluye shipping costs
   async mercadoLibreSuggestedCategoriesWithAttributes(req, res) {
   logger.info(`Datos recibidos para categorías sugeridas con atributos, pricing y shipping en MercadoLibre:\n ${JSON.stringify(req.body)}`);
 
-  const { credential_id, products, listing_type_id, logistic_type, shipping_mode, strategy, installments } = req.body;
+  const {
+    credential_id,
+    products,
+    listing_type_id,
+    logistic_type,
+    shipping_mode,
+    strategy,
+    installments,
+    response_detail
+  } = req.body;
   const user_id = req.user?.id || req.body.user_id;
   let selectedStrategy = normalizeStrategy(strategy, listing_type_id);
   const normalizedInstallments = normalizeInstallments(installments);
+  const resolvedResponseDetail = normalizeMlSuggestedCategoriesResponseDetail(response_detail);
+  const hasExplicitSelections = Array.isArray(products) && products.length > 0
+    ? products.every(product => product?.selection?.category_id)
+    : false;
   const strategyWarnings = [];
   if (normalizedInstallments.requested) {
     strategyWarnings.push("installments_request_ignored_backend_resolves_by_listing_type");
@@ -2060,6 +2721,33 @@ async mercadoLibreShippingCosts(req, res) {
     return res.status(400).json({
       success: false,
       error: "Se requiere un array no vacío de productos con 'id' y 'name'."
+    });
+  }
+
+  const productsWithIncompleteSelection = products
+    .filter(product => {
+      const selection = product?.selection;
+      if (!selection || typeof selection !== "object") return true;
+      return !selection.category_id
+        || !selection.listing_type_id
+        || !selection.shipping_mode
+        || !selection.logistic_type;
+    })
+    .map(product => ({
+      product_id: product?.id ?? null,
+      missing: {
+        category_id: !product?.selection?.category_id,
+        listing_type_id: !product?.selection?.listing_type_id,
+        shipping_mode: !product?.selection?.shipping_mode,
+        logistic_type: !product?.selection?.logistic_type
+      }
+    }));
+
+  if (productsWithIncompleteSelection.length > 0) {
+    return res.status(422).json({
+      success: false,
+      error: "Cada producto debe incluir selection.category_id, selection.listing_type_id, selection.shipping_mode y selection.logistic_type.",
+      invalid_products: productsWithIncompleteSelection
     });
   }
 
@@ -2500,6 +3188,17 @@ async mercadoLibreShippingCosts(req, res) {
 
       const nameFixed = product.name.trim();
       const shippingMeasurementInput = buildShippingMeasurementInput(product);
+      const productSelection = product?.selection && typeof product.selection === "object"
+        ? product.selection
+        : {};
+      const requestedCategoryId = productSelection.category_id || null;
+      const requestedCategoryName = productSelection.category_name || null;
+      const requestedDomainId = productSelection.domain_id || null;
+      const requestedDomainName = productSelection.domain_name || null;
+      const requestedPath = productSelection.path || null;
+      const requestedListingTypeId = productSelection.listing_type_id || listing_type_id || null;
+      const requestedShippingMode = productSelection.shipping_mode || shipping_mode || null;
+      const requestedLogisticType = productSelection.logistic_type || logistic_type || null;
       
       // Obtener price de cada producto
       const productPrice = (product.price !== undefined && product.price !== null && !isNaN(product.price))
@@ -2526,9 +3225,10 @@ async mercadoLibreShippingCosts(req, res) {
         site_id,
         strategy: selectedStrategy,
         campaign_tag: normalizeCampaignTagValue(normalizedInstallments?.campaign_tag),
-        listing_type_id: listing_type_id || null,
-        shipping_mode: shipping_mode || null,
-        logistic_type: logistic_type || null,
+        listing_type_id: requestedListingTypeId,
+        shipping_mode: requestedShippingMode,
+        logistic_type: requestedLogisticType,
+        category_id: requestedCategoryId,
         product: {
           id: product.id,
           name: nameFixed,
@@ -2539,19 +3239,24 @@ async mercadoLibreShippingCosts(req, res) {
           ml_item_id: product.ml_item_id || null
         }
       });
-      const productCacheKey = `${nameFixed}__${requestFingerprint}`;
-      const cachedProductResult = getFromCache(`credential_${credential_id}`, `product_suggestion_${site_id}_v7`, productCacheKey);
+      const productCacheKey = `${nameFixed}__${requestFingerprint}__${resolvedResponseDetail}`;
+      const cachedProductResult = getFromCache(`credential_${credential_id}`, `product_suggestion_${site_id}_v8`, productCacheKey);
 
       if (cachedProductResult) {
         logger.info(`[CACHE HIT] Producto "${nameFixed}" en credential ${credential_id}`);
         cacheHits++;
-        
-        suggestions.push({
-          product_id: product.id,
-          credential_id: credential_id,
-          marketplace_id: marketplace_id,
-          categories: cachedProductResult
-        });
+
+        suggestions.push(
+          buildMlSuggestedProductSuggestion({
+            product,
+            credentialId: credential_id,
+            marketplaceId: marketplace_id,
+            selectedStrategy,
+            normalizedInstallments,
+            strategyWarnings,
+            categories: cachedProductResult
+          })
+        );
         continue;
       }
 
@@ -2560,39 +3265,66 @@ async mercadoLibreShippingCosts(req, res) {
 
       let categories = [];
 
-      // === Obtener categorías sugeridas ===
-      try {
-        const domainDiscoveryUrl = `https://api.mercadolibre.com/sites/${site_id}/domain_discovery/search`;
-        logMercadoLibreEndpointTrace({
-          stage: "categories.domain_discovery.request",
-          endpoint: domainDiscoveryUrl,
-          productId: product.id,
-          params: { q: nameFixed, limit: 3 },
-          extra: { product_name: nameFixed, site_id }
-        });
-        const catResponse = await axios.get(domainDiscoveryUrl, {
-          params: { q: nameFixed, limit: 3 },
-          timeout: 20000
-        });
-        logMercadoLibreEndpointTrace({
-          stage: "categories.domain_discovery.response",
-          endpoint: domainDiscoveryUrl,
-          productId: product.id,
-          response: catResponse.data,
-          extra: { site_id }
-        });
+      if (requestedCategoryId) {
+        try {
+          const categoryDetailUrl = `https://api.mercadolibre.com/categories/${requestedCategoryId}`;
+          const categoryResponse = await axios.get(categoryDetailUrl, {
+            headers: { Authorization: `Bearer ${credential.access_token}` },
+            timeout: 20000
+          });
+          const categoryDetail = categoryResponse.data || {};
+          categories = [{
+            category_id: requestedCategoryId,
+            category_name: requestedCategoryName || categoryDetail.name || requestedCategoryId,
+            domain_id: requestedDomainId || categoryDetail.settings?.catalog_domain || null,
+            domain_name: requestedDomainName || categoryDetail.name || null,
+            path: requestedPath || categoryDetail.path_from_root?.map(entry => entry.name).join(" > ") || categoryDetail.name || ""
+          }];
+        } catch (categorySelectionErr) {
+          logger.warn(`No se pudo cargar detalle de categoría seleccionada ${requestedCategoryId}: ${categorySelectionErr.message}`);
+          return res.status(422).json({
+            success: false,
+            error: "La categoría seleccionada no es válida o no se pudo consultar en Mercado Libre.",
+            product_id: product.id,
+            selection: productSelection,
+            detail: categorySelectionErr.message
+          });
+        }
+      } else {
+        // === Obtener categorías sugeridas ===
+        try {
+          const domainDiscoveryUrl = `https://api.mercadolibre.com/sites/${site_id}/domain_discovery/search`;
+          logMercadoLibreEndpointTrace({
+            stage: "categories.domain_discovery.request",
+            endpoint: domainDiscoveryUrl,
+            productId: product.id,
+            params: { q: nameFixed, limit: 3 },
+            extra: { product_name: nameFixed, site_id }
+          });
+          const catResponse = await axios.get(domainDiscoveryUrl, {
+            params: { q: nameFixed, limit: 3 },
+            timeout: 20000
+          });
+          logMercadoLibreEndpointTrace({
+            stage: "categories.domain_discovery.response",
+            endpoint: domainDiscoveryUrl,
+            productId: product.id,
+            response: catResponse.data,
+            extra: { site_id }
+          });
 
-        const rawCategories = catResponse.data || [];
-        categories = rawCategories.map(cat => ({
-          category_id: cat.category_id,
-          category_name: cat.category_name,
-          domain_id: cat.domain_id,
-          domain_name: cat.domain_name,
-          path: cat.domain_name || ''
-        }));
-      } catch (catErr) {
-        logger.error(`Error al obtener categorías para "${nameFixed}": ${catErr.message}`);
-        continue;
+          const rawCategories = catResponse.data || [];
+          categories = rawCategories.map(cat => ({
+            category_id: cat.category_id,
+            category_name: cat.category_name,
+            domain_id: cat.domain_id,
+            domain_name: cat.domain_name,
+            path: cat.domain_name || ''
+          }));
+        } catch (catErr) {
+          logger.error(`Error al obtener categorías para "${nameFixed}": ${catErr.message}`);
+          continue;
+        }
       }
 
       const categoriesWithAttrs = [];
@@ -2602,8 +3334,8 @@ async mercadoLibreShippingCosts(req, res) {
         const categoryWarnings = [];
 
         // === Cache de categoría con atributos ===
-        const categoryCacheKey = `${cat.category_id}__${requestFingerprint}`;
-        const cachedCategory = getFromCache(`credential_${credential_id}`, `category_attributes_${site_id}_v7`, categoryCacheKey);
+        const categoryCacheKey = `${cat.category_id}__${requestFingerprint}__${resolvedResponseDetail}`;
+        const cachedCategory = getFromCache(`credential_${credential_id}`, `category_attributes_${site_id}_v8`, categoryCacheKey);
 
         if (cachedCategory) {
           logger.info(`[CACHE HIT] Categoría ${cat.category_id} en credential ${credential_id}`);
@@ -2706,19 +3438,41 @@ async mercadoLibreShippingCosts(req, res) {
         }
         let listingResolution = null;
         let effectiveListingType = null;
-        try {
-          listingResolution = resolveListingTypeByStrategy(selectedStrategy, listingTypesForCategory);
-          effectiveListingType = listingResolution.listing_type_id;
-        } catch (listingError) {
-          logger.warn(`No se pudo resolver listing type para categoría ${cat.category_id}: ${listingError.message}`);
-          // Fallback defensivo cuando ML no devolvió tipos válidos
-          effectiveListingType = "gold_special";
+        if (requestedListingTypeId) {
+          const requestedListingAvailable = listingTypesForCategory.length === 0
+            || listingTypesForCategory.some(item => item.value === requestedListingTypeId);
+          if (!requestedListingAvailable) {
+            return res.status(422).json({
+              success: false,
+              error: "El listing_type_id seleccionado no está disponible para la categoría o credencial.",
+              product_id: product.id,
+              category_id: cat.category_id,
+              requested_listing_type_id: requestedListingTypeId,
+              available_listing_type_ids: listingTypesForCategory.map(item => item.value)
+            });
+          }
+          effectiveListingType = requestedListingTypeId;
           listingResolution = {
             listing_type_id: effectiveListingType,
-            fallback_applied: true,
-            note: "No se pudieron validar tipos de publicación para esta categoría. Se aplicó fallback por defecto.",
-            error: listingError.message
+            fallback_applied: false,
+            note: "Tipo de publicación seleccionado por cliente.",
+            requested_listing_type_id: requestedListingTypeId
           };
+        } else {
+          try {
+            listingResolution = resolveListingTypeByStrategy(selectedStrategy, listingTypesForCategory);
+            effectiveListingType = listingResolution.listing_type_id;
+          } catch (listingError) {
+            logger.warn(`No se pudo resolver listing type para categoría ${cat.category_id}: ${listingError.message}`);
+            // Fallback defensivo cuando ML no devolvió tipos válidos
+            effectiveListingType = "gold_special";
+            listingResolution = {
+              listing_type_id: effectiveListingType,
+              fallback_applied: true,
+              note: "No se pudieron validar tipos de publicación para esta categoría. Se aplicó fallback por defecto.",
+              error: listingError.message
+            };
+          }
         }
         let filteredShippingModes = shippingModesCatalog;
         let logisticTypesForCategory = [];
@@ -2774,19 +3528,39 @@ async mercadoLibreShippingCosts(req, res) {
         );
 
         const shippingComboResolution = selectPreferredShippingCombo({
-          requestedMode: shipping_mode,
-          requestedLogisticType: logistic_type,
+          requestedMode: requestedShippingMode,
+          requestedLogisticType: requestedLogisticType,
           availableCombos: availableShippingCombos
         });
+
+        const exactRequestedComboExists = availableShippingCombos.some(combo =>
+          combo.shipping_mode === requestedShippingMode && combo.logistic_type === requestedLogisticType
+        );
+
+        if (!exactRequestedComboExists) {
+          return res.status(422).json({
+            success: false,
+            error: "La combinación shipping_mode/logistic_type seleccionada no está permitida para la categoría o credencial.",
+            product_id: product.id,
+            category_id: cat.category_id,
+            requested_shipping_mode: requestedShippingMode,
+            requested_logistic_type: requestedLogisticType,
+            available_shipping_combinations: availableShippingCombos
+          });
+        }
 
         if (shippingComboResolution.combo) {
           effectiveShippingMode = shippingComboResolution.combo.shipping_mode;
           effectiveLogisticType = shippingComboResolution.combo.logistic_type;
         } else {
-          effectiveShippingMode = shipping_mode || filteredShippingModes[0]?.value || shippingModesCatalog[0]?.value || 'me2';
-          const compatibleFallbackLogistic = logisticTypesCatalog.find(lt => isLogisticCompatibleWithMode(lt, effectiveShippingMode));
-          effectiveLogisticType = logistic_type || compatibleFallbackLogistic?.value || null;
-          categoryWarnings.push('shipping_combo_resolution_fallback_applied');
+          return res.status(422).json({
+            success: false,
+            error: "No se pudo resolver la combinación shipping_mode/logistic_type seleccionada.",
+            product_id: product.id,
+            category_id: cat.category_id,
+            requested_shipping_mode: requestedShippingMode,
+            requested_logistic_type: requestedLogisticType
+          });
         }
 
         const filteredModeSet = new Set(availableShippingCombos.map(combo => combo.shipping_mode));
@@ -3018,9 +3792,9 @@ async mercadoLibreShippingCosts(req, res) {
           response_format_version: "v2_compact",
           requested: {
             strategy: selectedStrategy,
-            listing_type_id: listing_type_id || null,
-            shipping_mode: shipping_mode || null,
-            logistic_type: logistic_type || null,
+            listing_type_id: requestedListingTypeId,
+            shipping_mode: requestedShippingMode,
+            logistic_type: requestedLogisticType,
             installments: normalizedInstallments,
             economic_inputs: economicInputs
           },
@@ -3086,27 +3860,24 @@ async mercadoLibreShippingCosts(req, res) {
           ...(hasShippingInput && { shipping_policy: quoteBlock.shipping_policy })
         };
 
-        saveToCache(`credential_${credential_id}`, `category_attributes_${site_id}_v7`, categoryCacheKey, categoryData);
-        categoriesWithAttrs.push(categoryData);
+        const categoryPayload = buildMlSuggestedCategoryPayload(categoryData, resolvedResponseDetail);
+        saveToCache(`credential_${credential_id}`, `category_attributes_${site_id}_v8`, categoryCacheKey, categoryPayload);
+        categoriesWithAttrs.push(categoryPayload);
       }
 
-      saveToCache(`credential_${credential_id}`, `product_suggestion_${site_id}_v7`, productCacheKey, categoriesWithAttrs);
+      saveToCache(`credential_${credential_id}`, `product_suggestion_${site_id}_v8`, productCacheKey, categoriesWithAttrs);
 
-      suggestions.push({
-        product_id: product.id,
-        credential_id: credential_id,
-        marketplace_id: marketplace_id,
-        response_focus: "economic_summary",
-        selection_context: {
-          strategy: selectedStrategy,
-          installments: {
-            request_ignored: normalizedInstallments.requested,
-            campaign_tag_requested: normalizeCampaignTagValue(normalizedInstallments?.campaign_tag)
-          },
-          warnings: strategyWarnings
-        },
-        categories: categoriesWithAttrs
-      });
+      suggestions.push(
+        buildMlSuggestedProductSuggestion({
+          product,
+          credentialId: credential_id,
+          marketplaceId: marketplace_id,
+          selectedStrategy,
+          normalizedInstallments,
+          strategyWarnings,
+          categories: categoriesWithAttrs
+        })
+      );
     }
 
     const shippingRequested = products.some(
@@ -3143,9 +3914,85 @@ async mercadoLibreShippingCosts(req, res) {
       seller_fee_focus: true,
       note: "Resolución automática por categoría/listing_type."
     };
+    if (hasExplicitSelections) {
+      const results = suggestions.map((suggestion) => {
+        const category = Array.isArray(suggestion.categories) ? suggestion.categories[0] || null : null;
+        return {
+          product_id: suggestion.product_id,
+          credential_id: suggestion.credential_id,
+          marketplace_id: suggestion.marketplace_id,
+          selection: category ? {
+            category_id: category.category_id,
+            category_name: category.category_name,
+            listing_type_id: category.resolved?.listing_type_id || null,
+            shipping_mode: category.resolved?.shipping_mode || null,
+            logistic_type: category.resolved?.logistic_type || null,
+            strategy: category.resolved?.strategy || selectedStrategy
+          } : null,
+          pricing: category?.quote?.pricing ? {
+            sale_fee_amount: category.quote.pricing.sale_fee_amount,
+            listing_fee_amount: category.quote.pricing.listing_fee_amount,
+            total_fee_amount: category.quote.pricing.total_fee_amount,
+            fee_percentage: category.quote.pricing.fee_percentage,
+            net_amount_before_shipping: category.quote.pricing.net_amount_before_shipping,
+            net_amount_after_shipping: category.quote.pricing.net_amount_after_shipping
+          } : null,
+          shipping: category?.quote?.shipping?.selected_summary ? {
+            scenario: category.quote.shipping.selected_summary.scenario,
+            free_shipping: category.quote.shipping.selected_summary.free_shipping,
+            mandatory_free_shipping: category.quote.shipping.selected_summary.mandatory_free_shipping,
+            seller_shipping_cost: category.quote.shipping.selected_summary.seller_shipping_cost,
+            shipping_subsidy: category.quote.shipping.selected_summary.shipping_subsidy,
+            shipping_mode: category.quote.shipping.selected_summary.shipping_mode,
+            logistic_type: category.quote.shipping.selected_summary.logistic_type
+          } : null,
+          package_analysis: category?.quote?.package_analysis || null,
+          profitability: category?.quote?.profitability ? {
+            product_cost: category.quote.profitability.product_cost_basis,
+            total_cost_basis: category.quote.profitability.total_cost_basis,
+            net_amount_without_shipping: category.quote.profitability.net_amount_without_shipping,
+            net_amount_with_shipping: category.quote.profitability.net_amount_with_shipping,
+            estimated_profit: category.quote.profitability.final_profit,
+            margin_percent: category.quote.profitability.real_margin_percentage,
+            recommended_minimum_price: category.quote.profitability.recommended_minimum_price,
+            estimated_break_even_price: category.quote.profitability.estimated_break_even_price,
+            profitability_status: category.quote.profitability.profitability_status
+          } : null,
+          warnings: [
+            ...(suggestion.selection_context?.warnings || []),
+            ...(category?.selection_warnings || [])
+          ]
+        };
+      });
+
+      return res.status(200).json({
+        success: true,
+        response_format_version: "v1_calculation",
+        results,
+        count: results.length,
+        stats: {
+          total_products: products.length,
+          cache_hits: cacheHits,
+          api_calls: apiCalls,
+          pricing_calls: pricingCalls,
+          listing_types_calls: listingTypesCalls,
+          shipping_validation_calls: shippingValidationCalls,
+          shipping_calls: shippingCalls,
+          cache_hit_rate: products.length > 0
+            ? ((cacheHits / products.length) * 100).toFixed(2) + '%'
+            : '0%',
+          pricing_requested: products.some(p => p.price !== undefined && p.price !== null),
+          shipping_requested: shippingRequested
+        },
+        warnings: shippingRequested
+          ? []
+          : ["Estimación incompleta: shipping_requested=false, neto final puede variar por costo de envío."]
+      });
+    }
+
     return res.status(200).json({
       success: true,
-      response_format_version: "v2_compact",
+      response_format_version: resolvedResponseDetail === "full" ? "v2_compact" : "v2_essential",
       selection_model: {
         strategies: [
           {
