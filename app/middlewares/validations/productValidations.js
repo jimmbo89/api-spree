@@ -181,11 +181,17 @@ const listByWarehouseIdsSchema = Joi.object({
     .label('warehouse_ids')
 });
 
+const bulkImportProductSchema = Joi.object({
+  company_id: Joi.number().integer().positive().required(),
+  user_id: Joi.number().integer().positive().optional().allow(null)
+});
+
 module.exports = {
   storeProductSchema,
   updateProductSchema,
   idProductSchema,
   listProductsSchema,
   listByWarehouseIdsSchema,
-  assignWarehouseSchema
+  assignWarehouseSchema,
+  bulkImportProductSchema
 };

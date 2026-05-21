@@ -602,6 +602,12 @@ async existsBySku(sku, companyId = null, excludeId = null) {
     });
   },
 
+  async countByCompanyId(companyId) {
+    return await Product.count({
+      where: { company_id: companyId }
+    });
+  },
+
   async validateForMarketplace(productIds, marketplaceType) {
     const products = await Product.findAll({
       where: { id: productIds },

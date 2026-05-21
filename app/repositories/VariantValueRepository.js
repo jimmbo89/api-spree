@@ -15,6 +15,21 @@ const VariantValueRepository = {
     }
   },
 
+  async findByDefinitionIdAndName(variantDefinitionId, name) {
+    try {
+      return await VariantValue.findOne({
+        where: {
+          variant_definition_id: variantDefinitionId,
+          name
+        },
+        attributes: ["id", "variant_definition_id", "name", "code"]
+      });
+    } catch (error) {
+      logger.error("Error en VariantValueRepository->findByDefinitionIdAndName:", error);
+      throw new Error(`Error al obtener valor de variante por nombre: ${error.message}`);
+    }
+  },
+
   async findById(id) {
     try {
       return await VariantValue.findByPk(id, {

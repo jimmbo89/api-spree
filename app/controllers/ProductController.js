@@ -1,5 +1,6 @@
 // controllers/ProductController.js
 const logger = require("../../config/logger");
+const fs = require("fs").promises;
 const {
   ProductRepository,
   ProductVariantRepository,
@@ -22,6 +23,7 @@ const MarketplaceTransformer = require("../services/MarketplaceTransformer");
 const { detectChanges } = require("../util/auditUtils");
 const { getRequestMetadata } = require("../util/requestUtil");
 const FileService = require("../services/FileService");
+const ProductBulkImportService = require("../services/ProductBulkImportService");
 const { imageUrl } = require("../util/imageCacheUtils");
 const DEFAULT_IMAGE = "products/default.jpg";
 
@@ -644,6 +646,59 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
         error: "ServerError",
         details: error.message,
       });
+    }
+  },
+  async bulkImport(req, res) {
+    logger.info(`${req.user?.name || "Unknown"} - Importacion masiva de productos`);
+
+    const { company_id, user_id: bodyUserId } = req.body;
+    const userId = bodyUserId || req.user.id;
+
+    if (!req.file?.path) {
+      return res.status(400).json({
+        success: false,
+        msg: "Debe adjuntar archivo CSV o Excel",
+      });
+    }
+
+    try {
+      const summary = await ProductBulkImportService.importFile({
+        filePath: req.file.path,
+        companyId: Number(company_id),
+        userId,
+      });
+
+      return res.status(200).json(summary);
+    } catch (error) {
+      logger.error("ProductController->bulkImport: " + error.message);
+
+      if (error.message === "companyNotFound") {
+        return res.status(404).json({
+          success: false,
+          msg: "companyNotFound",
+        });
+      }
+
+      if (error.message.includes("archivo")) {
+        return res.status(400).json({
+          success: false,
+          msg: error.message,
+        });
+      }
+
+      return res.status(500).json({
+        success: false,
+        error: "ServerError",
+        details: error.message,
+      });
+    } finally {
+      try {
+        await fs.unlink(req.file.path);
+      } catch (cleanupError) {
+        if (cleanupError.code !== "ENOENT") {
+          logger.warn(`No se pudo eliminar archivo temporal ${req.file.path}: ${cleanupError.message}`);
+        }
+      }
     }
   },
   async show(req, res) {

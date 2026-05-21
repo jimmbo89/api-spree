@@ -22,7 +22,7 @@ const { listWarehouseSchema, storeWarehouseSchema, updateWarehouseSchema, idWare
 const { businessTypeSchema, updateBusinessTypeSchema, idBusinessTypeSchema } = require("./middlewares/validations/businessTypeValidations.js");
 const ProductCategoryController = require("./controllers/ProductCategoryController.js");
 const { productCategorySchema, updateProductCategorySchema, listProductCategorySchema, idProductCategorySchema } = require("./middlewares/validations/productCategoryValidations.js");
-const { listProductsSchema, storeProductSchema, updateProductSchema, idProductSchema, listByWarehouseIdsSchema, assignWarehouseSchema } = require("./middlewares/validations/productValidations.js");
+const { listProductsSchema, storeProductSchema, updateProductSchema, idProductSchema, listByWarehouseIdsSchema, assignWarehouseSchema, bulkImportProductSchema } = require("./middlewares/validations/productValidations.js");
 const ProductController = require("./controllers/ProductController.js");
 const { listWarehouseProductSchema, storeWarehouseProductSchema, updateWarehouseProductSchema, idWarehouseProductSchema, transferSchema, bulkUploadSchema, bulkTransferSchema } = require("./middlewares/validations/warehouseProductValidations.js");
 const WarehouseProductController = require("./controllers/WarehouseProductController.js");
@@ -335,6 +335,7 @@ const productImageFields = {
 // Rutas de Productos
 router.post("/product-user-company", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(listProductsSchema), ProductController.list);
 router.post("/product", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), multerFieldFolders(productImageFields), validateSchema(storeProductSchema), ProductController.store);
+router.post("/product-bulk-import", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager', ]), multerGeneric("file", 20 * 1024 * 1024), validateSchema({ body: bulkImportProductSchema }), ProductController.bulkImport);
 router.post("/product-update", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), multerFieldFolders(productImageFields), validateSchema(updateProductSchema), ProductController.update);
 router.post("/product-destroy", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(idProductSchema), ProductController.destroy);
 router.post("/product-state", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(updateProductSchema), ProductController.updateState);
