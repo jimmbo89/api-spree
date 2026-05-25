@@ -19,22 +19,24 @@ const {
 const FileService = require("./FileService");
 
 const HEADER_ALIASES = {
-  sku: ["sku", "referencia", "codigo", "codigo_producto", "product_code"],
-  name: ["name", "nombre", "titulo", "title"],
+  sku: ["sku", "referencia", "codigo", "codigo_producto", "product_code", "sku_global"],
+  name: ["name", "nombre", "titulo", "title", "nombre_del_producto"],
   category_name: ["category", "categoria", "rubro", "category_name"],
   brand: ["brand", "marca"],
   description: ["description", "descripcion", "detalle"],
   condition: ["condition", "condicion", "estado_producto"],
   gtin: ["gtin", "ean", "upc", "isbn"],
   mpn: ["mpn"],
-  warranty_months: ["warranty_months", "garantia_meses"],
-  warranty_text: ["warranty_text", "garantia", "texto_garantia"],
+  warranty_months: ["warranty_months", "garantia_meses", "meses_de_garantia"],
+  warranty_text: ["warranty_text", "garantia", "texto_garantia", "condiciones_de_garantia"],
   sale_price: ["sale_price", "precio", "precio_venta", "precio_final"],
   purchase_price: ["purchase_price", "costo", "precio_compra"],
-  image_url: ["image_url", "imagen", "foto", "url_imagen", "image"],
+  image_url: ["image_url", "imagen", "foto", "url_imagen", "image", "imagenes_del_producto"],
   model: ["model", "modelo"],
   weight: ["weight", "peso", "peso_g", "peso_kg"],
   weight_unit: ["weight_unit", "unidad_peso"],
+  volumetric_weight: ["volumetric_weight", "peso_volumetrico"],
+  volumetric_weight_unit: ["volumetric_weight_unit", "unidad_peso_volumetrico"],
   length: ["length", "largo"],
   length_unit: ["length_unit", "unidad_largo"],
   width: ["width", "ancho"],
@@ -43,17 +45,21 @@ const HEADER_ALIASES = {
   height_unit: ["height_unit", "unidad_alto"],
   depth: ["depth", "profundidad"],
   depth_unit: ["depth_unit", "unidad_profundidad"],
+  packaging_weight: ["packaging_weight", "peso_de_la_caja"],
+  packaging_weight_unit: ["packaging_weight_unit", "unidad_peso_de_la_caja"],
+  packaging_total_weight: ["packaging_total_weight", "peso_total_con_producto"],
+  packaging_total_weight_unit: ["packaging_total_weight_unit", "unidad_peso_total_con_producto"],
+  packaging_length: ["packaging_length", "largo_caja"],
+  packaging_length_unit: ["packaging_length_unit", "unidad_largo_caja"],
+  packaging_width: ["packaging_width", "ancho_caja"],
+  packaging_width_unit: ["packaging_width_unit", "unidad_ancho_caja"],
+  packaging_height: ["packaging_height", "alto_caja"],
+  packaging_height_unit: ["packaging_height_unit", "unidad_alto_caja"],
+  packaging_material: ["packaging_material", "material_del_empaque"],
+  packaging_fragile: ["packaging_fragile", "fragil"],
+  units_per_box: ["units_per_box", "unidades_por_caja"],
+  products_per_box: ["products_per_box", "cantidad_de_productos_por_caja"],
 };
-
-const VARIANT_HEADERS = new Set([
-  "color",
-  "talla",
-  "size",
-  "capacidad",
-  "sabor",
-  "presentacion",
-  "fragancia",
-]);
 
 const CONDITION_MAP = {
   new: "new",
@@ -184,6 +190,8 @@ function convertDimensionToCm(value, unit) {
 function buildMeasurements(data) {
   const weightValue = parseNumber(data.weight);
   const weightUnit = String(data.weight_unit || "g").trim() || "g";
+  const volumetricWeightValue = parseNumber(data.volumetric_weight);
+  const volumetricWeightUnit = String(data.volumetric_weight_unit || "kg").trim() || "kg";
   const lengthValue = parseNumber(data.length);
   const lengthUnit = String(data.length_unit || "cm").trim() || "cm";
   const widthValue = parseNumber(data.width);
@@ -199,11 +207,47 @@ function buildMeasurements(data) {
     widthValue,
     heightValue,
     depthValue,
+    volumetricWeightValue,
   ].some(item => item !== null);
+
+  const packagingWeightValue = parseNumber(data.packaging_weight);
+  const packagingWeightUnit = String(data.packaging_weight_unit || "kg").trim() || "kg";
+  const packagingTotalWeightValue = parseNumber(data.packaging_total_weight);
+  const packagingTotalWeightUnit = String(data.packaging_total_weight_unit || "kg").trim() || "kg";
+  const packagingLengthValue = parseNumber(data.packaging_length);
+  const packagingLengthUnit = String(data.packaging_length_unit || "cm").trim() || "cm";
+  const packagingWidthValue = parseNumber(data.packaging_width);
+  const packagingWidthUnit = String(data.packaging_width_unit || "cm").trim() || "cm";
+  const packagingHeightValue = parseNumber(data.packaging_height);
+  const packagingHeightUnit = String(data.packaging_height_unit || "cm").trim() || "cm";
+  const packagingHasAnyMeasurement = [
+    packagingWeightValue,
+    packagingTotalWeightValue,
+    packagingLengthValue,
+    packagingWidthValue,
+    packagingHeightValue,
+    data.packaging_material,
+    data.packaging_fragile,
+    data.units_per_box,
+    data.products_per_box,
+  ].some(item => !isEmptyValue(item) && item !== null);
 
   if (!hasAnyMeasurement) {
     return {
       product_measurements: {},
+      packaging_measurements: packagingHasAnyMeasurement ? {
+        weight: { value: packagingWeightValue, unit: packagingWeightUnit },
+        total_weight_with_product: { value: packagingTotalWeightValue, unit: packagingTotalWeightUnit },
+        dimensions: {
+          length: { value: packagingLengthValue, unit: packagingLengthUnit },
+          width: { value: packagingWidthValue, unit: packagingWidthUnit },
+          height: { value: packagingHeightValue, unit: packagingHeightUnit },
+        },
+        material: isEmptyValue(data.packaging_material) ? null : String(data.packaging_material).trim(),
+        fragile: data.packaging_fragile === undefined ? false : Boolean(toBoolean(data.packaging_fragile)),
+        units_per_box: parseNumber(data.units_per_box),
+        products_per_box: parseNumber(data.products_per_box),
+      } : {},
       weight_grams: null,
       length_cm: null,
       width_cm: null,
@@ -218,6 +262,9 @@ function buildMeasurements(data) {
     const heightCm = convertDimensionToCm(heightValue, heightUnit);
     volumetricWeight = Number(((lengthCm * widthCm * heightCm) / 5000).toFixed(2));
   }
+  if (volumetricWeightValue !== null) {
+    volumetricWeight = volumetricWeightValue;
+  }
 
   return {
     product_measurements: {
@@ -228,8 +275,21 @@ function buildMeasurements(data) {
         height: { value: heightValue, unit: heightUnit },
         depth: { value: depthValue, unit: depthUnit },
       },
-      volumetric_weight: { value: volumetricWeight, unit: "kg" },
+      volumetric_weight: { value: volumetricWeight, unit: volumetricWeightUnit },
     },
+    packaging_measurements: packagingHasAnyMeasurement ? {
+      weight: { value: packagingWeightValue, unit: packagingWeightUnit },
+      total_weight_with_product: { value: packagingTotalWeightValue, unit: packagingTotalWeightUnit },
+      dimensions: {
+        length: { value: packagingLengthValue, unit: packagingLengthUnit },
+        width: { value: packagingWidthValue, unit: packagingWidthUnit },
+        height: { value: packagingHeightValue, unit: packagingHeightUnit },
+      },
+      material: isEmptyValue(data.packaging_material) ? null : String(data.packaging_material).trim(),
+      fragile: data.packaging_fragile === undefined ? false : Boolean(toBoolean(data.packaging_fragile)),
+      units_per_box: parseNumber(data.units_per_box),
+      products_per_box: parseNumber(data.products_per_box),
+    } : {},
     weight_grams: convertWeightToGrams(weightValue, weightUnit),
     length_cm: convertDimensionToCm(lengthValue, lengthUnit),
     width_cm: convertDimensionToCm(widthValue, widthUnit),
@@ -528,24 +588,27 @@ class ProductBulkImportService {
         continue;
       }
 
-      if (normalizedHeader.startsWith("attr_")) {
-        const attributeName = humanizeHeader(originalHeader.replace(/^attr[_\s-]*/i, ""));
+      if (
+        normalizedHeader.startsWith("attr_") ||
+        normalizedHeader.startsWith("atributo_") ||
+        normalizedHeader.startsWith("atributo-")
+      ) {
+        const attributeName = humanizeHeader(originalHeader.replace(/^(attr|atributo)[_\s-]*/i, ""));
         attributeEntries.push({ name: attributeName, value: rawValue });
         continue;
       }
 
-      if (normalizedHeader.startsWith("variant_")) {
-        const variantName = humanizeHeader(originalHeader.replace(/^variant[_\s-]*/i, ""));
+      if (
+        normalizedHeader.startsWith("variant_") ||
+        normalizedHeader.startsWith("variante_") ||
+        normalizedHeader.startsWith("variante-")
+      ) {
+        const variantName = humanizeHeader(originalHeader.replace(/^(variant|variante)[_\s-]*/i, ""));
         variantEntries.push({ name: variantName, value: rawValue });
         continue;
       }
 
-      if (VARIANT_HEADERS.has(normalizedHeader)) {
-        variantEntries.push({ name: humanizeHeader(originalHeader), value: rawValue });
-        continue;
-      }
-
-      attributeEntries.push({ name: humanizeHeader(originalHeader), value: rawValue });
+      warnings.push(`Columna ignorada por no tener prefijo soportado: ${originalHeader}`);
     }
 
     payload.sku = String(payload.sku || "").trim();
@@ -568,16 +631,16 @@ class ProductBulkImportService {
       const category = await this.ensureCategory(categoryName, companyId, caches);
       payload.category_id = category.id;
     } else {
-      payload.category_id = null;
+    payload.category_id = null;
     }
 
     const measurements = buildMeasurements(payload);
     payload.product_measurements = measurements.product_measurements;
+    payload.packaging_measurements = measurements.packaging_measurements;
     payload.weight_grams = measurements.weight_grams;
     payload.length_cm = measurements.length_cm;
     payload.width_cm = measurements.width_cm;
     payload.height_cm = measurements.height_cm;
-    payload.packaging_measurements = {};
 
     const files = await this.downloadImages(payload.image_url, payload.sku, warnings);
     delete payload.image_url;
