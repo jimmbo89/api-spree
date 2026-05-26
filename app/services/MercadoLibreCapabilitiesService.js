@@ -223,14 +223,6 @@ const MercadoLibreCapabilitiesService = {
     const TRACE_ID = `[ML-SM-${Date.now()}]`;
     
     try {
-      const marketplace = credential.marketplace || {};
-      const siteId = getMercadoLibreSiteId(marketplace.domain);
-      
-      logger.info(`${TRACE_ID} [Shipping Modes] Usando valores estáticos documentados`, {
-        site_id: siteId,
-        reason: 'No existe endpoint público para shipping_modes'
-      });
-      
       // Valores basados en documentación y comportamiento observado
       const shippingModes = [
         { 
@@ -301,14 +293,6 @@ const MercadoLibreCapabilitiesService = {
     const TRACE_ID = `[ML-LG-${Date.now()}]`;
     
     try {
-      const marketplace = credential.marketplace || {};
-      const siteId = getMercadoLibreSiteId(marketplace.domain);
-      
-      logger.info(`${TRACE_ID} [Logistic Types] Usando valores estáticos documentados`, {
-        site_id: siteId,
-        reason: 'No existe endpoint público para logistic_types'
-      });
-      
       // Valores basados en documentación y comportamiento observado
       const logisticTypes = [
         { 
