@@ -51,6 +51,7 @@ const FB_USER_AGENT = process.env.FB_USER_AGENT || "Spree/1.0";
 
 const MarketplaceWebhookController = {
   async mercadoLibre(req, res) {
+    logger.info(`Datos llegados desde el webhook-Mercado-Libre:\n ${JSON.stringify(req.body)}`);
     const payload = req.body || {};
 
     res.status(200).json({ success: true });
@@ -63,6 +64,7 @@ const MarketplaceWebhookController = {
   },
 
   async falabella(req, res) {
+    logger.info(`Datos llegados desde el webhook-Falabella:\n ${JSON.stringify(req.body)}`);
     const payload = req.body || {};
     const topicRaw =
       payload?.event ||

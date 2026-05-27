@@ -5642,10 +5642,44 @@ if (treeMatch && Object.keys(treeMatch).length > 0) {
     }
   );
 logger.info(`comisión encontrada en la bd: \n ${JSON.stringify(commissionByPath)}`);
-  if (commissionByPath) {
+  let commissionToUse = commissionByPath;
+
+  if (!commissionToUse) {
+    logger.info(`[AUTO-MAP] Buscando comisión con fallback por categoría/nombre para ${categoryId}`);
+    commissionToUse = await CategoryCommissionRepository.findByCategoryWithFallback(
+      marketplace_id,
+      {
+        categoryId,
+        categoryName: item.CategoryName,
+        globalIdentifier: item.SuggestedCategory,
+        level1: treeMatch.level1,
+        level2: treeMatch.level2,
+        level3: treeMatch.level3
+      }
+    );
+    logger.info(`comisión fallback encontrada en la bd: \n ${JSON.stringify(commissionToUse)}`);
+  }
+
+  if (!commissionToUse) {
+    logger.info(`[AUTO-MAP] Buscando comisión con fallback parcial por ruta para ${categoryId}`);
+    commissionToUse = await CategoryCommissionRepository.findByCategoryWithFallback(
+      marketplace_id,
+      {
+        categoryId,
+        globalIdentifier: item.SuggestedCategory,
+        level1: treeMatch.level1,
+        level2: treeMatch.level2,
+        level3: treeMatch.level3,
+        categoryName: null
+      }
+    );
+    logger.info(`comisión fallback parcial encontrada en la bd: \n ${JSON.stringify(commissionToUse)}`);
+  }
+
+  if (commissionToUse) {
     // 🔹 Paso 4: Actualizar el registro con los identificadores de API
     await CategoryCommissionRepository.updateCommissionIdentifiers(
-      commissionByPath.id,
+      commissionToUse.id,
       {
         category_id: categoryId,
         global_identifier: item.SuggestedCategory,
@@ -5653,8 +5687,8 @@ logger.info(`comisión encontrada en la bd: \n ${JSON.stringify(commissionByPath
       }
     );
     
-    commission = commissionByPath;
-    logger.info(`[AUTO-MAP] ✅ Registro actualizado: ID=${commissionByPath.id}`);
+    commission = commissionToUse;
+    logger.info(`[AUTO-MAP] ✅ Registro actualizado: ID=${commissionToUse.id}`);
   } else {
     logger.warn(`[AUTO-MAP] ⚠️ No se encontró comisión en BD para esta categoría`);
   }
