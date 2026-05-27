@@ -304,9 +304,8 @@ async checkUniqueName(data, excludeId = null) {
     });
   },
 
-  async countByCompanyId(companyId) {
-  const count = await Warehouse.count({
-    where: {
+  async countByCompanyId(companyId, options = {}) {
+    const where = {
       [Op.or]: [
         { company_id: companyId }, // Almacenes directos de la empresa
         {
@@ -317,11 +316,18 @@ async checkUniqueName(data, excludeId = null) {
           }
         }
       ]
-    }
-  });
+    };
 
-  return count;
-},
+    // Por defecto, un almacén eliminado no debe consumir cupo del plan.
+    // Si necesitas otro comportamiento, pásalo explícitamente en options.where.
+    where.status = options.where?.status || { [Op.ne]: 'delete' };
+
+    if (options.where) {
+      Object.assign(where, options.where);
+    }
+
+    return await Warehouse.count({ where });
+  },
 
   async validateWarehousesExist(warehouseIds, companyId = null) {
   if (!Array.isArray(warehouseIds) || warehouseIds.length === 0) {

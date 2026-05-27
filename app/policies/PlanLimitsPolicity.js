@@ -3,6 +3,15 @@ const logger = require('../../config/logger');
 const { WarehouseRepository, MarketplaceCredentialRepository, CompanyRepository, BranchRepository, PoolRepository, WarehouseProductRepository } = require('../repositories');
 const { getUserId } = require('../../config/context');
 
+const normalizePlanLimit = (value) => {
+  if (value === null || value === undefined || value === '') {
+    return -1;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : -1;
+};
+
 /**
  * Política para verificar límites de plan antes de crear un recurso
  * @param {string} resourceType - 'branch', 'store', 'pool', 'publication'
@@ -38,13 +47,13 @@ const checkPlanLimit = (resourceType) => {
       switch (resourceType) {
         case 'branch':
           currentCount = await BranchRepository.countByCompanyId(companyId, { where: { status: true } });
-          maxLimit = plan.max_branches;
+          maxLimit = normalizePlanLimit(plan.max_branches);
           resourceName = 'sucursales';
           break;
           
         case 'warehouse':
           currentCount = await WarehouseRepository.countByCompanyId(companyId);
-          maxLimit = plan.max_stores;
+          maxLimit = normalizePlanLimit(plan.max_stores);
           resourceName = 'almacenes';
           break;
         
@@ -74,6 +83,8 @@ const checkPlanLimit = (resourceType) => {
       }
 
       // 3. Verificar límite
+      logger.info(`[checkPlanLimit:${resourceType}] company=${companyId} current=${currentCount} limit=${maxLimit}`);
+
       if (maxLimit !== -1 && currentCount >= maxLimit) {
         return res.status(403).json({
           success: false,

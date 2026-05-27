@@ -361,24 +361,6 @@ const MercadoLibreCapabilitiesService = {
             name: "Default",
             compatible_shipping_mode: "me1"
           }
-        },
-        { 
-          value: "custom", 
-          title: "custom", 
-          description: "Personalizado - Configuración manual de logística",
-          ml_metadata: {
-            name: "Custom",
-            compatible_shipping_mode: "custom",
-            requires_manual_config: true
-          }
-        },
-        { 
-          value: "not_specified", 
-          title: "not_specified", 
-          description: "No especificado",
-          ml_metadata: {
-            name: "Not Specified"
-          }
         }
       ];
 
@@ -627,8 +609,6 @@ const MercadoLibreCapabilitiesService = {
       { value: "turbo", title: "turbo", description: "Turbo", _is_static_fallback: true, ml_metadata: null },
       { value: "fulfillment", title: "fulfillment", description: "Full", _is_static_fallback: true, ml_metadata: null },
       { value: "default", title: "default", description: "Por defecto", _is_static_fallback: true, ml_metadata: null },
-      { value: "custom", title: "custom", description: "Personalizado", _is_static_fallback: true, ml_metadata: null },
-      { value: "not_specified", title: "not_specified", description: "No especificado", _is_static_fallback: true, ml_metadata: null },
     ];
   },
 
