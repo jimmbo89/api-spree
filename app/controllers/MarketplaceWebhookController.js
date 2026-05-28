@@ -187,6 +187,12 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
       : Promise.resolve(null),
     fetchMercadoLibreBillingInfoWithRetry(orderId, credential.access_token)
   ]);
+  const messagesData = await fetchMercadoLibreMessagesWithRetry({
+    orderId,
+    order,
+    accessToken: credential.access_token,
+    sellerId: getMercadoLibreSellerId(credential, order)
+  });
   const shippingFinancials = normalizeMercadoLibreShipmentCosts(
     shipmentCostsData,
     order,
@@ -245,11 +251,13 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
       ]) || buildShippingAddress(order.shipping),
     shipping_city: customerSnapshot.shipping_city || order?.shipping?.receiver_address?.city_name || null,
     shipping_region: customerSnapshot.shipping_state || order?.shipping?.receiver_address?.state_name || null,
+    messages_snapshot: buildMercadoLibreMessagesSnapshot(messagesData),
     raw_payload: {
       order,
       shipment: shipmentData,
       shipment_costs: shipmentCostsData,
       billing_info: billingInfoData,
+      messages: messagesData,
       shipping_financials: shippingFinancials
     }
   };
@@ -400,6 +408,22 @@ async function fetchMercadoLibreBillingInfoWithRetry(orderId, accessToken) {
   });
 }
 
+async function fetchMercadoLibreMessagesWithRetry({ orderId, order, accessToken, sellerId }) {
+  const packId = order?.pack_id || orderId;
+  const finalSellerId = sellerId || order?.seller?.id || order?.seller_id || null;
+
+  if (!packId || !finalSellerId) {
+    return null;
+  }
+
+  return await fetchMercadoLibreResourceWithRetry({
+    resourcePath: `messages/packs/${packId}/sellers/${finalSellerId}?tag=post_sale&mark_as_read=false`,
+    accessToken,
+    resourceLabel: `messages pack ${packId}`,
+    allowNotFound: true
+  });
+}
+
 async function fetchMercadoLibreResourceWithRetry({
   resourcePath,
   accessToken,
@@ -509,6 +533,52 @@ function normalizeMercadoLibreShipmentCosts(shipmentCosts, order, shipment) {
     receiver,
     raw: shipmentCosts || null
   };
+}
+
+function buildMercadoLibreMessagesSnapshot(messagesData) {
+  const results = Array.isArray(messagesData?.messages)
+    ? messagesData.messages
+    : Array.isArray(messagesData?.results)
+      ? messagesData.results
+      : Array.isArray(messagesData)
+        ? messagesData
+        : [];
+
+  return results
+    .map((message) => {
+      const receivedAt =
+        message?.message_date?.received ||
+        message?.message_date?.sent ||
+        message?.created_at ||
+        message?.date_created ||
+        null;
+
+      return {
+        message_id: message?.message_id || message?.id || null,
+        text: message?.text || "",
+        conversation_status: message?.conversation_status || null,
+        received_at: receivedAt,
+        sender: message?.from?.role || message?.sender || message?.author || null,
+        raw_payload: message
+      };
+    })
+    .filter((message) => message.message_id || message.text)
+    .sort((a, b) => {
+      const aTime = a.received_at ? new Date(a.received_at).getTime() : 0;
+      const bTime = b.received_at ? new Date(b.received_at).getTime() : 0;
+      return aTime - bTime;
+    });
+}
+
+function getMercadoLibreSellerId(credential, order) {
+  return (
+    credential?.seller_id ||
+    credential?.additional_data?.ml_user_id ||
+    order?.seller?.id ||
+    order?.seller_id ||
+    order?.user_id ||
+    null
+  );
 }
 
 async function processFalabellaWebhook(payload, options = {}) {

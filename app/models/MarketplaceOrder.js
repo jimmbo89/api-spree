@@ -232,6 +232,20 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: true,
       comment: 'Payload completo de la orden para auditoría'
     },
+
+    // Snapshot de mensajes asociados a la orden
+    messages_snapshot: {
+      type: DataTypes.JSON,
+      allowNull: true,
+      comment: 'Mensajes asociados a la orden para visualización'
+    },
+
+    // Notas internas de la orden
+    notes_snapshot: {
+      type: DataTypes.JSON,
+      allowNull: true,
+      comment: 'Notas internas agregadas por el usuario'
+    },
     
     // Relaciones con entidades locales
     company_id: {

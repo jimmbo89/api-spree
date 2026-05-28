@@ -66,6 +66,7 @@ const { storeUpgradeRequestSchema, listUpgradeRequestsSchema, updateUpgradeReque
 const UpgradeRequestController = require("./controllers/UpgradeRequestController.js");
 const { listBillingOrdersSchema, storeBillingOrderSchema, updateBillingOrderSchema, idBillingOrderSchema } = require("./middlewares/validations/billingOrderValidation.js");
 const BillingOrderController = require("./controllers/BillingOrderController.js");
+const { refreshOrderSchema, updateOrderNotesSchema, sendOrderMessageSchema } = require("./middlewares/validations/marketplaceOrderValidations.js");
 const { listNotificationsSchema, idNotificationSchema, markAsReadSchema } = require("./middlewares/validations/notificationValidation.js");
 const NotificationController = require("./controllers/NotificationController.js");
 const multerDisk = require("./middlewares/multerDisk.js");
@@ -87,6 +88,7 @@ const { createDteSchema, checkStatusSchema } = require("./middlewares/validation
 const JobController = require("./controllers/JobController.js");
 const MarketplaceWebhookController = require("./controllers/MarketplaceWebhookController.js");
 const MarketplaceReportController = require("./controllers/MarketplaceReportController.js");
+const MarketplaceOrderController = require("./controllers/MarketplaceOrderController.js");
 const DashboardController = require("./controllers/DashboardController.js");
 const router = express.Router();
 
@@ -159,6 +161,9 @@ router.post("/reports-commissions", MarketplaceReportController.commissions);
 router.post("/reports-commissions-stats", MarketplaceReportController.commissionStats);
 router.post("/reports-profits", MarketplaceReportController.profits);
 router.post("/reports-profits-stats", MarketplaceReportController.profitStats);
+router.post("/marketplace-order-refresh", validateSchema(refreshOrderSchema), MarketplaceOrderController.refresh);
+router.post("/marketplace-order-notes-update", validateSchema(updateOrderNotesSchema), MarketplaceOrderController.updateNotes);
+router.post("/marketplace-order-message-send", validateSchema(sendOrderMessageSchema), MarketplaceOrderController.sendMessage);
 router.get("/upload-diagnostics", async (req, res) => {
   try {
     const diagnostics = await getUploadPathDiagnostics(['products', 'certificates', 'tmp']);

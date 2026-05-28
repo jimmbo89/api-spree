@@ -69,7 +69,15 @@ const MarketplaceOrderRepository = {
   async findById(id) {
     return await MarketplaceOrder.findByPk(id, {
       include: [
-        { association: 'items' },
+        {
+          association: 'items',
+          include: [
+            { association: 'product' },
+            { association: 'variant' },
+            { association: 'inventoryMovement' },
+            { association: 'fees' }
+          ]
+        },
         { association: 'fees' },
         { association: 'events' },
         { association: 'customerSnapshot' }

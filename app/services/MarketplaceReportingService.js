@@ -83,7 +83,8 @@ const MarketplaceReportingService = {
           tax: parseFloat(order.tax_total || 0),
           total: parseFloat(order.total_amount || 0),
           invoiceNumber: order.invoice_number,
-          invoiceType: order.invoice_type
+          invoiceType: order.invoice_type,
+          notes_snapshot: normalizeNotesSnapshot(order.notes_snapshot)
         }))
       };
 
@@ -497,5 +498,50 @@ const MarketplaceReportingService = {
   }
 
 };
+
+function normalizeNotesSnapshot(notesSnapshot) {
+  if (Array.isArray(notesSnapshot)) {
+    return notesSnapshot
+      .map((note, index) => {
+        if (typeof note === 'string') {
+          return {
+            note_id: `legacy-note-${index}`,
+            text: note,
+            created_at: null,
+            created_by_user_id: null,
+            created_by_user_name: null,
+            raw_payload: { text: note }
+          };
+        }
+
+        if (!note || typeof note !== 'object') return null;
+        const text = typeof note.text === 'string' ? note.text : '';
+        if (!text) return null;
+
+        return {
+          note_id: note.note_id || `legacy-note-${index}`,
+          text,
+          created_at: note.created_at || null,
+          created_by_user_id: note.created_by_user_id ?? null,
+          created_by_user_name: note.created_by_user_name ?? null,
+          raw_payload: note.raw_payload || note
+        };
+      })
+      .filter(Boolean);
+  }
+
+  if (notesSnapshot && typeof notesSnapshot === 'object') {
+    return [{
+      note_id: notesSnapshot.note_id || 'legacy-note-0',
+      text: notesSnapshot.text || '',
+      created_at: notesSnapshot.created_at || null,
+      created_by_user_id: notesSnapshot.created_by_user_id ?? null,
+      created_by_user_name: notesSnapshot.created_by_user_name ?? null,
+      raw_payload: notesSnapshot.raw_payload || notesSnapshot
+    }].filter((note) => note.text);
+  }
+
+  return [];
+}
 
 module.exports = MarketplaceReportingService;

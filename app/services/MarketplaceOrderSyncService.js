@@ -1,0 +1,480 @@
+const axios = require('axios');
+const logger = require('../../config/logger');
+const {
+  MarketplaceOrderRepository,
+  MarketplaceCredentialRepository,
+  MarketplaceOrderCustomerRepository
+} = require('../repositories');
+
+const ML_MARKETPLACE_KEY = 'mercadolibre';
+const ML_FETCH_RETRY_MAX = 3;
+const ML_FETCH_RETRY_BASE_DELAY_MS = 1000;
+const ML_FETCH_RETRY_MAX_DELAY_MS = 8000;
+
+const MarketplaceOrderSyncService = {
+  async refreshById(orderId) {
+    const order = await MarketplaceOrderRepository.findById(orderId);
+    if (!order) {
+      throw new Error('order_not_found');
+    }
+
+    if (String(order.marketplace || '').toLowerCase() !== ML_MARKETPLACE_KEY) {
+      throw new Error('unsupported_marketplace');
+    }
+
+    const credential = await MarketplaceCredentialRepository.findById(order.marketplace_credential_id);
+    if (!credential || !credential.access_token) {
+      throw new Error('credential_not_found');
+    }
+
+    const remoteOrder = await fetchMercadoLibreOrderWithRetry(order.marketplace_order_id, credential.access_token);
+    if (!remoteOrder) {
+      throw new Error('order_fetch_failed');
+    }
+
+    const shipmentId = remoteOrder?.shipping?.id || null;
+    const [shipmentData, shipmentCostsData, billingInfoData, messagesData] = await Promise.all([
+      shipmentId
+        ? fetchMercadoLibreShipmentWithRetry(shipmentId, credential.access_token)
+        : Promise.resolve(null),
+      shipmentId
+        ? fetchMercadoLibreShipmentCostsWithRetry(shipmentId, credential.access_token)
+        : Promise.resolve(null),
+      fetchMercadoLibreBillingInfoWithRetry(order.marketplace_order_id, credential.access_token),
+      fetchMercadoLibreMessagesWithRetry({
+        orderId: order.marketplace_order_id,
+        order: remoteOrder,
+        accessToken: credential.access_token,
+        sellerId: getMercadoLibreSellerId(credential, remoteOrder)
+      })
+    ]);
+
+    const shippingFinancials = normalizeMercadoLibreShipmentCosts(
+      shipmentCostsData,
+      remoteOrder,
+      shipmentData
+    );
+
+    const customerSnapshot = buildMercadoLibreCustomerSnapshot({
+      order: remoteOrder,
+      shipment: shipmentData,
+      billingInfo: billingInfoData
+    });
+
+    const orderData = {
+      order_status: mapMercadoLibreOrderStatus(remoteOrder.order_status),
+      payment_status: mapMercadoLibrePaymentStatus(remoteOrder.payment_status),
+      subtotal: remoteOrder.total_amount || 0,
+      shipping_total: shippingFinancials.seller_cost,
+      discount_total: shippingFinancials.shipping_subsidy,
+      tax_total: 0,
+      total_amount: remoteOrder.total_amount || 0,
+      currency: remoteOrder.currency_id || 'CLP',
+      buyer_id: customerSnapshot.marketplace_customer_id || remoteOrder?.buyer?.id?.toString() || null,
+      buyer_name: customerSnapshot.full_name || remoteOrder?.buyer?.nickname || null,
+      buyer_email: customerSnapshot.email || null,
+      buyer_document: customerSnapshot.document_number || null,
+      payment_method: remoteOrder?.payments?.[0]?.payment_type || null,
+      payment_date: remoteOrder?.payments?.[0]?.date_created || null,
+      shipping_address:
+        buildAddressLine([
+          customerSnapshot.shipping_address_line,
+          customerSnapshot.shipping_address_line_2,
+          customerSnapshot.shipping_reference
+        ]) || buildShippingAddress(remoteOrder.shipping),
+      shipping_city: customerSnapshot.shipping_city || remoteOrder?.shipping?.receiver_address?.city_name || null,
+      shipping_region: customerSnapshot.shipping_state || remoteOrder?.shipping?.receiver_address?.state_name || null,
+      messages_snapshot: buildMercadoLibreMessagesSnapshot(messagesData),
+      notes_snapshot: normalizeNotesSnapshot(order.notes_snapshot),
+      raw_payload: {
+        order: remoteOrder,
+        shipment: shipmentData,
+        shipment_costs: shipmentCostsData,
+        billing_info: billingInfoData,
+        messages: messagesData,
+        shipping_financials: shippingFinancials
+      }
+    };
+
+    await MarketplaceOrderRepository.updateById(order.id, orderData);
+    await persistMarketplaceOrderCustomerSnapshot(order.id, customerSnapshot);
+
+    const refreshedOrder = await MarketplaceOrderRepository.findById(order.id);
+    return {
+      order: refreshedOrder ? refreshedOrder.get({ plain: true }) : null,
+      refreshed_at: new Date().toISOString()
+    };
+  }
+};
+
+async function persistMarketplaceOrderCustomerSnapshot(orderId, customerSnapshot) {
+  if (!customerSnapshot) return null;
+
+  return await MarketplaceOrderCustomerRepository.upsertByOrderId(orderId, customerSnapshot);
+}
+
+async function fetchMercadoLibreOrderWithRetry(orderId, accessToken) {
+  return await fetchMercadoLibreResourceWithRetry({
+    resourcePath: `orders/${orderId}`,
+    accessToken,
+    resourceLabel: `orden ${orderId}`
+  });
+}
+
+async function fetchMercadoLibreShipmentWithRetry(shipmentId, accessToken) {
+  return await fetchMercadoLibreResourceWithRetry({
+    resourcePath: `shipments/${shipmentId}`,
+    accessToken,
+    resourceLabel: `shipment ${shipmentId}`
+  });
+}
+
+async function fetchMercadoLibreShipmentCostsWithRetry(shipmentId, accessToken) {
+  return await fetchMercadoLibreResourceWithRetry({
+    resourcePath: `shipments/${shipmentId}/costs`,
+    accessToken,
+    resourceLabel: `shipment_costs ${shipmentId}`,
+    allowNotFound: true,
+    extraHeaders: {
+      'x-format-new': 'true'
+    }
+  });
+}
+
+async function fetchMercadoLibreBillingInfoWithRetry(orderId, accessToken) {
+  return await fetchMercadoLibreResourceWithRetry({
+    resourcePath: `marketplace/orders/${orderId}/billing_info`,
+    accessToken,
+    resourceLabel: `billing_info ${orderId}`,
+    allowNotFound: true
+  });
+}
+
+async function fetchMercadoLibreMessagesWithRetry({
+  orderId,
+  order,
+  accessToken,
+  sellerId
+}) {
+  const packId = order?.pack_id || orderId;
+  const finalSellerId = sellerId || order?.seller?.id || order?.seller_id || null;
+
+  if (!packId || !finalSellerId) {
+    return null;
+  }
+
+  return await fetchMercadoLibreResourceWithRetry({
+    resourcePath: `messages/packs/${packId}/sellers/${finalSellerId}?tag=post_sale&mark_as_read=false`,
+    accessToken,
+    resourceLabel: `messages pack ${packId}`,
+    allowNotFound: true
+  });
+}
+
+async function fetchMercadoLibreResourceWithRetry({
+  resourcePath,
+  accessToken,
+  resourceLabel,
+  allowNotFound = false,
+  extraHeaders = {}
+}) {
+  let lastError = null;
+  const safeLabel = resourceLabel || resourcePath;
+
+  for (let attempt = 1; attempt <= ML_FETCH_RETRY_MAX; attempt++) {
+    try {
+      const response = await axios.get(`https://api.mercadolibre.com/${resourcePath}`, {
+        headers: { Authorization: `Bearer ${accessToken}`, ...extraHeaders },
+        timeout: 10000
+      });
+      return response.data;
+    } catch (error) {
+      lastError = error;
+      const status = error?.response?.status;
+
+      if (status === 404) {
+        const level = allowNotFound ? 'info' : 'warn';
+        logger[level](`[ML Refresh] Recurso ${safeLabel} no encontrado (404)`);
+        return null;
+      }
+
+      if (status === 401 || status === 403) {
+        logger.error(`[ML Refresh] Error autenticacion ${status} para ${safeLabel}`);
+        return null;
+      }
+
+      if (attempt < ML_FETCH_RETRY_MAX) {
+        const delayMs = Math.min(
+          ML_FETCH_RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1),
+          ML_FETCH_RETRY_MAX_DELAY_MS
+        );
+        logger.warn(
+          `[ML Refresh] Intento ${attempt}/${ML_FETCH_RETRY_MAX} fallido para ${safeLabel}. Reintentando en ${delayMs}ms...`
+        );
+        await sleep(delayMs);
+      }
+    }
+  }
+
+  logger.error(
+    `[ML Refresh] Error obteniendo ${safeLabel} despues de ${ML_FETCH_RETRY_MAX} intentos: ${lastError?.message || 'unknown'}`
+  );
+  return null;
+}
+
+function normalizeMercadoLibreShipmentCosts(shipmentCosts, order, shipment) {
+  const toAmount = (value) => {
+    const amount = Number(value);
+    return Number.isFinite(amount) ? amount : 0;
+  };
+
+  const sumDiscounts = (discounts) => {
+    if (!Array.isArray(discounts)) return 0;
+    return discounts.reduce((sum, discount) => {
+      if (!discount || typeof discount !== 'object') return sum;
+      const amount = Number(
+        discount.promoted_amount ??
+        discount.amount ??
+        discount.value ??
+        0
+      );
+      return sum + (Number.isFinite(amount) ? amount : 0);
+    }, 0);
+  };
+
+  const senders = Array.isArray(shipmentCosts?.senders) ? shipmentCosts.senders : [];
+  const receiver = shipmentCosts?.receiver || {};
+  const grossAmount = toAmount(shipmentCosts?.gross_amount ?? order?.shipping?.shipping_cost ?? 0);
+  const sellerCost = senders.reduce((sum, sender) => sum + toAmount(sender?.cost), 0);
+  const sellerDiscount = senders.reduce((sum, sender) => {
+    return sum + sumDiscounts(sender?.discounts) + sumDiscounts(sender?.discount);
+  }, 0);
+  const buyerCost = toAmount(receiver?.cost);
+  const shippingSubsidy = Math.max(
+    sellerDiscount,
+    grossAmount > 0 ? grossAmount - sellerCost - buyerCost : 0
+  );
+  const freeShipping = typeof shipment?.free_shipping === 'boolean'
+    ? shipment.free_shipping
+    : (typeof order?.shipping?.free_shipping === 'boolean' ? order.shipping.free_shipping : null);
+
+  let whoPays = 'unknown';
+  if (buyerCost > 0 && sellerCost > 0) whoPays = 'shared';
+  else if (buyerCost > 0) whoPays = 'buyer';
+  else if (sellerCost > 0) whoPays = 'seller';
+
+  return {
+    shipment_id: shipment?.id || order?.shipping?.id || null,
+    logistic_type: shipment?.logistic_type || order?.shipping?.logistic_type || null,
+    free_shipping: freeShipping,
+    gross_amount: grossAmount,
+    buyer_cost: buyerCost,
+    seller_cost: sellerCost,
+    seller_discount: sellerDiscount,
+    shipping_subsidy: shippingSubsidy,
+    who_pays: whoPays,
+    senders,
+    receiver,
+    raw: shipmentCosts || null
+  };
+}
+
+function buildMercadoLibreMessagesSnapshot(messagesData) {
+  const results = Array.isArray(messagesData?.messages)
+    ? messagesData.messages
+    : Array.isArray(messagesData?.results)
+      ? messagesData.results
+    : Array.isArray(messagesData)
+      ? messagesData
+      : [];
+
+  return results
+    .map((message) => {
+      const receivedAt =
+        message?.message_date?.received ||
+        message?.message_date?.sent ||
+        message?.created_at ||
+        message?.date_created ||
+        null;
+
+      return {
+        message_id: message?.message_id || message?.id || null,
+        text: message?.text || '',
+        conversation_status: message?.conversation_status || null,
+        received_at: receivedAt,
+        sender: message?.from?.role || message?.sender || message?.author || null,
+        raw_payload: message
+      };
+    })
+    .filter((message) => message.message_id || message.text)
+    .sort((a, b) => {
+      const aTime = a.received_at ? new Date(a.received_at).getTime() : 0;
+      const bTime = b.received_at ? new Date(b.received_at).getTime() : 0;
+      return aTime - bTime;
+    });
+}
+
+function getMercadoLibreSellerId(credential, order) {
+  return (
+    credential?.seller_id ||
+    credential?.additional_data?.ml_user_id ||
+    order?.seller?.id ||
+    order?.seller_id ||
+    null
+  );
+}
+
+function buildMercadoLibreCustomerSnapshot({ order, shipment, billingInfo }) {
+  const buyer = order?.buyer || {};
+  const billing = billingInfo?.billing_info || billingInfo?.billingInfo || billingInfo || {};
+  const address = shipment?.receiver_address || order?.shipping?.receiver_address || {};
+
+  const email =
+    billing?.email ||
+    order?.buyer?.email ||
+    order?.buyer?.email_address ||
+    order?.buyer?.alternate_email ||
+    null;
+
+  const documentNumber =
+    billing?.doc_number ||
+    billing?.document_number ||
+    billing?.document ||
+    order?.buyer?.identification?.number ||
+    null;
+
+  return {
+    marketplace_customer_id: buyer?.id?.toString() || null,
+    full_name:
+      buyer?.nickname ||
+      buyer?.name ||
+      [address?.first_name, address?.last_name].filter(Boolean).join(' ') ||
+      null,
+    email,
+    phone: address?.phone || billing?.phone || null,
+    document_number: documentNumber,
+    shipping_address_line: buildAddressLine([
+      address?.address_line,
+      address?.street_name ? `${address.street_name} ${address.street_number || ''}` : null
+    ]),
+    shipping_address_line_2: address?.comment || address?.reference || null,
+    shipping_reference: address?.reference || null,
+    shipping_city: address?.city_name || address?.city || null,
+    shipping_state: address?.state_name || address?.state || null,
+    shipping_country: address?.country_name || address?.country || null,
+    raw: {
+      buyer,
+      billing_info: billingInfo,
+      receiver_address: address
+    }
+  };
+}
+
+function buildAddressLine(parts = []) {
+  return parts
+    .flat()
+    .filter(Boolean)
+    .map((part) => String(part).trim())
+    .filter(Boolean)
+    .join(', ') || null;
+}
+
+function normalizeNotesSnapshot(notesSnapshot) {
+  if (Array.isArray(notesSnapshot)) {
+    return notesSnapshot
+      .map((note, index) => {
+        if (typeof note === 'string') {
+          return {
+            note_id: `legacy-note-${index}`,
+            text: note,
+            created_at: null,
+            created_by_user_id: null,
+            created_by_user_name: null,
+            raw_payload: { text: note }
+          };
+        }
+
+        if (!note || typeof note !== 'object') return null;
+        const text = typeof note.text === 'string' ? note.text : '';
+        if (!text) return null;
+
+        return {
+          note_id: note.note_id || `legacy-note-${index}`,
+          text,
+          created_at: note.created_at || null,
+          created_by_user_id: note.created_by_user_id ?? null,
+          created_by_user_name: note.created_by_user_name ?? null,
+          raw_payload: note.raw_payload || note
+        };
+      })
+      .filter(Boolean);
+  }
+
+  if (notesSnapshot && typeof notesSnapshot === 'object') {
+    return [{
+      note_id: notesSnapshot.note_id || 'legacy-note-0',
+      text: notesSnapshot.text || '',
+      created_at: notesSnapshot.created_at || null,
+      created_by_user_id: notesSnapshot.created_by_user_id ?? null,
+      created_by_user_name: notesSnapshot.created_by_user_name ?? null,
+      raw_payload: notesSnapshot.raw_payload || notesSnapshot
+    }].filter((note) => note.text);
+  }
+
+  return [];
+}
+
+function buildShippingAddress(shipping) {
+  if (!shipping) return null;
+
+  const address = shipping.receiver_address || {};
+  const parts = [];
+
+  if (address.street_name) parts.push(`${address.street_name} ${address.street_number || ''}`);
+  if (address.city_name) parts.push(address.city_name);
+  if (address.state_name) parts.push(address.state_name);
+  if (address.country_name) parts.push(address.country_name);
+  if (address.zip_code) parts.push(address.zip_code);
+
+  return parts.join(', ') || null;
+}
+
+function mapMercadoLibreOrderStatus(mlStatus) {
+  if (!mlStatus) return 'pending';
+
+  const statusMap = {
+    paid: 'paid',
+    confirmed: 'paid',
+    shipped: 'shipped',
+    delivered: 'delivered',
+    cancelled: 'cancelled',
+    refunded: 'returned',
+    pending: 'pending',
+    processing: 'pending'
+  };
+
+  return statusMap[String(mlStatus).toLowerCase()] || 'pending';
+}
+
+function mapMercadoLibrePaymentStatus(mlStatus) {
+  if (!mlStatus) return 'pending';
+
+  const statusMap = {
+    paid: 'paid',
+    pending: 'pending',
+    authorized: 'authorized',
+    in_process: 'processing',
+    in_mediation: 'mediation',
+    cancelled: 'cancelled',
+    refunded: 'refunded',
+    charged_back: 'charged_back'
+  };
+
+  return statusMap[String(mlStatus).toLowerCase()] || 'pending';
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+module.exports = MarketplaceOrderSyncService;
