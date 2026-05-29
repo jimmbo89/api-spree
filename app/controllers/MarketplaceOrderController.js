@@ -32,11 +32,11 @@ const MarketplaceOrderController = {
         error.message === 'order_not_found'
           ? 'La orden solicitada no existe.'
           : error.message === 'unsupported_marketplace'
-            ? 'La orden no pertenece a Mercado Libre.'
+            ? 'La orden no pertenece a un marketplace soportado.'
             : error.message === 'credential_not_found'
               ? 'No se encontrÃ³ la credencial necesaria para refrescar esta orden.'
               : error.message === 'order_fetch_failed'
-                ? 'No se pudo actualizar la orden desde Mercado Libre.'
+                ? 'No se pudo actualizar la orden desde el marketplace.'
                 : error.message;
 
       return res.status(statusCode).json({
@@ -131,12 +131,14 @@ const MarketplaceOrderController = {
         error.message === 'order_not_found'
           ? 'La orden solicitada no existe.'
           : error.message === 'unsupported_marketplace'
-            ? 'La orden no pertenece a Mercado Libre.'
-            : error.message === 'credential_not_found'
-              ? 'No se encontrÃ³ la credencial necesaria para enviar el mensaje.'
-              : error.message === 'MESSAGE_TEXT_INVALID'
-                ? 'El texto del mensaje no es vÃ¡lido.'
-                : error.message;
+            ? 'La orden no pertenece a un marketplace soportado.'
+            : error.message === 'message_not_supported'
+              ? 'Falabella no permite mensajería post-venta desde el front.'
+              : error.message === 'credential_not_found'
+                ? 'No se encontró la credencial necesaria para enviar el mensaje.'
+                : error.message === 'MESSAGE_TEXT_INVALID'
+                  ? 'El texto del mensaje no es válido.'
+                  : error.message;
 
       return res.status(statusCode).json({
         success: false,

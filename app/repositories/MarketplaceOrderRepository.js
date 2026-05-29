@@ -142,6 +142,12 @@ const MarketplaceOrderRepository = {
         offset,
         order: [['createdAt', 'DESC']],
         include: [
+          {
+            association: 'credential',
+            include: [
+              { association: 'marketplace' }
+            ]
+          },
           { association: 'items', limit: 10 },
           { association: 'customerSnapshot' },
           { association: 'company' },

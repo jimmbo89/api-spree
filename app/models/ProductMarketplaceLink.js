@@ -57,6 +57,16 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.STRING,
       allowNull: true
     },
+    published_stock: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      comment: 'Stock publicado en el marketplace para este vínculo'
+    },
+    published_payload: {
+      type: DataTypes.JSON,
+      allowNull: true,
+      comment: 'Payload publicado más reciente del marketplace'
+    },
     last_synced_at: {
       type: DataTypes.DATE,
       allowNull: true

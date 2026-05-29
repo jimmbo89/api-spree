@@ -63,13 +63,20 @@ class MarketplaceStockSyncService {
     const jobProductsData = [];
 
     for (const link of targets) {
-      const latestTask = await ProductPublishingTaskRepository.findLatestByProductAndMarketplace(
+      const latestTask = await ProductPublishingTaskRepository.findLatestPublishedByProductMarketplaceAndCredential(
         productId,
-        link.marketplace_id
+        link.marketplace_id,
+        link.credential_id
       );
 
-      const credentialId = latestTask?.credential_id || null;
+      const credentialId = link.credential_id || latestTask?.credential_id || null;
       const externalId = link.external_id || latestTask?.external_id || null;
+      const publishedPayload = link.published_payload || latestTask?.payload || null;
+      let publishedStockLimit = this._resolvePublishedStockLimit(publishedPayload, sku);
+      if (publishedStockLimit == null && link.published_stock != null) {
+        publishedStockLimit = this._toNonNegativeInteger(link.published_stock);
+      }
+      const effectiveStock = this._capStockByPublishedLimit(stockValue, publishedStockLimit);
 
       if (!credentialId || !externalId) {
         logger.warn('[StockSync] Sin credential_id o external_id, se omite', {
@@ -90,7 +97,9 @@ class MarketplaceStockSyncService {
           product_id: productId,
           variant_id: variantId,
           warehouse_id: warehouseId,
-          stock: stockValue,
+          stock: effectiveStock,
+          source_stock: stockValue,
+          published_stock_limit: publishedStockLimit,
           sku,
           external_id: externalId
         },
@@ -379,6 +388,115 @@ class MarketplaceStockSyncService {
     if (!variantId) return null;
     const variant = await ProductVariantRepository.findById(variantId);
     return variant?.sku || null;
+  }
+
+  static _capStockByPublishedLimit(stock, publishedLimit) {
+    const baseStock = Number(stock);
+    if (!Number.isFinite(baseStock) || baseStock < 0) return 0;
+
+    const limit = Number(publishedLimit);
+    if (!Number.isFinite(limit) || limit < 0) {
+      return Math.max(0, Math.round(baseStock));
+    }
+
+    return Math.max(0, Math.min(Math.round(baseStock), Math.round(limit)));
+  }
+
+  static _resolvePublishedStockLimit(payload, sku = null) {
+    const source = this._normalizePayload(payload);
+    if (!source) return null;
+
+    const directFields = [
+      source.publishStock,
+      source.available_quantity,
+      source.stock,
+      source.initial_quantity,
+      source.totalPublishingStock,
+      source.totalStock
+    ];
+
+    for (const value of directFields) {
+      const parsed = this._toNonNegativeInteger(value);
+      if (parsed !== null) return parsed;
+    }
+
+    const variations = Array.isArray(source.variations)
+      ? source.variations
+      : Array.isArray(source.Variations)
+        ? source.Variations
+        : Array.isArray(source.items)
+          ? source.items
+          : [];
+
+    if (variations.length === 0) {
+      return null;
+    }
+
+    const normalizeSku = (value) => String(value || '').trim().toLowerCase();
+    const normalizedSku = normalizeSku(sku);
+
+    let matchingVariation = null;
+    if (normalizedSku) {
+      matchingVariation = variations.find((variation) => {
+        const variationSku = normalizeSku(
+          variation?.seller_custom_field ||
+          variation?.seller_sku ||
+          variation?.sellerSku ||
+          variation?.sku ||
+          variation?.SellerSku ||
+          variation?.sellerSkuCode
+        );
+        return variationSku && variationSku === normalizedSku;
+      }) || null;
+    }
+
+    if (!matchingVariation && variations.length === 1) {
+      matchingVariation = variations[0];
+    }
+
+    if (!matchingVariation) {
+      return null;
+    }
+
+    const variationFields = [
+      matchingVariation.available_quantity,
+      matchingVariation.stock,
+      matchingVariation.publishStock,
+      matchingVariation.initial_quantity,
+      matchingVariation.totalStock,
+      matchingVariation.quantity
+    ];
+
+    for (const value of variationFields) {
+      const parsed = this._toNonNegativeInteger(value);
+      if (parsed !== null) return parsed;
+    }
+
+    return null;
+  }
+
+  static _normalizePayload(payload) {
+    if (!payload) return null;
+
+    if (typeof payload === 'string') {
+      try {
+        return JSON.parse(payload);
+      } catch (error) {
+        return null;
+      }
+    }
+
+    if (payload && typeof payload === 'object' && payload.payload && typeof payload.payload === 'object') {
+      return payload.payload;
+    }
+
+    return payload && typeof payload === 'object' ? payload : null;
+  }
+
+  static _toNonNegativeInteger(value) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed < 0) return null;
+    return Math.round(parsed);
   }
 }
 

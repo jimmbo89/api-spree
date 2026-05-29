@@ -9,6 +9,50 @@ const {
 } = require('../repositories');
 const logger = require('../../config/logger');
 
+function normalizePublishedStock(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+
+  const directFields = [
+    payload.available_quantity,
+    payload.stock,
+    payload.publishStock,
+    payload.initial_quantity,
+    payload.totalPublishingStock,
+    payload.totalStock
+  ];
+
+  for (const value of directFields) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return Math.round(parsed);
+    }
+  }
+
+  const variations = Array.isArray(payload.variations)
+    ? payload.variations
+    : Array.isArray(payload.items)
+      ? payload.items
+      : [];
+
+  if (variations.length === 0) return null;
+
+  const totals = variations
+    .map((variation) => {
+      const value =
+        variation?.available_quantity ??
+        variation?.stock ??
+        variation?.publishStock ??
+        variation?.initial_quantity ??
+        variation?.quantity;
+      const parsed = Number(value);
+      return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : null;
+    })
+    .filter((value) => value !== null);
+
+  if (totals.length === 0) return null;
+  return totals.reduce((sum, value) => sum + value, 0);
+}
+
 class PublishingService {
 
   static async publishProducts(products, marketplace, warehouse, userId, companyId, mode, config, credentialId = null) {
@@ -276,6 +320,8 @@ class PublishingService {
           status: status,
           external_id: result.external_id || result.data?.id,
           external_url: result.data?.permalink,
+          published_stock: normalizePublishedStock(transformed),
+          published_payload: transformed,
           last_synced_at: new Date()
         });
 
@@ -484,6 +530,22 @@ static async republishProduct(task, marketplace, credential, userId) {
         error_message: result.error || 'Error desconocido',
         error_details: result.details || null,
         api_response: result.data
+      });
+    }
+
+    if (result.success) {
+      await ProductMarketplaceLinkRepository.upsert({
+        product_id: task.product_id,
+        marketplace_id: task.marketplace_id,
+        credential_id: task.credential_id,
+        company_id: task.company_id,
+        branch_id: task.branch_id,
+        status,
+        external_id: result.external_id,
+        external_url: result.data?.permalink,
+        published_stock: normalizePublishedStock(task.payload),
+        published_payload: task.payload,
+        last_synced_at: new Date()
       });
     }
 

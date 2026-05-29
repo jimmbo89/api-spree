@@ -1,6 +1,7 @@
 const {
   MarketplaceOrderRepository,
-  MarketplaceOrderFeeRepository
+  MarketplaceOrderFeeRepository,
+  MarketplaceCredentialRepository
 } = require('../repositories');
 
 const { sequelize } = require('../models');
@@ -32,6 +33,30 @@ function buildDateRange(from, to, alias = null) {
   }
 
   return { conditions, replacements };
+}
+
+function getMarketplaceMetaFromCredential(credential) {
+  const marketplace = credential?.marketplace || {};
+
+  return {
+    marketplace_name: credential?.name || null,
+    marketplace_domain: marketplace.domain?.trim() || credential?.domain?.trim() || null
+  };
+}
+
+function buildMarketplaceLookup(credentials = []) {
+  return credentials.reduce((acc, credential) => {
+    if (credential?.id == null) return acc;
+    acc[String(credential.id)] = getMarketplaceMetaFromCredential(credential);
+    return acc;
+  }, {});
+}
+
+function getMarketplaceMetaFromLookup(marketplaceId, lookup = {}) {
+  return lookup[String(marketplaceId)] || {
+    marketplace_name: null,
+    marketplace_domain: null
+  };
 }
 
 const MarketplaceReportingService = {
@@ -72,6 +97,7 @@ const MarketplaceReportingService = {
         orders: ordersResult.rows.map(order => ({
           id: order.id,
           marketplace: order.marketplace_credential_id,
+          ...getMarketplaceMetaFromCredential(order.credential),
           orderRef: order.marketplace_order_id,
           date: order.createdAt,
           customer: order.buyer_name || order.buyer_id || 'N/A',
@@ -183,6 +209,7 @@ const MarketplaceReportingService = {
           orderId: fee.order_id,
           orderRef: fee.order?.marketplace_order_id,
           marketplace: fee.order?.marketplace_credential_id,
+          ...getMarketplaceMetaFromCredential(fee.order?.credential),
           feeType: fee.fee_type,
           amount: parseFloat(fee.amount || 0),
           percentage: parseFloat(fee.percentage || 0),
@@ -264,6 +291,11 @@ const MarketplaceReportingService = {
       const stats = await this.getProfitStats(filters);
       const byMarketplace = await this.getProfitByMarketplace(filters);
       const byProduct = await this.getProfitByProduct(filters);
+      const marketplaceIds = [...new Set(byMarketplace.map(row => row.marketplace).filter(Boolean))];
+      const credentials = marketplaceIds.length
+        ? await MarketplaceCredentialRepository.findByIds(marketplaceIds)
+        : [];
+      const marketplaceLookup = buildMarketplaceLookup(credentials);
 
       return {
         summary: {
@@ -273,7 +305,10 @@ const MarketplaceReportingService = {
           grossProfit: stats.gross_profit || 0,
           marginPercentage: stats.margin_percentage || 0
         },
-        byMarketplace,
+        byMarketplace: byMarketplace.map(row => ({
+          ...row,
+          ...getMarketplaceMetaFromLookup(row.marketplace, marketplaceLookup)
+        })),
         byProduct,
         topProducts: byProduct.slice(0, 10)
       };

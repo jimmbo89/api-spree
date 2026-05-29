@@ -197,7 +197,18 @@ const MarketplaceOrderFeeRepository = {
         offset,
         order: [['createdAt', 'DESC']],
         include: [
-          { association: 'order', attributes: ['id', 'marketplace', 'marketplace_order_id'] }
+          {
+            association: 'order',
+            attributes: ['id', 'marketplace', 'marketplace_order_id', 'marketplace_credential_id'],
+            include: [
+              {
+                association: 'credential',
+                include: [
+                  { association: 'marketplace' }
+                ]
+              }
+            ]
+          }
         ]
       });
 

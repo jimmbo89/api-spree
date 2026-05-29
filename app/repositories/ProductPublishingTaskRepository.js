@@ -1,3 +1,4 @@
+const { Op } = require('sequelize');
 const { ProductPublishingTask, Product, Marketplace, Warehouse, Branch, Company, User, MarketplaceCredential, Job } = require('../models');
 const logger = require('../../config/logger');
 
@@ -142,6 +143,25 @@ const ProductPublishingTaskRepository = {
         product_id: productId,
         marketplace_id: marketplaceId
       },
+      order: [['createdAt', 'DESC']]
+    });
+  },
+
+  async findLatestPublishedByProductMarketplaceAndCredential(productId, marketplaceId, credentialId) {
+    const where = {
+      product_id: productId,
+      marketplace_id: marketplaceId,
+      status: {
+        [Op.in]: ['published', 'published_with_warnings']
+      }
+    };
+
+    if (credentialId) {
+      where.credential_id = credentialId;
+    }
+
+    return await ProductPublishingTask.findOne({
+      where,
       order: [['createdAt', 'DESC']]
     });
   },

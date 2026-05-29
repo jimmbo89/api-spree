@@ -22,7 +22,13 @@ const MarketplaceOrderMessageService = {
       throw new Error('order_not_found');
     }
 
-    if (String(order.marketplace || '').toLowerCase() !== 'mercadolibre') {
+    const marketplace = String(order.marketplace || '').toLowerCase();
+
+    if (marketplace === 'falabella') {
+      throw new Error('message_not_supported');
+    }
+
+    if (marketplace !== 'mercadolibre') {
       throw new Error('unsupported_marketplace');
     }
 
