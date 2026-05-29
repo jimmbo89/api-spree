@@ -3,7 +3,10 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "dev": "nodemon app/server.js"
+    "dev": "nodemon app/server.js",
+    "simulate:mercadolibre-publish": "node scripts/simulateMercadoLibrePublishingFlow.js",
+    "simulate:mercadolibre-webhook-purchase": "node scripts/simulateMercadoLibreWebhookPurchase.js",
+    "simulate:mercadolibre-flow": "node scripts/simulateMercadoLibreFullFlow.js"
   },
   "keywords": [],
   "author": "",
