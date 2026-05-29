@@ -1,4 +1,5 @@
 const { getMercadoLibreSiteId } = require('../util/marketplaceUtil');
+const ProductMarketplaceLinkRepository = require('../repositories/ProductMarketplaceLinkRepository');
 
 function toFiniteNumber(value, fallback = 0) {
   const num = Number(value);
@@ -14,6 +15,38 @@ function buildMercadoLibreExternalId(productId, credentialId, siteId) {
 function buildMercadoLibrePermalink(siteId, externalId) {
   const numeric = String(externalId || '').replace(/^[A-Z]+/, '');
   return `https://articulo.mercadolibre.cl/${siteId}-${numeric}`;
+}
+
+function normalizePublishedStock(productData) {
+  const directFields = [
+    productData?.available_quantity,
+    productData?.stock,
+    productData?.publishStock,
+    productData?.initial_quantity,
+    productData?.totalPublishingStock,
+    productData?.totalStock
+  ];
+
+  for (const value of directFields) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return Math.round(parsed);
+    }
+  }
+
+  const variants = Array.isArray(productData?.variants) ? productData.variants : [];
+  if (variants.length === 0) return null;
+
+  const totals = variants
+    .map((variant) => {
+      const value = variant?.publishStock ?? variant?.stock ?? variant?.totalStock ?? variant?.available_quantity ?? variant?.quantity;
+      const parsed = Number(value);
+      return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : null;
+    })
+    .filter((value) => value !== null);
+
+  if (totals.length === 0) return null;
+  return totals.reduce((sum, value) => sum + value, 0);
 }
 
 function resolveTitle(productData) {
@@ -148,7 +181,29 @@ function buildMercadoLibreItem({ productData, marketplace, credential, warehouse
   };
 }
 
-function buildMercadoLibreSimulationResponse({ productData, marketplace, credential, warehouse }) {
+async function persistMercadoLibreSimulationLink({ productData, marketplace, credential, warehouse, externalId, externalUrl, data }) {
+  if (!productData?.id || !marketplace?.marketplace_id || !credential?.id) {
+    return null;
+  }
+
+  const publishedStock = normalizePublishedStock(data || productData);
+
+  return await ProductMarketplaceLinkRepository.upsert({
+    product_id: productData.id,
+    marketplace_id: marketplace.marketplace_id,
+    credential_id: credential.id,
+    company_id: warehouse?.company_id || productData?.company_id || null,
+    branch_id: warehouse?.branch_id || productData?.branch_id || null,
+    status: 'published',
+    external_id: externalId,
+    external_url: externalUrl,
+    published_stock: publishedStock,
+    published_payload: data,
+    last_synced_at: new Date()
+  });
+}
+
+async function buildMercadoLibreSimulationResponse({ productData, marketplace, credential, warehouse, persist_link = true }) {
   const siteId = getMercadoLibreSiteId(
     credential?.country || marketplace?.country || null,
     marketplace?.domain || marketplace?.marketplace?.domain || null
@@ -163,15 +218,30 @@ function buildMercadoLibreSimulationResponse({ productData, marketplace, credent
     siteId
   });
 
+  if (persist_link) {
+    await persistMercadoLibreSimulationLink({
+      productData,
+      marketplace,
+      credential,
+      warehouse,
+      externalId,
+      externalUrl: data.permalink,
+      data
+    });
+  }
+
   return {
     success: true,
     external_id: externalId,
     external_url: data.permalink,
     data,
+    published_stock: normalizePublishedStock(data),
+    published_payload: data,
     simulated: true
   };
 }
 
 module.exports = {
-  buildMercadoLibreSimulationResponse
+  buildMercadoLibreSimulationResponse,
+  persistMercadoLibreSimulationLink
 };
