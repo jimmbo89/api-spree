@@ -323,7 +323,26 @@ const InventoryMovementRepository = {
     }
   },
 
-async findWithFilters(filters = {}, options = {}) {
+  async findByReferencePrefix(referencePrefix, options = {}) {
+    try {
+      if (!referencePrefix) return [];
+
+      return await InventoryMovement.findAll({
+        where: {
+          reference_id: {
+            [Op.like]: `${referencePrefix}%`
+          }
+        },
+        order: [['createdAt', 'ASC']],
+        ...options
+      });
+    } catch (error) {
+      logger.error("InventoryMovementRepository.findByReferencePrefix error:", error.message);
+      throw error;
+    }
+  },
+
+ async findWithFilters(filters = {}, options = {}) {
   try {
     // ✅ EXTRAER fechas desde filters (o options, según tu convención)
     const { start_date, end_date, company_id, branch_id } = filters;

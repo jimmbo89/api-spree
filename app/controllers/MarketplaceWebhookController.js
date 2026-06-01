@@ -46,6 +46,11 @@ const FB_KNOWN_TOPICS = new Set([
   ...FB_FEED_TOPICS,
   ...FB_PRODUCT_TOPICS
 ]);
+const STOCK_SALE_STATUSES = new Set(["paid", "confirmed", "shipped", "delivered"]);
+const STOCK_REVERSE_ORDER_STATUSES = new Set(["cancelled", "returned"]);
+const STOCK_REVERSE_PAYMENT_STATUSES = new Set(["refunded", "charged_back", "cancelled"]);
+const STOCK_DEDUCT_EVENT_TYPE = "stock_deducted";
+const STOCK_REVERSE_EVENT_TYPE = "stock_reversed";
 const FB_API_VERSION = process.env.FB_API_VERSION || "2.0";
 const FB_USER_AGENT = process.env.FB_USER_AGENT || "Spree/1.0";
 
@@ -221,6 +226,10 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
   const companyInfo = await resolveCompanyFromListing(ML_MARKETPLACE_KEY, firstListingId);
   const companyId = companyInfo?.company_id || null;
   const branchId = companyInfo?.branch_id || null;
+  const existingOrder = await MarketplaceOrderRepository.findByMarketplaceOrderId(
+    ML_MARKETPLACE_KEY,
+    String(order.id)
+  );
 
   // ✅ GUARDAR ORDEN EN marketplace_orders
   const orderData = {
@@ -264,10 +273,11 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
 
   let savedOrder;
   let orderCreated = false;
-  
+  let previousOrderStatus = existingOrder?.order_status || null;
+
   try {
     const result = await MarketplaceOrderRepository.upsert(orderData);
-    savedOrder = result.record;
+    savedOrder = await MarketplaceOrderRepository.findById(result.record.id);
     orderCreated = result.created;
   } catch (error) {
     logger.error(`[ML Webhook] Error guardando orden ${orderId}: ${error.message}`);
@@ -279,13 +289,36 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
     return;
   }
 
-  // ✅ GUARDAR EVENTO DE CREACIÓN DE ORDEN
+  const currentOrderStatus = savedOrder?.order_status || orderData.order_status;
+  const currentPaymentStatus = savedOrder?.payment_status || orderData.payment_status;
+  const stockState = await getMarketplaceOrderStockState(
+    ML_MARKETPLACE_KEY,
+    savedOrder.id
+  );
+  const lifecycle = getMarketplaceOrderLifecycleDecision({
+    orderStatus: currentOrderStatus,
+    paymentStatus: currentPaymentStatus
+  });
+  const shouldDeductStock = lifecycle.shouldDeduct && !stockState.hasDeduction && !stockState.hasReversal;
+  const shouldReverseStock = lifecycle.shouldReverse && stockState.hasDeduction && stockState.pendingReversalCount > 0;
+
+  const statusChanged = previousOrderStatus !== currentOrderStatus;
+
   if (orderCreated) {
     await MarketplaceOrderEventRepository.createStatusChange(
       savedOrder.id,
       'created',
       null,
-      orderData.order_status,
+      currentOrderStatus,
+      order,
+      { company_id: companyId }
+    );
+  } else if (statusChanged) {
+    await MarketplaceOrderEventRepository.createStatusChange(
+      savedOrder.id,
+      currentOrderStatus,
+      previousOrderStatus,
+      currentOrderStatus,
       order,
       { company_id: companyId }
     );
@@ -309,58 +342,98 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
   const errors = [];
   const savedItems = [];
 
-  // ✅ PROCESAR CADA ITEM
-  for (const orderItem of items) {
-    try {
-      const itemResult = await processOrderItem(orderItem, {
-        orderId,
-        marketplaceId: credential.marketplace_id,
-        companyId,
-        branchId,
-        orderIdLocal: savedOrder.id,
-        // Datos financieros de la orden completa
-        totalAmount: order.total_amount || 0,
-        shippingGrossAmount: shippingData.shippingGrossAmount,
-        sellerShippingCost: shippingData.sellerShippingCost,
-        buyerShippingCost: shippingData.buyerShippingCost,
-        shippingSubsidy: shippingData.shippingSubsidy,
-        logisticType: shippingData.logisticType,
-        freeShipping: shippingData.freeShipping,
-        shippingWhoPays: shippingData.whoPays,
-        totalItems: items.length,
-        totalQuantity
-      });
-      
-      if (itemResult) {
-        savedItems.push(itemResult);
+  if (shouldDeductStock) {
+    // ✅ PROCESAR CADA ITEM SOLO EN PRIMERA VENTA PAGADA
+    for (const orderItem of items) {
+      try {
+        const itemResult = await processOrderItem(orderItem, {
+          orderId,
+          marketplaceId: credential.marketplace_id,
+          companyId,
+          branchId,
+          orderIdLocal: savedOrder.id,
+          // Datos financieros de la orden completa
+          totalAmount: order.total_amount || 0,
+          shippingGrossAmount: shippingData.shippingGrossAmount,
+          sellerShippingCost: shippingData.sellerShippingCost,
+          buyerShippingCost: shippingData.buyerShippingCost,
+          shippingSubsidy: shippingData.shippingSubsidy,
+          logisticType: shippingData.logisticType,
+          freeShipping: shippingData.freeShipping,
+          shippingWhoPays: shippingData.whoPays,
+          totalItems: items.length,
+          totalQuantity
+        });
+        
+        if (itemResult) {
+          savedItems.push(itemResult);
+        }
+      } catch (error) {
+        errors.push(error.message);
+        logger.error(`[ML Webhook] Item error order=${orderId}: ${error.message}`);
       }
-    } catch (error) {
-      errors.push(error.message);
-      logger.error(`[ML Webhook] Item error order=${orderId}: ${error.message}`);
     }
+
+    // ✅ GUARDAR FEES TOTALES DE LA ORDEN
+    if (savedOrder && items.length > 0) {
+      try {
+        const totalFees = items.reduce((sum, item) => {
+          return sum + (Number(item.sale_fee) || 0);
+        }, 0);
+
+        if (totalFees > 0) {
+          await MarketplaceOrderFeeRepository.create({
+            order_id: savedOrder.id,
+            company_id: companyId,
+            fee_type: 'commission',
+            amount: totalFees,
+            percentage: calculateAverageCommissionPercentage(totalFees, order.total_amount),
+            status: 'pending',
+            description: `Comisión Mercado Libre - Orden ${orderId}`,
+            raw_data: { items: items.map(i => ({ id: i.id, sale_fee: i.sale_fee })) }
+          });
+        }
+      } catch (error) {
+        logger.error(`[ML Webhook] Error guardando fees de orden ${orderId}: ${error.message}`);
+      }
+    }
+
+    await MarketplaceOrderEventRepository.create({
+      order_id: savedOrder.id,
+      event_type: STOCK_DEDUCT_EVENT_TYPE,
+      previous_status: previousOrderStatus,
+      new_status: currentOrderStatus,
+      raw_payload: order,
+      notes: `Stock debitado por orden Mercado Libre ${orderId}`,
+      company_id: companyId
+    });
   }
 
-  // ✅ GUARDAR FEES TOTALES DE LA ORDEN
-  if (savedOrder && items.length > 0) {
-    try {
-      const totalFees = items.reduce((sum, item) => {
-        return sum + (Number(item.sale_fee) || 0);
-      }, 0);
+  if (shouldReverseStock) {
+    const reversalResult = await reverseMarketplaceOrderStock({
+      order: savedOrder,
+      marketplaceKey: ML_MARKETPLACE_KEY,
+      orderId,
+      reason: 'mercadolibre_reversal',
+      payload: order,
+      sourceMarketplaceId: credential.marketplace_id,
+      includeSourceMarketplace: true
+    });
 
-      if (totalFees > 0) {
-        await MarketplaceOrderFeeRepository.create({
-          order_id: savedOrder.id,
-          company_id: companyId,
-          fee_type: 'commission',
-          amount: totalFees,
-          percentage: calculateAverageCommissionPercentage(totalFees, order.total_amount),
-          status: 'pending',
-          description: `Comisión Mercado Libre - Orden ${orderId}`,
-          raw_data: { items: items.map(i => ({ id: i.id, sale_fee: i.sale_fee })) }
-        });
-      }
-    } catch (error) {
-      logger.error(`[ML Webhook] Error guardando fees de orden ${orderId}: ${error.message}`);
+    if (reversalResult.errors.length > 0) {
+      errors.push(...reversalResult.errors);
+    }
+
+    if (reversalResult.completed) {
+      await MarketplaceOrderEventRepository.create({
+        order_id: savedOrder.id,
+        event_type: STOCK_REVERSE_EVENT_TYPE,
+        previous_status: previousOrderStatus,
+        new_status: currentOrderStatus,
+        raw_payload: order,
+        notes: `Stock revertido por estado ${currentOrderStatus} en orden Mercado Libre ${orderId}`,
+        company_id: companyId
+      });
     }
   }
 
@@ -698,6 +771,10 @@ async function processFalabellaEvent({ event, payload, orderId }) {
   const companyInfo = await resolveCompanyFromListing(FB_MARKETPLACE_KEY, firstSku);
   const companyId = companyInfo?.company_id || null;
   const branchId = companyInfo?.branch_id || null;
+  const existingOrder = await MarketplaceOrderRepository.findByMarketplaceOrderId(
+    FB_MARKETPLACE_KEY,
+    String(orderId)
+  );
   const customerSnapshot = buildFalabellaCustomerSnapshot({
     orderData,
     orderInfo,
@@ -736,10 +813,11 @@ async function processFalabellaEvent({ event, payload, orderId }) {
 
   let savedOrder;
   let orderCreated = false;
+  let previousOrderStatus = existingOrder?.order_status || null;
   
   try {
     const result = await MarketplaceOrderRepository.upsert(orderDataToSave);
-    savedOrder = result.record;
+    savedOrder = await MarketplaceOrderRepository.findById(result.record.id);
     orderCreated = result.created;
   } catch (error) {
     logger.error(`[FB Webhook] Error guardando orden ${orderId}: ${error.message}`);
@@ -751,13 +829,36 @@ async function processFalabellaEvent({ event, payload, orderId }) {
     return;
   }
 
-  // ✅ GUARDAR EVENTO DE CREACIÓN DE ORDEN
+  const currentOrderStatus = savedOrder?.order_status || orderDataToSave.order_status;
+  const currentPaymentStatus = savedOrder?.payment_status || orderDataToSave.payment_status;
+  const stockState = await getMarketplaceOrderStockState(
+    FB_MARKETPLACE_KEY,
+    savedOrder.id
+  );
+  const lifecycle = getMarketplaceOrderLifecycleDecision({
+    orderStatus: currentOrderStatus,
+    paymentStatus: currentPaymentStatus
+  });
+  const shouldDeductStock = lifecycle.shouldDeduct && !stockState.hasDeduction && !stockState.hasReversal;
+  const shouldReverseStock = lifecycle.shouldReverse && stockState.hasDeduction && stockState.pendingReversalCount > 0;
+  const statusChanged = previousOrderStatus !== currentOrderStatus;
+
+  // ✅ GUARDAR EVENTOS DE ESTADO
   if (orderCreated) {
     await MarketplaceOrderEventRepository.createStatusChange(
       savedOrder.id,
       'created',
       null,
-      orderDataToSave.order_status,
+      currentOrderStatus,
+      orderData,
+      { company_id: companyId }
+    );
+  } else if (statusChanged) {
+    await MarketplaceOrderEventRepository.createStatusChange(
+      savedOrder.id,
+      currentOrderStatus,
+      previousOrderStatus,
+      currentOrderStatus,
       orderData,
       { company_id: companyId }
     );
@@ -768,42 +869,82 @@ async function processFalabellaEvent({ event, payload, orderId }) {
   const errors = [];
   const savedItems = [];
 
-  // ✅ PROCESAR CADA ITEM
-  for (const item of items) {
-    try {
-      const itemResult = await processFalabellaOrderItem(item, {
-        orderId,
-        marketplaceId: credential.marketplace_id,
-        companyId,
-        branchId,
-        orderIdLocal: savedOrder.id,
-        itemData: item // Pasar datos completos del item
-      });
-      
-      if (itemResult) {
-        savedItems.push(itemResult);
+  if (shouldDeductStock) {
+    // ✅ PROCESAR CADA ITEM SOLO EN PRIMERA VENTA PAGADA
+    for (const item of items) {
+      try {
+        const itemResult = await processFalabellaOrderItem(item, {
+          orderId,
+          marketplaceId: credential.marketplace_id,
+          companyId,
+          branchId,
+          orderIdLocal: savedOrder.id,
+          itemData: item // Pasar datos completos del item
+        });
+        
+        if (itemResult) {
+          savedItems.push(itemResult);
+        }
+      } catch (error) {
+        errors.push(error.message);
+        logger.error(`[FB Webhook] Item error order=${orderId}: ${error.message}`);
       }
-    } catch (error) {
-      errors.push(error.message);
-      logger.error(`[FB Webhook] Item error order=${orderId}: ${error.message}`);
     }
+
+    // ✅ GUARDAR FEES TOTALES DE LA ORDEN (comisiones)
+    if (savedOrder && orderInfo.commission > 0) {
+      try {
+        await MarketplaceOrderFeeRepository.create({
+          order_id: savedOrder.id,
+          company_id: companyId,
+          fee_type: 'commission',
+          amount: orderInfo.commission,
+          percentage: orderInfo.totalAmount > 0 ? (orderInfo.commission / orderInfo.totalAmount) * 100 : 0,
+          status: 'pending',
+          description: `Comisión Falabella - Orden ${orderId}`,
+          raw_data: { commission: orderInfo.commission }
+        });
+      } catch (error) {
+        logger.error(`[FB Webhook] Error guardando fees de orden ${orderId}: ${error.message}`);
+      }
+    }
+
+    await MarketplaceOrderEventRepository.create({
+      order_id: savedOrder.id,
+      event_type: STOCK_DEDUCT_EVENT_TYPE,
+      previous_status: previousOrderStatus,
+      new_status: currentOrderStatus,
+      raw_payload: orderData,
+      notes: `Stock debitado por orden Falabella ${orderId}`,
+      company_id: companyId
+    });
   }
 
-  // ✅ GUARDAR FEES TOTALES DE LA ORDEN (comisiones)
-  if (savedOrder && orderInfo.commission > 0) {
-    try {
-      await MarketplaceOrderFeeRepository.create({
+  if (shouldReverseStock) {
+    const reversalResult = await reverseMarketplaceOrderStock({
+      order: savedOrder,
+      marketplaceKey: FB_MARKETPLACE_KEY,
+      orderId,
+      reason: 'falabella_reversal',
+      payload: orderData,
+      sourceMarketplaceId: credential.marketplace_id,
+      includeSourceMarketplace: true
+    });
+
+    if (reversalResult.errors.length > 0) {
+      errors.push(...reversalResult.errors);
+    }
+
+    if (reversalResult.completed) {
+      await MarketplaceOrderEventRepository.create({
         order_id: savedOrder.id,
-        company_id: companyId,
-        fee_type: 'commission',
-        amount: orderInfo.commission,
-        percentage: orderInfo.totalAmount > 0 ? (orderInfo.commission / orderInfo.totalAmount) * 100 : 0,
-        status: 'pending',
-        description: `Comisión Falabella - Orden ${orderId}`,
-        raw_data: { commission: orderInfo.commission }
+        event_type: STOCK_REVERSE_EVENT_TYPE,
+        previous_status: previousOrderStatus,
+        new_status: currentOrderStatus,
+        raw_payload: orderData,
+        notes: `Stock revertido por estado ${currentOrderStatus} en orden Falabella ${orderId}`,
+        company_id: companyId
       });
-    } catch (error) {
-      logger.error(`[FB Webhook] Error guardando fees de orden ${orderId}: ${error.message}`);
     }
   }
 
@@ -2117,7 +2258,14 @@ async function applyStockExit({
     const meta = {
       order_id: orderId,
       listing_id: listingId,
-      marketplace: finalMarketplaceKey
+      marketplace: finalMarketplaceKey,
+      pre_sale_state: {
+        price: wpVariant.price ?? null,
+        promotional_price: wpVariant.promotional_price ?? null,
+        local_sku: wpVariant.local_sku ?? null,
+        active: wpVariant.active ?? null,
+        published: wpVariant.published ?? null
+      }
     };
 
     // Agregar datos financieros si existen
@@ -2165,7 +2313,8 @@ async function queueStockSync({
   sourceMarketplaceId,
   companyId,
   branchId,
-  logPrefix
+  logPrefix,
+  includeSourceMarketplace = false
 }) {
   try {
     const job = await MarketplaceStockSyncService.enqueueStockSync({
@@ -2175,7 +2324,8 @@ async function queueStockSync({
       stock,
       sourceMarketplaceId,
       companyId,
-      branchId
+      branchId,
+      includeSourceMarketplace
     });
 
     if (!job) return;
@@ -2507,6 +2657,254 @@ function buildShippingAddress(shipping) {
 function calculateAverageCommissionPercentage(totalFees, totalAmount) {
   if (!totalAmount || totalAmount <= 0) return 0;
   return parseFloat(((totalFees / totalAmount) * 100).toFixed(2));
+}
+
+function getMarketplaceOrderReferencePrefix(marketplaceKey) {
+  if (marketplaceKey === ML_MARKETPLACE_KEY) return "ml";
+  if (marketplaceKey === FB_MARKETPLACE_KEY) return "fb";
+  return String(marketplaceKey || "marketplace");
+}
+
+function getMarketplaceOrderLifecycleDecision({ orderStatus, paymentStatus }) {
+  const normalizedOrderStatus = stringOrNull(orderStatus)?.toLowerCase() || null;
+  const normalizedPaymentStatus = stringOrNull(paymentStatus)?.toLowerCase() || null;
+
+  const shouldReverse =
+    Boolean(normalizedOrderStatus && STOCK_REVERSE_ORDER_STATUSES.has(normalizedOrderStatus)) ||
+    Boolean(normalizedPaymentStatus && STOCK_REVERSE_PAYMENT_STATUSES.has(normalizedPaymentStatus));
+
+  const shouldDeduct =
+    !shouldReverse && (
+      Boolean(normalizedOrderStatus && STOCK_SALE_STATUSES.has(normalizedOrderStatus)) ||
+      ["paid", "authorized", "processing", "confirmed", "in_process"].includes(normalizedPaymentStatus)
+    );
+
+  return {
+    orderStatus: normalizedOrderStatus,
+    paymentStatus: normalizedPaymentStatus,
+    shouldDeduct,
+    shouldReverse
+  };
+}
+
+async function getMarketplaceOrderStockState(marketplaceKey, orderId) {
+  const referencePrefix = getMarketplaceOrderReferencePrefix(marketplaceKey);
+  const movements = await InventoryMovementRepository.findByReferencePrefix(
+    `${referencePrefix}:${orderId}:`
+  );
+  const reversalMovements = await InventoryMovementRepository.findByReferencePrefix(
+    `${referencePrefix}:reversal:`
+  );
+  const reversedMovementIds = new Set(
+    reversalMovements
+      .map((movement) => {
+        const referenceId = String(movement.reference_id || "");
+        const parts = referenceId.split(":");
+        return parts.length >= 3 ? parts[2] : null;
+      })
+      .filter(Boolean)
+  );
+  const exitMovements = movements.filter(
+    (movement) => String(movement.movement_type || "").toLowerCase() === "exit"
+  );
+  const events = await MarketplaceOrderEventRepository.findByOrderId(orderId);
+  const pendingReversalCount = exitMovements.filter(
+    (movement) => !reversedMovementIds.has(String(movement.id))
+  ).length;
+
+  return {
+    movements,
+    events,
+    pendingReversalCount,
+    hasDeduction:
+      movements.some((movement) => String(movement.movement_type || "").toLowerCase() === "exit") ||
+      events.some((event) => event.event_type === STOCK_DEDUCT_EVENT_TYPE),
+    hasReversal: pendingReversalCount === 0 && exitMovements.length > 0 && reversedMovementIds.size > 0
+  };
+}
+
+function normalizeInventoryMovementMeta(meta) {
+  if (!meta) return {};
+  if (typeof meta === "object") return meta;
+  if (typeof meta !== "string") return {};
+
+  try {
+    const parsed = JSON.parse(meta);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (error) {
+    return {};
+  }
+}
+
+async function reverseMarketplaceOrderStock({
+  order,
+  marketplaceKey,
+  orderId,
+  reason,
+  payload = null,
+  sourceMarketplaceId = null,
+  includeSourceMarketplace = true
+}) {
+  const referencePrefix = getMarketplaceOrderReferencePrefix(marketplaceKey);
+  const movements = await InventoryMovementRepository.findByReferencePrefix(
+    `${referencePrefix}:${orderId}:`
+  );
+  const reversalMovements = await InventoryMovementRepository.findByReferencePrefix(
+    `${referencePrefix}:reversal:`
+  );
+  const reversedMovementIds = new Set(
+    reversalMovements
+      .map((movement) => {
+        const referenceId = String(movement.reference_id || "");
+        const parts = referenceId.split(":");
+        return parts.length >= 3 ? parts[2] : null;
+      })
+      .filter(Boolean)
+  );
+  const exitMovements = movements.filter(
+    (movement) => String(movement.movement_type || "").toLowerCase() === "exit"
+  );
+  const pendingMovements = exitMovements.filter(
+    (movement) => !reversedMovementIds.has(String(movement.id))
+  );
+
+  if (pendingMovements.length === 0) {
+    return { reversed: false, errors: [], results: [] };
+  }
+
+  const results = [];
+  const errors = [];
+
+  for (const movement of pendingMovements) {
+    const transaction = await sequelize.transaction();
+
+    try {
+      const warehouseId = movement.warehouse_id || null;
+      const productId = movement.product_id || null;
+      const variantId = movement.variant_id || null;
+
+      if (!warehouseId || !productId || !variantId) {
+        throw new Error("movement_context_missing");
+      }
+
+      const warehouseProduct = await WarehouseProductRepository.findByWarehouseAndProduct(
+        warehouseId,
+        productId
+      );
+      if (!warehouseProduct) {
+        throw new Error("warehouse_product_not_found");
+      }
+
+      const wpVariant = await WarehouseProductVariantRepository.findByVariantAndWarehouseProduct(
+        variantId,
+        warehouseProduct.id
+      );
+      if (!wpVariant) {
+        throw new Error("warehouse_product_variant_not_found");
+      }
+
+      const quantity = parseInt(movement.quantity, 10) || 0;
+      if (quantity <= 0) {
+        throw new Error("invalid_reversal_quantity");
+      }
+
+      const stockBefore = parseInt(wpVariant.stock, 10) || 0;
+      const stockAfter = stockBefore + quantity;
+      const movementMeta = normalizeInventoryMovementMeta(movement.meta);
+      const preSaleState = movementMeta.pre_sale_state || {};
+      const updateData = { stock: stockAfter };
+
+      if (preSaleState && Object.keys(preSaleState).length > 0) {
+        if (preSaleState.price !== undefined) updateData.price = preSaleState.price;
+        if (preSaleState.promotional_price !== undefined) updateData.promotional_price = preSaleState.promotional_price;
+        if (preSaleState.local_sku !== undefined) updateData.local_sku = preSaleState.local_sku;
+        if (preSaleState.active !== undefined) updateData.active = preSaleState.active;
+        if (preSaleState.published !== undefined) updateData.published = preSaleState.published;
+      } else if (stockAfter > 0) {
+        updateData.active = true;
+        updateData.published = true;
+      }
+
+      await WarehouseProductVariantRepository.update(wpVariant, updateData, { transaction });
+
+      let companyId = movement.company_id || warehouseProduct.company_id || null;
+      let branchId = movement.branch_id || warehouseProduct.branch_id || null;
+      if (!companyId && !branchId) {
+        const warehouse = await WarehouseRepository.findById(warehouseId);
+        companyId = warehouse?.company_id || null;
+        branchId = warehouse?.branch_id || null;
+      }
+
+      const reversalMovement = await InventoryMovementRepository.create({
+        warehouse_id: warehouseId,
+        product_id: productId,
+        variant_id: variantId,
+        company_id: companyId,
+        branch_id: branchId,
+        movement_type: "entry",
+        quantity,
+        stock_before: stockBefore,
+        stock_after: stockAfter,
+        unit_price: movement.unit_price || null,
+        total_value: movement.total_value || null,
+        reference_type: referencePrefix,
+        reference_id: `${referencePrefix}:reversal:${movement.id}`,
+        reason: reason || `${referencePrefix}_reversal`,
+        notes: `reversal_of:${movement.reference_id}`,
+        user_id: null,
+        meta: {
+          order_id: orderId,
+          marketplace: marketplaceKey,
+          original_movement_id: movement.id,
+          original_reference_id: movement.reference_id,
+          reverse_reason: reason || null,
+          payload: payload || null
+        }
+      }, { transaction });
+
+      await transaction.commit();
+
+      results.push({
+        warehouseId,
+        productId,
+        variantId,
+        stockAfter,
+        inventoryMovementId: reversalMovement?.id || null
+      });
+    } catch (error) {
+      await transaction.rollback();
+      errors.push(error.message);
+      logger.error(`[${marketplaceKey.toUpperCase()} Webhook] Error revirtiendo stock de orden ${orderId}: ${error.message}`);
+    }
+  }
+
+  if (results.length > 0) {
+    for (const result of results) {
+      try {
+        await queueStockSync({
+          productId: result.productId,
+          variantId: result.variantId,
+          warehouseId: result.warehouseId,
+          stock: result.stockAfter,
+          sourceMarketplaceId,
+          companyId: order?.company_id || null,
+          branchId: order?.branch_id || null,
+          logPrefix: `${marketplaceKey.toUpperCase()} Reversal`,
+          includeSourceMarketplace
+        });
+      } catch (error) {
+        errors.push(error.message);
+        logger.warn(`[${marketplaceKey.toUpperCase()} Webhook] Error encola sync reversa orden ${orderId}: ${error.message}`);
+      }
+    }
+  }
+
+  return {
+    reversed: results.length > 0,
+    completed: pendingMovements.length === results.length && errors.length === 0,
+    errors,
+    results
+  };
 }
 
 /**

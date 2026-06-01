@@ -24,7 +24,8 @@ class MarketplaceStockSyncService {
     stock,
     sourceMarketplaceId,
     companyId,
-    branchId
+    branchId,
+    includeSourceMarketplace = false
   }) {
     const links = await ProductMarketplaceLinkRepository.findByProduct(
       productId,
@@ -32,9 +33,11 @@ class MarketplaceStockSyncService {
       branchId
     );
 
-    const targets = (links || []).filter(
-      (l) => Number(l.marketplace_id) !== Number(sourceMarketplaceId)
-    );
+    const targets = includeSourceMarketplace
+      ? (links || [])
+      : (links || []).filter(
+          (l) => Number(l.marketplace_id) !== Number(sourceMarketplaceId)
+        );
 
     if (targets.length === 0) return null;
 
