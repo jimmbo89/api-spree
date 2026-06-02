@@ -7,6 +7,10 @@ const {
   ProductMarketplaceLinkRepository,
   MarketplaceCredentialRepository
 } = require('../repositories');
+const {
+  isMercadoLibreMarketplace,
+  verifyMercadoLibreItem
+} = require('./MarketplaceItemVerificationService');
 const logger = require('../../config/logger');
 
 function normalizePublishedStock(payload) {
@@ -51,6 +55,21 @@ function normalizePublishedStock(payload) {
 
   if (totals.length === 0) return null;
   return totals.reduce((sum, value) => sum + value, 0);
+}
+
+function resolveExternalId(result, fallback = null) {
+  return result?.external_id || result?.data?.id || fallback || null;
+}
+
+function buildVerificationWarningMessage(verification) {
+  if (!verification) return null;
+  if (!verification.item_found) {
+    return `Verificación ML fallida: ${verification.error || 'item_not_found'}`;
+  }
+  if (verification.status === 'active') {
+    return null;
+  }
+  return `Verificación ML: estado ${verification.status || 'desconocido'}`;
 }
 
 class PublishingService {
@@ -230,6 +249,18 @@ class PublishingService {
 
       // === 4. Publicar ===
       const result = await adapter.publish(transformed);
+      const externalId = resolveExternalId(result);
+      const shouldVerifyMlPublication = Boolean(
+        result.success &&
+        externalId &&
+        isMercadoLibreMarketplace(marketplace)
+      );
+      const verification = shouldVerifyMlPublication
+        ? await verifyMercadoLibreItem({
+            itemId: externalId,
+            accessToken: credential?.access_token
+          })
+        : null;
 
       if (result.auth_required) {
         // ✅ Crear task en estado pending para auth_required (esperando re-autorización)
@@ -269,16 +300,24 @@ class PublishingService {
 
         // ✅ Determinar status según si hay warnings
         // Los warnings NO son errores, el producto SÍ se publicó
-        const status = hasWarnings ? 'published_with_warnings' : 'published';
+        const verificationWarningMessage = buildVerificationWarningMessage(verification);
+        const verificationFailed = shouldVerifyMlPublication && verification && !verification.item_found;
+        const finalSuccess = result.success && !verificationFailed;
+        const status = finalSuccess
+          ? ((hasWarnings || verificationWarningMessage) ? 'published_with_warnings' : 'published')
+          : 'failed';
 
         // ✅ Preparar mensaje de warnings para UI (claro y entendible)
-        const warningMessage = hasWarnings
-          ? `Advertencias del marketplace: ${result.warnings.map(w => {
-              const field = w.field ? `${w.field}` : '';
-              const message = w.message || 'Sin detalle';
-              return field ? `${field}: ${message}` : message;
-            }).join('; ')}`
-          : null;
+        const warningMessage = [
+          hasWarnings
+            ? `Advertencias del marketplace: ${result.warnings.map(w => {
+                const field = w.field ? `${w.field}` : '';
+                const message = w.message || 'Sin detalle';
+                return field ? `${field}: ${message}` : message;
+              }).join('; ')}`
+            : null,
+          verificationWarningMessage
+        ].filter(Boolean).join(' | ') || null;
 
         // ✅ Estructura de warnings para guardar (más clara para el front)
         const warningsData = hasWarnings ? {
@@ -292,6 +331,20 @@ class PublishingService {
           published_successfully: true
         } : null;
 
+        const verificationDetails = verification
+          ? {
+              marketplace: 'mercado_libre',
+              verified: verification.verified,
+              item_found: verification.item_found,
+              status: verification.status,
+              attempts: verification.attempts,
+              note: verification.note,
+              error: verification.error || null
+            }
+          : null;
+
+        const externalId = resolveExternalId(result);
+
         const task = await ProductPublishingTaskRepository.create({
           product_id: productData.id,
           marketplace_id: marketplace.marketplace_id,
@@ -301,40 +354,44 @@ class PublishingService {
           date: new Date(),
           status: status,
           payload: transformed,
-          external_id: result.external_id || result.data?.id,
+          external_id: externalId,
           external_url: result.data?.permalink,
           // ✅ Guardar warnings como error_message para compatibilidad con el front
-          error_message: hasWarnings ? warningMessage : null,
+          error_message: warningMessage,
           // ✅ Guardar warnings estructurados en error_details
-          error_details: warningsData,
+          error_details: verificationDetails || warningsData,
           api_response: result.data,
           batch_id: batch_id || null,
         });
 
-        await ProductMarketplaceLinkRepository.upsert({
-          product_id: productData.id,
-          marketplace_id: marketplace.marketplace_id,
-          credential_id: credentialId,
-          company_id: warehouse.company_id,
-          branch_id: warehouse.branch_id,
-          status: status,
-          external_id: result.external_id || result.data?.id,
-          external_url: result.data?.permalink,
-          published_stock: normalizePublishedStock(transformed),
-          published_payload: transformed,
-          last_synced_at: new Date()
-        });
+        if (finalSuccess) {
+          await ProductMarketplaceLinkRepository.upsert({
+            product_id: productData.id,
+            marketplace_id: marketplace.marketplace_id,
+            credential_id: credentialId,
+            company_id: warehouse.company_id,
+            branch_id: warehouse.branch_id,
+            status: status,
+            external_id: externalId,
+            external_url: result.data?.permalink,
+            published_stock: normalizePublishedStock(transformed),
+            published_payload: transformed,
+            last_synced_at: new Date()
+          });
+        }
 
         logger.info(`[PublishingService] ✅ Producto publicado ${hasWarnings ? 'con advertencias' : 'exitosamente'}`);
         return {
-          success: true,
+          success: finalSuccess,
           task_id: task.id,
-          external_id: result.external_id || result.data?.id,
+          external_id: externalId,
           product_id: productData.id,
           credential_id: credentialId,
-          has_warnings: hasWarnings,
+          has_warnings: hasWarnings || Boolean(verificationWarningMessage),
           warnings: hasWarnings ? result.warnings : null,
-          status: status
+          verification: verificationDetails,
+          status: status,
+          error: verificationFailed ? verificationWarningMessage : null
         };
       }
 
@@ -475,22 +532,41 @@ static async republishProduct(task, marketplace, credential, userId) {
 
     // 3. ✅ PUBLICAR DIRECTO (SIN prepareProduct, SIN transformer)
     const result = await adapter.publish(task.payload);
+    const shouldVerifyMlPublication = Boolean(
+      result.success &&
+      externalId &&
+      isMercadoLibreMarketplace(marketplace)
+    );
+    const verification = shouldVerifyMlPublication
+      ? await verifyMercadoLibreItem({
+          itemId: externalId,
+          accessToken: credential?.access_token
+        })
+      : null;
 
     // ✅ Detectar si hay warnings
     const hasWarnings = result.has_warnings === true ||
                        (Array.isArray(result.warnings) && result.warnings.length > 0);
 
     // ✅ Determinar status según si hay warnings
-    const status = hasWarnings ? 'published_with_warnings' : (result.success ? 'published' : 'failed');
+    const verificationWarningMessage = buildVerificationWarningMessage(verification);
+    const verificationFailed = shouldVerifyMlPublication && verification && !verification.item_found;
+    const finalSuccess = result.success && !verificationFailed;
+    const status = finalSuccess
+      ? ((hasWarnings || verificationWarningMessage) ? 'published_with_warnings' : 'published')
+      : 'failed';
 
     // ✅ Preparar mensaje de warnings para UI (claro y entendible)
-    const warningMessage = hasWarnings
-      ? `Advertencias del marketplace: ${result.warnings?.map(w => {
-          const field = w.field ? `${w.field}` : '';
-          const message = w.message || 'Sin detalle';
-          return field ? `${field}: ${message}` : message;
-        }).join('; ')}`
-      : null;
+    const warningMessage = [
+      hasWarnings
+        ? `Advertencias del marketplace: ${result.warnings?.map(w => {
+            const field = w.field ? `${w.field}` : '';
+            const message = w.message || 'Sin detalle';
+            return field ? `${field}: ${message}` : message;
+          }).join('; ')}`
+        : null,
+      verificationWarningMessage
+    ].filter(Boolean).join(' | ') || null;
 
     // ✅ Estructura de warnings para guardar
     const warningsData = hasWarnings ? {
@@ -503,23 +579,37 @@ static async republishProduct(task, marketplace, credential, userId) {
       published_successfully: true
     } : null;
 
+    const verificationDetails = verification
+      ? {
+          marketplace: 'mercado_libre',
+          verified: verification.verified,
+          item_found: verification.item_found,
+          status: verification.status,
+          attempts: verification.attempts,
+          note: verification.note,
+          error: verification.error || null
+        }
+      : null;
+
+    const externalId = resolveExternalId(result, task.external_id);
+
     // ✅ Si hay warnings, actualizar la tarea con el estado correspondiente
     if (hasWarnings) {
       await ProductPublishingTaskRepository.updateTask(task, {
         status: status,  // ← 'published_with_warnings'
         error_message: warningMessage,
-        error_details: warningsData,
-        external_id: result.external_id,
+        error_details: verificationDetails || warningsData,
+        external_id: externalId,
         external_url: result.data?.permalink,
         api_response: result.data
       });
     } else if (result.success) {
       // ✅ Éxito sin warnings
       await ProductPublishingTaskRepository.updateTask(task, {
-        status: 'published',
-        error_message: null,
-        error_details: null,
-        external_id: result.external_id,
+        status: status,
+        error_message: warningMessage,
+        error_details: verificationDetails,
+        external_id: externalId,
         external_url: result.data?.permalink,
         api_response: result.data
       });
@@ -533,7 +623,7 @@ static async republishProduct(task, marketplace, credential, userId) {
       });
     }
 
-    if (result.success) {
+    if (finalSuccess) {
       await ProductMarketplaceLinkRepository.upsert({
         product_id: task.product_id,
         marketplace_id: task.marketplace_id,
@@ -541,7 +631,7 @@ static async republishProduct(task, marketplace, credential, userId) {
         company_id: task.company_id,
         branch_id: task.branch_id,
         status,
-        external_id: result.external_id,
+        external_id: externalId,
         external_url: result.data?.permalink,
         published_stock: normalizePublishedStock(task.payload),
         published_payload: task.payload,
@@ -550,17 +640,19 @@ static async republishProduct(task, marketplace, credential, userId) {
     }
 
     return {
-      success: result.success,
+      success: finalSuccess,
       task_id: task.id,
-      external_id: result.external_id,
+      external_id: externalId,
       data: result.data,
       error: result.error,
       details: result.details,
       auth_required: result.auth_required,
       auth_url: result.auth_url,
-      has_warnings: hasWarnings,
+      has_warnings: hasWarnings || Boolean(verificationWarningMessage),
       warnings: hasWarnings ? result.warnings : null,
-      status: status
+      verification: verificationDetails,
+      status: status,
+      error_details: verificationFailed ? { verification: verificationDetails } : null
     };
 
   } catch (error) {

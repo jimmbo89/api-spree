@@ -3,6 +3,24 @@ const logger = require('../../config/logger');
 const { MarketplaceRepository } = require('../repositories');
 
 class MarketplaceTransformerMercadoLibre {
+  static isGenericLabel(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    return (
+      normalized === 'producto sin nombre' ||
+      normalized === 'producto sin titulo' ||
+      normalized === 'producto sin título' ||
+      normalized.startsWith('producto sin ')
+    );
+  }
+
+  static resolveDisplayName(product) {
+    return (
+      product?.family_name ||
+      product?.name ||
+      product?.title ||
+      "Producto sin nombre"
+    );
+  }
 
   static async transformProducts(products, marketplaceId) {
     const mappings = await MarketplaceRepository.findMappingsByMarketplace(marketplaceId);
@@ -11,9 +29,14 @@ class MarketplaceTransformerMercadoLibre {
     return products.map(product => {
       const transformed = {};
 
-      // 🔑 Preservar name y title originales
-      transformed.name = product.name || product.title || "Producto sin nombre";
-      transformed.title = product.title || product.name || "Producto sin título";
+      // 🔑 Preservar name/title usando family_name como respaldo para ML
+      const displayName = this.resolveDisplayName(product);
+      transformed.name = (!product.name || this.isGenericLabel(product.name))
+        ? displayName
+        : product.name;
+      transformed.title = (!product.title || this.isGenericLabel(product.title))
+        ? displayName || "Producto sin título"
+        : product.title;
 
       // 🔑 Preservar family_name si existe
       if (product.family_name) {

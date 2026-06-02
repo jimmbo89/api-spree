@@ -206,10 +206,19 @@ class MercadoLibreAdapter extends BaseAdapter {
     }
     // ✅ PASO 4: Aplicar family_name vs title según documentación oficial
     if (isCatalogProduct || hasVariationAttributes) {
-      prepared.family_name = productData.name?.trim() || 'Producto sin nombre';
+      const familyName = (productData.family_name || productData.name || productData.title || 'Producto sin nombre')
+        .toString()
+        .trim();
+      prepared.family_name = familyName;
+      prepared.name = productData.name?.trim() || familyName;
+      prepared.title = productData.title?.trim() || familyName;
       logger.info(`[ML Adapter] 📦 Producto de catálogo o con variaciones → family_name: "${prepared.family_name}"`);
     } else {
-      prepared.title = productData.name?.trim() || 'Producto sin título';
+      const title = (productData.title || productData.name || productData.family_name || 'Producto sin título')
+        .toString()
+        .trim();
+      prepared.title = title;
+      prepared.name = productData.name?.trim() || title;
       logger.info(`[ML Adapter] 📦 Producto simple → title: "${prepared.title}"`);
     }
 
