@@ -258,7 +258,7 @@ class PublishingService {
       const verification = shouldVerifyMlPublication
         ? await verifyMercadoLibreItem({
             itemId: externalId,
-            accessToken: credential?.access_token
+            accessToken: adapter.credential?.access_token
           })
         : null;
 
