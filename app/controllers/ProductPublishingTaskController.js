@@ -27,6 +27,77 @@ const { getRequestMetadata } = require('../util/requestUtil');
 const PublishingAdapterFactory = require('../services/adapters/PublishingAdapterFactory');
 const MercadoLibreCapabilitiesService = require('../services/MercadoLibreCapabilitiesService');
 
+function normalizeWarningEntry(warning) {
+  if (typeof warning === 'string') {
+    const message = warning.trim();
+    return {
+      field: 'warning',
+      message: message || 'Sin detalle',
+      value: null
+    };
+  }
+
+  if (!warning || typeof warning !== 'object') return null;
+
+  return {
+    field: warning.field || warning.code || 'unknown',
+    message: warning.message || warning.error || warning.detail || 'Sin detalle',
+    value: warning.value ?? null
+  };
+}
+
+function buildWarningArtifacts(result) {
+  const normalizedWarnings = Array.isArray(result?.warnings)
+    ? result.warnings.map(normalizeWarningEntry).filter(Boolean)
+    : [];
+  const fallbackMessage = result?.warning_message || result?.error || result?.message || null;
+
+  if (normalizedWarnings.length > 0) {
+    return {
+      hasWarnings: true,
+      warningMessage: `Advertencias del marketplace: ${normalizedWarnings.map(w => {
+        const field = w.field ? `${w.field}` : '';
+        const message = w.message || 'Sin detalle';
+        return field ? `${field}: ${message}` : message;
+      }).join('; ')}`,
+      warningDetails: {
+        has_warnings: true,
+        warnings: normalizedWarnings,
+        published_successfully: true
+      },
+      warnings: normalizedWarnings
+    };
+  }
+
+  if (result?.has_warnings) {
+    return {
+      hasWarnings: true,
+      warningMessage: fallbackMessage ? `Advertencias del marketplace: ${fallbackMessage}` : 'Advertencias del marketplace',
+      warningDetails: {
+        has_warnings: true,
+        warnings: fallbackMessage ? [{
+          field: 'marketplace',
+          message: fallbackMessage,
+          value: null
+        }] : [],
+        published_successfully: true
+      },
+      warnings: fallbackMessage ? [{
+        field: 'marketplace',
+        message: fallbackMessage,
+        value: null
+      }] : []
+    };
+  }
+
+  return {
+    hasWarnings: false,
+    warningMessage: null,
+    warningDetails: null,
+    warnings: null
+  };
+}
+
 const ProductPublishingTaskController = {
   // 1. Registrar publicación (simula envío a API)
 async warehouseMarketplaces(req, res) {
@@ -1086,21 +1157,11 @@ async store(req, res) {
     );
 
     // 6. Actualizar task
-    const hasWarnings = result.has_warnings === true ||
-      (Array.isArray(result.warnings) && result.warnings.length > 0);
+    const warningArtifacts = buildWarningArtifacts(result);
+    const hasWarnings = warningArtifacts.hasWarnings;
     const draftStatus = result.status || (hasWarnings ? 'published_with_warnings' : (result.success ? 'published' : 'failed'));
-    const warningMessage = hasWarnings
-      ? `Advertencias del marketplace: ${result.warnings.map(w => {
-          const field = w.field ? `${w.field}` : '';
-          const message = w.message || 'Sin detalle';
-          return field ? `${field}: ${message}` : message;
-        }).join('; ')}`
-      : null;
-    const warningDetails = hasWarnings ? {
-      has_warnings: true,
-      warnings: result.warnings,
-      published_successfully: true
-    } : null;
+    const warningMessage = warningArtifacts.warningMessage;
+    const warningDetails = warningArtifacts.warningDetails;
 
     await ProductPublishingTaskRepository.updateTask(task, {
       status: draftStatus,
@@ -1136,7 +1197,7 @@ async store(req, res) {
           external_url: result.external_url || result.data?.permalink,
           status: draftStatus,
           has_warnings: hasWarnings,
-          warnings: hasWarnings ? result.warnings : null
+          warnings: warningArtifacts.warnings
         }
       });
     } else {
@@ -1806,12 +1867,14 @@ async retryBatch(req, res) {
                 ? 'error'
                 : jobProduct.status;
 
+            const warningArtifacts = buildWarningArtifacts(result);
+
             await JobProductRepository.update(jobProduct, {
               status: jobProductStatus,
               external_id: result.external_id || jobProduct.external_id,
               external_url: result.external_url || jobProduct.external_url,
-              error_message: result.success ? null : (result.error || jobProduct.error_message),
-              error_details: result.success ? null : (result.error_details || result.details || jobProduct.error_details),
+              error_message: result.success ? warningArtifacts.warningMessage : (result.error || jobProduct.error_message),
+              error_details: result.success ? warningArtifacts.warningDetails : (result.error_details || result.details || jobProduct.error_details),
               attempt_count: (jobProduct.attempt_count || 0) + 1,
               last_attempt_at: new Date()
             });
@@ -1832,10 +1895,10 @@ async retryBatch(req, res) {
         task_id,
         success: result.success,
         external_id: result.external_id,
-        error: result.success ? null : result.error,
-        error_details: result.success ? null : (result.error_details || result.details),
-        has_warnings: result.has_warnings || false,
-        warnings: result.warnings || null,
+        error: result.success ? warningArtifacts.warningMessage : result.error,
+        error_details: result.success ? warningArtifacts.warningDetails : (result.error_details || result.details),
+        has_warnings: warningArtifacts.hasWarnings,
+        warnings: warningArtifacts.warnings,
         status: result.status  // ← ✅ Incluir status para que el front sepa el estado real
       });
 

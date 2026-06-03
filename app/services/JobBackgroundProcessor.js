@@ -12,6 +12,37 @@ const CONFIG = {
   JOB_TIMEOUT_MINUTES: 60         // Timeout para jobs colgados
 };
 
+function normalizeWarningEntry(warning) {
+  if (typeof warning === 'string') {
+    const message = warning.trim();
+    return {
+      field: 'warning',
+      message: message || 'Sin detalle',
+      value: null
+    };
+  }
+
+  if (!warning || typeof warning !== 'object') return null;
+
+  return {
+    field: warning.field || warning.code || 'unknown',
+    message: warning.message || warning.error || warning.detail || 'Sin detalle',
+    value: warning.value ?? null
+  };
+}
+
+function buildWarningMessage(warnings, fallbackMessage = null) {
+  const normalized = Array.isArray(warnings)
+    ? warnings.map(normalizeWarningEntry).filter(Boolean)
+    : [];
+
+  if (normalized.length > 0) {
+    return `Advertencias: ${normalized.map(w => w.message).join(', ')}`;
+  }
+
+  return fallbackMessage || null;
+}
+
 let processorInterval = null;
 let isRunning = false;
 const activeJobIds = new Set();
@@ -273,19 +304,25 @@ const JobBackgroundProcessor = {
 
     // Éxito
     if (result?.success) {
-        // Si hay warnings, marcar como success pero guardar detalles
-        await JobProductRepository.update(jobProduct, {
-          status: 'success',  // ← ✅ Siempre success si result.success=true
-          external_id: result.external_id || null,
-          external_url: result.external_url || null,
-          // ✅ Guardar warnings como error_message para que aparezca en UI
-          error_message: result.has_warnings ? 
-            `Advertencias: ${result.warnings?.map(w => w.message).join(', ')}` : null,
-          // ✅ Guardar warnings completos en error_details
-          error_details: result.has_warnings ? { warnings: result.warnings } : null
-        });
-        return { success: true };
-      }
+      const warningMessage = buildWarningMessage(
+        result.warning_details?.warnings || result.warnings,
+        result.warning_message || result.error || null
+      );
+      const warningDetails = Array.isArray(result.warning_details?.warnings)
+        ? result.warning_details
+        : (Array.isArray(result.warnings) && result.warnings.length > 0
+          ? { warnings: result.warnings }
+          : null);
+
+      await JobProductRepository.update(jobProduct, {
+        status: 'success',
+        external_id: result.external_id || null,
+        external_url: result.external_url || null,
+        error_message: result.has_warnings ? warningMessage : null,
+        error_details: result.has_warnings ? warningDetails : null
+      });
+      return { success: true };
+    }
 
     // Error → marcar y terminar
     const errorMessage = result?.error || result?.message || 'unknown_error';
@@ -449,16 +486,27 @@ async _processProduct(jobProduct, parentJobId) {
 
     // Éxito
     if (result?.success) {
+      const warningMessage = buildWarningMessage(
+        result.warning_details?.warnings || result.warnings,
+        result.warning_message || result.error || null
+      );
+      const warningDetails = Array.isArray(result.warning_details?.warnings)
+        ? result.warning_details
+        : (Array.isArray(result.warnings) && result.warnings.length > 0
+          ? { warnings: result.warnings }
+          : null);
+
       await JobProductRepository.update(jobProduct, {
         status: 'success',
         external_id: result.external_id || null,
         external_url: result.external_url || null,
-        error_message: result.has_warnings ?
-          `Advertencias: ${result.warnings?.map(w => w.message).join(', ')}` : null,
-        error_details: {
-          warnings: result.has_warnings ? result.warnings : null,
-          task_id: result.task_id || null  // ✅ Guardar referencia al task creado
-        }
+        error_message: result.has_warnings ? warningMessage : null,
+        error_details: result.has_warnings
+          ? {
+              ...(warningDetails || {}),
+              task_id: result.task_id || null
+            }
+          : null
       });
       return { success: true };
     }

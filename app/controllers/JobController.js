@@ -600,6 +600,8 @@ async getJobDetail(req, res) {
   let filteredErrors = errors;
   if (errorStatus === 'with_error') {
     filteredErrors = errors.filter(e => !e.is_fixed && checkIsError(e));
+  } else if (errorStatus === 'with_warnings') {
+    filteredErrors = errors.filter(e => !e.is_fixed && checkIsWarning(e));
   } else if (errorStatus === 'fixed') {
     filteredErrors = errors.filter(e => e.is_fixed);
   }

@@ -764,6 +764,29 @@ async findAllErrorsByJob(job, options = {}) {
       return []; // Retornar array vacío en lugar de lanzar error
     }
 
+    const parseJsonMaybe = (value) => {
+      if (!value) return null;
+      if (typeof value === 'object') return value;
+      if (typeof value !== 'string') return null;
+
+      try {
+        return JSON.parse(value);
+      } catch (e) {
+        return null;
+      }
+    };
+
+    const hasWarningDetails = (value) => {
+      const parsed = parseJsonMaybe(value);
+      return Boolean(
+        parsed &&
+        (
+          parsed.has_warnings === true ||
+          (Array.isArray(parsed.warnings) && parsed.warnings.length > 0)
+        )
+      );
+    };
+
     const jobProducts = await JobProduct.findAll({
       where: {
         job_id: job.id,
@@ -771,7 +794,10 @@ async findAllErrorsByJob(job, options = {}) {
           { status: { [Op.in]: ['error', 'failed'] } },
           { 
             status: 'success',
-            error_message: { [Op.ne]: null }
+            [Op.or]: [
+              { error_message: { [Op.ne]: null } },
+              { error_details: { [Op.ne]: null } }
+            ]
           }
         ]
       },
@@ -822,6 +848,14 @@ async findAllErrorsByJob(job, options = {}) {
       }
       
       // ✅ 4. Push con task_id opcional (null si no se encontró task)
+      if (
+        data.status === 'success' &&
+        !hasWarningDetails(data.error_details) &&
+        !(typeof data.error_message === 'string' && data.error_message.trim().toLowerCase().startsWith('advertencias'))
+      ) {
+        continue;
+      }
+
       errors.push({
         task_id: task?.id || null,  // ✅ CLAVE: usar optional chaining
         product_id: jp.product_id,

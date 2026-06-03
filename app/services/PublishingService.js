@@ -72,6 +72,77 @@ function buildVerificationWarningMessage(verification) {
   return `Verificación ML: estado ${verification.status || 'desconocido'}`;
 }
 
+function normalizeWarningEntry(warning) {
+  if (typeof warning === 'string') {
+    const message = warning.trim();
+    return {
+      field: 'warning',
+      message: message || 'Sin detalle',
+      value: null
+    };
+  }
+
+  if (!warning || typeof warning !== 'object') return null;
+
+  const message = warning.message || warning.error || warning.detail || 'Sin detalle';
+  return {
+    field: warning.field || warning.code || 'unknown',
+    message,
+    value: warning.value ?? null
+  };
+}
+
+function buildWarningArtifacts({ marketplaceWarnings = [], hasWarningsFlag = false, fallbackMessage = null, verificationWarningMessage = null }) {
+  const normalizedMarketplaceWarnings = Array.isArray(marketplaceWarnings)
+    ? marketplaceWarnings.map(normalizeWarningEntry).filter(Boolean)
+    : [];
+
+  const inferredMarketplaceWarnings = normalizedMarketplaceWarnings.length > 0
+    ? normalizedMarketplaceWarnings
+    : (hasWarningsFlag
+      ? [{
+          field: 'marketplace',
+          message: fallbackMessage || 'Advertencias reportadas por el marketplace',
+          value: null
+        }]
+      : []);
+
+  const verificationWarnings = verificationWarningMessage
+    ? [{
+        field: 'verification',
+        message: verificationWarningMessage,
+        value: null
+      }]
+    : [];
+
+  const combinedWarnings = [...inferredMarketplaceWarnings, ...verificationWarnings];
+  const marketplaceWarningMessage = normalizedMarketplaceWarnings.length > 0
+    ? `Advertencias del marketplace: ${normalizedMarketplaceWarnings.map(w => {
+        const field = w.field ? `${w.field}` : '';
+        const message = w.message || 'Sin detalle';
+        return field ? `${field}: ${message}` : message;
+      }).join('; ')}`
+    : null;
+
+  const warningMessage = [
+    marketplaceWarningMessage,
+    verificationWarningMessage
+  ].filter(Boolean).join(' | ') || null;
+
+  const warningsData = combinedWarnings.length > 0 ? {
+    has_warnings: true,
+    warnings: combinedWarnings,
+    published_successfully: true
+  } : null;
+
+  return {
+    hasWarnings: combinedWarnings.length > 0,
+    warnings: combinedWarnings.length > 0 ? combinedWarnings : null,
+    warningMessage,
+    warningsData
+  };
+}
+
 class PublishingService {
 
   static async publishProducts(products, marketplace, warehouse, userId, companyId, mode, config, credentialId = null) {
@@ -295,41 +366,25 @@ class PublishingService {
 
       if (result.success) {
         // ✅ Detectar si hay warnings
-        const hasWarnings = result.has_warnings === true ||
-                          (Array.isArray(result.warnings) && result.warnings.length > 0);
+        const verificationWarningMessage = buildVerificationWarningMessage(verification);
+        const warningsArtifacts = buildWarningArtifacts({
+          marketplaceWarnings: result.warnings,
+          hasWarningsFlag: result.has_warnings === true,
+          fallbackMessage: result.warning_message || result.message || result.error || null,
+          verificationWarningMessage
+        });
 
         // ✅ Determinar status según si hay warnings
         // Los warnings NO son errores, el producto SÍ se publicó
-        const verificationWarningMessage = buildVerificationWarningMessage(verification);
         const verificationFailed = shouldVerifyMlPublication && verification && !verification.item_found;
         const finalSuccess = result.success && !verificationFailed;
         const status = finalSuccess
-          ? ((hasWarnings || verificationWarningMessage) ? 'published_with_warnings' : 'published')
+          ? (warningsArtifacts.hasWarnings ? 'published_with_warnings' : 'published')
           : 'failed';
 
-        // ✅ Preparar mensaje de warnings para UI (claro y entendible)
-        const warningMessage = [
-          hasWarnings
-            ? `Advertencias del marketplace: ${result.warnings.map(w => {
-                const field = w.field ? `${w.field}` : '';
-                const message = w.message || 'Sin detalle';
-                return field ? `${field}: ${message}` : message;
-              }).join('; ')}`
-            : null,
-          verificationWarningMessage
-        ].filter(Boolean).join(' | ') || null;
-
-        // ✅ Estructura de warnings para guardar (más clara para el front)
-        const warningsData = hasWarnings ? {
-          has_warnings: true,
-          warnings: result.warnings.map(w => ({
-            field: w.field || 'unknown',
-            message: w.message || 'Sin detalle',
-            value: w.value || null
-          })),
-          // ✅ Flag para que el front sepa que aunque hay warnings, la publicación fue exitosa
-          published_successfully: true
-        } : null;
+        const hasWarnings = warningsArtifacts.hasWarnings;
+        const warningMessage = warningsArtifacts.warningMessage;
+        const warningsData = warningsArtifacts.warningsData;
 
         const verificationDetails = verification
           ? {
@@ -380,15 +435,19 @@ class PublishingService {
           });
         }
 
-        logger.info(`[PublishingService] ✅ Producto publicado ${hasWarnings ? 'con advertencias' : 'exitosamente'}`);
+        logger.info(
+          `[PublishingService] ${finalSuccess ? '✅' : '⚠️'} Producto publicado ` +
+          `${finalSuccess ? (hasWarnings ? 'con advertencias' : 'exitosamente') : 'sin confirmación final'}`
+        );
         return {
           success: finalSuccess,
           task_id: task.id,
           external_id: externalId,
           product_id: productData.id,
           credential_id: credentialId,
-          has_warnings: hasWarnings || Boolean(verificationWarningMessage),
-          warnings: hasWarnings ? result.warnings : null,
+          has_warnings: hasWarnings,
+          warnings: warningsArtifacts.warnings,
+          warning_message: warningMessage,
           verification: verificationDetails,
           status: status,
           error: verificationFailed ? verificationWarningMessage : null
@@ -532,6 +591,7 @@ static async republishProduct(task, marketplace, credential, userId) {
 
     // 3. ✅ PUBLICAR DIRECTO (SIN prepareProduct, SIN transformer)
     const result = await adapter.publish(task.payload);
+    const externalId = resolveExternalId(result, task.external_id);
     const shouldVerifyMlPublication = Boolean(
       result.success &&
       externalId &&
@@ -545,39 +605,24 @@ static async republishProduct(task, marketplace, credential, userId) {
       : null;
 
     // ✅ Detectar si hay warnings
-    const hasWarnings = result.has_warnings === true ||
-                       (Array.isArray(result.warnings) && result.warnings.length > 0);
+    const verificationWarningMessage = buildVerificationWarningMessage(verification);
+    const warningsArtifacts = buildWarningArtifacts({
+      marketplaceWarnings: result.warnings,
+      hasWarningsFlag: result.has_warnings === true,
+      fallbackMessage: result.warning_message || result.message || result.error || null,
+      verificationWarningMessage
+    });
 
     // ✅ Determinar status según si hay warnings
-    const verificationWarningMessage = buildVerificationWarningMessage(verification);
     const verificationFailed = shouldVerifyMlPublication && verification && !verification.item_found;
     const finalSuccess = result.success && !verificationFailed;
     const status = finalSuccess
-      ? ((hasWarnings || verificationWarningMessage) ? 'published_with_warnings' : 'published')
+      ? (warningsArtifacts.hasWarnings ? 'published_with_warnings' : 'published')
       : 'failed';
 
-    // ✅ Preparar mensaje de warnings para UI (claro y entendible)
-    const warningMessage = [
-      hasWarnings
-        ? `Advertencias del marketplace: ${result.warnings?.map(w => {
-            const field = w.field ? `${w.field}` : '';
-            const message = w.message || 'Sin detalle';
-            return field ? `${field}: ${message}` : message;
-          }).join('; ')}`
-        : null,
-      verificationWarningMessage
-    ].filter(Boolean).join(' | ') || null;
-
-    // ✅ Estructura de warnings para guardar
-    const warningsData = hasWarnings ? {
-      has_warnings: true,
-      warnings: result.warnings?.map(w => ({
-        field: w.field || 'unknown',
-        message: w.message || 'Sin detalle',
-        value: w.value || null
-      })) || [],
-      published_successfully: true
-    } : null;
+    const hasWarnings = warningsArtifacts.hasWarnings;
+    const warningMessage = warningsArtifacts.warningMessage;
+    const warningsData = warningsArtifacts.warningsData;
 
     const verificationDetails = verification
       ? {
@@ -590,8 +635,6 @@ static async republishProduct(task, marketplace, credential, userId) {
           error: verification.error || null
         }
       : null;
-
-    const externalId = resolveExternalId(result, task.external_id);
 
     // ✅ Si hay warnings, actualizar la tarea con el estado correspondiente
     if (hasWarnings) {
@@ -648,8 +691,9 @@ static async republishProduct(task, marketplace, credential, userId) {
       details: result.details,
       auth_required: result.auth_required,
       auth_url: result.auth_url,
-      has_warnings: hasWarnings || Boolean(verificationWarningMessage),
-      warnings: hasWarnings ? result.warnings : null,
+      has_warnings: hasWarnings,
+      warnings: warningsArtifacts.warnings,
+      warning_message: warningMessage,
       verification: verificationDetails,
       status: status,
       error_details: verificationFailed ? { verification: verificationDetails } : null
