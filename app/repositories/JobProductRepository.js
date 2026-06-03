@@ -782,7 +782,13 @@ async findAllErrorsByJob(job, options = {}) {
         parsed &&
         (
           parsed.has_warnings === true ||
-          (Array.isArray(parsed.warnings) && parsed.warnings.length > 0)
+          (Array.isArray(parsed.warnings) && parsed.warnings.length > 0) ||
+          (
+            parsed.marketplace_item_state &&
+            typeof parsed.marketplace_item_state === 'object' &&
+            String(parsed.marketplace_item_state.status || '').toLowerCase() &&
+            String(parsed.marketplace_item_state.status || '').toLowerCase() !== 'active'
+          )
         )
       );
     };

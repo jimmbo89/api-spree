@@ -40,6 +40,31 @@ function getStatusOutcome(status) {
   };
 }
 
+function buildMercadoLibreItemSnapshot(item) {
+  if (!item || typeof item !== 'object') {
+    return null;
+  }
+
+  const subStatus = Array.isArray(item.sub_status)
+    ? item.sub_status
+    : item.sub_status
+      ? [item.sub_status]
+      : [];
+
+  return {
+    id: item.id || null,
+    title: item.title || null,
+    status: item.status || null,
+    sub_status: subStatus,
+    category_id: item.category_id || null,
+    domain_id: item.domain_id || null,
+    price: item.price ?? null,
+    available_quantity: item.available_quantity ?? null,
+    permalink: item.permalink || null,
+    last_updated: item.last_updated || null
+  };
+}
+
 async function fetchMercadoLibreItem(itemId, accessToken, timeoutMs = 10000) {
   const response = await axios.get(`https://api.mercadolibre.com/items/${itemId}`, {
     headers: {
@@ -48,13 +73,11 @@ async function fetchMercadoLibreItem(itemId, accessToken, timeoutMs = 10000) {
     timeout: timeoutMs
   });
 
-  logger.info(
-    `[ML Verify] Respuesta item ${itemId}: ${JSON.stringify({
-      status: response.status,
-      statusText: response.statusText,
-      data: response.data
-    })}`
-  );
+  logger.info(`[ML Verify] Respuesta item ${itemId}: ${JSON.stringify({
+    http_status: response.status,
+    http_status_text: response.statusText,
+    snapshot: buildMercadoLibreItemSnapshot(response.data)
+  })}`);
 
   return response.data;
 }

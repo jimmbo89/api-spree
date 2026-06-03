@@ -22,10 +22,12 @@ const {
   UserCompanyRepository
 } = require("../repositories");
 const MarketplaceStockSyncService = require("../services/MarketplaceStockSyncService");
+const { verifyMercadoLibreItem } = require("../services/MarketplaceItemVerificationService");
 
 const ML_MARKETPLACE_KEY = "mercadolibre";
 const FB_MARKETPLACE_KEY = "falabella";
 const ML_ORDERS_TOPIC = "orders_v2";
+const ML_ITEMS_TOPIC = "items";
 const ML_WEBHOOK_TIMEOUT_MS = 30000;
 const ML_FETCH_RETRY_MAX = 3;
 const ML_FETCH_RETRY_BASE_DELAY_MS = 1000;
@@ -100,63 +102,71 @@ async function processMercadoLibreWebhook(payload, options = {}) {
 
   const { resource, topic, user_id } = payload;
 
+  if (topic === ML_ORDERS_TOPIC) {
+    const orderId = extractOrderId(resource);
+    if (!orderId) {
+      logger.warn(`[ML Webhook] Resource invalido: ${resource}`);
+      return;
+    }
+
+    const eventId = buildMercadoLibreEventId(payload, resource);
+
+    const eventResult = await MarketplaceWebhookEventRepository.createUnique({
+      marketplace: ML_MARKETPLACE_KEY,
+      topic,
+      resource,
+      event_id: eventId,
+      external_id: String(orderId),
+      marketplace_user_id: user_id != null ? String(user_id) : null,
+      status: "received",
+      payload
+    });
+
+    if (!eventResult.created) {
+      logger.info(`[ML Webhook] Evento duplicado ignorado: ${eventId}`);
+      return;
+    }
+
+    const event = eventResult.record;
+
+    const timeoutMs =
+      Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+        ? options.timeoutMs
+        : ML_WEBHOOK_TIMEOUT_MS;
+
+    const processPromise = processMercadoLibreEvent({
+      event,
+      payload,
+      orderId,
+      userId: user_id
+    });
+
+    try {
+      await withTimeout(processPromise, timeoutMs);
+    } catch (error) {
+      const isTimeout = error?.message === "timeout";
+      await MarketplaceWebhookEventRepository.updateById(event.id, {
+        status: isTimeout ? "timeout" : "error",
+        error_message: isTimeout
+          ? `timeout:${timeoutMs}ms`
+          : `processing_error:${error?.message || "unknown"}`,
+        processed_at: new Date()
+      });
+      logger.error(
+        `[ML Webhook] ${isTimeout ? "Timeout" : "Error"} procesando evento ${eventId}: ${error.message}`
+      );
+    }
+    return;
+  }
+
+  if (topic === ML_ITEMS_TOPIC) {
+    await processMercadoLibreItemWebhook(payload, options);
+    return;
+  }
+
   if (topic !== ML_ORDERS_TOPIC) {
     logger.info(`[ML Webhook] Ignorado topic: ${topic}`);
     return;
-  }
-
-  const orderId = extractOrderId(resource);
-  if (!orderId) {
-    logger.warn(`[ML Webhook] Resource invalido: ${resource}`);
-    return;
-  }
-
-  const eventId = buildMercadoLibreEventId(payload, resource);
-
-  const eventResult = await MarketplaceWebhookEventRepository.createUnique({
-    marketplace: ML_MARKETPLACE_KEY,
-    topic,
-    resource,
-    event_id: eventId,
-    external_id: String(orderId),
-    marketplace_user_id: user_id != null ? String(user_id) : null,
-    status: "received",
-    payload
-  });
-
-  if (!eventResult.created) {
-    logger.info(`[ML Webhook] Evento duplicado ignorado: ${eventId}`);
-    return;
-  }
-
-  const event = eventResult.record;
-
-  const timeoutMs =
-    Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
-      ? options.timeoutMs
-      : ML_WEBHOOK_TIMEOUT_MS;
-
-  const processPromise = processMercadoLibreEvent({
-    event,
-    payload,
-    orderId,
-    userId: user_id
-  });
-
-  try {
-    await withTimeout(processPromise, timeoutMs);
-  } catch (error) {
-    const isTimeout = error?.message === "timeout";
-    await MarketplaceWebhookEventRepository.updateById(event.id, {
-      status: isTimeout ? "timeout" : "error",
-      error_message: isTimeout
-        ? `timeout:${timeoutMs}ms`
-        : `processing_error:${error?.message || "unknown"}`,
-      processed_at: new Date()
-    });
-    logger.error(
-      `[ML Webhook] ${isTimeout ? "Timeout" : "Error"} procesando evento ${eventId}: ${error.message}`
-    );
   }
 }
 
@@ -652,6 +662,293 @@ function getMercadoLibreSellerId(credential, order) {
     order?.user_id ||
     null
   );
+}
+
+function extractMercadoLibreItemId(resource) {
+  if (!resource || typeof resource !== "string") return null;
+  const match = resource.match(/\/?items\/([^/?]+)/i);
+  if (match && match[1]) return match[1];
+  const parts = resource.split("/").filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : null;
+}
+
+function normalizeMercadoLibreItemStatusValue(status) {
+  return String(status || "").trim().toLowerCase() || null;
+}
+
+function normalizeMercadoLibreSubStatusValue(subStatus) {
+  if (!subStatus) return [];
+  if (Array.isArray(subStatus)) {
+    return subStatus.map((value) => String(value).trim()).filter(Boolean);
+  }
+
+  if (typeof subStatus === "string") {
+    return subStatus
+      .split(",")
+      .map((value) => String(value).trim())
+      .filter(Boolean);
+  }
+
+  return [String(subStatus).trim()].filter(Boolean);
+}
+
+function buildMercadoLibreItemStateSnapshot({ item, verification, payload }) {
+  const status = normalizeMercadoLibreItemStatusValue(item?.status);
+  const subStatus = normalizeMercadoLibreSubStatusValue(item?.sub_status);
+
+  return {
+    marketplace: ML_MARKETPLACE_KEY,
+    status,
+    sub_status: subStatus,
+    sub_status_text: subStatus.join(", "),
+    verified: !!verification?.verified,
+    item_found: !!verification?.item_found,
+    note: verification?.note || null,
+    attempts: verification?.attempts || 0,
+    updated_at: new Date().toISOString(),
+    webhook: {
+      topic: payload?.topic || null,
+      resource: payload?.resource || null,
+      sent: payload?.sent || null,
+      received: payload?.received || null
+    }
+  };
+}
+
+async function persistMercadoLibreItemState({
+  credential,
+  itemId,
+  item,
+  verification,
+  payload
+}) {
+  const marketplaceId = credential?.marketplace_id || null;
+  const snapshot = buildMercadoLibreItemStateSnapshot({ item, verification, payload });
+
+  logger.info(
+    `[ML Webhook] Item ${itemId} verificado: ${JSON.stringify({
+      topic: payload?.topic || null,
+      resource: payload?.resource || null,
+      snapshot: {
+        id: item?.id || itemId,
+        title: item?.title || null,
+        status: snapshot.status,
+        sub_status: snapshot.sub_status,
+        category_id: item?.category_id || null,
+        price: item?.price ?? null,
+        permalink: item?.permalink || null,
+        last_updated: item?.last_updated || null
+      }
+    })}`
+  );
+
+  let task = await ProductPublishingTaskRepository.findLatestByExternalId(
+    marketplaceId,
+    String(itemId)
+  );
+
+  let companyId = task?.company_id || null;
+  let branchId = task?.branch_id || null;
+
+  let link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
+    marketplaceId,
+    String(itemId),
+    companyId,
+    branchId,
+    credential?.id || null
+  );
+
+  if (!link && (companyId || branchId)) {
+    link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
+      marketplaceId,
+      String(itemId),
+      companyId,
+      branchId,
+      null
+    );
+  }
+
+  if (!link && task) {
+    link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
+      marketplaceId,
+      String(itemId),
+      task.company_id || null,
+      task.branch_id || null,
+      credential?.id || null
+    );
+  }
+
+  const updatePayload = {
+    status: snapshot.status || link?.status || 'unpublished',
+    external_url: item?.permalink || link?.external_url || null,
+    last_synced_at: new Date()
+  };
+
+  if (link) {
+    await link.update(updatePayload);
+  }
+
+  if (task) {
+    const currentDetails = task.error_details && typeof task.error_details === "object"
+      ? task.error_details
+      : {};
+    const mergedDetails = {
+      ...currentDetails,
+      marketplace_item_state: snapshot
+    };
+    const taskUpdate = {
+      api_response: item || task.api_response || null,
+      error_details: mergedDetails
+    };
+
+    if (snapshot.status && snapshot.status !== "active") {
+      const subStatusLabel = snapshot.sub_status_text ? ` (${snapshot.sub_status_text})` : "";
+      taskUpdate.error_message = `ML item status: ${snapshot.status}${subStatusLabel}`;
+    }
+
+    await task.update(taskUpdate);
+  }
+
+  let jobProduct = null;
+  if (task?.job?.id && task.product_id && task.marketplace_id) {
+    jobProduct = await JobProductRepository.findByProductAndMarketplace(
+      task.job.id,
+      task.product_id,
+      task.marketplace_id,
+      task.credential_id || null
+    );
+
+    if (jobProduct) {
+      const currentJobDetails = jobProduct.error_details && typeof jobProduct.error_details === "object"
+        ? jobProduct.error_details
+        : {};
+      const mergedJobDetails = {
+        ...currentJobDetails,
+        marketplace_item_state: snapshot
+      };
+
+      const jobProductErrorMessage = snapshot.status && snapshot.status !== "active"
+        ? `Advertencias: ML item status ${snapshot.status}${snapshot.sub_status_text ? ` (${snapshot.sub_status_text})` : ''}`
+        : null;
+
+      await JobProductRepository.update(jobProduct, {
+        external_id: item?.id || jobProduct.external_id || null,
+        external_url: item?.permalink || jobProduct.external_url || null,
+        error_message: jobProductErrorMessage,
+        error_details: mergedJobDetails
+      });
+    }
+  }
+
+  return {
+    snapshot,
+    taskUpdated: !!task,
+    linkUpdated: !!link,
+    jobProductUpdated: !!jobProduct,
+    taskId: task?.id || null,
+    linkId: link?.id || null,
+    jobProductId: jobProduct?.id || null
+  };
+}
+
+async function processMercadoLibreItemWebhook(payload, options = {}) {
+  const validation = validateMercadoLibrePayload(payload);
+  if (!validation.ok) {
+    logger.warn(`[ML Webhook] Payload invalido para item: ${validation.reason}`);
+    return;
+  }
+
+  const { resource, topic, user_id } = payload;
+  const itemId = extractMercadoLibreItemId(resource);
+  if (!itemId) {
+    logger.warn(`[ML Webhook] Resource invalido para item: ${resource}`);
+    return;
+  }
+
+  const eventId = buildMercadoLibreEventId(payload, resource);
+  const eventResult = await MarketplaceWebhookEventRepository.createUnique({
+    marketplace: ML_MARKETPLACE_KEY,
+    topic,
+    resource,
+    event_id: eventId,
+    external_id: String(itemId),
+    marketplace_user_id: user_id != null ? String(user_id) : null,
+    status: "received",
+    payload
+  });
+
+  if (!eventResult.created) {
+    logger.info(`[ML Webhook] Evento duplicado ignorado: ${eventId}`);
+    return;
+  }
+
+  const event = eventResult.record;
+  const timeoutMs =
+    Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+      ? options.timeoutMs
+      : ML_WEBHOOK_TIMEOUT_MS;
+
+  try {
+    const credential = await MarketplaceCredentialRepository.findByMLUserIdGlobal(user_id);
+    if (!credential || !credential.access_token) {
+      await MarketplaceWebhookEventRepository.updateById(event.id, {
+        status: "error",
+        error_message: "credential_not_found",
+        processed_at: new Date()
+      });
+      logger.warn(`[ML Webhook] Credencial no encontrada para ml_user_id=${user_id}`);
+      return;
+    }
+
+    const verificationPromise = verifyMercadoLibreItem({
+      itemId,
+      accessToken: credential.access_token,
+      maxAttempts: 3,
+      baseDelayMs: 1000,
+      timeoutMs: Math.min(timeoutMs, 10000)
+    });
+
+    const verification = await withTimeout(verificationPromise, timeoutMs);
+
+    if (!verification?.ok || !verification.item_found) {
+      await MarketplaceWebhookEventRepository.updateById(event.id, {
+        status: "error",
+        error_message: verification?.error || "item_verification_failed",
+        processed_at: new Date()
+      });
+      return;
+    }
+
+    const persistResult = await persistMercadoLibreItemState({
+      credential,
+      itemId,
+      item: verification.item,
+      verification,
+      payload
+    });
+
+    await MarketplaceWebhookEventRepository.updateById(event.id, {
+      status: "processed",
+      processed_at: new Date(),
+      error_message: null
+    });
+
+    logger.info(
+      `[ML Webhook] Item ${itemId} sincronizado: ${persistResult.snapshot.status || 'unknown'}${persistResult.snapshot.sub_status_text ? ` (${persistResult.snapshot.sub_status_text})` : ''}`
+    );
+  } catch (error) {
+    const isTimeout = error?.message === "timeout";
+    await MarketplaceWebhookEventRepository.updateById(event.id, {
+      status: isTimeout ? "timeout" : "error",
+      error_message: isTimeout
+        ? `timeout:${timeoutMs}ms`
+        : `processing_error:${error?.message || "unknown"}`,
+      processed_at: new Date()
+    });
+    logger.error(
+      `[ML Webhook] ${isTimeout ? "Timeout" : "Error"} procesando item ${itemId}: ${error.message}`
+    );
+  }
 }
 
 async function processFalabellaWebhook(payload, options = {}) {

@@ -69,7 +69,32 @@ function buildVerificationWarningMessage(verification) {
   if (verification.status === 'active') {
     return null;
   }
-  return `Verificación ML: estado ${verification.status || 'desconocido'}`;
+  const subStatus = Array.isArray(verification.sub_status) && verification.sub_status.length > 0
+    ? ` (${verification.sub_status.join(', ')})`
+    : '';
+  return `Verificación ML: estado ${verification.status || 'desconocido'}${subStatus}`;
+}
+
+function buildVerificationDetails(verification) {
+  if (!verification) return null;
+
+  const subStatus = Array.isArray(verification.sub_status) && verification.sub_status.length > 0
+    ? verification.sub_status
+    : Array.isArray(verification.item?.sub_status) && verification.item.sub_status.length > 0
+      ? verification.item.sub_status
+      : null;
+
+  return {
+    marketplace: 'mercado_libre',
+    verified: verification.verified,
+    item_found: verification.item_found,
+    status: verification.status,
+    sub_status: subStatus,
+    sub_status_text: subStatus ? subStatus.join(', ') : null,
+    attempts: verification.attempts,
+    note: verification.note,
+    error: verification.error || null
+  };
 }
 
 function normalizeWarningEntry(warning) {
@@ -386,17 +411,7 @@ class PublishingService {
         const warningMessage = warningsArtifacts.warningMessage;
         const warningsData = warningsArtifacts.warningsData;
 
-        const verificationDetails = verification
-          ? {
-              marketplace: 'mercado_libre',
-              verified: verification.verified,
-              item_found: verification.item_found,
-              status: verification.status,
-              attempts: verification.attempts,
-              note: verification.note,
-              error: verification.error || null
-            }
-          : null;
+        const verificationDetails = buildVerificationDetails(verification);
 
         const externalId = resolveExternalId(result);
 
@@ -624,17 +639,7 @@ static async republishProduct(task, marketplace, credential, userId) {
     const warningMessage = warningsArtifacts.warningMessage;
     const warningsData = warningsArtifacts.warningsData;
 
-    const verificationDetails = verification
-      ? {
-          marketplace: 'mercado_libre',
-          verified: verification.verified,
-          item_found: verification.item_found,
-          status: verification.status,
-          attempts: verification.attempts,
-          note: verification.note,
-          error: verification.error || null
-        }
-      : null;
+    const verificationDetails = buildVerificationDetails(verification);
 
     // ✅ Si hay warnings, actualizar la tarea con el estado correspondiente
     if (hasWarnings) {
