@@ -88,6 +88,125 @@ class MercadoLibreAdapter extends BaseAdapter {
     return MarketplaceTransformerMercadoLibre;
   }
 
+  extractNumericValue(value) {
+    if (value === null || value === undefined) return null;
+    if (typeof value === 'number') {
+      return Number.isFinite(value) ? value : null;
+    }
+    if (typeof value === 'string') {
+      const normalized = value.trim().replace(',', '.');
+      if (!normalized) return null;
+      const parsed = Number(normalized);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    if (typeof value === 'object' && value !== null) {
+      if ('value' in value) return this.extractNumericValue(value.value);
+      if ('number' in value) return this.extractNumericValue(value.number);
+    }
+    return null;
+  }
+
+  resolveMercadoLibreUnit(unit, attrMeta = null) {
+    const normalizedUnit = String(unit || '').trim().toLowerCase();
+    const allowedUnits = Array.isArray(attrMeta?.allowed_units) ? attrMeta.allowed_units : [];
+    const defaultUnit = String(attrMeta?.default_unit || '').trim().toLowerCase();
+
+    const candidates = [normalizedUnit, defaultUnit].filter(Boolean);
+    for (const candidate of candidates) {
+      const match = allowedUnits.find((allowed) => {
+        const allowedId = String(allowed?.id || '').trim().toLowerCase();
+        const allowedName = String(allowed?.name || '').trim().toLowerCase();
+        return candidate === allowedId || candidate === allowedName;
+      });
+
+      if (match) {
+        return match.id || match.name || candidate;
+      }
+    }
+
+    if (allowedUnits.length > 0) {
+      const fallback = allowedUnits[0];
+      return fallback?.id || fallback?.name || normalizedUnit || defaultUnit || null;
+    }
+
+    return normalizedUnit || defaultUnit || null;
+  }
+
+  formatMercadoLibreAttribute(attr, attrMeta = null) {
+    if (!attr || !attr.id) return null;
+
+    const valueType = String(attrMeta?.value_type || '').trim().toLowerCase();
+    const rawValue = attr.value_name ?? attr.value ?? attr.value_struct?.number ?? null;
+    const rawUnit = attr.unit ?? attr.value_struct?.unit ?? null;
+
+    if (valueType === 'number_unit') {
+      const numericValue = this.extractNumericValue(rawValue);
+      const resolvedUnit = this.resolveMercadoLibreUnit(rawUnit, attrMeta);
+
+      if (numericValue === null) {
+        logger.warn(`[ML Adapter] ⚠️ Atributo ${attr.id} ignorado: no se pudo obtener valor numérico válido`);
+        return null;
+      }
+
+      const processedValue = Number.isInteger(numericValue)
+        ? String(numericValue)
+        : String(numericValue).replace(/\.0+$/, '');
+
+      const formattedValue = resolvedUnit
+        ? `${processedValue} ${resolvedUnit}`
+        : processedValue;
+
+      if (!resolvedUnit) {
+        logger.warn(`[ML Adapter] ⚠️ Atributo ${attr.id} sin unidad válida; se enviará solo el valor numérico`);
+      }
+
+      logger.info(`[ML Adapter] ✅ Atributo ${attr.id} formateado para ML: "${formattedValue}"`);
+
+      return {
+        id: attr.id,
+        value_name: formattedValue
+      };
+    }
+
+    const processed = {
+      id: attr.id,
+      value_name: attr.value_name ? String(attr.value_name).trim() : undefined,
+      value_id: attr.value_id ? String(attr.value_id).trim() : undefined
+    };
+
+    if (['true', 'false'].includes(String(processed.value_name).toLowerCase())) {
+      processed.value_name = String(processed.value_name).toLowerCase() === 'true' ? 'Sí' : 'No';
+      logger.info(`[ML Adapter] ✅ Convertido valor booleano para ${attr.id}: "${processed.value_name}"`);
+    }
+
+    return processed;
+  }
+
+  buildMercadoLibreAttributes(attributes, categoryAttributes = []) {
+    if (!Array.isArray(attributes) || attributes.length === 0) return [];
+
+    const categoryAttributesMap = new Map(
+      (Array.isArray(categoryAttributes) ? categoryAttributes : []).map((attr) => [attr.id, attr])
+    );
+
+    return attributes
+      .filter(attr => attr && attr.id && (attr.value_name || attr.value_id || attr.value !== undefined || attr.unit || attr.value_struct))
+      .filter(attr => {
+        const attrMeta = categoryAttributesMap.get(attr.id);
+        const isReadOnly = attrMeta?.tags?.read_only === true;
+        const isHidden = attrMeta?.tags?.hidden === true;
+        const isItemCondition = attr.id === 'ITEM_CONDITION';
+
+        if (isReadOnly || isHidden || isItemCondition) {
+          logger.warn(`[ML Adapter] ⚠️ Atributo ${attr.id} filtrado (read_only/hidden/ITEM_CONDITION)`);
+          return false;
+        }
+        return true;
+      })
+      .map(attr => this.formatMercadoLibreAttribute(attr, categoryAttributesMap.get(attr.id)))
+      .filter(Boolean);
+  }
+
   // 🔑 NUEVO MÉTODO: Preprocesamiento específico de MercadoLibre
   async prepareProduct(productData) {
     logger.info('[MercadoLibreAdapter] Preparando producto para publicación', {
@@ -602,9 +721,13 @@ class MercadoLibreAdapter extends BaseAdapter {
       const attributes = rawAttributes.map(attr => ({
         id: attr.id,
         name: attr.name,
+        value_type: attr.value_type,
         tags: attr.tags || {},
         values: attr.values || [],
-        hierarchy: attr.hierarchy
+        hierarchy: attr.hierarchy,
+        allowed_units: attr.allowed_units || [],
+        default_unit: attr.default_unit || null,
+        value_max_length: attr.value_max_length || null
       }));
 
       const variationAttributes = attributes.filter(
@@ -720,6 +843,208 @@ class MercadoLibreAdapter extends BaseAdapter {
       .trim()
       .replace(/\s+/g, ' ');
   }
+
+  async prepareProduct(productData) {
+    logger.info('[MercadoLibreAdapter] Preparando producto para publicación', {
+      productId: productData.id,
+      name: productData.name,
+      variantsCount: productData.variants?.length || 0
+    });
+
+    if (!productData.mercado_libre || Object.keys(productData.mercado_libre).length === 0) {
+      throw new Error('No se encontró información de MercadoLibre para el producto');
+    }
+
+    const mlData = pickMlDataForCredential(productData.mercado_libre, this.credentialId);
+    if (!mlData || typeof mlData !== 'object') {
+      throw new Error('No se encontró configuración de MercadoLibre para la credencial seleccionada');
+    }
+
+    const shippingEffective = mlData?.shipping?.effective || {};
+    const shippingRequested = mlData?.shipping?.requested || {};
+    const listingTypeOverride = normalizeListingTypeId(mlData?.listing_type_id || null);
+    const shippingModeOverride = shippingEffective.shipping_mode
+      || shippingRequested.shipping_mode
+      || mlData?.shipping_mode
+      || null;
+    const logisticTypeOverride = shippingEffective.logistic_type
+      || shippingRequested.logistic_type
+      || mlData?.logistic_type
+      || null;
+    let strategy = normalizeStrategyForPublish(mlData?.strategy, mlData?.listing_type_id || null);
+
+    if (!mlData?.category?.category_id) {
+      throw new Error('Falta category_id para MercadoLibre');
+    }
+
+    await this.ensureValidCredentials();
+    const categoryInfo = await this.getCategoryMetadata(
+      mlData.category.category_id,
+      this.credential?.access_token
+    );
+    const availableListingTypes = await this.getAvailableListingTypeIdsForCategory(
+      mlData.category.category_id,
+      this.credential?.access_token
+    );
+    const listingResolution = this.resolveListingTypeForPublish({
+      strategy,
+      requestedListingTypeId: listingTypeOverride,
+      availableTypeIds: availableListingTypes
+    });
+
+    const catalogDomain = categoryInfo.settings?.catalog_domain;
+    const isCatalogProduct = !!catalogDomain && catalogDomain !== 'MLC-UNCLASSIFIED_PRODUCTS';
+    const hasVariationAttributes = categoryInfo.hasVariationAttributes;
+
+    const prepared = {
+      category_id: mlData.category.category_id,
+      price: Number(productData.price) || 0,
+      currency_id: 'CLP',
+      available_quantity: Number(productData.totalStock) || 0,
+      buying_mode: 'buy_it_now',
+      listing_type_id: 'gold_special',
+      condition: productData.condition?.toLowerCase() === 'new' ? 'new' : 'used',
+      description: {
+        plain_text: productData.description?.trim() || productData.name?.trim() || ''
+      },
+      shipping: {
+        mode: 'me2',
+        local_pick_up: true,
+        free_shipping: false
+      },
+      sale_terms: [],
+      attributes: [],
+      pictures: productData.images || [],
+      category_settings: categoryInfo.settings || {},
+      __ml_has_variation_attributes: hasVariationAttributes,
+      __ml_is_catalog_product: isCatalogProduct
+    };
+
+    prepared.listing_type_id = listingResolution.listing_type_id;
+    const installmentsConfig = resolveInstallmentsForPublish(this.getSiteId(), prepared.listing_type_id);
+    if (shippingModeOverride) {
+      prepared.shipping_mode = shippingModeOverride;
+    }
+    if (logisticTypeOverride) {
+      prepared.logistic_type = logisticTypeOverride;
+    }
+    prepared.__ml_selection = {
+      strategy,
+      installments: installmentsConfig,
+      listing_resolution: listingResolution
+    };
+
+    if (productData.economic_config) {
+      const config = productData.economic_config;
+      if (config.allow_price_adjustment && config.min_margin && config.commission_rate) {
+        const basePrice = Number(productData.price) || 0;
+        const commissionRate = Number(config.commission_rate) || 0;
+        const minMargin = Number(config.min_margin) / 100;
+        const currentMargin = 1 - commissionRate;
+
+        if (currentMargin < minMargin && basePrice > 0) {
+          const adjustedPrice = basePrice / (1 - commissionRate - minMargin);
+          const roundedPrice = Math.ceil(adjustedPrice / 10) * 10;
+          prepared.price = roundedPrice;
+          logger.info(`[ML Adapter] 💰 Precio ajustado: $${basePrice} → $${roundedPrice} (margen: ${(minMargin * 100)}%)`);
+        }
+      }
+    }
+
+    if (isCatalogProduct || hasVariationAttributes) {
+      const familyName = (productData.family_name || productData.name || productData.title || 'Producto sin nombre')
+        .toString()
+        .trim();
+      prepared.family_name = familyName;
+      prepared.name = productData.name?.trim() || familyName;
+      prepared.title = productData.title?.trim() || familyName;
+      logger.info(`[ML Adapter] 📦 Producto de catálogo o con variaciones → family_name: "${prepared.family_name}"`);
+    } else {
+      const title = (productData.title || productData.name || productData.family_name || 'Producto sin título')
+        .toString()
+        .trim();
+      prepared.title = title;
+      prepared.name = productData.name?.trim() || title;
+      logger.info(`[ML Adapter] 📦 Producto simple → title: "${prepared.title}"`);
+    }
+
+    const rawAttributes = Array.isArray(mlData.attributes) ? [...mlData.attributes] : [];
+    const hasGTINInRaw = rawAttributes.some(attr => attr?.id === 'GTIN');
+    if (!hasGTINInRaw) {
+      let gtinValue = productData.gtin || productData.ean || productData.upc || '';
+      if (!gtinValue || gtinValue.length < 8) {
+        gtinValue = this.generateValidGTIN(productData.sku || String(productData.id));
+        logger.warn(`[ML Adapter] ⚠️ GTIN no encontrado. Generando GTIN válido: ${gtinValue}`);
+      }
+      rawAttributes.push({
+        id: 'GTIN',
+        value_name: gtinValue
+      });
+      logger.info(`[ML Adapter] ✅ GTIN agregado a mlData.attributes: ${gtinValue}`);
+    }
+
+    prepared.attributes = this.buildMercadoLibreAttributes(rawAttributes, categoryInfo.attributes);
+
+    if (productData.warranty_months && productData.warranty_text) {
+      const warrantyValue = `${productData.warranty_months} ${productData.warranty_text}`;
+      prepared.sale_terms.push({
+        id: 'WARRANTY_TIME',
+        value: warrantyValue
+      });
+      logger.info(`[ML Adapter] ✅ Garantía añadida: ${warrantyValue}`);
+    }
+
+    const publishableVariants = (productData.variants || []).filter(v => v.publish && v.price > 0);
+    const hasMultipleVariants = publishableVariants.length > 1;
+    const hasSingleVariant = publishableVariants.length === 1;
+
+    if (hasMultipleVariants && hasVariationAttributes) {
+      logger.info(`[ML Adapter] Producto con ${publishableVariants.length} variantes. Construyendo variations.`);
+
+      const variationAttrIds = new Set(categoryInfo.variationAttributeIds || []);
+      prepared.attributes = prepared.attributes.filter(a => !variationAttrIds.has(a.id));
+
+      const variations = this.buildValidMercadoLibreVariations(
+        publishableVariants,
+        categoryInfo.attributes
+      );
+
+      if (variations && variations.length >= 2) {
+        prepared.variations = variations;
+        logger.info(`[ML Adapter] ✅ Variaciones construidas: ${variations.length}`);
+      } else {
+        logger.warn('[ML Adapter] ⚠️ No se construyeron variaciones válidas. Restaurando atributos.');
+        prepared.attributes = this.buildMercadoLibreAttributes(rawAttributes, categoryInfo.attributes);
+        prepared.variations = undefined;
+      }
+    } else if (hasSingleVariant) {
+      logger.info('[ML Adapter] Producto con 1 variante. Permitiendo atributos de variación en nivel base.');
+      prepared.attributes = this.buildMercadoLibreAttributes(rawAttributes, categoryInfo.attributes);
+
+      const singleVariant = publishableVariants[0];
+      prepared.available_quantity = Number(singleVariant.publishStock ?? singleVariant.totalStock ?? productData.totalStock) || 0;
+      prepared.price = Number(singleVariant.price) || Number(productData.price) || 0;
+      prepared.variations = undefined;
+    } else {
+      logger.info('[ML Adapter] Producto sin variantes publicables.');
+      prepared.variations = undefined;
+    }
+
+    logger.info('[ML Adapter] ✅ Producto preparado para ML:', {
+      category_id: prepared.category_id,
+      has_variations: !!prepared.variations,
+      variations_count: prepared.variations?.length || 0,
+      attributes_count: prepared.attributes?.length || 0,
+      sale_terms_count: prepared.sale_terms?.length || 0,
+      pictures_count: prepared.pictures?.length || 0,
+      has_family_name: !!prepared.family_name,
+      has_title: !!prepared.title,
+      is_catalog: isCatalogProduct
+    });
+
+    return prepared;
+  }
+
       async ensureValidCredentials() {
     if (this.credentialId) {
     if (typeof this.credentialId === 'object' && this.credentialId !== null) {
