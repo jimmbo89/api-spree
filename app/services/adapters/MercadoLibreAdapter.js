@@ -1070,7 +1070,6 @@ class MercadoLibreAdapter extends BaseAdapter {
       logger.info("[MercadoLibreAdapter] === PAYLOAD FINAL QUE SE ENVIARÁ A MERCADO LIBRE ===");
       logger.info(JSON.stringify(productToPublish, null, 2));
 
-      // ✅ CORREGIDO: Eliminar espacios en URL
       const response = await axios.post(
         "https://api.mercadolibre.com/items",
         productToPublish,
@@ -1084,7 +1083,11 @@ class MercadoLibreAdapter extends BaseAdapter {
         }
       );
 
-      logger.info(`[MercadoLibreAdapter] ✅ Publicado exitosamente: ${response.data.id}`);
+      logger.info(
+        `[MercadoLibreAdapter] ✅ Resultado de publicación: ${JSON.stringify({
+         data: response.data
+        })}`
+      );
       return {
         success: true,
         external_id: response.data.id,
@@ -1092,7 +1095,7 @@ class MercadoLibreAdapter extends BaseAdapter {
       };
     } catch (error) {
       logger.error("[MercadoLibreAdapter] ❌ Error en publicación:");
-      logger.error(`Error message: ${error.message}`);
+      logger.error(`Error message: ${JSON.stringify(error.message)}`);
       
       if (error.response) {
         logger.error(`Status: ${error.response.status}`);

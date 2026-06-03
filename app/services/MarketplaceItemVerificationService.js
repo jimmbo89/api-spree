@@ -48,6 +48,14 @@ async function fetchMercadoLibreItem(itemId, accessToken, timeoutMs = 10000) {
     timeout: timeoutMs
   });
 
+  logger.info(
+    `[ML Verify] Respuesta item ${itemId}: ${JSON.stringify({
+      status: response.status,
+      statusText: response.statusText,
+      data: response.data
+    })}`
+  );
+
   return response.data;
 }
 
