@@ -18,6 +18,7 @@ const {
   MarketplaceOrderFeeRepository,
   MarketplaceOrderEventRepository,
   MarketplaceOrderCustomerRepository,
+  JobProductRepository,
   CompanyRepository,
   UserCompanyRepository
 } = require("../repositories");
