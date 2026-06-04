@@ -1,7 +1,15 @@
 const { Op } = require("sequelize");
 const { getUserId } = require("../../config/context");
 const logger = require("../../config/logger");
-const { JobRepository, JobProductRepository, NotificationRepository } = require("../repositories");
+const {
+  JobRepository,
+  JobProductRepository,
+  NotificationRepository,
+  ProductPublishingTaskRepository,
+  ProductMarketplaceLinkRepository,
+  MarketplaceCredentialRepository
+} = require("../repositories");
+const { verifyMercadoLibreItem } = require("../services/MarketplaceItemVerificationService");
 const checkIsError = (item) => {
   if (!item) return false;
   const isFailedStatus = item.status === 'error' || item.status === 'failed';
@@ -18,6 +26,247 @@ const checkCanEdit = (item) => {
   if (!item) return false;
   return !item.is_fixed && (checkIsError(item) || checkIsWarning(item));
 };
+
+function parseJsonMaybe(value) {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+  if (typeof value !== 'string') return null;
+
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    return null;
+  }
+}
+
+function normalizeMarketplaceItemState(details) {
+  const parsedDetails = parseJsonMaybe(details);
+  if (!parsedDetails || typeof parsedDetails !== 'object') return null;
+
+  const rawState = parsedDetails.marketplace_item_state || parsedDetails.verification || null;
+  if (!rawState || typeof rawState !== 'object') return null;
+
+  const status = String(rawState.status || '').trim().toLowerCase() || null;
+  const subStatus = Array.isArray(rawState.sub_status)
+    ? rawState.sub_status.map((value) => String(value).trim()).filter(Boolean)
+    : rawState.sub_status
+      ? [String(rawState.sub_status).trim()].filter(Boolean)
+      : [];
+
+  return {
+    ...rawState,
+    status,
+    sub_status: subStatus,
+    sub_status_text: rawState.sub_status_text || (subStatus.length > 0 ? subStatus.join(', ') : null)
+  };
+}
+
+function extractPausedStatusFromWarnings(details) {
+  const parsedDetails = parseJsonMaybe(details);
+  if (!parsedDetails || typeof parsedDetails !== 'object') return null;
+
+  const warnings = Array.isArray(parsedDetails.warnings) ? parsedDetails.warnings : [];
+  for (const warning of warnings) {
+    const message = String(warning?.message || warning?.text || warning?.detail || '').toLowerCase();
+    if (!message) continue;
+
+    if (message.includes('estado paused') || message.includes('status paused')) {
+      return {
+        status: 'paused',
+        sub_status: [],
+        sub_status_text: null,
+        source: 'legacy_warnings'
+      };
+    }
+  }
+
+  return null;
+}
+
+function isPausedMarketplaceItem(details) {
+  const state = normalizeMarketplaceItemState(details);
+  if (state?.status === 'paused') return true;
+
+  const legacyState = extractPausedStatusFromWarnings(details);
+  return legacyState?.status === 'paused';
+}
+
+function buildMarketplaceItemStateSnapshot(item, verification, source = 'jobs-finished-list') {
+  const subStatus = Array.isArray(item?.sub_status)
+    ? item.sub_status
+    : item?.sub_status
+      ? [item.sub_status]
+      : [];
+
+  return {
+    marketplace: 'mercadolibre',
+    status: String(item?.status || '').trim().toLowerCase() || null,
+    sub_status: subStatus,
+    sub_status_text: subStatus.length > 0 ? subStatus.join(', ') : null,
+    verified: !!verification?.verified,
+    item_found: !!verification?.item_found,
+    note: verification?.note || null,
+    attempts: verification?.attempts || 0,
+    checked_at: new Date().toISOString(),
+    source
+  };
+}
+
+async function refreshPausedMarketplaceItemStateForJob(job) {
+  try {
+    const jobProducts = await JobProductRepository.findAllErrorsByJob(job, {
+      includePayloads: false,
+      includeDetails: true,
+      limit: 200
+    });
+
+    const pausedItems = jobProducts.filter((item) => isPausedMarketplaceItem(item.error_details));
+    logger.info(
+      `[JobController.listFinishedJobs][paused-refresh] job_id=${job?.id || 'unknown'} ` +
+      `job_products=${jobProducts.length} paused_detected=${pausedItems.length}`
+    );
+
+    if (pausedItems.length === 0) return;
+
+    const seenTaskIds = new Set();
+
+    for (const item of pausedItems) {
+      if (!item.task_id || seenTaskIds.has(String(item.task_id))) {
+        continue;
+      }
+      seenTaskIds.add(String(item.task_id));
+
+      const previousState = normalizeMarketplaceItemState(item.error_details) || extractPausedStatusFromWarnings(item.error_details) || null;
+
+      const task = await ProductPublishingTaskRepository.findById(item.task_id);
+      if (!task || !task.external_id || !task.credential_id) {
+        continue;
+      }
+
+      const credential = await MarketplaceCredentialRepository.findById(task.credential_id);
+      const accessToken = credential?.access_token || null;
+      if (!accessToken) {
+        logger.warn(
+          `[JobController.listFinishedJobs][paused-refresh] skip task_id=${task.id} item=${task.external_id} reason=missing_access_token`
+        );
+        continue;
+      }
+
+      logger.info(
+        `[JobController.listFinishedJobs][paused-refresh] querying marketplace item=${task.external_id} task_id=${task.id}`
+      );
+
+      const verification = await verifyMercadoLibreItem({
+        itemId: task.external_id,
+        accessToken,
+        maxAttempts: 2,
+        baseDelayMs: 800,
+        timeoutMs: 10000
+      });
+
+      if (!verification?.ok || !verification.item_found) {
+        logger.warn(
+          `[JobController.listFinishedJobs][paused-refresh] item=${task.external_id} verification_failed=${verification?.error || 'unknown'}`
+        );
+        continue;
+      }
+
+      const snapshot = buildMarketplaceItemStateSnapshot(verification.item, verification);
+      const stateChanged = String(previousState?.status || '').toLowerCase() !== String(snapshot.status || '').toLowerCase();
+
+      logger.info(
+        `[JobController.listFinishedJobs][paused-refresh] item=${task.external_id} ` +
+        `previous=${previousState?.status || 'unknown'} -> current=${snapshot.status || 'unknown'} ` +
+        `sub_status=${snapshot.sub_status_text || 'none'} ` +
+        `ml_response=${JSON.stringify({
+          id: verification.item?.id || task.external_id,
+          title: verification.item?.title || null,
+          status: verification.item?.status || null,
+          sub_status: verification.item?.sub_status || [],
+          category_id: verification.item?.category_id || null,
+          price: verification.item?.price ?? null,
+          available_quantity: verification.item?.available_quantity ?? null,
+          permalink: verification.item?.permalink || null,
+          last_updated: verification.item?.last_updated || null
+        })}`
+      );
+
+      const currentDetails = task.error_details && typeof task.error_details === 'object'
+        ? task.error_details
+        : {};
+      const mergedDetails = {
+        ...currentDetails,
+        marketplace_item_state: snapshot
+      };
+
+      const shouldKeepWarning = snapshot.status && snapshot.status !== 'active';
+      const errorMessage = shouldKeepWarning
+        ? `Advertencias: ML item status ${snapshot.status}${snapshot.sub_status_text ? ` (${snapshot.sub_status_text})` : ''}`
+        : null;
+
+      await ProductPublishingTaskRepository.updateTask(task, {
+        error_message: errorMessage,
+        error_details: mergedDetails,
+        api_response: verification.item
+      });
+
+      await JobProductRepository.update(item, {
+        error_message: errorMessage,
+        error_details: mergedDetails,
+        external_id: verification.item.id || item.external_id || task.external_id || null,
+        external_url: verification.item.permalink || item.external_url || task.external_url || null
+      });
+
+      const linkExternalId = verification.item.id || task.external_id || null;
+      const existingLink = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
+        task.marketplace_id,
+        linkExternalId,
+        task.company_id || null,
+        task.branch_id || null,
+        task.credential_id || null
+      );
+
+      if (existingLink) {
+        await existingLink.update({
+          status: snapshot.status || 'unpublished',
+          external_url: verification.item.permalink || task.external_url || null,
+          published_stock: task.payload?.available_quantity || null,
+          published_payload: task.payload || null,
+          last_synced_at: new Date()
+        });
+      } else if (task.company_id || task.branch_id) {
+        const linkScope = task.company_id
+          ? { company_id: task.company_id, branch_id: null }
+          : { company_id: null, branch_id: task.branch_id || null };
+
+        await ProductMarketplaceLinkRepository.upsert({
+          product_id: task.product_id,
+          marketplace_id: task.marketplace_id,
+          credential_id: task.credential_id,
+          ...linkScope,
+          status: snapshot.status || 'unpublished',
+          external_id: linkExternalId,
+          external_url: verification.item.permalink || task.external_url || null,
+          published_stock: task.payload?.available_quantity || null,
+          published_payload: task.payload || null,
+          last_synced_at: new Date()
+        });
+      } else {
+        logger.warn(
+          `[JobController.listFinishedJobs][paused-refresh] skip link update task_id=${task.id} item=${task.external_id} reason=missing_company_or_branch_context`
+        );
+      }
+
+      logger.info(
+        `[JobController.listFinishedJobs][paused-refresh] action=${stateChanged ? 'state_changed_and_synced' : 'state_refreshed'} ` +
+        `task_id=${task.id} job_product_id=${item.id} link_updated=${!!existingLink || !!(task.company_id || task.branch_id)}`
+      );
+    }
+  } catch (error) {
+    logger.warn(`[JobController.listFinishedJobs] No se pudo refrescar paused items del job ${job?.id}: ${error.message}`);
+  }
+}
+
 const JobController = {  
 /**
  * GET /api/jobs/:jobId/progress
@@ -458,6 +707,8 @@ async listFinishedJobs(req, res) {
       limit: parseInt(limit),
       offset: (parseInt(page) - 1) * parseInt(limit)
     });
+
+    await Promise.all(jobs.map((job) => refreshPausedMarketplaceItemStateForJob(job)));
 
     // ✅ 2. Enriquecer cada job con conteo de canales (usando JobProductRepository)
     const enrichedJobs = await Promise.all(jobs.map(async (job) => {

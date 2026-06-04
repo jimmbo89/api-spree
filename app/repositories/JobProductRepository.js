@@ -863,6 +863,7 @@ async findAllErrorsByJob(job, options = {}) {
       }
 
       errors.push({
+        id: jp.id,
         task_id: task?.id || null,  // ✅ CLAVE: usar optional chaining
         product_id: jp.product_id,
         product_name: jp.product?.name || 'Producto sin nombre',
