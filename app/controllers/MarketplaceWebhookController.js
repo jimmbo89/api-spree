@@ -790,6 +790,8 @@ async function persistMercadoLibreItemState({
   }
 
   if (task) {
+    const isActive = String(snapshot.status || '').toLowerCase() === 'active';
+    const subStatusLabel = snapshot.sub_status_text ? ` (${snapshot.sub_status_text})` : '';
     const currentDetails = task.error_details && typeof task.error_details === "object"
       ? task.error_details
       : {};
@@ -799,12 +801,14 @@ async function persistMercadoLibreItemState({
     };
     const taskUpdate = {
       api_response: item || task.api_response || null,
-      error_details: mergedDetails
+      error_message: isActive ? null : `ML item status: ${snapshot.status}${subStatusLabel}`,
+      error_details: isActive ? null : mergedDetails
     };
 
-    if (snapshot.status && snapshot.status !== "active") {
-      const subStatusLabel = snapshot.sub_status_text ? ` (${snapshot.sub_status_text})` : "";
-      taskUpdate.error_message = `ML item status: ${snapshot.status}${subStatusLabel}`;
+    if (isActive && task.status === 'published_with_warnings') {
+      taskUpdate.status = 'published';
+    } else if (!isActive && task.status === 'published') {
+      taskUpdate.status = 'published_with_warnings';
     }
 
     await task.update(taskUpdate);
@@ -820,6 +824,8 @@ async function persistMercadoLibreItemState({
     );
 
     if (jobProduct) {
+      const isActive = String(snapshot.status || '').toLowerCase() === 'active';
+      const subStatusLabel = snapshot.sub_status_text ? ` (${snapshot.sub_status_text})` : '';
       const currentJobDetails = jobProduct.error_details && typeof jobProduct.error_details === "object"
         ? jobProduct.error_details
         : {};
@@ -828,15 +834,14 @@ async function persistMercadoLibreItemState({
         marketplace_item_state: snapshot
       };
 
-      const jobProductErrorMessage = snapshot.status && snapshot.status !== "active"
-        ? `Advertencias: ML item status ${snapshot.status}${snapshot.sub_status_text ? ` (${snapshot.sub_status_text})` : ''}`
-        : null;
-
       await JobProductRepository.update(jobProduct, {
+        status: 'success',
         external_id: item?.id || jobProduct.external_id || null,
         external_url: item?.permalink || jobProduct.external_url || null,
-        error_message: jobProductErrorMessage,
-        error_details: mergedJobDetails
+        error_message: isActive
+          ? null
+          : `Advertencias: ML item status ${snapshot.status}${subStatusLabel}`,
+        error_details: isActive ? null : mergedJobDetails
       });
     }
   }

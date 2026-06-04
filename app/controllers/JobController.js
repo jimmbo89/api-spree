@@ -83,8 +83,9 @@ function extractPausedStatusFromWarnings(details) {
   return null;
 }
 
-function isPausedMarketplaceItem(details) {
+function isTransientMarketplaceItem(details) {
   const state = normalizeMarketplaceItemState(details);
+  if (state?.status === 'under_review') return true;
   if (state?.status === 'paused') return true;
 
   const legacyState = extractPausedStatusFromWarnings(details);
@@ -120,10 +121,12 @@ async function refreshPausedMarketplaceItemStateForJob(job) {
       limit: 200
     });
 
-    const pausedItems = jobProducts.filter((item) => isPausedMarketplaceItem(item.error_details));
+    const pausedItems = jobProducts.filter((item) =>
+      isTransientMarketplaceItem(item.error_details)
+    );
     logger.info(
-      `[JobController.listFinishedJobs][paused-refresh] job_id=${job?.id || 'unknown'} ` +
-      `job_products=${jobProducts.length} paused_detected=${pausedItems.length}`
+      `[JobController.listFinishedJobs][marketplace-refresh] job_id=${job?.id || 'unknown'} ` +
+      `job_products=${jobProducts.length} transient_detected=${pausedItems.length}`
     );
 
     if (pausedItems.length === 0) return;
@@ -147,13 +150,13 @@ async function refreshPausedMarketplaceItemStateForJob(job) {
       const accessToken = credential?.access_token || null;
       if (!accessToken) {
         logger.warn(
-          `[JobController.listFinishedJobs][paused-refresh] skip task_id=${task.id} item=${task.external_id} reason=missing_access_token`
+          `[JobController.listFinishedJobs][marketplace-refresh] skip task_id=${task.id} item=${task.external_id} reason=missing_access_token`
         );
         continue;
       }
 
       logger.info(
-        `[JobController.listFinishedJobs][paused-refresh] querying marketplace item=${task.external_id} task_id=${task.id}`
+        `[JobController.listFinishedJobs][marketplace-refresh] querying marketplace item=${task.external_id} task_id=${task.id}`
       );
 
       const verification = await verifyMercadoLibreItem({
@@ -166,7 +169,7 @@ async function refreshPausedMarketplaceItemStateForJob(job) {
 
       if (!verification?.ok || !verification.item_found) {
         logger.warn(
-          `[JobController.listFinishedJobs][paused-refresh] item=${task.external_id} verification_failed=${verification?.error || 'unknown'}`
+          `[JobController.listFinishedJobs][marketplace-refresh] item=${task.external_id} verification_failed=${verification?.error || 'unknown'}`
         );
         continue;
       }
@@ -175,7 +178,7 @@ async function refreshPausedMarketplaceItemStateForJob(job) {
       const stateChanged = String(previousState?.status || '').toLowerCase() !== String(snapshot.status || '').toLowerCase();
 
       logger.info(
-        `[JobController.listFinishedJobs][paused-refresh] item=${task.external_id} ` +
+        `[JobController.listFinishedJobs][marketplace-refresh] item=${task.external_id} ` +
         `previous=${previousState?.status || 'unknown'} -> current=${snapshot.status || 'unknown'} ` +
         `sub_status=${snapshot.sub_status_text || 'none'} ` +
         `ml_response=${JSON.stringify({
@@ -199,20 +202,29 @@ async function refreshPausedMarketplaceItemStateForJob(job) {
         marketplace_item_state: snapshot
       };
 
-      const shouldKeepWarning = snapshot.status && snapshot.status !== 'active';
+      const isActive = snapshot.status === 'active';
+      const shouldKeepWarning = snapshot.status && !isActive;
       const errorMessage = shouldKeepWarning
         ? `Advertencias: ML item status ${snapshot.status}${snapshot.sub_status_text ? ` (${snapshot.sub_status_text})` : ''}`
         : null;
 
-      await ProductPublishingTaskRepository.updateTask(task, {
+      const taskUpdateData = {
         error_message: errorMessage,
-        error_details: mergedDetails,
+        error_details: shouldKeepWarning ? mergedDetails : null,
         api_response: verification.item
-      });
+      };
+      if (isActive && task.status === 'published_with_warnings') {
+        taskUpdateData.status = 'published';
+      } else if (shouldKeepWarning && task.status === 'published') {
+        taskUpdateData.status = 'published_with_warnings';
+      }
+
+      await ProductPublishingTaskRepository.updateTask(task, taskUpdateData);
 
       await JobProductRepository.update(item, {
+        status: 'success',
         error_message: errorMessage,
-        error_details: mergedDetails,
+        error_details: shouldKeepWarning ? mergedDetails : null,
         external_id: verification.item.id || item.external_id || task.external_id || null,
         external_url: verification.item.permalink || item.external_url || task.external_url || null
       });
@@ -253,7 +265,7 @@ async function refreshPausedMarketplaceItemStateForJob(job) {
         });
       } else {
         logger.warn(
-          `[JobController.listFinishedJobs][paused-refresh] skip link update task_id=${task.id} item=${task.external_id} reason=missing_company_or_branch_context`
+          `[JobController.listFinishedJobs][marketplace-refresh] skip link update task_id=${task.id} item=${task.external_id} reason=missing_company_or_branch_context`
         );
       }
 

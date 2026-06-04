@@ -1,6 +1,12 @@
 const axios = require('axios');
 const logger = require('../../config/logger');
 
+const TRANSIENT_ITEM_STATUSES = new Set(['under_review']);
+const TRANSIENT_PAUSED_SUBSTATUSES = new Set([
+  'picture_download_pending',
+  'waiting_for_patch'
+]);
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -15,13 +21,47 @@ function normalizeItemStatus(status) {
   return String(status || '').trim().toLowerCase();
 }
 
-function getStatusOutcome(status) {
-  const normalized = normalizeItemStatus(status);
+function normalizeSubStatusList(subStatus) {
+  if (Array.isArray(subStatus)) {
+    return subStatus
+      .map((value) => String(value || '').trim().toLowerCase())
+      .filter(Boolean);
+  }
+
+  if (!subStatus) return [];
+  return [String(subStatus).trim().toLowerCase()].filter(Boolean);
+}
+
+function getTransientItemReason(item) {
+  const normalizedStatus = normalizeItemStatus(item?.status);
+  const normalizedSubStatus = normalizeSubStatusList(item?.sub_status);
+
+  if (TRANSIENT_ITEM_STATUSES.has(normalizedStatus)) {
+    return normalizedStatus;
+  }
+
+  if (
+    normalizedStatus === 'paused' &&
+    normalizedSubStatus.some((value) => TRANSIENT_PAUSED_SUBSTATUSES.has(value))
+  ) {
+    return `paused:${normalizedSubStatus.join(',')}`;
+  }
+
+  return null;
+}
+
+function getStatusOutcome(itemOrStatus) {
+  const item =
+    itemOrStatus && typeof itemOrStatus === 'object'
+      ? itemOrStatus
+      : { status: itemOrStatus };
+  const normalized = normalizeItemStatus(item?.status);
   if (!normalized) {
     return {
       verified: false,
       status: null,
-      note: 'missing_status'
+      note: 'missing_status',
+      is_transient: false
     };
   }
 
@@ -29,14 +69,26 @@ function getStatusOutcome(status) {
     return {
       verified: true,
       status: normalized,
-      note: 'active'
+      note: 'active',
+      is_transient: false
+    };
+  }
+
+  const transientReason = getTransientItemReason(item);
+  if (transientReason) {
+    return {
+      verified: true,
+      status: normalized,
+      note: `transient:${transientReason}`,
+      is_transient: true
     };
   }
 
   return {
     verified: true,
     status: normalized,
-    note: `non_active:${normalized}`
+    note: `non_active:${normalized}`,
+    is_transient: false
   };
 }
 
@@ -56,6 +108,7 @@ function buildMercadoLibreItemSnapshot(item) {
     title: item.title || null,
     status: item.status || null,
     sub_status: subStatus,
+    sub_status_text: subStatus.length > 0 ? subStatus.join(', ') : null,
     category_id: item.category_id || null,
     domain_id: item.domain_id || null,
     price: item.price ?? null,
@@ -105,7 +158,18 @@ async function verifyMercadoLibreItem({
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       const item = await fetchMercadoLibreItem(itemId, accessToken, timeoutMs);
-      const outcome = getStatusOutcome(item?.status);
+      const outcome = getStatusOutcome(item);
+
+      if (outcome.is_transient && attempt < maxAttempts) {
+        const delayMs = baseDelayMs * Math.pow(2, attempt - 1);
+        logger.info(
+          `[ML Verify] Item ${itemId} en estado transitorio ${outcome.status} ` +
+          `(${buildMercadoLibreItemSnapshot(item)?.sub_status_text || 'sin sub_status'}), ` +
+          `reintentando en ${delayMs}ms (intento ${attempt}/${maxAttempts})`
+        );
+        await sleep(delayMs);
+        continue;
+      }
 
       return {
         ok: true,
@@ -115,6 +179,7 @@ async function verifyMercadoLibreItem({
         item,
         attempts: attempt,
         note: outcome.note,
+        is_transient: outcome.is_transient,
         error: null
       };
     } catch (error) {
