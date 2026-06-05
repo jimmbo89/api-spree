@@ -61,17 +61,21 @@ module.exports = (sequelize, DataTypes) => {
     comment: 'ID de la credencial específica usada para esta publicación'
   },
     status: {
-      type: DataTypes.ENUM(
-        'draft',
-        'pending',
-        'processing',
-        'published',
-        'published_with_warnings',  // ✅ Nuevo status para publicaciones con advertencias
-        'failed',
-        'cancelled'
-      ),
+      type: DataTypes.STRING(32),
       allowNull: false,
-      defaultValue: 'pending'
+      defaultValue: 'pending',
+      validate: {
+        isIn: [[
+          'draft',
+          'pending',
+          'processing',
+          'published',
+          'published_with_warnings',
+          'failed',
+          'cancelled',
+          'deleted'
+        ]]
+      }
     },
     draft_name: {
       type: DataTypes.STRING(255),

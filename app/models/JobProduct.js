@@ -83,9 +83,12 @@ module.exports = (sequelize, DataTypes) => {
     
     // Estado individual del producto
     status: {
-      type: DataTypes.ENUM('pending', 'processing', 'success', 'error', 'retrying'),
+      type: DataTypes.STRING(32),
       allowNull: false,
-      defaultValue: 'pending'
+      defaultValue: 'pending',
+      validate: {
+        isIn: [['pending', 'processing', 'success', 'error', 'retrying', 'deleted']]
+      }
     },
     
     // Resultado de la publicación

@@ -46,6 +46,8 @@ class MarketplaceTransformer {
       if (product.sale_terms !== undefined) transformed.sale_terms = product.sale_terms;
       if (product.category_attributes !== undefined) transformed.category_attributes = product.category_attributes;
       if (product.is_user_product !== undefined) transformed.is_user_product = product.is_user_product;
+      if (product.warranty_months !== undefined) transformed.warranty_months = product.warranty_months;
+      if (product.warranty_text !== undefined) transformed.warranty_text = product.warranty_text;
 
       return transformed;
     });

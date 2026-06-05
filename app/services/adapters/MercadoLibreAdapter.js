@@ -79,6 +79,28 @@ function pickMlDataForCredential(mlConfigByCredential, credentialId) {
   return mlConfigByCredential[allKeys[0]];
 }
 
+function buildWarrantySaleTerms(productData) {
+  if (!productData || typeof productData !== 'object') return [];
+
+  const warrantyMonthsRaw = productData.warranty_months;
+  const warrantyUnitRaw = String(productData.warranty_text || '').trim();
+  const warrantyMonths = Number(warrantyMonthsRaw);
+
+  if (!Number.isFinite(warrantyMonths) || warrantyMonths < 0 || !warrantyUnitRaw) {
+    return [];
+  }
+
+  const normalizedMonths = Number.isInteger(warrantyMonths)
+    ? warrantyMonths
+    : Number(warrantyMonths.toFixed(2));
+  const warrantyValue = `${normalizedMonths} ${warrantyUnitRaw}`;
+
+  return [{
+    id: 'WARRANTY_TIME',
+    value_name: warrantyValue
+  }];
+}
+
 class MercadoLibreAdapter extends BaseAdapter {
   static supportsCategoryPrediction() {
     return true;
@@ -406,13 +428,10 @@ class MercadoLibreAdapter extends BaseAdapter {
     }
 
     // ✅ PASO 7: Procesar garantía → sale_terms (según documentación oficial)
-    if (productData.warranty_months && productData.warranty_text) {
-      const warrantyValue = `${productData.warranty_months} ${productData.warranty_text}`;
-      prepared.sale_terms.push({
-        id: "WARRANTY_TIME",
-        value: warrantyValue
-      });
-      logger.info(`[ML Adapter] ✅ Garantía añadida: ${warrantyValue}`);
+    const warrantySaleTerms = buildWarrantySaleTerms(productData);
+    if (warrantySaleTerms.length > 0) {
+      prepared.sale_terms.push(...warrantySaleTerms);
+      logger.info(`[ML Adapter] ✅ Garantía añadida: ${warrantySaleTerms[0].value_name}`);
     }
 
     // ✅ PASO 8: Procesar variantes publicables
@@ -985,13 +1004,10 @@ class MercadoLibreAdapter extends BaseAdapter {
 
     prepared.attributes = this.buildMercadoLibreAttributes(rawAttributes, categoryInfo.attributes);
 
-    if (productData.warranty_months && productData.warranty_text) {
-      const warrantyValue = `${productData.warranty_months} ${productData.warranty_text}`;
-      prepared.sale_terms.push({
-        id: 'WARRANTY_TIME',
-        value: warrantyValue
-      });
-      logger.info(`[ML Adapter] ✅ Garantía añadida: ${warrantyValue}`);
+    const warrantySaleTerms = buildWarrantySaleTerms(productData);
+    if (warrantySaleTerms.length > 0) {
+      prepared.sale_terms.push(...warrantySaleTerms);
+      logger.info(`[ML Adapter] ✅ Garantía añadida: ${warrantySaleTerms[0].value_name}`);
     }
 
     const publishableVariants = (productData.variants || []).filter(v => v.publish && v.price > 0);
@@ -1336,12 +1352,12 @@ class MercadoLibreAdapter extends BaseAdapter {
         );
 
         const filteredSaleTerms = allowedSaleTermIds
-          ? transformedProduct.sale_terms.filter(st => st?.id && allowedSaleTermIds.has(st.id))
+          ? transformedProduct.sale_terms.filter(st => st?.id && (allowedSaleTermIds.has(st.id) || st.id === 'WARRANTY_TIME'))
           : transformedProduct.sale_terms;
 
         const removedTerms = allowedSaleTermIds
           ? transformedProduct.sale_terms
-            .filter(st => st?.id && !allowedSaleTermIds.has(st.id))
+            .filter(st => st?.id && !allowedSaleTermIds.has(st.id) && st.id !== 'WARRANTY_TIME')
             .map(st => st.id)
           : [];
 

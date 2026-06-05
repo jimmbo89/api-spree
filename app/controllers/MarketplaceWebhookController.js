@@ -693,6 +693,17 @@ function normalizeMercadoLibreSubStatusValue(subStatus) {
   return [String(subStatus).trim()].filter(Boolean);
 }
 
+function isMercadoLibreDeletedState(status, subStatus = []) {
+  const normalizedStatus = normalizeMercadoLibreItemStatusValue(status);
+  const normalizedSubStatus = normalizeMercadoLibreSubStatusValue(subStatus);
+
+  return (
+    normalizedStatus === 'deleted' ||
+    normalizedStatus === 'closed' ||
+    normalizedSubStatus.some((value) => String(value).toLowerCase() === 'deleted')
+  );
+}
+
 function buildMercadoLibreItemStateSnapshot({ item, verification, payload }) {
   const status = normalizeMercadoLibreItemStatusValue(item?.status);
   const subStatus = normalizeMercadoLibreSubStatusValue(item?.sub_status);
@@ -714,6 +725,19 @@ function buildMercadoLibreItemStateSnapshot({ item, verification, payload }) {
       received: payload?.received || null
     }
   };
+}
+
+function buildMercadoLibreDeletedItemSnapshot(itemId, verification, payload) {
+  return buildMercadoLibreItemStateSnapshot({
+    item: {
+      id: itemId,
+      status: verification?.status || 'deleted',
+      sub_status: ['deleted'],
+      permalink: null
+    },
+    verification,
+    payload
+  });
 }
 
 async function persistMercadoLibreItemState({
@@ -780,7 +804,9 @@ async function persistMercadoLibreItemState({
   }
 
   const updatePayload = {
-    status: snapshot.status || link?.status || 'unpublished',
+    status: isMercadoLibreDeletedState(snapshot.status, snapshot.sub_status)
+      ? 'deleted'
+      : (snapshot.status || link?.status || 'unpublished'),
     external_url: item?.permalink || link?.external_url || null,
     last_synced_at: new Date()
   };
@@ -791,23 +817,29 @@ async function persistMercadoLibreItemState({
 
   if (task) {
     const isActive = String(snapshot.status || '').toLowerCase() === 'active';
+    const isDeleted = isMercadoLibreDeletedState(snapshot.status, snapshot.sub_status);
     const subStatusLabel = snapshot.sub_status_text ? ` (${snapshot.sub_status_text})` : '';
     const currentDetails = task.error_details && typeof task.error_details === "object"
       ? task.error_details
       : {};
     const mergedDetails = {
       ...currentDetails,
-      marketplace_item_state: snapshot
+      marketplace_item_state: snapshot,
+      terminal_state: isDeleted ? 'deleted' : null
     };
     const taskUpdate = {
       api_response: item || task.api_response || null,
-      error_message: isActive ? null : `ML item status: ${snapshot.status}${subStatusLabel}`,
+      error_message: isActive
+        ? null
+        : (isDeleted
+          ? 'ML item eliminado en Mercado Libre'
+          : `ML item status: ${snapshot.status}${subStatusLabel}`),
       error_details: isActive ? null : mergedDetails
     };
 
     if (isActive && task.status === 'published_with_warnings') {
       taskUpdate.status = 'published';
-    } else if (!isActive && task.status === 'published') {
+    } else if (!isActive && !isDeleted && task.status === 'published') {
       taskUpdate.status = 'published_with_warnings';
     }
 
@@ -825,13 +857,15 @@ async function persistMercadoLibreItemState({
 
     if (jobProduct) {
       const isActive = String(snapshot.status || '').toLowerCase() === 'active';
+      const isDeleted = isMercadoLibreDeletedState(snapshot.status, snapshot.sub_status);
       const subStatusLabel = snapshot.sub_status_text ? ` (${snapshot.sub_status_text})` : '';
       const currentJobDetails = jobProduct.error_details && typeof jobProduct.error_details === "object"
         ? jobProduct.error_details
         : {};
       const mergedJobDetails = {
         ...currentJobDetails,
-        marketplace_item_state: snapshot
+        marketplace_item_state: snapshot,
+        terminal_state: isDeleted ? 'deleted' : null
       };
 
       await JobProductRepository.update(jobProduct, {
@@ -840,7 +874,9 @@ async function persistMercadoLibreItemState({
         external_url: item?.permalink || jobProduct.external_url || null,
         error_message: isActive
           ? null
-          : `Advertencias: ML item status ${snapshot.status}${subStatusLabel}`,
+          : (isDeleted
+            ? 'ML item eliminado en Mercado Libre'
+            : `Advertencias: ML item status ${snapshot.status}${subStatusLabel}`),
         error_details: isActive ? null : mergedJobDetails
       });
     }
@@ -917,6 +953,29 @@ async function processMercadoLibreItemWebhook(payload, options = {}) {
     const verification = await withTimeout(verificationPromise, timeoutMs);
 
     if (!verification?.ok || !verification.item_found) {
+      const isDeleted = verification?.http_status === 404 || verification?.error_code === 'item_not_found';
+
+      if (isDeleted) {
+        const deletedItem = buildMercadoLibreDeletedItemSnapshot(itemId, verification, payload);
+
+        await persistMercadoLibreItemState({
+          credential,
+          itemId,
+          item: deletedItem,
+          verification,
+          payload
+        });
+
+        await MarketplaceWebhookEventRepository.updateById(event.id, {
+          status: "processed",
+          error_message: null,
+          processed_at: new Date()
+        });
+
+        logger.info(`[ML Webhook] Item ${itemId} marcado como deleted por 404/no encontrado`);
+        return;
+      }
+
       await MarketplaceWebhookEventRepository.updateById(event.id, {
         status: "error",
         error_message: verification?.error || "item_verification_failed",

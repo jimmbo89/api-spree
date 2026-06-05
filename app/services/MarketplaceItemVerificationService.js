@@ -149,6 +149,8 @@ async function verifyMercadoLibreItem({
       item_found: false,
       status: null,
       attempts: 0,
+      http_status: null,
+      error_code: 'missing_item_id_or_token',
       error: 'missing_item_id_or_token'
     };
   }
@@ -176,10 +178,12 @@ async function verifyMercadoLibreItem({
         verified: outcome.verified,
         item_found: true,
         status: outcome.status,
+        http_status: 200,
         item,
         attempts: attempt,
         note: outcome.note,
         is_transient: outcome.is_transient,
+        error_code: null,
         error: null
       };
     } catch (error) {
@@ -206,6 +210,10 @@ async function verifyMercadoLibreItem({
     item_found: false,
     status: null,
     attempts: maxAttempts,
+    http_status: lastError?.response?.status || null,
+    error_code: lastError?.response?.status === 404
+      ? 'item_not_found'
+      : 'verification_failed',
     error: lastError?.response?.data?.message || lastError?.message || 'verification_failed'
   };
 }

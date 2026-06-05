@@ -23,9 +23,9 @@ module.exports = {
       
       // Estado individual del producto
       status: {
-        type: Sequelize.ENUM('pending', 'processing', 'success', 'error', 'retrying'),
-        defaultValue: 'pending',
-        index: true
+        type: Sequelize.STRING(100), //ENUM('pending', 'processing', 'success', 'error', 'retrying')
+        allowNull: false,
+        defaultValue: 'pending'
       },
       
       // Resultado

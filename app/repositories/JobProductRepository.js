@@ -60,16 +60,17 @@ const JobProductRepository = {
           credential_id: row.credential_id,
           credential_name: row.credential?.name || `Credencial ${row.credential_id}`,
           seller_email: row.credential?.seller_email || null,
-          total: 0, processed: 0, published: 0, failed: 0, pending: 0
+          total: 0, processed: 0, published: 0, failed: 0, deleted: 0, pending: 0
         };
       }
       
       const count = parseInt(row.count) || 0;
       grouped[key].total += count;
       
-      if (['success', 'error'].includes(row.status)) grouped[key].processed += count;
+      if (['success', 'error', 'deleted'].includes(row.status)) grouped[key].processed += count;
       if (row.status === 'success') grouped[key].published += count;
       if (row.status === 'error') grouped[key].failed += count;
+      if (row.status === 'deleted') grouped[key].deleted += count;
       if (['pending', 'processing'].includes(row.status)) grouped[key].pending += count;
     });
 
@@ -327,7 +328,7 @@ async findById(id, options = {}) {
       if (!job_id || !product_id || !marketplace_id) {
         throw new Error('job_id, product_id y marketplace_id son requeridos');
       }
-      if (!['pending', 'processing', 'success', 'error', 'retrying'].includes(status)) {
+      if (!['pending', 'processing', 'success', 'error', 'retrying', 'deleted'].includes(status)) {
         throw new Error('status inválido');
       }
 
