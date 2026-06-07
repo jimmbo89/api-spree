@@ -64,6 +64,15 @@ const listSchema = Joi.object({
   batch_id: Joi.string().guid().optional() // ✅ Nuevo
 });
 
+const publishedProductsSchema = Joi.object({
+  company_id: Joi.number().integer().positive().optional(),
+  user_id: Joi.number().integer().positive().optional(),
+  marketplace_id: Joi.number().integer().positive().optional(),
+  product_id: Joi.number().integer().positive().optional(),
+  start_date: Joi.date().optional().allow(null),
+  end_date: Joi.date().optional().allow(null)
+});
+
 const listWithProductSchema = Joi.object({
   company_id: Joi.number().integer().positive().required(),
   user_id: Joi.number().integer().optional(),
@@ -118,6 +127,7 @@ module.exports = {
   listProductPublishingTaskSchema: listSchema,
   listProductPublishingTaskWithProductSchema: listWithProductSchema,
   listDraftsByUserSchema: listDraftsByUserSchema, // ✅ Nuevo
+  publishedProductsSchema: publishedProductsSchema,
   retryProductPublishingTaskSchema: retrySchema,
   publishDraftSchema: publishDraftSchema // ✅ Nuevo
 };

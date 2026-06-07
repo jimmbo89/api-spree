@@ -5,6 +5,7 @@ const { MarketplaceCredentialRepository } = require("../../repositories");
 const axios = require('axios');
 const MarketplaceTransformerMercadoLibre = require("../MarketplaceTransformerMercadoLibre");
 const MercadoLibreAttributesService = require('../MercadoLibreAttributesService');
+const { verifyMercadoLibreItem } = require('../MarketplaceItemVerificationService');
 
 const ML_SUPPORTED_LISTING_TYPES = ['gold_pro', 'gold_special', 'free'];
 const ML_STRATEGY = {
@@ -1288,6 +1289,185 @@ class MercadoLibreAdapter extends BaseAdapter {
       const credentialStatus = await this.ensureValidCredentials();
       if (!credentialStatus?.valid) {
         return credentialStatus;
+      }
+
+      const mlExistingItemId = String(
+        transformedProduct.__ml_existing_item_id ||
+        transformedProduct.external_id ||
+        ''
+      ).trim();
+
+      const normalizePositiveInteger = (value) => {
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed) || parsed < 0) return null;
+        return Math.round(parsed);
+      };
+
+      const buildUpdateVariation = (variation) => {
+        if (!variation || !variation.id) return null;
+
+        const updateVariation = { id: variation.id };
+        const variationPrice = normalizePositiveInteger(variation.price);
+        const variationQuantity = normalizePositiveInteger(
+          variation.available_quantity ?? variation.quantity ?? variation.stock
+        );
+
+        if (variationPrice !== null) updateVariation.price = variationPrice;
+        if (variationQuantity !== null) updateVariation.available_quantity = variationQuantity;
+
+        return updateVariation;
+      };
+
+      const buildUpdatePayload = () => {
+        const payload = {};
+
+        const price = normalizePositiveInteger(transformedProduct.price);
+        const quantity = normalizePositiveInteger(
+          transformedProduct.available_quantity ?? transformedProduct.stock
+        );
+
+        if (typeof transformedProduct.title === 'string' && transformedProduct.title.trim()) {
+          payload.title = transformedProduct.title.trim();
+        }
+
+        if (price !== null) payload.price = price;
+        if (quantity !== null) payload.available_quantity = quantity;
+
+        if (typeof transformedProduct.description?.plain_text === 'string' && transformedProduct.description.plain_text.trim()) {
+          payload.description = {
+            plain_text: transformedProduct.description.plain_text.trim()
+          };
+        } else if (typeof transformedProduct.description === 'string' && transformedProduct.description.trim()) {
+          payload.description = {
+            plain_text: transformedProduct.description.trim()
+          };
+        }
+
+        if (Array.isArray(transformedProduct.pictures) && transformedProduct.pictures.length > 0) {
+          payload.pictures = transformedProduct.pictures;
+        }
+
+        if (Array.isArray(transformedProduct.variations) && transformedProduct.variations.length > 0) {
+          const variations = transformedProduct.variations
+            .map(buildUpdateVariation)
+            .filter(Boolean);
+          if (variations.length > 0) {
+            payload.variations = variations;
+          }
+        }
+
+        return payload;
+      };
+
+      const buildRelistPayload = () => {
+        const payload = {
+          listing_type_id: normalizeListingTypeId(transformedProduct.listing_type_id)
+        };
+
+        const price = normalizePositiveInteger(transformedProduct.price);
+        const quantity = normalizePositiveInteger(
+          transformedProduct.available_quantity ?? transformedProduct.stock
+        );
+
+        if (price !== null) payload.price = price;
+        if (quantity !== null) payload.quantity = quantity;
+
+        if (Array.isArray(transformedProduct.variations) && transformedProduct.variations.length > 0) {
+          const variations = transformedProduct.variations
+            .map((variation) => {
+              if (!variation || !variation.id) return null;
+              const relistVariation = { id: variation.id };
+              const variationPrice = normalizePositiveInteger(variation.price);
+              const variationQuantity = normalizePositiveInteger(
+                variation.available_quantity ?? variation.quantity ?? variation.stock
+              );
+              if (variationPrice !== null) relistVariation.price = variationPrice;
+              if (variationQuantity !== null) relistVariation.quantity = variationQuantity;
+              return relistVariation;
+            })
+            .filter(Boolean);
+
+          if (variations.length > 0) {
+            payload.variations = variations;
+          }
+        }
+
+        return payload;
+      };
+
+      if (mlExistingItemId) {
+        try {
+          const verification = await verifyMercadoLibreItem({
+            itemId: mlExistingItemId,
+            accessToken: this.credential?.access_token
+          });
+
+          if (verification?.item_found) {
+            const currentStatus = String(verification.status || '').trim().toLowerCase();
+            logger.info(`[MercadoLibreAdapter] Publicación existente detectada ${mlExistingItemId} en estado ${currentStatus || 'desconocido'}`);
+
+            if (currentStatus === 'closed') {
+              const relistPayload = buildRelistPayload();
+              logger.info(`[MercadoLibreAdapter] REPUBLICAR item cerrado ${mlExistingItemId}`);
+
+              const relistResponse = await axios.post(
+                `https://api.mercadolibre.com/items/${mlExistingItemId}/relist`,
+                relistPayload,
+                {
+                  headers: {
+                    Authorization: `Bearer ${this.credential.access_token}`,
+                    'Content-Type': 'application/json',
+                    Accept: 'application/json'
+                  },
+                  timeout: 30000
+                }
+              );
+
+              return {
+                success: true,
+                external_id: relistResponse.data.id,
+                data: relistResponse.data
+              };
+            }
+
+            const updatePayload = buildUpdatePayload();
+            if (Object.keys(updatePayload).length > 0) {
+              logger.info(`[MercadoLibreAdapter] ACTUALIZAR item existente ${mlExistingItemId}`);
+
+              const updateResponse = await axios.put(
+                `https://api.mercadolibre.com/items/${mlExistingItemId}`,
+                updatePayload,
+                {
+                  headers: {
+                    Authorization: `Bearer ${this.credential.access_token}`,
+                    'Content-Type': 'application/json',
+                    Accept: 'application/json'
+                  },
+                  timeout: 30000
+                }
+              );
+
+              return {
+                success: true,
+                external_id: updateResponse.data.id || mlExistingItemId,
+                data: updateResponse.data
+              };
+            }
+
+            logger.warn(`[MercadoLibreAdapter] Item existente ${mlExistingItemId} sin campos actualizables, se mantendrá publicación actual`);
+            return {
+              success: true,
+              external_id: mlExistingItemId,
+              data: verification.item
+            };
+          }
+        } catch (existingError) {
+          if (existingError?.response?.status !== 404) {
+            logger.warn(`[MercadoLibreAdapter] No se pudo validar item existente ${mlExistingItemId}: ${existingError.message}`);
+          } else {
+            logger.warn(`[MercadoLibreAdapter] Item existente ${mlExistingItemId} no encontrado; se creará nueva publicación`);
+          }
+        }
       }
 
       const categoryId = transformedProduct.category_id || '';

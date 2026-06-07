@@ -1,5 +1,5 @@
 const { Op } = require('sequelize');
-const { ProductPublishingTask, Product, Marketplace, Warehouse, Branch, Company, User, MarketplaceCredential, Job } = require('../models');
+const { ProductPublishingTask, Product, Marketplace, Warehouse, Branch, Company, User, MarketplaceCredential, Job, sequelize } = require('../models');
 const logger = require('../../config/logger');
 
 const ProductPublishingTaskRepository = {
@@ -147,7 +147,7 @@ const ProductPublishingTaskRepository = {
     });
   },
 
-  async findLatestPublishedByProductMarketplaceAndCredential(productId, marketplaceId, credentialId) {
+  async findLatestPublishedByProductMarketplaceAndCredential(productId, marketplaceId, credentialId, userId = null) {
     const where = {
       product_id: productId,
       marketplace_id: marketplaceId,
@@ -160,9 +160,55 @@ const ProductPublishingTaskRepository = {
       where.credential_id = credentialId;
     }
 
+    if (userId) {
+      where.user_id = userId;
+    }
+
     return await ProductPublishingTask.findOne({
       where,
       order: [['createdAt', 'DESC']]
+    });
+  },
+
+  async findPublishedProducts({
+    companyId = null,
+    userId = null,
+    marketplaceId = null,
+    productId = null,
+    startDate = null,
+    endDate = null
+  } = {}) {
+    const where = {
+      status: {
+        [Op.in]: ['published', 'published_with_warnings']
+      }
+    };
+
+    if (companyId) where.company_id = companyId;
+    if (userId) where.user_id = userId;
+    if (marketplaceId) where.marketplace_id = marketplaceId;
+    if (productId) where.product_id = productId;
+
+    if (startDate && endDate) {
+      where[Op.and] = sequelize.where(
+        sequelize.literal('DATE(COALESCE(`ProductPublishingTask`.`published_at`, `ProductPublishingTask`.`createdAt`))'),
+        {
+          [Op.between]: [startDate, endDate]
+        }
+      );
+    }
+
+    return await ProductPublishingTask.findAll({
+      where,
+      include: [
+        { model: Product, as: 'product' },
+        { model: Marketplace, as: 'marketplace' },
+        { model: MarketplaceCredential, as: 'credential' }
+      ],
+      order: [
+        [sequelize.literal('DATE(COALESCE(`ProductPublishingTask`.`published_at`, `ProductPublishingTask`.`createdAt`))'), 'DESC'],
+        ['id', 'DESC']
+      ]
     });
   },
 

@@ -98,6 +98,206 @@ function buildWarningArtifacts(result) {
   };
 }
 
+function normalizePublishedPayload(rawPayload) {
+  if (!rawPayload) return null;
+
+  let parsed = rawPayload;
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  if (parsed && typeof parsed === 'object' && parsed.payload && typeof parsed.payload === 'object') {
+    parsed = parsed.payload;
+  }
+
+  return parsed && typeof parsed === 'object' ? parsed : null;
+}
+
+function extractPublishedStock(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+
+  const directFields = [
+    payload.available_quantity,
+    payload.stock,
+    payload.publishStock,
+    payload.initial_quantity,
+    payload.totalPublishingStock,
+    payload.totalStock
+  ];
+
+  for (const value of directFields) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return Math.round(parsed);
+    }
+  }
+
+  const variations = Array.isArray(payload.variations)
+    ? payload.variations
+    : Array.isArray(payload.items)
+      ? payload.items
+      : [];
+
+  if (variations.length === 0) return null;
+
+  const totals = variations
+    .map((variation) => {
+      const value =
+        variation?.available_quantity ??
+        variation?.stock ??
+        variation?.publishStock ??
+        variation?.initial_quantity ??
+        variation?.quantity;
+      const parsed = Number(value);
+      return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : null;
+    })
+    .filter((value) => value !== null);
+
+  if (totals.length === 0) return null;
+  return totals.reduce((sum, value) => sum + value, 0);
+}
+
+function extractPublishedPrice(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+
+  const directFields = [
+    payload.price,
+    payload.final_price,
+    payload.list_price,
+    payload.base_price
+  ];
+
+  for (const value of directFields) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return parsed;
+    }
+  }
+
+  const variations = Array.isArray(payload.variations)
+    ? payload.variations
+    : Array.isArray(payload.items)
+      ? payload.items
+      : [];
+
+  if (variations.length === 0) return null;
+
+  const firstWithPrice = variations.find((variation) => {
+    const parsed = Number(variation?.price);
+    return Number.isFinite(parsed) && parsed >= 0;
+  });
+
+  if (!firstWithPrice) return null;
+  const parsed = Number(firstWithPrice.price);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function extractMercadoLibreState(task) {
+  const stateSources = [
+    task?.error_details?.marketplace_item_state?.status,
+    task?.error_details?.status,
+    task?.api_response?.status,
+    task?.marketplace_status,
+    task?.status
+  ];
+
+  for (const value of stateSources) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return null;
+}
+
+function classifyMarketplaceState(status) {
+  const normalized = String(status || '').trim().toLowerCase();
+
+  if (!normalized) {
+    return 'unknown';
+  }
+
+  if (normalized === 'active') {
+    return 'active';
+  }
+
+  if (normalized === 'deleted' || normalized === 'closed') {
+    return 'deleted';
+  }
+
+  return 'inactive';
+}
+
+function formatDateKey(dateValue) {
+  if (!(dateValue instanceof Date) || Number.isNaN(dateValue.getTime())) {
+    return null;
+  }
+
+  const year = dateValue.getFullYear();
+  const month = String(dateValue.getMonth() + 1).padStart(2, '0');
+  const day = String(dateValue.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function parseDateKey(dateInput, fallbackDate) {
+  if (dateInput === null || dateInput === undefined || dateInput === '') {
+    return formatDateKey(fallbackDate);
+  }
+
+  const raw = String(dateInput).trim();
+  const datePart = raw.includes('T') ? raw.split('T')[0] : raw.slice(0, 10);
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(datePart)) {
+    const parsed = new Date(raw);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return formatDateKey(parsed);
+  }
+
+  return datePart;
+}
+
+function formatDateTimeDisplay(dateValue) {
+  if (!dateValue) return null;
+
+  const date = dateValue instanceof Date ? dateValue : new Date(dateValue);
+  if (Number.isNaN(date.getTime())) return null;
+
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  const hours = String(date.getUTCHours()).padStart(2, '0');
+  const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+
+  return `${year}-${month}-${day} ${hours}:${minutes}`;
+}
+
+function normalizeDateRange(startDateInput, endDateInput) {
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+
+  const startDate = parseDateKey(startDateInput, monthStart);
+  const endDate = parseDateKey(endDateInput, monthEnd);
+
+  if (!startDate) {
+    throw new Error('start_date_invalid');
+  }
+  if (!endDate) {
+    throw new Error('end_date_invalid');
+  }
+
+  if (startDate > endDate) {
+    throw new Error('date_range_invalid');
+  }
+
+  return { startDate, endDate };
+}
+
 const ProductPublishingTaskController = {
   // 1. Registrar publicación (simula envío a API)
 async warehouseMarketplaces(req, res) {
@@ -1957,6 +2157,176 @@ async retryBatch(req, res) {
     results
   });
 },
+  async publishedProducts(req, res) {
+    logger.info(`${req.user?.name || 'Unknown'} - Lista productos publicados`);
+    const metadata = getRequestMetadata(req);
+
+    try {
+      const {
+        company_id: bodyCompanyId,
+        user_id: bodyUserId,
+        marketplace_id: bodyMarketplaceId,
+        product_id: bodyProductId,
+        start_date,
+        end_date
+      } = req.body || {};
+
+      const companyId = bodyCompanyId ? Number(bodyCompanyId) : req.user.company_id;
+      const userId = bodyUserId ? Number(bodyUserId) : req.user.id;
+      const marketplaceId = bodyMarketplaceId ? Number(bodyMarketplaceId) : null;
+      const productId = bodyProductId ? Number(bodyProductId) : null;
+
+      if (bodyCompanyId && !Number.isFinite(companyId)) {
+        return res.status(400).json({ success: false, msg: 'company_id_invalid' });
+      }
+      if (bodyUserId && !Number.isFinite(userId)) {
+        return res.status(400).json({ success: false, msg: 'user_id_invalid' });
+      }
+      if (bodyMarketplaceId && !Number.isFinite(marketplaceId)) {
+        return res.status(400).json({ success: false, msg: 'marketplace_id_invalid' });
+      }
+      if (bodyProductId && !Number.isFinite(productId)) {
+        return res.status(400).json({ success: false, msg: 'product_id_invalid' });
+      }
+
+      const { startDate, endDate } = normalizeDateRange(start_date, end_date);
+
+      const tasks = await ProductPublishingTaskRepository.findPublishedProducts({
+        companyId,
+        userId,
+        marketplaceId,
+        productId,
+        startDate,
+        endDate
+      });
+
+      const uniqueByExternalId = new Map();
+      for (const task of tasks) {
+        const externalId = String(task.external_id || '').trim();
+        if (!externalId) continue;
+
+        const dedupeKey = [
+          externalId,
+          task.marketplace_id || '',
+          task.credential_id || '',
+          task.user_id || '',
+          task.product_id || ''
+        ].join(':');
+
+        if (!uniqueByExternalId.has(dedupeKey)) {
+          uniqueByExternalId.set(dedupeKey, task);
+        }
+      }
+
+      const publishedProducts = [];
+      const statusSummary = {
+        total: 0,
+        active: 0,
+        inactive: 0,
+        deleted: 0,
+        unknown: 0
+      };
+
+      for (const task of uniqueByExternalId.values()) {
+        const marketplace = task.marketplace || {};
+        const product = task.product || {};
+        const credential = task.credential || {};
+        const marketplaceStatus = extractMercadoLibreState(task);
+        const statusBucket = classifyMarketplaceState(marketplaceStatus);
+
+        const apiResponsePayload = normalizePublishedPayload(task.api_response);
+        const taskPayload = normalizePublishedPayload(task.payload);
+        const payloadForMetrics = apiResponsePayload || taskPayload || {};
+
+        statusSummary.total += 1;
+        statusSummary[statusBucket] = (statusSummary[statusBucket] || 0) + 1;
+
+        publishedProducts.push({
+          task_id: task.id,
+          product_id: task.product_id,
+          product_name: product.name || 'N/A',
+          sku: product.sku || null,
+          product_image: Array.isArray(product.images) && product.images.length > 0
+            ? product.images[0]
+            : 'products/default.jpg',
+          external_id: task.external_id,
+          external_url: task.external_url || null,
+          marketplace_id: task.marketplace_id,
+          marketplace_name: credential.name || marketplace.name || 'N/A',
+          marketplace_domain: marketplace.domain || null,
+          marketplace_status: marketplaceStatus || 'unknown',
+          publication_status: task.status,
+          published_stock: extractPublishedStock(payloadForMetrics),
+          published_price: extractPublishedPrice(payloadForMetrics),
+          published_at: formatDateTimeDisplay(task.published_at || task.createdAt || task.updatedAt),
+          published_at_iso: task.published_at || task.createdAt || task.updatedAt
+            ? new Date(task.published_at || task.createdAt || task.updatedAt).toISOString()
+            : null,
+          user_id: task.user_id,
+          company_id: task.company_id,
+          credential_id: task.credential_id,
+          last_synced_at: formatDateTimeDisplay(task.updatedAt),
+          last_synced_at_iso: task.updatedAt ? new Date(task.updatedAt).toISOString() : null,
+          live_verification: null
+        });
+      }
+
+      await LogRepository.create({
+        user_id: metadata.user_id,
+        action: 'publishing_task.published_products.list',
+        description: `Listado de productos publicados: ${publishedProducts.length} encontrados`,
+        ip_address: metadata.ip_address,
+        user_agent: metadata.user_agent,
+        status: 'success',
+        meta: {
+          company_id: companyId,
+          user_id: userId,
+          marketplace_id: marketplaceId,
+          product_id: productId,
+          start_date: startDate,
+          end_date: endDate,
+          count: publishedProducts.length
+        }
+      });
+
+      return res.status(200).json({
+        success: true,
+        count: publishedProducts.length,
+        status_summary: statusSummary,
+        published_products: publishedProducts
+      });
+    } catch (error) {
+      if (error.message === 'start_date_invalid' || error.message === 'end_date_invalid' || error.message === 'date_range_invalid') {
+        return res.status(400).json({
+          success: false,
+          msg: 'invalid_date_range',
+          error: error.message
+        });
+      }
+
+      logger.error(`Error listando productos publicados:\n ${error.message}`);
+      await LogRepository.create({
+        user_id: metadata?.user_id,
+        action: 'publishing_task.published_products.list',
+        description: `Error: ${error.message}`,
+        ip_address: metadata?.ip_address,
+        user_agent: metadata?.user_agent,
+        status: 'error',
+        meta: {
+          company_id: req.user?.company_id,
+          user_id: req.body?.user_id || req.user?.id,
+          marketplace_id: req.body?.marketplace_id || null,
+          product_id: req.body?.product_id || null
+        }
+      });
+
+      return res.status(500).json({
+        success: false,
+        msg: 'internal_error',
+        error: error.message
+      });
+    }
+  },
   // Agregar método destroy al controlador
 async destroy(req, res) {
   const userName = req.user?.name || 'Anonymous';

@@ -192,6 +192,7 @@ async function persistMercadoLibreSimulationLink({ productData, marketplace, cre
     product_id: productData.id,
     marketplace_id: marketplace.marketplace_id,
     credential_id: credential.id,
+    user_id: productData.user_id || null,
     company_id: warehouse?.company_id || productData?.company_id || null,
     branch_id: warehouse?.branch_id || productData?.branch_id || null,
     status: 'published',

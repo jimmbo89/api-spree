@@ -170,6 +170,30 @@ function buildWarningArtifacts({ marketplaceWarnings = [], hasWarningsFlag = fal
 
 class PublishingService {
 
+  static async resolveMercadoLibrePublicationContext({
+    productId,
+    marketplaceId,
+    userId = null,
+    credentialId = null
+  }) {
+    const latestTask = await ProductPublishingTaskRepository.findLatestPublishedByProductMarketplaceAndCredential(
+      productId,
+      marketplaceId,
+      credentialId,
+      userId
+    );
+
+    if (latestTask?.external_id) {
+      return {
+        external_id: latestTask.external_id,
+        source: 'task',
+        task: latestTask
+      };
+    }
+
+    return null;
+  }
+
   static async publishProducts(products, marketplace, warehouse, userId, companyId, mode, config, credentialId = null) {
     // ← NUEVO: credentialId opcional
     const success = [];
@@ -306,6 +330,20 @@ class PublishingService {
         };
       }
 
+      if (String(marketplace?.domain || '').toLowerCase().includes('mercadolibre')) {
+        const publicationContext = await this.resolveMercadoLibrePublicationContext({
+          productId: productData.id,
+          marketplaceId: marketplace.marketplace_id,
+          userId,
+          credentialId
+        });
+
+        if (publicationContext?.external_id) {
+          transformed.__ml_existing_item_id = publicationContext.external_id;
+          transformed.__ml_publication_source = publicationContext.source;
+        }
+      }
+
       // ✅ Fallback para family_name/title
       if (!transformed.family_name && !transformed.title) {
         transformed.title = productData.name || productData.title || `Producto ${productData.id}`;
@@ -435,14 +473,15 @@ class PublishingService {
         });
 
         if (finalSuccess) {
-          await ProductMarketplaceLinkRepository.upsert({
-            product_id: productData.id,
-            marketplace_id: marketplace.marketplace_id,
-            credential_id: credentialId,
-            company_id: warehouse.company_id,
-            branch_id: warehouse.branch_id,
-            status: status,
-            external_id: externalId,
+        await ProductMarketplaceLinkRepository.upsert({
+          product_id: productData.id,
+          marketplace_id: marketplace.marketplace_id,
+          credential_id: credentialId,
+          user_id: userId,
+          company_id: warehouse.company_id,
+          branch_id: warehouse.branch_id,
+          status: status,
+          external_id: externalId,
             external_url: result.data?.permalink,
             published_stock: normalizePublishedStock(transformed),
             published_payload: transformed,
@@ -576,6 +615,20 @@ static async republishProduct(task, marketplace, credential, userId) {
     }
     task.payload = effectivePayload;
 
+    if (String(marketplace?.domain || '').toLowerCase().includes('mercadolibre') && !task.payload.__ml_existing_item_id) {
+      const publicationContext = await PublishingService.resolveMercadoLibrePublicationContext({
+        productId: task.product_id,
+        marketplaceId: task.marketplace_id,
+        userId: task.user_id,
+        credentialId: task.credential_id
+      });
+
+      if (publicationContext?.external_id) {
+        task.payload.__ml_existing_item_id = publicationContext.external_id;
+        task.payload.__ml_publication_source = publicationContext.source;
+      }
+    }
+
     // 1. Obtener adapter correcto
     const adapter = PublishingAdapterFactory.getAdapter(
       marketplace,
@@ -676,6 +729,7 @@ static async republishProduct(task, marketplace, credential, userId) {
         product_id: task.product_id,
         marketplace_id: task.marketplace_id,
         credential_id: task.credential_id,
+        user_id: task.user_id,
         company_id: task.company_id,
         branch_id: task.branch_id,
         status,

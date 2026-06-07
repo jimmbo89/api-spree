@@ -12,11 +12,12 @@ const ProductMarketplaceLinkRepository = {
    * @param {number|null} credentialId - ID de la credencial (opcional, NUEVO)
    * @returns {Promise<Object|null>} Link encontrado o null
    */
-  async findByProductAndMarketplace(productId, marketplaceId, companyId = null, branchId = null, credentialId = null) {
+  async findByProductAndMarketplace(productId, marketplaceId, companyId = null, branchId = null, credentialId = null, userId = null) {
     const where = { product_id: productId, marketplace_id: marketplaceId };
     if (companyId) where.company_id = companyId;
     if (branchId) where.branch_id = branchId;
     if (credentialId) where.credential_id = credentialId;
+    if (userId) where.user_id = userId;
 
     return await ProductMarketplaceLink.findOne({ where });
   },
@@ -51,11 +52,12 @@ const ProductMarketplaceLinkRepository = {
    * @param {number|null} credentialId - ID de la credencial (opcional, NUEVO)
    * @returns {Promise<Array>} Lista de links encontrados
    */
-  async findByMarketplace(marketplaceId, companyId = null, branchId = null, credentialId = null) {
+  async findByMarketplace(marketplaceId, companyId = null, branchId = null, credentialId = null, userId = null) {
     const where = { marketplace_id: marketplaceId };
     if (companyId) where.company_id = companyId;
     if (branchId) where.branch_id = branchId;
     if (credentialId) where.credential_id = credentialId;
+    if (userId) where.user_id = userId;
 
     return await ProductMarketplaceLink.findAll({ where });
   },
@@ -69,11 +71,12 @@ const ProductMarketplaceLinkRepository = {
    * @param {number|null} credentialId - ID de la credencial (opcional, NUEVO)
    * @returns {Promise<Object|null>} Link encontrado o null
    */
-  async findByMarketplaceExternalId(marketplaceId, externalId, companyId = null, branchId = null, credentialId = null) {
+  async findByMarketplaceExternalId(marketplaceId, externalId, companyId = null, branchId = null, credentialId = null, userId = null) {
     const where = { marketplace_id: marketplaceId, external_id: externalId };
     if (companyId) where.company_id = companyId;
     if (branchId) where.branch_id = branchId;
     if (credentialId) where.credential_id = credentialId;
+    if (userId) where.user_id = userId;
     return await ProductMarketplaceLink.findOne({ where });
   },
 
@@ -85,11 +88,12 @@ const ProductMarketplaceLinkRepository = {
    * @param {number|null} credentialId - ID de la credencial (opcional, NUEVO)
    * @returns {Promise<Array>} Lista de links encontrados
    */
-  async findByProduct(productId, companyId = null, branchId = null, credentialId = null) {
+  async findByProduct(productId, companyId = null, branchId = null, credentialId = null, userId = null) {
     const where = { product_id: productId };
     if (companyId) where.company_id = companyId;
     if (branchId) where.branch_id = branchId;
     if (credentialId) where.credential_id = credentialId;
+    if (userId) where.user_id = userId;
     return await ProductMarketplaceLink.findAll({ where });
   },
 
@@ -101,18 +105,24 @@ const ProductMarketplaceLinkRepository = {
    * @param {number} credentialId - ID de la credencial específica
    * @returns {Promise<Object|null>} Link encontrado o null
    */
-  async findByExternalIdAndCredential(marketplaceId, externalId, credentialId) {
+  async findByExternalIdAndCredential(marketplaceId, externalId, credentialId, userId = null) {
     if (!marketplaceId || !externalId || !credentialId) {
       logger.warn(`[ProductMarketplaceLinkRepository] Parámetros inválidos para findByExternalIdAndCredential`);
       return null;
     }
 
+    const where = {
+      marketplace_id: marketplaceId,
+      external_id: externalId,
+      credential_id: credentialId
+    };
+
+    if (userId) {
+      where.user_id = userId;
+    }
+
     return await ProductMarketplaceLink.findOne({
-      where: {
-        marketplace_id: marketplaceId,
-        external_id: externalId,
-        credential_id: credentialId
-      },
+      where,
       include: [
         {
           model: MarketplaceCredential,

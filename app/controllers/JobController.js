@@ -235,7 +235,8 @@ async function refreshPausedMarketplaceItemStateForJob(job) {
         linkExternalId,
         task.company_id || null,
         task.branch_id || null,
-        task.credential_id || null
+        task.credential_id || null,
+        task.user_id || null
       );
 
       if (existingLink) {
@@ -255,6 +256,7 @@ async function refreshPausedMarketplaceItemStateForJob(job) {
           product_id: task.product_id,
           marketplace_id: task.marketplace_id,
           credential_id: task.credential_id,
+          user_id: task.user_id || null,
           ...linkScope,
           status: snapshot.status || 'unpublished',
           external_id: linkExternalId,
