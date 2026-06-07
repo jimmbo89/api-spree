@@ -1627,6 +1627,105 @@ class MercadoLibreAdapter extends BaseAdapter {
     }
   }
 
+  async updateItem({ itemId, status = undefined, price = undefined, available_quantity = undefined }) {
+    try {
+      if (!this.credential?.access_token) {
+        return { success: false, error: 'auth_required', auth_required: true };
+      }
+
+      const normalizedItemId = String(itemId || '').trim();
+      if (!normalizedItemId) {
+        return { success: false, error: 'missing_item_id' };
+      }
+
+      const payload = {};
+
+      if (status !== undefined && status !== null && String(status).trim() !== '') {
+        const normalizedStatus = String(status).trim().toLowerCase();
+        if (!['active', 'paused', 'closed'].includes(normalizedStatus)) {
+          return { success: false, error: 'invalid_status', details: { allowed_values: ['active', 'paused', 'closed'] } };
+        }
+        payload.status = normalizedStatus;
+      }
+
+      if (price !== undefined && price !== null && price !== '') {
+        const parsedPrice = Number(price);
+        if (!Number.isFinite(parsedPrice) || parsedPrice < 0) {
+          return { success: false, error: 'invalid_price' };
+        }
+        payload.price = parsedPrice;
+      }
+
+      if (available_quantity !== undefined && available_quantity !== null && available_quantity !== '') {
+        const parsedQuantity = Number(available_quantity);
+        if (!Number.isFinite(parsedQuantity) || parsedQuantity < 0 || !Number.isInteger(parsedQuantity)) {
+          return { success: false, error: 'invalid_available_quantity' };
+        }
+        payload.available_quantity = parsedQuantity;
+      }
+
+      if (Object.keys(payload).length === 0) {
+        return { success: false, error: 'no_changes' };
+      }
+
+      const verification = await verifyMercadoLibreItem({
+        itemId: normalizedItemId,
+        accessToken: this.credential.access_token
+      });
+
+      if (!verification?.item_found) {
+        return {
+          success: false,
+          error: verification?.error_code === 'item_not_found' ? 'item_not_found' : 'item_verification_failed',
+          status_code: verification?.http_status || 404,
+          details: verification
+        };
+      }
+
+      const currentStatus = String(verification.status || '').trim().toLowerCase();
+      if (currentStatus === 'closed') {
+        return {
+          success: false,
+          error: 'item_closed_relist_required',
+          status_code: 409,
+          details: verification
+        };
+      }
+
+      const response = await axios.put(
+        `https://api.mercadolibre.com/items/${normalizedItemId}`,
+        payload,
+        {
+          headers: {
+            Authorization: `Bearer ${this.credential.access_token}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json'
+          },
+          timeout: 30000
+        }
+      );
+
+      return {
+        success: true,
+        external_id: response.data?.id || normalizedItemId,
+        data: response.data,
+        requested_changes: payload,
+        current_status: currentStatus
+      };
+    } catch (error) {
+      logger.error('[MercadoLibreAdapter] Error actualizando item:', error.message);
+      if (error.response) {
+        return {
+          success: false,
+          error: error.response.data?.message || error.response.data?.error || `Error ${error.response.status} en MercadoLibre`,
+          status_code: error.response.status,
+          details: error.response.data || null
+        };
+      }
+      return { success: false, error: error.message || 'internal_error' };
+    }
+  }
+
   async getCategorySaleTermIds(categoryId, accessToken) {
     try {
       const categoryRes = await axios.get(`https://api.mercadolibre.com/categories/${categoryId}`, {

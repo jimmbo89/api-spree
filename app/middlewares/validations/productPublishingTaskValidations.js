@@ -73,6 +73,28 @@ const publishedProductsSchema = Joi.object({
   end_date: Joi.date().optional().allow(null)
 });
 
+const updateMercadoLibreItemSchema = Joi.object({
+  company_id: Joi.number().integer().positive().optional(),
+  user_id: Joi.number().integer().positive().optional(),
+  marketplace_id: Joi.number().integer().positive().required(),
+  credential_id: Joi.number().integer().positive().required(),
+  branch_id: Joi.number().integer().positive().optional(),
+  external_id: Joi.string().trim().min(1).max(255).required(),
+  status: Joi.string().valid('active', 'paused', 'closed').optional(),
+  price: Joi.number().precision(2).min(0).optional(),
+  available_quantity: Joi.number().integer().min(0).optional()
+})
+  .or('status', 'price', 'available_quantity')
+  .custom((value, helpers) => {
+    if (value.status === 'closed' && (value.price !== undefined || value.available_quantity !== undefined)) {
+      return helpers.error('any.custom', {
+        message: 'status_closed_cannot_combine_with_price_or_stock'
+      });
+    }
+
+    return value;
+  }, 'Mercado Libre item update validation');
+
 const listWithProductSchema = Joi.object({
   company_id: Joi.number().integer().positive().required(),
   user_id: Joi.number().integer().optional(),
@@ -128,6 +150,7 @@ module.exports = {
   listProductPublishingTaskWithProductSchema: listWithProductSchema,
   listDraftsByUserSchema: listDraftsByUserSchema, // ✅ Nuevo
   publishedProductsSchema: publishedProductsSchema,
+  updateMercadoLibreItemSchema: updateMercadoLibreItemSchema,
   retryProductPublishingTaskSchema: retrySchema,
   publishDraftSchema: publishDraftSchema // ✅ Nuevo
 };

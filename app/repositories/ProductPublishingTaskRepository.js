@@ -137,6 +137,43 @@ const ProductPublishingTaskRepository = {
     });
   },
 
+  async findLatestByExternalIdAndContext({
+    marketplaceId,
+    externalId,
+    companyId = null,
+    branchId = null,
+    credentialId = null,
+    userId = null
+  } = {}) {
+    if (!marketplaceId || !externalId) {
+      return null;
+    }
+
+    const where = {
+      marketplace_id: marketplaceId,
+      external_id: externalId,
+      status: {
+        [Op.in]: ['published', 'published_with_warnings']
+      }
+    };
+
+    if (companyId) where.company_id = companyId;
+    if (branchId) where.branch_id = branchId;
+    if (credentialId) where.credential_id = credentialId;
+    if (userId) where.user_id = userId;
+
+    return await ProductPublishingTask.findOne({
+      where,
+      include: [
+        { model: Product, as: 'product' },
+        { model: Marketplace, as: 'marketplace' },
+        { model: User, as: 'user' },
+        { model: MarketplaceCredential, as: 'credential' }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+  },
+
   async findLatestByProductAndMarketplace(productId, marketplaceId) {
     return await ProductPublishingTask.findOne({
       where: {

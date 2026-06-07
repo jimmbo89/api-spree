@@ -247,6 +247,25 @@ function extractMercadoLibreState(task) {
   return null;
 }
 
+function extractPublishedMarketplaceStatus(task, marketplaceLink) {
+  const stateSources = [
+    marketplaceLink?.status,
+    task?.error_details?.marketplace_item_state?.status,
+    task?.error_details?.status,
+    task?.api_response?.status,
+    task?.status
+  ];
+
+  for (const value of stateSources) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return 'unknown';
+}
+
 function classifyMarketplaceState(status) {
   const normalized = String(status || '').trim().toLowerCase();
 
@@ -263,6 +282,33 @@ function classifyMarketplaceState(status) {
   }
 
   return 'inactive';
+}
+
+function buildMercadoLibreItemStateSnapshotFromItem(item, source = 'manual_update') {
+  const status = String(item?.status || '').trim().toLowerCase() || null;
+  const subStatus = Array.isArray(item?.sub_status)
+    ? item.sub_status.map((value) => String(value).trim()).filter(Boolean)
+    : item?.sub_status
+      ? [String(item.sub_status).trim()].filter(Boolean)
+      : [];
+
+  return {
+    marketplace: 'mercado_libre',
+    status,
+    sub_status: subStatus,
+    sub_status_text: subStatus.join(', '),
+    verified: true,
+    item_found: true,
+    note: source,
+    attempts: 0,
+    updated_at: new Date().toISOString()
+  };
+}
+
+function normalizeMlEditRequestValue(value) {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'string' && value.trim() === '') return undefined;
+  return value;
 }
 
 function formatDateKey(dateValue) {
@@ -2263,7 +2309,15 @@ async retryBatch(req, res) {
         const marketplace = task.marketplace || {};
         const product = task.product || {};
         const credential = task.credential || {};
-        const marketplaceStatus = extractMercadoLibreState(task);
+        const marketplaceLink = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
+          task.marketplace_id,
+          task.external_id,
+          task.company_id || companyId || null,
+          task.branch_id || null,
+          task.credential_id || null,
+          task.user_id || null
+        );
+        const marketplaceStatus = extractPublishedMarketplaceStatus(task, marketplaceLink);
         const statusBucket = classifyMarketplaceState(marketplaceStatus);
 
         const apiResponsePayload = normalizePublishedPayload(task.api_response);
@@ -2362,6 +2416,260 @@ async retryBatch(req, res) {
     }
   },
   // Agregar método destroy al controlador
+  async updateMercadoLibreItem(req, res) {
+    logger.info(`${req.user?.name || 'Unknown'} - Actualiza item Mercado Libre`);
+    const metadata = getRequestMetadata(req);
+
+    try {
+      const {
+        company_id: bodyCompanyId,
+        user_id: bodyUserId,
+        marketplace_id: bodyMarketplaceId,
+        credential_id: bodyCredentialId,
+        branch_id: bodyBranchId,
+        external_id: bodyExternalId,
+        status,
+        price,
+        available_quantity
+      } = req.body || {};
+
+      const companyId = bodyCompanyId ? Number(bodyCompanyId) : req.user.company_id;
+      const userId = bodyUserId ? Number(bodyUserId) : req.user.id;
+      const marketplaceId = bodyMarketplaceId ? Number(bodyMarketplaceId) : null;
+      const credentialId = bodyCredentialId ? Number(bodyCredentialId) : null;
+      const branchId = bodyBranchId ? Number(bodyBranchId) : null;
+      const externalId = String(bodyExternalId || '').trim();
+
+      if (bodyCompanyId && !Number.isFinite(companyId)) {
+        return res.status(400).json({ success: false, msg: 'company_id_invalid' });
+      }
+      if (bodyUserId && !Number.isFinite(userId)) {
+        return res.status(400).json({ success: false, msg: 'user_id_invalid' });
+      }
+      if (!Number.isFinite(marketplaceId) || !marketplaceId) {
+        return res.status(400).json({ success: false, msg: 'marketplace_id_required' });
+      }
+      if (!Number.isFinite(credentialId) || !credentialId) {
+        return res.status(400).json({ success: false, msg: 'credential_id_required' });
+      }
+      if (!externalId) {
+        return res.status(400).json({ success: false, msg: 'external_id_required' });
+      }
+
+      const hasStatus = status !== undefined && status !== null && String(status).trim() !== '';
+      const hasPrice = price !== undefined && price !== null && String(price).trim() !== '';
+      const hasQuantity = available_quantity !== undefined && available_quantity !== null && String(available_quantity).trim() !== '';
+
+      if (!hasStatus && !hasPrice && !hasQuantity) {
+        return res.status(400).json({ success: false, msg: 'no_changes', error: 'Debe enviar al menos uno de: status, price, available_quantity' });
+      }
+
+      const marketplace = await MarketplaceRepository.findById(marketplaceId);
+      if (!marketplace) {
+        return res.status(404).json({ success: false, msg: 'marketplace_not_found' });
+      }
+
+      if (!String(marketplace.domain || '').toLowerCase().includes('mercadolibre')) {
+        return res.status(400).json({ success: false, msg: 'unsupported_marketplace', error: 'Este endpoint solo aplica para Mercado Libre' });
+      }
+
+      const credential = await MarketplaceCredentialRepository.findById(credentialId);
+      if (!credential) {
+        return res.status(404).json({ success: false, msg: 'credential_not_found' });
+      }
+
+      let refreshedCredential = credential;
+      try {
+        refreshedCredential = await ProductPublishingTaskController.refreshSingleCredential(
+          credential,
+          marketplace,
+          userId
+        );
+      } catch (refreshError) {
+        if (refreshError.message.startsWith('auth_required:')) {
+          return res.status(401).json({
+            success: false,
+            msg: 'auth_required',
+            auth_url: refreshError.message.replace('auth_required:', '')
+          });
+        }
+
+        throw refreshError;
+      }
+
+      const task = await ProductPublishingTaskRepository.findLatestByExternalIdAndContext({
+        marketplaceId,
+        externalId,
+        companyId,
+        branchId,
+        credentialId,
+        userId
+      });
+
+      if (!task) {
+        return res.status(404).json({
+          success: false,
+          msg: 'publication_not_found',
+          error: 'No se encontró una publicación local editable para ese external_id'
+        });
+      }
+
+      const adapter = new MercadoLibreAdapter(
+        marketplace.id,
+        companyId,
+        branchId,
+        userId,
+        refreshedCredential
+      );
+
+      const result = await adapter.updateItem({
+        itemId: externalId,
+        status: normalizeMlEditRequestValue(status),
+        price: normalizeMlEditRequestValue(price),
+        available_quantity: normalizeMlEditRequestValue(available_quantity)
+      });
+
+      if (!result.success) {
+        if (result.error === 'item_not_found') {
+          return res.status(404).json({
+            success: false,
+            msg: 'item_not_found',
+            error: 'El item ya no existe en Mercado Libre'
+          });
+        }
+
+        if (result.error === 'item_closed_relist_required') {
+          return res.status(409).json({
+            success: false,
+            msg: 'relist_required',
+            error: 'El item está cerrado. Para volver a publicarlo debes hacer relist.',
+            current_status: result.details?.status || 'closed',
+            relist_required: true
+          });
+        }
+
+        return res.status(result.status_code && result.status_code >= 400 && result.status_code < 600 ? result.status_code : 400).json({
+          success: false,
+          msg: 'update_failed',
+          error: result.error,
+          details: result.details || null
+        });
+      }
+
+      const updatedItem = result.data || {};
+      const marketplaceStateSnapshot = buildMercadoLibreItemStateSnapshotFromItem(updatedItem, 'manual_update');
+      const isActive = marketplaceStateSnapshot.status === 'active';
+      const shouldKeepWarning = marketplaceStateSnapshot.status && !isActive;
+      const currentDetails = task.error_details && typeof task.error_details === 'object'
+        ? task.error_details
+        : {};
+      const mergedDetails = {
+        ...currentDetails,
+        marketplace_item_state: marketplaceStateSnapshot,
+        manual_update: {
+          requested_changes: result.requested_changes,
+          updated_at: new Date().toISOString()
+        }
+      };
+
+      const taskUpdate = {
+        api_response: updatedItem,
+        error_message: shouldKeepWarning
+          ? `ML item status: ${marketplaceStateSnapshot.status}${marketplaceStateSnapshot.sub_status_text ? ` (${marketplaceStateSnapshot.sub_status_text})` : ''}`
+          : null,
+        error_details: shouldKeepWarning ? mergedDetails : null
+      };
+
+      if (isActive && task.status === 'published_with_warnings') {
+        taskUpdate.status = 'published';
+      } else if (shouldKeepWarning && task.status === 'published') {
+        taskUpdate.status = 'published_with_warnings';
+      }
+
+      await ProductPublishingTaskRepository.updateTask(task, taskUpdate);
+
+      const link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
+        marketplaceId,
+        externalId,
+        task.company_id || companyId,
+        task.branch_id || branchId || null,
+        credentialId,
+        userId
+      );
+
+      if (link) {
+        await link.update({
+          status: marketplaceStateSnapshot.status || link.status,
+          external_url: updatedItem.permalink || link.external_url || null,
+          published_stock: extractPublishedStock(updatedItem),
+          published_payload: updatedItem,
+          last_synced_at: new Date()
+        });
+      }
+
+      await LogRepository.create({
+        user_id: metadata.user_id,
+        action: 'marketplace_item.update',
+        description: `Item ML ${externalId} actualizado`,
+        ip_address: metadata.ip_address,
+        user_agent: metadata.user_agent,
+        status: 'success',
+        meta: {
+          company_id: companyId,
+          user_id: userId,
+          marketplace_id: marketplaceId,
+          credential_id: credentialId,
+          external_id: externalId,
+          changed_fields: Object.keys(result.requested_changes || {})
+        }
+      });
+
+      return res.status(200).json({
+        success: true,
+        msg: 'marketplace_item_updated',
+        changed_fields: Object.keys(result.requested_changes || {}),
+        external_id: result.external_id || externalId,
+        task_id: task.id,
+        product_id: task.product_id,
+        marketplace_id: marketplaceId,
+        marketplace_name: credential.name || marketplace.name || 'N/A',
+        marketplace_domain: marketplace.domain || null,
+        marketplace_status: marketplaceStateSnapshot.status || 'unknown',
+        publication_status: taskUpdate.status || task.status,
+        item: {
+          id: updatedItem.id || externalId,
+          status: updatedItem.status || marketplaceStateSnapshot.status || null,
+          price: updatedItem.price ?? null,
+          available_quantity: updatedItem.available_quantity ?? null,
+          permalink: updatedItem.permalink || null,
+          sub_status: updatedItem.sub_status || []
+        }
+      });
+    } catch (error) {
+      logger.error('Error actualizando item Mercado Libre:', error.message);
+      await LogRepository.create({
+        user_id: metadata?.user_id,
+        action: 'marketplace_item.update',
+        description: `Error: ${error.message}`,
+        ip_address: metadata?.ip_address,
+        user_agent: metadata?.user_agent,
+        status: 'error',
+        meta: {
+          company_id: req.body?.company_id || req.user?.company_id,
+          user_id: req.body?.user_id || req.user?.id,
+          marketplace_id: req.body?.marketplace_id || null,
+          credential_id: req.body?.credential_id || null,
+          external_id: req.body?.external_id || null
+        }
+      });
+
+      return res.status(500).json({
+        success: false,
+        msg: 'internal_error',
+        error: error.message
+      });
+    }
+  },
 async destroy(req, res) {
   const userName = req.user?.name || 'Anonymous';
   const task_id = req.body.id;
