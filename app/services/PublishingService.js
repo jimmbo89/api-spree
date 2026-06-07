@@ -253,7 +253,7 @@ class PublishingService {
     //logger.info(`datos llegados al servicio: \n productsData:\n ${JSON.stringify(productData)} \n marketplace: \n ${JSON.stringify(marketplace)} \n warehouse: \n ${JSON.stringify(warehouse)} \n userId: ${userId} \n crdentialId: \n ${credentialId}`);
     // ✅ Pasar credentialId al adapter factory
       const { batch_id, job_id } = options || {};
-    const adapter = PublishingAdapterFactory.getAdapter(
+      const adapter = PublishingAdapterFactory.getAdapter(
       marketplace,
       warehouse.company_id,
       warehouse.branch_id,
@@ -269,6 +269,8 @@ class PublishingService {
         marketplace_id: marketplace.marketplace_id,
         credential_id: credentialId,
         warehouse_id: warehouse.id,
+        company_id: warehouse.company_id || null,
+        branch_id: warehouse.branch_id || null,
         user_id: userId,
         date: new Date(),
         status: 'failed',
@@ -313,6 +315,8 @@ class PublishingService {
           marketplace_id: marketplace.marketplace_id,
           credential_id: credentialId,
           warehouse_id: warehouse.id,
+          company_id: warehouse.company_id || null,
+          branch_id: warehouse.branch_id || null,
           user_id: userId,
           date: new Date(),
           status: 'failed',
@@ -363,6 +367,8 @@ class PublishingService {
           marketplace_id: marketplace.marketplace_id,
           credential_id: credentialId,
           warehouse_id: warehouse.id,
+          company_id: warehouse.company_id || null,
+          branch_id: warehouse.branch_id || null,
           user_id: userId,
           date: new Date(),
           status: 'failed',
@@ -403,6 +409,8 @@ class PublishingService {
           marketplace_id: marketplace.marketplace_id,
           credential_id: credentialId,
           warehouse_id: warehouse.id,
+          company_id: warehouse.company_id || null,
+          branch_id: warehouse.branch_id || null,
           user_id: userId,
           date: new Date(),
           status: 'pending',
@@ -458,6 +466,8 @@ class PublishingService {
           marketplace_id: marketplace.marketplace_id,
           credential_id: credentialId,
           warehouse_id: warehouse.id,
+          company_id: warehouse.company_id || null,
+          branch_id: warehouse.branch_id || null,
           user_id: userId,
           date: new Date(),
           status: status,
@@ -513,6 +523,8 @@ class PublishingService {
         marketplace_id: marketplace.marketplace_id,
         credential_id: credentialId,
         warehouse_id: warehouse.id,
+        company_id: warehouse.company_id || null,
+        branch_id: warehouse.branch_id || null,
         user_id: userId,
         date: new Date(),
         status: 'failed',  // ← Error de publicación real
@@ -549,6 +561,8 @@ class PublishingService {
         marketplace_id: marketplace.marketplace_id,
         credential_id: credentialId,
         warehouse_id: warehouse.id,
+        company_id: warehouse.company_id || null,
+        branch_id: warehouse.branch_id || null,
         user_id: userId,
         date: new Date(),
         status: 'failed',

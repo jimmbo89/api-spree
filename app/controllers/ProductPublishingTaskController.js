@@ -117,6 +117,38 @@ function normalizePublishedPayload(rawPayload) {
   return parsed && typeof parsed === 'object' ? parsed : null;
 }
 
+function normalizeProductImages(images) {
+  if (!images) return [];
+
+  if (Array.isArray(images)) {
+    return images
+      .flatMap((image) => normalizeProductImages(image))
+      .filter((image) => image !== null && image !== undefined && image !== '');
+  }
+
+  if (typeof images === 'string') {
+    const trimmed = images.trim();
+    if (!trimmed) return [];
+
+    if ((trimmed.startsWith('[') && trimmed.endsWith(']')) || (trimmed.startsWith('{') && trimmed.endsWith('}'))) {
+      try {
+        return normalizeProductImages(JSON.parse(trimmed));
+      } catch (error) {
+        return [trimmed];
+      }
+    }
+
+    return [trimmed];
+  }
+
+  if (typeof images === 'object') {
+    const values = Object.values(images);
+    return values.flatMap((image) => normalizeProductImages(image));
+  }
+
+  return [];
+}
+
 function extractPublishedStock(payload) {
   if (!payload || typeof payload !== 'object') return null;
 
@@ -2237,6 +2269,7 @@ async retryBatch(req, res) {
         const apiResponsePayload = normalizePublishedPayload(task.api_response);
         const taskPayload = normalizePublishedPayload(task.payload);
         const payloadForMetrics = apiResponsePayload || taskPayload || {};
+        const productImages = normalizeProductImages(product.images);
 
         statusSummary.total += 1;
         statusSummary[statusBucket] = (statusSummary[statusBucket] || 0) + 1;
@@ -2246,9 +2279,10 @@ async retryBatch(req, res) {
           product_id: task.product_id,
           product_name: product.name || 'N/A',
           sku: product.sku || null,
-          product_image: Array.isArray(product.images) && product.images.length > 0
-            ? product.images[0]
+          product_image: productImages.length > 0
+            ? productImages[0]
             : 'products/default.jpg',
+          product_images: productImages,
           external_id: task.external_id,
           external_url: task.external_url || null,
           marketplace_id: task.marketplace_id,
