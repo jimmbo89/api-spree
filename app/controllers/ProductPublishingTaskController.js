@@ -760,9 +760,9 @@ async refreshExpiredTokens(credentials, userId) {
  * @param {number} userId - ID del usuario
  * @returns {Promise<Object>} - Credencial actualizada o original
  */
-async refreshSingleCredential(credential, marketplace, userId) {
-  try {
-    const mpName = marketplace?.domain || '';
+  async refreshSingleCredential(credential, marketplace, userId, forceRefresh = false) {
+    try {
+      const mpName = marketplace?.domain || '';
     
     // ✅ Solo marketplaces basados en token (no API key)
     if (!mpName.includes('mercadolibre')) {
@@ -777,7 +777,7 @@ async refreshSingleCredential(credential, marketplace, userId) {
     
     const hasNoToken = !credential.access_token;
     
-    if (!isExpired && !hasNoToken) {
+    if (!forceRefresh && !isExpired && !hasNoToken) {
       return credential; // Token válido
     }
     
@@ -2418,6 +2418,7 @@ async retryBatch(req, res) {
   // Agregar método destroy al controlador
   async updateMercadoLibreItem(req, res) {
     logger.info(`${req.user?.name || 'Unknown'} - Actualiza item Mercado Libre`);
+    logger.info(`Datos recibidos:\n ${JSON.stringify(req.body, null, 2)}`);
     const metadata = getRequestMetadata(req);
 
     try {
@@ -2478,24 +2479,33 @@ async retryBatch(req, res) {
         return res.status(404).json({ success: false, msg: 'credential_not_found' });
       }
 
-      let refreshedCredential = credential;
-      try {
-        refreshedCredential = await ProductPublishingTaskController.refreshSingleCredential(
-          credential,
-          marketplace,
-          userId
-        );
-      } catch (refreshError) {
-        if (refreshError.message.startsWith('auth_required:')) {
+      const preflightAdapter = new MercadoLibreAdapter(
+        marketplace.id,
+        companyId,
+        branchId,
+        userId,
+        credential
+      );
+
+      const credentialStatus = await preflightAdapter.ensureValidCredentials();
+      if (!credentialStatus?.valid) {
+        if (credentialStatus?.auth_required) {
           return res.status(401).json({
             success: false,
             msg: 'auth_required',
-            auth_url: refreshError.message.replace('auth_required:', '')
+            auth_url: credentialStatus.auth_url || null,
+            message: credentialStatus.message || 'Token expirado o inválido. Requiere reautorización.'
           });
         }
 
-        throw refreshError;
+        return res.status(400).json({
+          success: false,
+          msg: 'credential_invalid',
+          error: credentialStatus?.error || 'No se pudo validar la credencial'
+        });
       }
+
+      let refreshedCredential = (await MarketplaceCredentialRepository.findById(credentialId)) || credential;
 
       const task = await ProductPublishingTaskRepository.findLatestByExternalIdAndContext({
         marketplaceId,
@@ -2522,12 +2532,64 @@ async retryBatch(req, res) {
         refreshedCredential
       );
 
-      const result = await adapter.updateItem({
+      let result = await adapter.updateItem({
         itemId: externalId,
         status: normalizeMlEditRequestValue(status),
         price: normalizeMlEditRequestValue(price),
         available_quantity: normalizeMlEditRequestValue(available_quantity)
       });
+
+      logger.info(`[updateMercadoLibreItem] Respuesta Mercado Libre inicial:\n ${JSON.stringify(result, null, 2)}`);
+
+      if (!result.success && result.error === 'auth_required') {
+        try {
+          refreshedCredential = await ProductPublishingTaskController.refreshSingleCredential(
+            credential,
+            marketplace,
+            userId,
+            true
+          );
+
+          const retryAdapter = new MercadoLibreAdapter(
+            marketplace.id,
+            companyId,
+            branchId,
+            userId,
+            refreshedCredential
+          );
+
+          const retryResult = await retryAdapter.updateItem({
+            itemId: externalId,
+            status: normalizeMlEditRequestValue(status),
+            price: normalizeMlEditRequestValue(price),
+            available_quantity: normalizeMlEditRequestValue(available_quantity)
+          });
+
+          logger.info(`[updateMercadoLibreItem] Respuesta Mercado Libre reintento:\n ${JSON.stringify(retryResult, null, 2)}`);
+
+          if (retryResult.success) {
+            result = retryResult;
+          } else {
+            return res.status(retryResult.status_code && retryResult.status_code >= 400 && retryResult.status_code < 600 ? retryResult.status_code : 401).json({
+              success: false,
+              msg: retryResult.error === 'item_closed_relist_required' ? 'relist_required' : 'auth_required',
+              error: retryResult.error,
+              details: retryResult.details || null,
+              auth_url: retryResult.error === 'auth_required' ? (retryResult.auth_url || null) : null
+            });
+          }
+        } catch (retryRefreshError) {
+          if (retryRefreshError.message.startsWith('auth_required:')) {
+            return res.status(401).json({
+              success: false,
+              msg: 'auth_required',
+              auth_url: retryRefreshError.message.replace('auth_required:', '')
+            });
+          }
+
+          throw retryRefreshError;
+        }
+      }
 
       if (!result.success) {
         if (result.error === 'item_not_found') {
@@ -2545,6 +2607,16 @@ async retryBatch(req, res) {
             error: 'El item está cerrado. Para volver a publicarlo debes hacer relist.',
             current_status: result.details?.status || 'closed',
             relist_required: true
+          });
+        }
+
+        if (result.error === 'auth_required') {
+          return res.status(401).json({
+            success: false,
+            msg: 'auth_required',
+            error: result.error,
+            details: result.details || null,
+            auth_url: result.auth_url || null
           });
         }
 
@@ -2646,7 +2718,14 @@ async retryBatch(req, res) {
         }
       });
     } catch (error) {
-      logger.error('Error actualizando item Mercado Libre:', error.message);
+      logger.error('Error actualizando item Mercado Libre:');
+      logger.error(`Body:\n ${JSON.stringify(req.body, null, 2)}`);
+      logger.error(`Message: ${error.message}`);
+      logger.error(`Stack: ${error.stack || 'no_stack'}`);
+      if (error.response) {
+        logger.error(`Status: ${error.response.status}`);
+        logger.error(`Marketplace response:\n ${JSON.stringify(error.response.data, null, 2)}`);
+      }
       await LogRepository.create({
         user_id: metadata?.user_id,
         action: 'marketplace_item.update',
