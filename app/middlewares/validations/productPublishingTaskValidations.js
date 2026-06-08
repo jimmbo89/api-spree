@@ -69,8 +69,10 @@ const publishedProductsSchema = Joi.object({
   user_id: Joi.number().integer().positive().optional(),
   marketplace_id: Joi.number().integer().positive().optional(),
   product_id: Joi.number().integer().positive().optional(),
+  status: Joi.string().valid('active', 'paused', 'closed', 'under_review', 'deleted').optional().allow(null, ''),
   start_date: Joi.date().optional().allow(null),
-  end_date: Joi.date().optional().allow(null)
+  end_date: Joi.date().optional().allow(null),
+  use_manteiners: Joi.boolean().default(false).optional()
 });
 
 const updateMercadoLibreItemSchema = Joi.object({

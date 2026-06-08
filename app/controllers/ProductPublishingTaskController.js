@@ -2245,14 +2245,20 @@ async retryBatch(req, res) {
         user_id: bodyUserId,
         marketplace_id: bodyMarketplaceId,
         product_id: bodyProductId,
+        status: bodyStatus,
         start_date,
-        end_date
+        end_date,
+        use_manteiners: useManteiners = false
       } = req.body || {};
 
       const companyId = bodyCompanyId ? Number(bodyCompanyId) : req.user.company_id;
       const userId = bodyUserId ? Number(bodyUserId) : req.user.id;
       const marketplaceId = bodyMarketplaceId ? Number(bodyMarketplaceId) : null;
       const productId = bodyProductId ? Number(bodyProductId) : null;
+      const selectedStatus = bodyStatus ? String(bodyStatus).trim().toLowerCase() : null;
+      const useManteinersFlag = Boolean(useManteiners);
+
+      logger.info(`[publishedProducts] use_manteiners=${useManteinersFlag}`);
 
       if (bodyCompanyId && !Number.isFinite(companyId)) {
         return res.status(400).json({ success: false, msg: 'company_id_invalid' });
@@ -2265,6 +2271,59 @@ async retryBatch(req, res) {
       }
       if (bodyProductId && !Number.isFinite(productId)) {
         return res.status(400).json({ success: false, msg: 'product_id_invalid' });
+      }
+
+      let marketplaces = [];
+      let products = [];
+      let statusOptions = [];
+      if (useManteinersFlag) {
+        const credentials = await MarketplaceCredentialRepository.findByUserDecifrado(userId);
+        const marketplaceIds = [
+          ...new Set(
+            (Array.isArray(credentials) ? credentials : [])
+              .map((credential) => credential?.marketplace_id || credential?.marketplace?.id)
+              .filter(Boolean)
+              .map((id) => Number(id))
+              .filter((id) => Number.isFinite(id) && id > 0)
+          )
+        ];
+
+        if (marketplaceIds.length > 0) {
+          const marketplacesResult = await MarketplaceRepository.findByIds(marketplaceIds);
+          const marketplacesData = Array.isArray(marketplacesResult.marketplaces)
+            ? marketplacesResult.marketplaces
+            : [];
+
+          marketplaces = marketplacesData.map((marketplace) => ({
+            id: marketplace.id || null,
+            name: marketplace.name || 'N/A',
+            domain: marketplace.domain || null
+          }));
+        }
+
+        const companyProducts = await ProductRepository.findFiltered({
+          companyId,
+          userId: userId || undefined
+        });
+
+        products = (Array.isArray(companyProducts) ? companyProducts : []).map((product) => {
+          const productImages = normalizeProductImages(product.images);
+          return {
+            id: product.id || null,
+            name: product.name || 'N/A',
+            sku: product.sku || null,
+            image: productImages.length > 0 ? productImages[0] : 'products/default.jpg'
+          };
+        });
+
+        statusOptions = [
+          { id: 'active', name: 'Activa' },
+          { id: 'paused', name: 'Pausada' },
+          { id: 'under_review', name: 'En revisión' },
+          { id: 'closed', name: 'Cerrada' },
+          { id: 'deleted', name: 'Eliminada' },
+          { id: 'unknown', name: 'Desconocido' },
+        ];
       }
 
       const { startDate, endDate } = normalizeDateRange(start_date, end_date);
@@ -2319,6 +2378,11 @@ async retryBatch(req, res) {
         );
         const marketplaceStatus = extractPublishedMarketplaceStatus(task, marketplaceLink);
         const statusBucket = classifyMarketplaceState(marketplaceStatus);
+        const normalizedMarketplaceStatus = String(marketplaceStatus || '').trim().toLowerCase();
+
+        if (selectedStatus && normalizedMarketplaceStatus !== selectedStatus) {
+          continue;
+        }
 
         const apiResponsePayload = normalizePublishedPayload(task.api_response);
         const taskPayload = normalizePublishedPayload(task.payload);
@@ -2380,6 +2444,7 @@ async retryBatch(req, res) {
       return res.status(200).json({
         success: true,
         count: publishedProducts.length,
+        ...(useManteinersFlag ? { marketplaces, marketplaces_count: marketplaces.length, products, products_count: products.length, statusOptions } : {}),
         status_summary: statusSummary,
         published_products: publishedProducts
       });
