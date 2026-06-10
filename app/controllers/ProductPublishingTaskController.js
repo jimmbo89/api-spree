@@ -839,6 +839,8 @@ async refreshExpiredTokens(credentials, userId) {
     logger.info(`[refreshSingleCredential] 🔑 Token expirado/ausente para credential ${credential.id}. Renovando...`);
 
     // ✅ Crear adapter y renovar
+    credential.marketplace = credential.marketplace || marketplace;
+
     const adapter = PublishingAdapterFactory.getAdapter(
       marketplace,
       null, // companyId
@@ -852,6 +854,20 @@ async refreshExpiredTokens(credentials, userId) {
       return credential;
     }
     
+    if (forceRefresh && credential.refresh_token && typeof adapter.refreshAccessToken === 'function') {
+      adapter.credential = credential;
+      await adapter.refreshAccessToken();
+      logger.info(`[refreshSingleCredential] Token forzado renovado exitosamente para credential ${credential.id}`);
+
+      const updated = await MarketplaceCredentialRepository.findById(credential.id);
+      if (updated) {
+        updated.marketplace = marketplace;
+        return updated;
+      }
+
+      return adapter.credential || credential;
+    }
+
     const status = await adapter.ensureValidCredentials();
     
     if (status.valid) {

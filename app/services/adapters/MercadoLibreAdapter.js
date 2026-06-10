@@ -1629,6 +1629,17 @@ class MercadoLibreAdapter extends BaseAdapter {
 
   async updateItem({ itemId, status = undefined, price = undefined, available_quantity = undefined }) {
     try {
+      const credentialStatus = await this.ensureValidCredentials();
+      if (!credentialStatus?.valid) {
+        return {
+          success: false,
+          error: credentialStatus?.auth_required ? 'auth_required' : (credentialStatus?.error || 'credential_invalid'),
+          auth_required: !!credentialStatus?.auth_required,
+          auth_url: credentialStatus?.auth_url || null,
+          details: credentialStatus
+        };
+      }
+
       if (!this.credential?.access_token) {
         return { success: false, error: 'auth_required', auth_required: true };
       }
@@ -1715,6 +1726,16 @@ class MercadoLibreAdapter extends BaseAdapter {
     } catch (error) {
       logger.error('[MercadoLibreAdapter] Error actualizando item:', error.message);
       if (error.response) {
+        if (error.response.status === 401) {
+          return {
+            success: false,
+            error: 'auth_required',
+            auth_required: true,
+            status_code: error.response.status,
+            details: error.response.data || null
+          };
+        }
+
         return {
           success: false,
           error: error.response.data?.message || error.response.data?.error || `Error ${error.response.status} en MercadoLibre`,
