@@ -1036,11 +1036,25 @@ async function processFalabellaWebhook(payload, options = {}) {
     return;
   }
 
-  if (normalizedTopic && !FB_ORDER_TOPICS.has(normalizedTopic)) {
-    logger.info(`[FB Webhook] Evento no-order recibido: ${topicRaw}`);
+  if (normalizedTopic && FB_ORDER_TOPICS.has(normalizedTopic)) {
+    await processFalabellaOrderWebhook(payload, options);
     return;
   }
 
+  if (normalizedTopic && FB_PRODUCT_TOPICS.has(normalizedTopic)) {
+    await processFalabellaProductWebhook(payload, options);
+    return;
+  }
+
+  if (normalizedTopic && FB_FEED_TOPICS.has(normalizedTopic)) {
+    logger.info(`[FB Webhook] Evento de feed recibido: ${topicRaw}`);
+    return;
+  }
+
+  logger.info(`[FB Webhook] Evento ignorado: ${topicRaw}`);
+}
+
+async function processFalabellaOrderWebhook(payload, options = {}) {
   const orderId = extractFalabellaOrderId(payload);
   if (!orderId) {
     logger.warn(`[FB Webhook] No se pudo extraer OrderId del payload`);
@@ -1048,7 +1062,7 @@ async function processFalabellaWebhook(payload, options = {}) {
   }
 
   const resource = payload?.resource || `orders/${orderId}`;
-  const topic = topicRaw || "onOrderCreated";
+  const topic = payload?.event || payload?.event_type || payload?.topic || payload?.type || "onOrderCreated";
 
   const eventResult = await MarketplaceWebhookEventRepository.createUnique({
     marketplace: FB_MARKETPLACE_KEY,
@@ -1088,6 +1102,106 @@ async function processFalabellaWebhook(payload, options = {}) {
     });
     logger.error(
       `[FB Webhook] ${isTimeout ? "Timeout" : "Error"} procesando evento: ${error.message}`
+    );
+  }
+}
+
+async function processFalabellaProductWebhook(payload, options = {}) {
+  const sellerSku = extractFalabellaSellerSku(payload);
+  if (!sellerSku) {
+    logger.warn(`[FB Webhook] No se pudo extraer SellerSku del payload de producto`);
+    return;
+  }
+
+  const resource = payload?.resource || `products/${sellerSku}`;
+  const topic = payload?.event || payload?.event_type || payload?.topic || payload?.type || "onProductUpdated";
+  const eventResult = await MarketplaceWebhookEventRepository.createUnique({
+    marketplace: FB_MARKETPLACE_KEY,
+    topic,
+    resource,
+    event_id: buildFalabellaEventId(payload, resource),
+    external_id: String(sellerSku),
+    marketplace_user_id: getFalabellaSellerId(payload),
+    status: "received",
+    payload
+  });
+
+  if (!eventResult.created) {
+    logger.info(`[FB Webhook] Duplicado ignorado: ${resource}`);
+    return;
+  }
+
+  const event = eventResult.record;
+  const timeoutMs =
+    Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+      ? options.timeoutMs
+      : FB_WEBHOOK_TIMEOUT_MS;
+
+  try {
+    const credential = await resolveFalabellaCredential(payload);
+    if (!credential || !credential.seller_email || !credential.api_key) {
+      await MarketplaceWebhookEventRepository.updateById(event.id, {
+        status: "error",
+        error_message: "credential_not_found",
+        processed_at: new Date()
+      });
+      logger.warn(`[FB Webhook] Credencial Falabella no encontrada para producto ${sellerSku}`);
+      return;
+    }
+
+    const fetchPromise = fetchFalabellaProductWithRetry(sellerSku, credential);
+    const product = await withTimeout(fetchPromise, timeoutMs);
+
+    if (!product) {
+      await MarketplaceWebhookEventRepository.updateById(event.id, {
+        status: "error",
+        error_message: "product_not_found",
+        processed_at: new Date()
+      });
+      logger.warn(`[FB Webhook] Producto ${sellerSku} no encontrado en Falabella`);
+      return;
+    }
+
+    const effectiveProduct = product.__falabella_not_found
+      ? {
+          SellerSku: sellerSku,
+          BusinessUnits: {
+            BusinessUnit: {
+              Status: "deleted",
+              Stock: 0,
+              Price: 0
+            }
+          }
+        }
+      : product;
+
+    const persistResult = await persistFalabellaProductState({
+      credential,
+      sellerSku,
+      product: effectiveProduct,
+      payload
+    });
+
+    await MarketplaceWebhookEventRepository.updateById(event.id, {
+      status: "processed",
+      processed_at: new Date(),
+      error_message: null
+    });
+
+    logger.info(
+      `[FB Webhook] Producto ${sellerSku} sincronizado: ${persistResult.snapshot.status || 'unknown'}${persistResult.snapshot.qc_status ? ` (${persistResult.snapshot.qc_status})` : ''}`
+    );
+  } catch (error) {
+    const isTimeout = error?.message === "timeout";
+    await MarketplaceWebhookEventRepository.updateById(event.id, {
+      status: isTimeout ? "timeout" : "error",
+      error_message: isTimeout
+        ? `timeout:${timeoutMs}ms`
+        : `processing_error:${error?.message || "unknown"}`,
+      processed_at: new Date()
+    });
+    logger.error(
+      `[FB Webhook] ${isTimeout ? "Timeout" : "Error"} procesando producto ${sellerSku}: ${error.message}`
     );
   }
 }
@@ -1400,6 +1514,252 @@ async function fetchFalabellaOrder(orderId, credential) {
     logger.error(`[FB Webhook] Error obteniendo orden ${orderId}: ${error.message}`);
     return null;
   }
+}
+
+async function fetchFalabellaProductWithRetry(sellerSku, credential) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= FB_FETCH_RETRY_MAX; attempt++) {
+    try {
+      const response = await fetchFalabellaProduct(sellerSku, credential);
+      if (response) return response;
+      lastError = new Error("empty_response");
+    } catch (error) {
+      lastError = error;
+    }
+
+    if (attempt < FB_FETCH_RETRY_MAX) {
+      const delayMs = Math.min(
+        FB_FETCH_RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1),
+        FB_FETCH_RETRY_MAX_DELAY_MS
+      );
+      logger.warn(
+        `[FB Webhook] Intento ${attempt}/${FB_FETCH_RETRY_MAX} fallido para SKU ${sellerSku}. Reintentando en ${delayMs}ms...`
+      );
+      await sleep(delayMs);
+    }
+  }
+
+  logger.error(
+    `[FB Webhook] Error obteniendo producto ${sellerSku} despues de ${FB_FETCH_RETRY_MAX} intentos: ${lastError?.message || "unknown"}`
+  );
+  return null;
+}
+
+async function fetchFalabellaProduct(sellerSku, credential) {
+  try {
+    const timestamp = timestampMinus03();
+    const params = {
+      Action: "GetProducts",
+      Format: "JSON",
+      SellerSku: String(sellerSku),
+      Timestamp: timestamp,
+      UserID: credential.seller_email.trim(),
+      Version: FB_API_VERSION
+    };
+
+    const url = buildFalabellaSignedUrl(params, credential.api_key);
+    const response = await axios.get(url, {
+      timeout: 15000,
+      headers: {
+        "User-Agent": FB_USER_AGENT
+      }
+    });
+
+    const data = response.data;
+    if (typeof data === "string") {
+      try {
+        return JSON.parse(data);
+      } catch (error) {
+        logger.error(`[FB Webhook] Respuesta no JSON para SKU ${sellerSku}`);
+        return null;
+      }
+    }
+
+    return data;
+  } catch (error) {
+    if (error?.response?.status === 404) {
+      return { __falabella_not_found: true, seller_sku: String(sellerSku) };
+    }
+
+    logger.error(`[FB Webhook] Error obteniendo producto ${sellerSku}: ${error.message}`);
+    return null;
+  }
+}
+
+function extractFalabellaSellerSku(payload) {
+  const candidates = [
+    payload?.SellerSku,
+    payload?.seller_sku,
+    payload?.sellerSku,
+    payload?.SKU,
+    payload?.sku,
+    payload?.data?.SellerSku,
+    payload?.data?.seller_sku,
+    payload?.data?.sellerSku,
+    payload?.data?.SKU,
+    payload?.data?.sku,
+    payload?.product?.SellerSku,
+    payload?.product?.seller_sku,
+    payload?.product?.sku
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = String(candidate || "").trim();
+    if (normalized) return normalized;
+  }
+
+  const resource = String(payload?.resource || "").trim();
+  const resourceMatch = resource.match(/\/products\/([^/?#]+)/i);
+  if (resourceMatch?.[1]) {
+    return resourceMatch[1];
+  }
+
+  return null;
+}
+
+function normalizeFalabellaProductStatusValue(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized === "live") return "active";
+  return normalized;
+}
+
+function buildFalabellaProductStateSnapshot({ product, payload, source = "webhook" }) {
+  const businessUnit = Array.isArray(product?.BusinessUnits?.BusinessUnit)
+    ? product.BusinessUnits.BusinessUnit[0]
+    : product?.BusinessUnits?.BusinessUnit || {};
+  const status = normalizeFalabellaProductStatusValue(
+    businessUnit?.Status || product?.Status || product?.status || null
+  );
+  const qcStatus = normalizeFalabellaProductStatusValue(
+    product?.QCStatus || product?.qc_status || null
+  );
+
+  return {
+    marketplace: FB_MARKETPLACE_KEY,
+    status,
+    qc_status: qcStatus,
+    qc_status_text: qcStatus,
+    stock: parseInt(businessUnit?.Stock || product?.stock || 0, 10) || 0,
+    price: parseFloat(businessUnit?.Price || product?.price || 0) || 0,
+    verified: true,
+    item_found: true,
+    note: source,
+    updated_at: new Date().toISOString(),
+    webhook: {
+      topic: payload?.topic || payload?.event || payload?.event_type || null,
+      resource: payload?.resource || null,
+      event_id: payload?.event_id || payload?.EventId || payload?.eventId || null
+    }
+  };
+}
+
+async function persistFalabellaProductState({ credential, sellerSku, product, payload }) {
+  const marketplaceId = credential?.marketplace_id || null;
+  const snapshot = buildFalabellaProductStateSnapshot({ product, payload });
+
+  logger.info(
+    `[FB Webhook] Producto ${sellerSku} verificado: ${JSON.stringify({
+      topic: payload?.topic || null,
+      resource: payload?.resource || null,
+      snapshot: {
+        sku: sellerSku,
+        status: snapshot.status,
+        qc_status: snapshot.qc_status,
+        stock: snapshot.stock,
+        price: snapshot.price
+      }
+    })}`
+  );
+
+  let link = await ProductMarketplaceLinkRepository.findByExternalIdAndCredential(
+    marketplaceId,
+    String(sellerSku),
+    credential?.id || null,
+    payload?.user_id != null ? String(payload.user_id) : null
+  );
+
+  if (!link) {
+    link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
+      marketplaceId,
+      String(sellerSku),
+      null,
+      null,
+      credential?.id || null,
+      payload?.user_id != null ? String(payload.user_id) : null
+    );
+  }
+
+  let task = await ProductPublishingTaskRepository.findLatestByExternalIdAndContext({
+    marketplaceId,
+    externalId: String(sellerSku),
+    companyId: link?.company_id || null,
+    branchId: link?.branch_id || null,
+    credentialId: credential?.id || null
+  });
+
+  if (!task && link?.company_id) {
+    task = await ProductPublishingTaskRepository.findLatestByExternalIdAndContext({
+      marketplaceId,
+      externalId: String(sellerSku),
+      companyId: link.company_id,
+      branchId: link.branch_id || null,
+      credentialId: credential?.id || null
+    });
+  }
+
+  const isActive = snapshot.status === "active";
+  const isDeleted = snapshot.status === "deleted";
+
+  const updatePayload = {
+    status: isDeleted ? "deleted" : (snapshot.status || link?.status || "unpublished"),
+    external_url: product?.Url || product?.url || link?.external_url || null,
+    published_stock: snapshot.stock,
+    published_payload: product,
+    last_synced_at: new Date()
+  };
+
+  if (link) {
+    await link.update(updatePayload);
+  }
+
+  if (task) {
+    const currentDetails = task.error_details && typeof task.error_details === "object"
+      ? task.error_details
+      : {};
+    const mergedDetails = {
+      ...currentDetails,
+      marketplace_item_state: snapshot,
+      terminal_state: isDeleted ? "deleted" : null
+    };
+
+    const taskUpdate = {
+      api_response: product || task.api_response || null,
+      error_message: isActive
+        ? null
+        : (isDeleted
+          ? "Falabella item eliminado"
+          : `Falabella item status: ${snapshot.status}${snapshot.qc_status ? ` (${snapshot.qc_status})` : ''}`),
+      error_details: isActive ? null : mergedDetails
+    };
+
+    if (isActive && task.status === "published_with_warnings") {
+      taskUpdate.status = "published";
+    } else if (!isActive && !isDeleted && task.status === "published") {
+      taskUpdate.status = "published_with_warnings";
+    }
+
+    await task.update(taskUpdate);
+  }
+
+  return {
+    snapshot,
+    linkUpdated: !!link,
+    taskUpdated: !!task,
+    linkId: link?.id || null,
+    taskId: task?.id || null
+  };
 }
 
 async function fetchFalabellaOrdersV2({

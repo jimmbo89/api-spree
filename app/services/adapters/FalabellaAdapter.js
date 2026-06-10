@@ -300,6 +300,70 @@ class FalabellaAdapter extends BaseAdapter {
     return parsedFeed;
   }
 
+  async fetchProductsBySellerSku(sellerSku) {
+    const normalizedSku = String(sellerSku || '').trim();
+    if (!normalizedSku) {
+      return [];
+    }
+
+    const params = {
+      Action: 'GetProducts',
+      Filter: 'all',
+      Format: 'JSON',
+      SellerSku: normalizedSku,
+      Timestamp: this.timestampMinus03(),
+      UserID: this.credential.seller_email.trim(),
+      Version: '1.0'
+    };
+
+    const { canonicalQuery, signatureEncoded } = this.buildSignedQuery(params);
+    const apiUrl = `https://sellercenter-api.falabella.com?${canonicalQuery}&Signature=${signatureEncoded}`;
+    const response = await axios.get(apiUrl, { timeout: 15000 });
+
+    const data = response.data;
+    const body = data?.SuccessResponse?.Body
+      || data?.successResponse?.Body
+      || data?.Body
+      || data?.body
+      || data;
+
+    const rawProducts = body?.Products?.Product
+      || body?.Product
+      || body?.products?.product
+      || null;
+
+    if (!rawProducts) {
+      return [];
+    }
+
+    const products = Array.isArray(rawProducts) ? rawProducts : [rawProducts];
+    return products
+      .filter((product) => String(product?.SellerSku || product?.SKU || '').trim() === normalizedSku)
+      .map((product) => ({
+        sku: String(product?.SellerSku || product?.SKU || normalizedSku).trim(),
+        name: product?.Name || null,
+        brand: product?.Brand || null,
+        primaryCategory: product?.PrimaryCategory || null,
+        productId: product?.ProductId || null,
+        status: Array.isArray(product?.BusinessUnits?.BusinessUnit)
+          ? product.BusinessUnits.BusinessUnit[0]?.Status || null
+          : product?.BusinessUnits?.BusinessUnit?.Status || null,
+        raw: product
+      }));
+  }
+
+  async findExistingProductBySellerSku(sellerSku) {
+    try {
+      const products = await this.fetchProductsBySellerSku(sellerSku);
+      return products[0] || null;
+    } catch (error) {
+      logger.warn(
+        `[FalabellaAdapter] No se pudo verificar si el SKU ${String(sellerSku || '').trim()} ya existe: ${error.message}`
+      );
+      return null;
+    }
+  }
+
   normalizeFeedMessages(items) {
     if (!items) return [];
 
@@ -351,7 +415,7 @@ class FalabellaAdapter extends BaseAdapter {
     return { feed: lastFeed, timedOut: true };
   }
 
-  buildFeedDrivenResult({ transformedProduct, requestId, feed, timedOut }) {
+  buildFeedDrivenResult({ transformedProduct, requestId, feed, timedOut, action = 'ProductCreate' }) {
     const feedStatus = feed?.Status || 'unknown';
     const warnings = this.normalizeFeedMessages(feed?.FeedWarnings);
     const errors = this.normalizeFeedMessages(feed?.FeedErrors);
@@ -363,7 +427,7 @@ class FalabellaAdapter extends BaseAdapter {
       request_id: requestId,
       feed_id: feed?.FeedID || requestId,
       feed_status: feedStatus,
-      action: feed?.Action || 'ProductCreate',
+      action: feed?.Action || action || 'ProductCreate',
       source: feed?.Source || 'api',
       total_records: totalRecords,
       processed_records: processedRecords,
@@ -966,6 +1030,15 @@ buildProductXml(product) {
       };
     }
 
+    // ✅ Verificar si el producto ya existe para actualizarlo por SellerSku
+    const existingProduct = await this.findExistingProductBySellerSku(transformedProduct.sku);
+    const action = existingProduct ? 'ProductUpdate' : 'ProductCreate';
+    if (existingProduct) {
+      logger.info(
+        `[FalabellaAdapter] SKU existente detectado (${existingProduct.sku}) -> se usará ${action}`
+      );
+    }
+
     // ✅ Construir XML payload
     const xmlPayload = this.buildProductXml(transformedProduct);
     
@@ -974,7 +1047,7 @@ buildProductXml(product) {
 
     // ✅ Parámetros para firma (orden alfabético)
     const params = {
-      Action: 'ProductCreate',
+      Action: action,
       Format: 'XML',
       Timestamp: timestamp,
       UserID: this.credential.seller_email.trim(),
@@ -1005,7 +1078,7 @@ buildProductXml(product) {
     logger.info(`[FalabellaAdapter] 👤 Headers:`);
     logger.info(JSON.stringify(headers, null, 2));
 
-    logger.info(`[FalabellaAdapter] 📦 XML Payload: \n ${JSON.stringify(xmlPayload)}`);
+    logger.info(`[FalabellaAdapter] 📦 XML Payload (${action}): \n ${JSON.stringify(xmlPayload)}`);
 
     // ✅ Enviar solicitud POST
     const response = await axios.post(apiUrl, xmlPayload, {
@@ -1036,7 +1109,8 @@ buildProductXml(product) {
           transformedProduct,
           requestId,
           feed,
-          timedOut
+          timedOut,
+          action: 'ProductCreate'
         });
       } else if (responseBody.includes('<ErrorResponse>')) {
 
@@ -1085,7 +1159,8 @@ buildProductXml(product) {
           transformedProduct,
           requestId: duplicatedFeedId,
           feed,
-          timedOut
+          timedOut,
+          action: 'ProductCreate'
         });
 
       } catch (feedErr) {
@@ -1106,11 +1181,11 @@ buildProductXml(product) {
   };
 } else {
         logger.warn('[FalabellaAdapter] ⚠️ Respuesta inesperada:', responseBody.substring(0, 300));
-        return { 
-          success: false, 
-          error: 'Respuesta inesperada de API de Falabella',
-          payload: xmlPayload
-        };
+      return { 
+        success: false, 
+        error: 'Respuesta inesperada de API de Falabella',
+        payload: xmlPayload
+      };
       }
 
     } catch (err) {
@@ -1135,6 +1210,171 @@ buildProductXml(product) {
         success: false, 
         error: errorMsg,
         details: err.response?.data || err.message
+      };
+    }
+  }
+
+  buildFalabellaUpdateXml({ sellerSku, status = undefined, price = undefined, available_quantity = undefined }) {
+    const sku = String(sellerSku || '').trim();
+    if (!sku) {
+      return null;
+    }
+
+    const operatorCode = this.getFalabellaOperatorCode();
+    let businessUnitXml = `\n      <BusinessUnit>\n        <OperatorCode>${this.escapeXml(operatorCode)}</OperatorCode>`;
+
+    if (status !== undefined && status !== null && String(status).trim() !== '') {
+      const normalizedStatus = String(status).trim().toLowerCase();
+      businessUnitXml += `\n        <Status>${this.escapeXml(normalizedStatus)}</Status>`;
+    }
+
+    if (price !== undefined && price !== null && String(price).trim() !== '') {
+      businessUnitXml += `\n        <Price>${Number(price).toFixed(2)}</Price>`;
+    }
+
+    if (available_quantity !== undefined && available_quantity !== null && String(available_quantity).trim() !== '') {
+      const quantity = Math.max(0, Math.round(Number(available_quantity)));
+      businessUnitXml += `\n        <Stock>${quantity}</Stock>`;
+    }
+
+    businessUnitXml += `\n      </BusinessUnit>`;
+
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<Request>
+  <Product>
+    <SellerSku>${this.escapeXml(sku)}</SellerSku>
+    <BusinessUnits>${businessUnitXml}
+    </BusinessUnits>
+    <ProductData />
+  </Product>
+</Request>`;
+  }
+
+  getFalabellaOperatorCode() {
+    const code = String(this.credential?.country || '').trim().toLowerCase();
+    if (code === 'pe') return 'fape';
+    if (code === 'co') return 'faco';
+    if (code === 'mx') return 'fame';
+    if (String(this.marketplace?.domain || '').includes('falabella.com.pe')) return 'fape';
+    if (String(this.marketplace?.domain || '').includes('falabella.com.co')) return 'faco';
+    return 'facl';
+  }
+
+  async updateItem({ sellerSku, status = undefined, price = undefined, available_quantity = undefined }) {
+    try {
+      const credentialStatus = await this.ensureValidCredentials();
+      if (!credentialStatus.valid) {
+        return credentialStatus;
+      }
+
+      const normalizedSku = String(sellerSku || '').trim();
+      if (!normalizedSku) {
+        return { success: false, error: 'missing_seller_sku' };
+      }
+
+      const hasStatus = status !== undefined && status !== null && String(status).trim() !== '';
+      const hasPrice = price !== undefined && price !== null && String(price).trim() !== '';
+      const hasQuantity = available_quantity !== undefined && available_quantity !== null && String(available_quantity).trim() !== '';
+
+      if (!hasStatus && !hasPrice && !hasQuantity) {
+        return { success: false, error: 'no_changes' };
+      }
+
+      const normalizedStatus = hasStatus ? String(status).trim().toLowerCase() : undefined;
+      if (normalizedStatus && !['active', 'inactive'].includes(normalizedStatus)) {
+        return {
+          success: false,
+          error: 'invalid_status',
+          details: { allowed_values: ['active', 'inactive'] }
+        };
+      }
+
+      const xmlPayload = this.buildFalabellaUpdateXml({
+        sellerSku: normalizedSku,
+        status: normalizedStatus,
+        price: hasPrice ? Number(price) : undefined,
+        available_quantity: hasQuantity ? Number(available_quantity) : undefined
+      });
+
+      const timestamp = this.timestampMinus03();
+      const params = {
+        Action: 'ProductUpdate',
+        Format: 'XML',
+        Timestamp: timestamp,
+        UserID: this.credential.seller_email.trim(),
+        Version: '1.0'
+      };
+
+      const { canonicalQuery, signatureHex, signatureEncoded } = this.buildSignedQuery(params);
+      const urlQueryString = `${canonicalQuery}&Signature=${signatureEncoded}`;
+      const apiUrl = `https://sellercenter-api.falabella.com?${urlQueryString}`;
+
+      logger.info(`[FalabellaAdapter] 🔍 String to sign (ENCODEADO):`);
+      logger.info(canonicalQuery);
+      logger.info(`[FalabellaAdapter] ✅ Firma generada (HEX): ${signatureHex}`);
+      logger.info(`[FalabellaAdapter] 📦 XML Payload (ProductUpdate): \n ${JSON.stringify(xmlPayload)}`);
+
+      const headers = {
+        'Content-Type': 'application/xml; charset=UTF-8',
+        'User-Agent': `${this.credential.seller_id || 'SC72B9D'}/Node/${process.versions.node}/PROPIA/FACL`
+      };
+
+      const response = await axios.post(apiUrl, xmlPayload, {
+        headers,
+        timeout: 15000
+      });
+
+      const responseBody = response.data;
+      if (typeof responseBody === 'string' && responseBody.includes('<SuccessResponse>')) {
+        const requestIdMatch = responseBody.match(/<RequestId>([^<]+)<\/RequestId>/);
+        const requestId = requestIdMatch ? requestIdMatch[1] : null;
+
+        if (!requestId) {
+          return {
+            success: false,
+            error: 'Falabella respondió éxito técnico, pero no devolvió RequestId para validar el feed',
+            details: { error_code: 'missing_request_id' }
+          };
+        }
+
+        const { feed, timedOut } = await this.pollFeedStatus(requestId);
+        return this.buildFeedDrivenResult({
+          transformedProduct: {
+            sku: normalizedSku,
+            PrimaryCategory: null,
+            categoryName: null
+          },
+          requestId,
+          feed,
+          timedOut,
+          action: 'ProductUpdate'
+        });
+      }
+
+      if (typeof responseBody === 'string' && responseBody.includes('<ErrorResponse>')) {
+        const errorMsgMatch = responseBody.match(/<ErrorMessage>([^<]+)<\/ErrorMessage>/);
+        const errorCodeMatch = responseBody.match(/<ErrorCode>([^<]+)<\/ErrorCode>/);
+        const errorMsg = errorMsgMatch ? errorMsgMatch[1] : 'Error desconocido en API de Falabella';
+        const errorCode = errorCodeMatch ? errorCodeMatch[1] : 'UNKNOWN';
+
+        return {
+          success: false,
+          error: `Falabella API Error ${errorCode}: ${errorMsg}`,
+          status_code: response.status,
+          payload: xmlPayload
+        };
+      }
+
+      return {
+        success: false,
+        error: 'Respuesta inesperada de API de Falabella',
+        payload: xmlPayload
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error.response?.data || error.message || 'Error interno',
+        details: error.response?.data || error.message
       };
     }
   }

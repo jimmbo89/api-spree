@@ -97,6 +97,26 @@ const updateMercadoLibreItemSchema = Joi.object({
     return value;
   }, 'Mercado Libre item update validation');
 
+const updateFalabellaItemSchema = Joi.object({
+  company_id: Joi.number().integer().positive().optional(),
+  user_id: Joi.number().integer().positive().optional(),
+  marketplace_id: Joi.number().integer().positive().required(),
+  credential_id: Joi.number().integer().positive().required(),
+  branch_id: Joi.number().integer().positive().optional(),
+  external_id: Joi.string().trim().min(1).max(255).required(),
+  status: Joi.string().valid('active', 'inactive').optional(),
+  price: Joi.number().precision(2).min(0).optional(),
+  available_quantity: Joi.number().integer().min(0).optional()
+})
+  .or('status', 'price', 'available_quantity')
+  .custom((value, helpers) => {
+    if (value.status === 'inactive' && value.price === undefined && value.available_quantity === undefined) {
+      return value;
+    }
+
+    return value;
+  }, 'Falabella item update validation');
+
 const listWithProductSchema = Joi.object({
   company_id: Joi.number().integer().positive().required(),
   user_id: Joi.number().integer().optional(),
@@ -153,6 +173,7 @@ module.exports = {
   listDraftsByUserSchema: listDraftsByUserSchema, // ✅ Nuevo
   publishedProductsSchema: publishedProductsSchema,
   updateMercadoLibreItemSchema: updateMercadoLibreItemSchema,
+  updateFalabellaItemSchema: updateFalabellaItemSchema,
   retryProductPublishingTaskSchema: retrySchema,
   publishDraftSchema: publishDraftSchema // ✅ Nuevo
 };
