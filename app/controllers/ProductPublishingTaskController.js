@@ -152,6 +152,112 @@ function normalizeProductImages(images) {
 
 function extractPublishedStock(payload) {
   if (!payload || typeof payload !== 'object') return null;
+  // ✅ Incluir versiones en minúscula Y mayúscula (Falabella usa Price/Stock)
+  const directFields = [
+    payload.available_quantity,
+    payload.stock,
+    payload.Stock, // ✅ Falabella
+    payload.publishStock,
+    payload.initial_quantity,
+    payload.totalPublishingStock,
+    payload.totalStock
+  ];
+
+  for (const value of directFields) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return Math.round(parsed);
+    }
+  }
+
+  // ✅ Buscar también en BusinessUnits (estructura de respuesta Falabella)
+  const businessUnit = Array.isArray(payload?.BusinessUnits?.BusinessUnit)
+    ? payload.BusinessUnits.BusinessUnit[0]
+    : payload?.BusinessUnits?.BusinessUnit || null;
+  
+  if (businessUnit?.Stock !== undefined && businessUnit?.Stock !== null) {
+    const parsed = Number(businessUnit.Stock);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return Math.round(parsed);
+    }
+  }
+
+  const variations = Array.isArray(payload.variations)
+    ? payload.variations
+    : Array.isArray(payload.items)
+      ? payload.items
+      : [];
+
+  if (variations.length === 0) return null;
+
+  const totals = variations
+    .map((variation) => {
+      const value =
+        variation?.available_quantity ??
+        variation?.stock ??
+        variation?.Stock ?? // ✅ Falabella
+        variation?.publishStock ??
+        variation?.initial_quantity ??
+        variation?.quantity;
+      const parsed = Number(value);
+      return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : null;
+    })
+    .filter((value) => value !== null);
+
+  if (totals.length === 0) return null;
+  return totals.reduce((sum, value) => sum + value, 0);
+}
+
+function extractPublishedPrice(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+
+  // ✅ Incluir versiones en minúscula Y mayúscula (Falabella usa Price)
+  const directFields = [
+    payload.price,
+    payload.Price, // ✅ Falabella
+    payload.final_price,
+    payload.list_price,
+    payload.base_price
+  ];
+
+  for (const value of directFields) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return parsed;
+    }
+  }
+
+  // ✅ Buscar también en BusinessUnits (estructura de respuesta Falabella)
+  const businessUnit = Array.isArray(payload?.BusinessUnits?.BusinessUnit)
+    ? payload.BusinessUnits.BusinessUnit[0]
+    : payload?.BusinessUnits?.BusinessUnit || null;
+  
+  if (businessUnit?.Price !== undefined && businessUnit?.Price !== null) {
+    const parsed = Number(businessUnit.Price);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return parsed;
+    }
+  }
+
+  const variations = Array.isArray(payload.variations)
+    ? payload.variations
+    : Array.isArray(payload.items)
+      ? payload.items
+      : [];
+
+  if (variations.length === 0) return null;
+
+  const firstWithPrice = variations.find((variation) => {
+    const parsed = Number(variation?.price ?? variation?.Price); // ✅ Falabella
+    return Number.isFinite(parsed) && parsed >= 0;
+  });
+
+  if (!firstWithPrice) return null;
+  const parsed = Number(firstWithPrice.price ?? firstWithPrice.Price);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+/*function extractPublishedStock(payload) {
+  if (!payload || typeof payload !== 'object') return null;
 
   const directFields = [
     payload.available_quantity,
@@ -227,7 +333,7 @@ function extractPublishedPrice(payload) {
   if (!firstWithPrice) return null;
   const parsed = Number(firstWithPrice.price);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
-}
+}*/
 
 function resolveMarketplaceKey(marketplace = {}) {
   const domain = String(marketplace?.domain || '').toLowerCase();
@@ -350,16 +456,30 @@ function normalizeFalabellaEditRequestValue(value) {
 }
 
 function buildFalabellaPublishedStateSnapshot(product, sellerSku) {
-  const businessUnit = Array.isArray(product?.BusinessUnits?.BusinessUnit)
-    ? product.BusinessUnits.BusinessUnit[0]
-    : product?.BusinessUnits?.BusinessUnit || {};
+  // ✅ Manejar diferentes estructuras de respuesta de GetProducts de Falabella
+  let businessUnit = null;
+
+  if (Array.isArray(product?.BusinessUnits?.BusinessUnit)) {
+    businessUnit = product.BusinessUnits.BusinessUnit[0];
+  } else if (product?.BusinessUnits?.BusinessUnit && typeof product.BusinessUnits.BusinessUnit === 'object') {
+    businessUnit = product.BusinessUnits.BusinessUnit;
+  } else if (Array.isArray(product?.BusinessUnit)) {
+    businessUnit = product.BusinessUnit[0];
+  } else if (product?.BusinessUnit && typeof product.BusinessUnit === 'object') {
+    businessUnit = product.BusinessUnit;
+  }
+
   const status = String(businessUnit?.Status || product?.status || 'unknown').trim().toLowerCase() || 'unknown';
 
   return {
     sku: String(product?.SellerSku || sellerSku || '').trim(),
     status: status === 'live' ? 'active' : status,
-    price: businessUnit?.Price !== undefined && businessUnit?.Price !== null ? Number(businessUnit.Price) : null,
-    available_quantity: businessUnit?.Stock !== undefined && businessUnit?.Stock !== null ? Number(businessUnit.Stock) : null,
+    price: businessUnit?.Price !== undefined && businessUnit?.Price !== null
+      ? Number(businessUnit.Price)
+      : null,
+    available_quantity: businessUnit?.Stock !== undefined && businessUnit?.Stock !== null
+      ? Number(businessUnit.Stock)
+      : null,
     qc_status: String(product?.QCStatus || product?.qc_status || '').trim().toLowerCase() || null,
     permalink: product?.Url || product?.url || null,
     raw: product
@@ -2307,245 +2427,265 @@ async retryBatch(req, res) {
   });
 },
   async publishedProducts(req, res) {
-    logger.info(`${req.user?.name || 'Unknown'} - Lista productos publicados`);
-    const metadata = getRequestMetadata(req);
+  logger.info(`${req.user?.name || 'Unknown'} - Lista productos publicados`);
+  const metadata = getRequestMetadata(req);
 
-    try {
-      const {
-        company_id: bodyCompanyId,
-        user_id: bodyUserId,
-        marketplace_id: bodyMarketplaceId,
-        product_id: bodyProductId,
-        status: bodyStatus,
-        start_date,
-        end_date,
-        use_manteiners: useManteiners = false
-      } = req.body || {};
+  try {
+    const {
+      company_id: bodyCompanyId,
+      user_id: bodyUserId,
+      marketplace_id: bodyMarketplaceId,
+      product_id: bodyProductId,
+      status: bodyStatus,
+      start_date,
+      end_date,
+      use_manteiners: useManteiners = false
+    } = req.body || {};
 
-      const companyId = bodyCompanyId ? Number(bodyCompanyId) : req.user.company_id;
-      const userId = bodyUserId ? Number(bodyUserId) : req.user.id;
-      const marketplaceId = bodyMarketplaceId ? Number(bodyMarketplaceId) : null;
-      const productId = bodyProductId ? Number(bodyProductId) : null;
-      const selectedStatus = bodyStatus ? String(bodyStatus).trim().toLowerCase() : null;
-      const useManteinersFlag = Boolean(useManteiners);
+    const companyId = bodyCompanyId ? Number(bodyCompanyId) : req.user.company_id;
+    const userId = bodyUserId ? Number(bodyUserId) : req.user.id;
+    const marketplaceId = bodyMarketplaceId ? Number(bodyMarketplaceId) : null;
+    const productId = bodyProductId ? Number(bodyProductId) : null;
+    const selectedStatus = bodyStatus ? String(bodyStatus).trim().toLowerCase() : null;
+    const useManteinersFlag = Boolean(useManteiners);
 
-      logger.info(`[publishedProducts] use_manteiners=${useManteinersFlag}`);
+    logger.info(`[publishedProducts] use_manteiners=${useManteinersFlag}`);
 
-      if (bodyCompanyId && !Number.isFinite(companyId)) {
-        return res.status(400).json({ success: false, msg: 'company_id_invalid' });
-      }
-      if (bodyUserId && !Number.isFinite(userId)) {
-        return res.status(400).json({ success: false, msg: 'user_id_invalid' });
-      }
-      if (bodyMarketplaceId && !Number.isFinite(marketplaceId)) {
-        return res.status(400).json({ success: false, msg: 'marketplace_id_invalid' });
-      }
-      if (bodyProductId && !Number.isFinite(productId)) {
-        return res.status(400).json({ success: false, msg: 'product_id_invalid' });
-      }
+    if (bodyCompanyId && !Number.isFinite(companyId)) {
+      return res.status(400).json({ success: false, msg: 'company_id_invalid' });
+    }
+    if (bodyUserId && !Number.isFinite(userId)) {
+      return res.status(400).json({ success: false, msg: 'user_id_invalid' });
+    }
+    if (bodyMarketplaceId && !Number.isFinite(marketplaceId)) {
+      return res.status(400).json({ success: false, msg: 'marketplace_id_invalid' });
+    }
+    if (bodyProductId && !Number.isFinite(productId)) {
+      return res.status(400).json({ success: false, msg: 'product_id_invalid' });
+    }
 
-      let marketplaces = [];
-      let products = [];
-      let statusOptions = buildPublishedStatusOptions();
-      if (useManteinersFlag) {
-        const credentials = await MarketplaceCredentialRepository.findByUserDecifrado(userId);
-        const marketplaceIds = [
-          ...new Set(
-            (Array.isArray(credentials) ? credentials : [])
-              .map((credential) => credential?.marketplace_id || credential?.marketplace?.id)
-              .filter(Boolean)
-              .map((id) => Number(id))
-              .filter((id) => Number.isFinite(id) && id > 0)
-          )
-        ];
+    let marketplaces = [];
+    let products = [];
+    let statusOptions = buildPublishedStatusOptions();
+    if (useManteinersFlag) {
+      const credentials = await MarketplaceCredentialRepository.findByUserDecifrado(userId);
+      const marketplaceIds = [
+        ...new Set(
+          (Array.isArray(credentials) ? credentials : [])
+            .map((credential) => credential?.marketplace_id || credential?.marketplace?.id)
+            .filter(Boolean)
+            .map((id) => Number(id))
+            .filter((id) => Number.isFinite(id) && id > 0)
+        )
+      ];
 
-        if (marketplaceIds.length > 0) {
-          const marketplacesResult = await MarketplaceRepository.findByIds(marketplaceIds);
-          const marketplacesData = Array.isArray(marketplacesResult.marketplaces)
-            ? marketplacesResult.marketplaces
-            : [];
+      if (marketplaceIds.length > 0) {
+        const marketplacesResult = await MarketplaceRepository.findByIds(marketplaceIds);
+        const marketplacesData = Array.isArray(marketplacesResult.marketplaces)
+          ? marketplacesResult.marketplaces
+          : [];
 
-          marketplaces = marketplacesData.map((marketplace) => ({
-            id: marketplace.id || null,
-            name: marketplace.name || 'N/A',
-            domain: marketplace.domain || null
-          }));
-        }
-
-        const companyProducts = await ProductRepository.findFiltered({
-          companyId,
-          userId: userId || undefined
-        });
-
-        products = (Array.isArray(companyProducts) ? companyProducts : []).map((product) => {
-          const productImages = normalizeProductImages(product.images);
-          return {
-            id: product.id || null,
-            name: product.name || 'N/A',
-            sku: product.sku || null,
-            image: productImages.length > 0 ? productImages[0] : 'products/default.jpg'
-          };
-        });
-
-        statusOptions = buildPublishedStatusOptions();
+        marketplaces = marketplacesData.map((marketplace) => ({
+          id: marketplace.id || null,
+          name: marketplace.name || 'N/A',
+          domain: marketplace.domain || null
+        }));
       }
 
-      const { startDate, endDate } = normalizeDateRange(start_date, end_date);
-
-      const tasks = await ProductPublishingTaskRepository.findPublishedProducts({
+      const companyProducts = await ProductRepository.findFiltered({
         companyId,
-        userId,
-        marketplaceId,
-        productId,
-        startDate,
-        endDate
+        userId: userId || undefined
       });
 
-      const uniqueByExternalId = new Map();
-      for (const task of tasks) {
-        const externalId = String(task.external_id || '').trim();
-        if (!externalId) continue;
+      products = (Array.isArray(companyProducts) ? companyProducts : []).map((product) => {
+        const productImages = normalizeProductImages(product.images);
+        return {
+          id: product.id || null,
+          name: product.name || 'N/A',
+          sku: product.sku || null,
+          image: productImages.length > 0 ? productImages[0] : 'products/default.jpg'
+        };
+      });
 
-        const dedupeKey = [
-          externalId,
-          task.marketplace_id || '',
-          task.credential_id || '',
-          task.user_id || '',
-          task.product_id || ''
-        ].join(':');
+      statusOptions = buildPublishedStatusOptions();
+    }
 
-        if (!uniqueByExternalId.has(dedupeKey)) {
-          uniqueByExternalId.set(dedupeKey, task);
-        }
+    const { startDate, endDate } = normalizeDateRange(start_date, end_date);
+
+    const tasks = await ProductPublishingTaskRepository.findPublishedProducts({
+      companyId,
+      userId,
+      marketplaceId,
+      productId,
+      startDate,
+      endDate
+    });
+
+    const uniqueByExternalId = new Map();
+    for (const task of tasks) {
+      const externalId = String(task.external_id || '').trim();
+      if (!externalId) continue;
+
+      const dedupeKey = [
+        externalId,
+        task.marketplace_id || '',
+        task.credential_id || '',
+        task.user_id || '',
+        task.product_id || ''
+      ].join(':');
+
+      if (!uniqueByExternalId.has(dedupeKey)) {
+        uniqueByExternalId.set(dedupeKey, task);
+      }
+    }
+
+    const publishedProducts = [];
+    const statusSummary = {
+      total: 0,
+      active: 0,
+      inactive: 0,
+      deleted: 0,
+      unknown: 0
+    };
+
+    for (const task of uniqueByExternalId.values()) {
+      const marketplace = task.marketplace || {};
+      const product = task.product || {};
+      const credential = task.credential || {};
+      const marketplaceLink = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
+        task.marketplace_id,
+        task.external_id,
+        task.company_id || companyId || null,
+        task.branch_id || null,
+        task.credential_id || null,
+        task.user_id || null
+      );
+      const marketplaceStatus = extractPublishedMarketplaceStatus(task, marketplaceLink);
+      const statusBucket = classifyMarketplaceState(marketplaceStatus);
+      const normalizedMarketplaceStatus = String(marketplaceStatus || '').trim().toLowerCase();
+
+      if (selectedStatus && normalizedMarketplaceStatus !== selectedStatus) {
+        continue;
       }
 
-      const publishedProducts = [];
-      const statusSummary = {
-        total: 0,
-        active: 0,
-        inactive: 0,
-        deleted: 0,
-        unknown: 0
-      };
+      // ✅ DETECTAR MARKETPLACE Y SELECCIONAR PAYLOAD CORRECTO
+      const marketplaceKey = resolveMarketplaceKey(marketplace);
 
-      for (const task of uniqueByExternalId.values()) {
-        const marketplace = task.marketplace || {};
-        const product = task.product || {};
-        const credential = task.credential || {};
-        const marketplaceLink = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
-          task.marketplace_id,
-          task.external_id,
-          task.company_id || companyId || null,
-          task.branch_id || null,
-          task.credential_id || null,
-          task.user_id || null
-        );
-        const marketplaceStatus = extractPublishedMarketplaceStatus(task, marketplaceLink);
-        const statusBucket = classifyMarketplaceState(marketplaceStatus);
-        const normalizedMarketplaceStatus = String(marketplaceStatus || '').trim().toLowerCase();
-
-        if (selectedStatus && normalizedMarketplaceStatus !== selectedStatus) {
-          continue;
-        }
-
+      // ✅ Para Falabella: usar published_payload del link (tiene datos actualizados tras updateFalabellaItem)
+      // ✅ Para MercadoLibre: usar api_response del task (respuesta directa de la API con datos actuales)
+      let payloadForMetrics;
+      if (marketplaceKey === 'falabella') {
+        // Falabella: priorizar published_payload del link (actualizado por updateFalabellaItem)
+        const linkPayload = marketplaceLink?.published_payload;
+        const normalizedLinkPayload = normalizePublishedPayload(linkPayload);
+        payloadForMetrics = normalizedLinkPayload 
+          || normalizePublishedPayload(task.api_response) 
+          || normalizePublishedPayload(task.payload) 
+          || {};
+        logger.info(`[publishedProducts] Falabella: usando published_payload del link para ${task.external_id}`);
+      } else {
+        // MercadoLibre y otros: usar api_response del task
         const apiResponsePayload = normalizePublishedPayload(task.api_response);
         const taskPayload = normalizePublishedPayload(task.payload);
-        const payloadForMetrics = apiResponsePayload || taskPayload || {};
-        const productImages = normalizeProductImages(product.images);
-
-        statusSummary.total += 1;
-        statusSummary[statusBucket] = (statusSummary[statusBucket] || 0) + 1;
-
-        publishedProducts.push({
-          task_id: task.id,
-          product_id: task.product_id,
-          product_name: product.name || 'N/A',
-          sku: product.sku || null,
-          product_image: productImages.length > 0
-            ? productImages[0]
-            : 'products/default.jpg',
-          product_images: productImages,
-          external_id: task.external_id,
-          external_url: task.external_url || null,
-          marketplace_id: task.marketplace_id,
-          marketplace_key: resolveMarketplaceKey(marketplace),
-          marketplace_name: credential.name || marketplace.name || 'N/A',
-          marketplace_domain: marketplace.domain || null,
-          marketplace_status: marketplaceStatus || 'unknown',
-          publication_status: task.status,
-          published_stock: extractPublishedStock(payloadForMetrics),
-          published_price: extractPublishedPrice(payloadForMetrics),
-          published_at: formatDateTimeDisplay(task.published_at || task.createdAt || task.updatedAt),
-          published_at_iso: task.published_at || task.createdAt || task.updatedAt
-            ? new Date(task.published_at || task.createdAt || task.updatedAt).toISOString()
-            : null,
-          user_id: task.user_id,
-          company_id: task.company_id,
-          credential_id: task.credential_id,
-          last_synced_at: formatDateTimeDisplay(task.updatedAt),
-          last_synced_at_iso: task.updatedAt ? new Date(task.updatedAt).toISOString() : null,
-          live_verification: null
-        });
+        payloadForMetrics = apiResponsePayload || taskPayload || {};
+        logger.info(`[publishedProducts] ${marketplaceKey}: usando api_response para ${task.external_id}`);
       }
 
-      await LogRepository.create({
-        user_id: metadata.user_id,
-        action: 'publishing_task.published_products.list',
-        description: `Listado de productos publicados: ${publishedProducts.length} encontrados`,
-        ip_address: metadata.ip_address,
-        user_agent: metadata.user_agent,
-        status: 'success',
-        meta: {
-          company_id: companyId,
-          user_id: userId,
-          marketplace_id: marketplaceId,
-          product_id: productId,
-          start_date: startDate,
-          end_date: endDate,
-          count: publishedProducts.length
-        }
-      });
+      const productImages = normalizeProductImages(product.images);
 
-      return res.status(200).json({
-        success: true,
-        count: publishedProducts.length,
-        statusOptions,
-        ...(useManteinersFlag ? { marketplaces, marketplaces_count: marketplaces.length, products, products_count: products.length } : {}),
-        status_summary: statusSummary,
-        published_products: publishedProducts
+      statusSummary.total += 1;
+      statusSummary[statusBucket] = (statusSummary[statusBucket] || 0) + 1;
+
+      publishedProducts.push({
+        task_id: task.id,
+        product_id: task.product_id,
+        product_name: product.name || 'N/A',
+        sku: product.sku || null,
+        product_image: productImages.length > 0
+          ? productImages[0]
+          : 'products/default.jpg',
+        product_images: productImages,
+        external_id: task.external_id,
+        external_url: task.external_url || null,
+        marketplace_id: task.marketplace_id,
+        marketplace_key: marketplaceKey,
+        marketplace_name: credential.name || marketplace.name || 'N/A',
+        marketplace_domain: marketplace.domain || null,
+        marketplace_status: marketplaceStatus || 'unknown',
+        publication_status: task.status,
+        published_stock: extractPublishedStock(payloadForMetrics),
+        published_price: extractPublishedPrice(payloadForMetrics),
+        published_at: formatDateTimeDisplay(task.published_at || task.createdAt || task.updatedAt),
+        published_at_iso: task.published_at || task.createdAt || task.updatedAt
+          ? new Date(task.published_at || task.createdAt || task.updatedAt).toISOString()
+          : null,
+        user_id: task.user_id,
+        company_id: task.company_id,
+        credential_id: task.credential_id,
+        last_synced_at: formatDateTimeDisplay(task.updatedAt),
+        last_synced_at_iso: task.updatedAt ? new Date(task.updatedAt).toISOString() : null,
+        live_verification: null
       });
-    } catch (error) {
-      if (error.message === 'start_date_invalid' || error.message === 'end_date_invalid' || error.message === 'date_range_invalid') {
-        return res.status(400).json({
-          success: false,
-          msg: 'invalid_date_range',
-          error: error.message
-        });
+    }
+
+    await LogRepository.create({
+      user_id: metadata.user_id,
+      action: 'publishing_task.published_products.list',
+      description: `Listado de productos publicados: ${publishedProducts.length} encontrados`,
+      ip_address: metadata.ip_address,
+      user_agent: metadata.user_agent,
+      status: 'success',
+      meta: {
+        company_id: companyId,
+        user_id: userId,
+        marketplace_id: marketplaceId,
+        product_id: productId,
+        start_date: startDate,
+        end_date: endDate,
+        count: publishedProducts.length
       }
+    });
 
-      logger.error(`Error listando productos publicados:\n ${error.message}`);
-      await LogRepository.create({
-        user_id: metadata?.user_id,
-        action: 'publishing_task.published_products.list',
-        description: `Error: ${error.message}`,
-        ip_address: metadata?.ip_address,
-        user_agent: metadata?.user_agent,
-        status: 'error',
-        meta: {
-          company_id: req.user?.company_id,
-          user_id: req.body?.user_id || req.user?.id,
-          marketplace_id: req.body?.marketplace_id || null,
-          product_id: req.body?.product_id || null
-        }
-      });
-
-      return res.status(500).json({
+    return res.status(200).json({
+      success: true,
+      count: publishedProducts.length,
+      statusOptions,
+      ...(useManteinersFlag ? { marketplaces, marketplaces_count: marketplaces.length, products, products_count: products.length } : {}),
+      status_summary: statusSummary,
+      published_products: publishedProducts
+    });
+  } catch (error) {
+    if (error.message === 'start_date_invalid' || error.message === 'end_date_invalid' || error.message === 'date_range_invalid') {
+      return res.status(400).json({
         success: false,
-        msg: 'internal_error',
+        msg: 'invalid_date_range',
         error: error.message
       });
     }
-  },
+
+    logger.error(`Error listando productos publicados:\n ${error.message}`);
+    await LogRepository.create({
+      user_id: metadata?.user_id,
+      action: 'publishing_task.published_products.list',
+      description: `Error: ${error.message}`,
+      ip_address: metadata?.ip_address,
+      user_agent: metadata?.user_agent,
+      status: 'error',
+      meta: {
+        company_id: req.user?.company_id,
+        user_id: req.body?.user_id || req.user?.id,
+        marketplace_id: req.body?.marketplace_id || null,
+        product_id: req.body?.product_id || null
+      }
+    });
+
+    return res.status(500).json({
+      success: false,
+      msg: 'internal_error',
+      error: error.message
+    });
+  }
+},
   // Agregar método destroy al controlador
   async updateMercadoLibreItem(req, res) {
     logger.info(`${req.user?.name || 'Unknown'} - Actualiza item Mercado Libre`);
@@ -3033,21 +3173,124 @@ async retryBatch(req, res) {
         });
       }
 
-      const refreshedProduct = await adapter.findExistingProductBySellerSku(externalId);
-      const currentProductState = refreshedProduct
-        ? buildFalabellaPublishedStateSnapshot(refreshedProduct.raw || refreshedProduct, externalId)
-        : {
+      // ✅ CORRECCIÓN CLAVE: Determinar si el feed terminó exitosamente
+      const feedFinishedSuccessfully =
+        result.success &&
+        result.data?.feed_status === 'Finished' &&
+        parseInt(result.data?.processed_records || '0', 10) > 0 &&
+        parseInt(result.data?.failed_records || '0', 10) === 0;
+
+      logger.info(`[updateFalabellaItem] Feed exitoso: ${feedFinishedSuccessfully}`);
+
+      // ✅ CORRECCIÓN CRÍTICA: Obtener el link ANTES de construir el snapshot
+      // Esto nos da el estado REAL actual (stock, precio, status) desde la BD
+      const link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
+        marketplaceId,
+        externalId,
+        task.company_id || companyId,
+        task.branch_id || branchId || null,
+        credentialId,
+        userId
+      );
+
+      // ✅ Estado base: leer desde ProductMarketplaceLink (datos reales actualizados)
+      const currentState = {
+        sku: externalId,
+        status: link?.status || 'active',
+        price: link?.published_payload?.BusinessUnits?.BusinessUnit?.Price != null 
+          ? Number(link.published_payload.BusinessUnits.BusinessUnit.Price) 
+          : null,
+        available_quantity: link?.published_stock != null 
+          ? Number(link.published_stock) 
+          : null,
+        permalink: link?.external_url || task.external_url || null
+      };
+
+      logger.info(`[updateFalabellaItem] Estado actual desde ProductMarketplaceLink:`, currentState);
+
+      let currentProductState;
+      let refreshedProduct = null;
+
+      if (feedFinishedSuccessfully) {
+        // ✅ CASO 1: Feed confirmado exitosamente
+        // Construimos el snapshot mezclando: estado actual + solo los campos enviados
+        
+        currentProductState = {
+          sku: externalId,
+          // ✅ Status: si se envió, usar el nuevo; si no, mantener el actual
+          status: hasStatus
+            ? String(status).trim().toLowerCase()
+            : currentState.status,
+          // ✅ Precio: si se envió, usar el nuevo; si no, mantener el actual
+          price: hasPrice
+            ? Number(price)
+            : currentState.price,
+          // ✅ Stock: si se envió, usar el nuevo; si no, mantener el actual
+          available_quantity: hasQuantity
+            ? Number(available_quantity)
+            : currentState.available_quantity,
+          qc_status: null,
+          permalink: currentState.permalink,
+          raw: null
+        };
+
+        logger.info(`[updateFalabellaItem] ✅ Feed confirmado exitoso. Snapshot construido (solo campos enviados):`, {
+          sku: currentProductState.sku,
+          status: currentProductState.status,
+          price: currentProductState.price,
+          stock: currentProductState.available_quantity,
+          changedFields
+        });
+      } else {
+        // ✅ CASO 2: Feed no confirmado o con errores
+        // Intentar GetProducts como fallback para obtener estado real
+        try {
+          refreshedProduct = await adapter.findExistingProductBySellerSku(externalId);
+        } catch (getError) {
+          logger.warn(`[updateFalabellaItem] GetProducts falló: ${getError.message}`);
+        }
+
+        if (refreshedProduct) {
+          currentProductState = buildFalabellaPublishedStateSnapshot(
+            refreshedProduct.raw || refreshedProduct,
+            externalId
+          );
+          logger.info(`[updateFalabellaItem] Snapshot desde GetProducts:`, {
+            sku: currentProductState.sku,
+            status: currentProductState.status,
+            price: currentProductState.price,
+            stock: currentProductState.available_quantity
+          });
+        } else {
+          // Fallback último: usar estado actual del link + solo campos enviados
+          currentProductState = {
             sku: externalId,
-            status: String(normalizeFalabellaEditRequestValue(status) || task.error_details?.marketplace_item_state?.status || 'unknown').toLowerCase(),
-            price: normalizeFalabellaEditRequestValue(price) !== undefined ? Number(price) : null,
-            available_quantity: normalizeFalabellaEditRequestValue(available_quantity) !== undefined ? Number(available_quantity) : null,
+            status: hasStatus
+              ? String(status).trim().toLowerCase()
+              : currentState.status,
+            price: hasPrice
+              ? Number(price)
+              : currentState.price,
+            available_quantity: hasQuantity
+              ? Number(available_quantity)
+              : currentState.available_quantity,
             qc_status: null,
-            permalink: task.external_url || null,
+            permalink: currentState.permalink,
             raw: null
           };
+          logger.warn(`[updateFalabellaItem] ⚠️ GetProducts no devolvió datos. Snapshot desde fallback:`, {
+            sku: currentProductState.sku,
+            status: currentProductState.status,
+            price: currentProductState.price,
+            stock: currentProductState.available_quantity
+          });
+        }
+      }
 
-      const isActive = currentProductState.status === 'active';
-      const shouldKeepWarning = currentProductState.status && !isActive;
+      // ✅ CORRECCIÓN: No marcar como warning si el feed fue exitoso
+      const isActive = currentProductState.status === 'active' || feedFinishedSuccessfully;
+      const shouldKeepWarning = !feedFinishedSuccessfully && currentProductState.status && !isActive;
+
       const currentDetails = task.error_details && typeof task.error_details === 'object'
         ? task.error_details
         : {};
@@ -3059,9 +3302,9 @@ async retryBatch(req, res) {
           qc_status: currentProductState.qc_status,
           stock: currentProductState.available_quantity,
           price: currentProductState.price,
-          verified: true,
-          item_found: true,
-          note: 'manual_update',
+          verified: feedFinishedSuccessfully,
+          item_found: !!refreshedProduct || feedFinishedSuccessfully,
+          note: feedFinishedSuccessfully ? 'feed_confirmed' : (refreshedProduct ? 'get_products' : 'fallback'),
           updated_at: new Date().toISOString()
         },
         manual_update: {
@@ -3070,17 +3313,34 @@ async retryBatch(req, res) {
         }
       };
 
+      // ✅ CORRECCIÓN: Guardar el snapshot completo como api_response
+      const apiResponseToSave = refreshedProduct?.raw || {
+        SellerSku: currentProductState.sku,
+        BusinessUnits: {
+          BusinessUnit: {
+            Status: currentProductState.status,
+            Price: currentProductState.price,
+            Stock: currentProductState.available_quantity
+          }
+        },
+        _feed_status: result.data,
+        _updated_at: new Date().toISOString()
+      };
+
       const taskUpdate = {
-        api_response: refreshedProduct?.raw || result.data || null,
+        api_response: apiResponseToSave,
         error_message: shouldKeepWarning
           ? `Falabella item status: ${currentProductState.status}${currentProductState.qc_status ? ` (${currentProductState.qc_status})` : ''}`
           : null,
-        error_details: shouldKeepWarning ? mergedDetails : null,
+        error_details: mergedDetails,
         external_id: externalId,
         external_url: currentProductState.permalink || task.external_url || null
       };
 
-      if (isActive && task.status === 'published_with_warnings') {
+      // ✅ CORRECCIÓN: Si el feed fue exitoso, siempre marcar como 'published'
+      if (feedFinishedSuccessfully) {
+        taskUpdate.status = 'published';
+      } else if (isActive && task.status === 'published_with_warnings') {
         taskUpdate.status = 'published';
       } else if (shouldKeepWarning && task.status === 'published') {
         taskUpdate.status = 'published_with_warnings';
@@ -3088,29 +3348,27 @@ async retryBatch(req, res) {
 
       await ProductPublishingTaskRepository.updateTask(task, taskUpdate);
 
-      const link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
-        marketplaceId,
-        externalId,
-        task.company_id || companyId,
-        task.branch_id || branchId || null,
-        credentialId,
-        userId
-      );
-
+      // ✅ CORRECCIÓN CRÍTICA: Actualizar ProductMarketplaceLink con el stock/precio correcto
       if (link) {
         await link.update({
           status: currentProductState.status || link.status,
           external_url: currentProductState.permalink || link.external_url || null,
           published_stock: currentProductState.available_quantity,
-          published_payload: refreshedProduct?.raw || result.data || null,
+          published_payload: apiResponseToSave,
           last_synced_at: new Date()
+        });
+
+        logger.info(`[updateFalabellaItem] ✅ ProductMarketplaceLink actualizado:`, {
+          published_stock: currentProductState.available_quantity,
+          published_price: currentProductState.price,
+          status: currentProductState.status
         });
       }
 
       await LogRepository.create({
         user_id: metadata.user_id,
         action: 'marketplace_item.update',
-        description: `Item Falabella ${externalId} actualizado`,
+        description: `Item Falabella ${externalId} actualizado${feedFinishedSuccessfully ? ' (feed confirmado)' : ''}`,
         ip_address: metadata.ip_address,
         user_agent: metadata.user_agent,
         status: 'success',
@@ -3120,7 +3378,8 @@ async retryBatch(req, res) {
           marketplace_id: marketplaceId,
           credential_id: credentialId,
           external_id: externalId,
-          changed_fields: changedFields
+          changed_fields: changedFields,
+          feed_confirmed: feedFinishedSuccessfully
         }
       });
 
@@ -3137,6 +3396,7 @@ async retryBatch(req, res) {
         marketplace_key: 'falabella',
         marketplace_status: currentProductState.status || 'unknown',
         publication_status: taskUpdate.status || task.status,
+        feed_confirmed: feedFinishedSuccessfully,
         item: {
           sku: currentProductState.sku || externalId,
           status: currentProductState.status || null,
