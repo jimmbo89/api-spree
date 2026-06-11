@@ -2198,6 +2198,8 @@ async retryBatch(req, res) {
       );
 
       // 6. ✅ Actualizar JobProduct si hay job_id
+      const warningArtifacts = buildWarningArtifacts(result);
+
       if (job_id) {
         try {
           // Buscar JobProduct por job_id + product_id + marketplace_id + credential_id
@@ -2215,8 +2217,6 @@ async retryBatch(req, res) {
               : result.status === 'failed'
                 ? 'error'
                 : jobProduct.status;
-
-            const warningArtifacts = buildWarningArtifacts(result);
 
             await JobProductRepository.update(jobProduct, {
               status: jobProductStatus,
