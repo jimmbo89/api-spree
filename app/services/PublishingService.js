@@ -374,6 +374,59 @@ class PublishingService {
         };
       }
 
+      const isFalabellaMarketplace = String(marketplace?.domain || '').toLowerCase().includes('falabella');
+      let falabellaTask = null;
+
+      if (isFalabellaMarketplace) {
+        falabellaTask = await ProductPublishingTaskRepository.create({
+          product_id: productData.id,
+          marketplace_id: marketplace.marketplace_id,
+          credential_id: credentialId,
+          warehouse_id: warehouse.id,
+          company_id: warehouse.company_id || null,
+          branch_id: warehouse.branch_id || null,
+          user_id: userId,
+          date: new Date(),
+          status: 'processing',
+          payload: transformed,
+          external_id: transformed.sku,
+          external_url: null,
+          error_message: 'Producto enviado a Falabella, esperando confirmación del webhook...',
+          error_details: {
+            feed_id: null,
+            action: 'ProductCreate',
+            status: 'processing',
+            sku: transformed.sku,
+            category_id: transformed.PrimaryCategory,
+            category_name: transformed.categoryName,
+            sent_at: new Date().toISOString(),
+            pending_webhook: true
+          },
+          api_response: {
+            status: 'queued'
+          },
+          batch_id: batch_id || null,
+          attempt_count: 1
+        });
+
+        await ProductMarketplaceLinkRepository.upsert({
+          product_id: productData.id,
+          marketplace_id: marketplace.marketplace_id,
+          credential_id: credentialId,
+          user_id: userId,
+          company_id: warehouse.company_id,
+          branch_id: warehouse.branch_id,
+          status: 'processing',
+          external_id: transformed.sku,
+          external_url: null,
+          published_stock: normalizePublishedStock(transformed),
+          published_payload: transformed,
+          last_synced_at: new Date()
+        });
+
+        logger.info(`[PublishingService] ✅ Tarea Falabella creada antes del POST. task_id=${falabellaTask.id}, sku=${transformed.sku}`);
+      }
+
       // === 4. Publicar ===
       const result = await adapter.publish(transformed);
       const externalId = resolveExternalId(result);
@@ -390,6 +443,31 @@ class PublishingService {
         : null;
 
       if (result.auth_required) {
+        if (isFalabellaMarketplace) {
+          if (falabellaTask) {
+            await ProductPublishingTaskRepository.updateTask(falabellaTask, {
+              status: 'pending',
+              error_message: 'Autenticación requerida',
+              error_details: {
+                error_code: 'auth_required',
+                auth_url: result.auth_url,
+                message: result.message || 'Autenticación requerida'
+              },
+              api_response: result.data || null
+            });
+          }
+
+          return {
+            success: false,
+            auth_required: true,
+            auth_url: result.auth_url,
+            message: result.message || 'Autenticación requerida',
+            product_id: productData.id,
+            credential_id: credentialId,
+            task_id: falabellaTask?.id || null
+          };
+        }
+
         const pendingTask = await ProductPublishingTaskRepository.create({
           product_id: productData.id,
           marketplace_id: marketplace.marketplace_id,
@@ -422,78 +500,53 @@ class PublishingService {
       }
 
       if (result.success) {
-        // ✅ 🔑 DETECTAR SI ES FALABELLA
-        const isFalabella = String(marketplace?.domain || '').toLowerCase().includes('falabella');
-        
-        // ✅ 🔑 EXTRAER feed_id SOLO PARA FALABELLA
-        const feedId = isFalabella 
-          ? (result.data?.feed_id || result.data?.feed?.FeedID || result.request_id || null)
-          : null;
+        if (isFalabellaMarketplace) {
+          const falabellaFeedId = result.data?.feed_id || result.data?.feed?.FeedID || result.request_id || null;
+          const falabellaWarnings = Array.isArray(result.warnings) ? result.warnings : [];
+          const falabellaHasWarnings = result.has_warnings === true || falabellaWarnings.length > 0;
 
-        // ✅ 🔑 PARA FALABELLA: Crear tarea con status "processing" inmediatamente
-        if (isFalabella && feedId) {
-          logger.info(`[PublishingService] 🔑 Falabella: Creando tarea con status=processing y feed_id=${feedId}`);
-          
-          const task = await ProductPublishingTaskRepository.create({
-            product_id: productData.id,
-            marketplace_id: marketplace.marketplace_id,
-            credential_id: credentialId,
-            warehouse_id: warehouse.id,
-            company_id: warehouse.company_id || null,
-            branch_id: warehouse.branch_id || null,
-            user_id: userId,
-            date: new Date(),
-            status: 'processing', // ✅ Status inicial: procesando
-            payload: transformed,
-            external_id: externalId,
-            external_url: null, // Se actualizará cuando llegue el webhook
-            error_message: 'Producto enviado a Falabella, esperando confirmación del webhook...',
-            error_details: {
-              feed_id: feedId,
-              action: result.data?.action || 'ProductCreate',
-              status: 'processing',
-              sku: transformed.sku,
-              category_id: transformed.PrimaryCategory,
-              category_name: transformed.categoryName,
-              sent_at: new Date().toISOString()
-            },
-            api_response: result.data,
-            batch_id: batch_id || null,
-          });
-
-          // ✅ Crear link con status "processing"
-          await ProductMarketplaceLinkRepository.upsert({
-            product_id: productData.id,
-            marketplace_id: marketplace.marketplace_id,
-            credential_id: credentialId,
-            user_id: userId,
-            company_id: warehouse.company_id,
-            branch_id: warehouse.branch_id,
+          const falabellaErrorDetails = {
+            feed_id: falabellaFeedId,
+            action: result.data?.action || 'ProductCreate',
             status: 'processing',
-            external_id: externalId,
-            external_url: null,
-            published_stock: normalizePublishedStock(transformed),
-            published_payload: transformed,
-            last_synced_at: new Date()
-          });
+            sku: transformed.sku,
+            category_id: transformed.PrimaryCategory,
+            category_name: transformed.categoryName,
+            sent_at: new Date().toISOString()
+          };
 
-          logger.info(`[PublishingService] ✅ Tarea creada con status=processing. El webhook onFeedCompleted actualizará el estado.`);
-          
+          if (falabellaHasWarnings) {
+            falabellaErrorDetails.warnings = falabellaWarnings;
+            falabellaErrorDetails.warning_message = result.warning_message || null;
+          }
+
+          if (falabellaTask) {
+            await ProductPublishingTaskRepository.updateTask(falabellaTask, {
+              status: 'processing',
+              external_id: externalId || transformed.sku,
+              external_url: result.data?.permalink || null,
+              error_message: result.warning_message || 'Producto enviado a Falabella, esperando confirmación del webhook...',
+              error_details: falabellaErrorDetails,
+              api_response: result.data || null
+            });
+          }
+
+          logger.info(`[PublishingService] ✅ Falabella quedó en processing; webhook terminará la confirmación.`);
+
           return {
             success: true,
-            task_id: task.id,
-            external_id: externalId,
+            task_id: falabellaTask?.id || null,
+            external_id: externalId || transformed.sku,
             product_id: productData.id,
             credential_id: credentialId,
-            has_warnings: false,
-            warnings: null,
-            warning_message: result.message || 'Producto enviado a Falabella. El estado se actualizará automáticamente.',
+            has_warnings: falabellaHasWarnings,
+            warnings: falabellaWarnings,
+            warning_message: result.warning_message || 'Producto enviado a Falabella. El estado se actualizará automáticamente.',
             verification: null,
             status: 'processing',
             error: null
           };
         }
-
         // ✅ Para otros marketplaces (ML), mantener lógica existente
         const verificationWarningMessage = buildVerificationWarningMessage(verification);
         const warningsArtifacts = buildWarningArtifacts({
@@ -728,6 +781,63 @@ static async republishProduct(task, marketplace, credential, userId) {
     // 3. ✅ PUBLICAR DIRECTO (SIN prepareProduct, SIN transformer)
     const result = await adapter.publish(task.payload);
     const externalId = resolveExternalId(result, task.external_id);
+    const isFalabellaMarketplace = String(marketplace?.domain || '').toLowerCase().includes('falabella');
+
+    if (isFalabellaMarketplace && result.success) {
+      const falabellaWarnings = Array.isArray(result.warnings) ? result.warnings : [];
+      const falabellaHasWarnings = result.has_warnings === true || falabellaWarnings.length > 0;
+      const falabellaFeedId = result.data?.feed_id || result.data?.feed?.FeedID || result.request_id || null;
+
+      await ProductPublishingTaskRepository.updateTask(task, {
+        status: 'processing',
+        error_message: result.warning_message || 'Producto reenviado a Falabella, esperando confirmación del webhook...',
+        error_details: {
+          ...(task.error_details && typeof task.error_details === 'object' ? task.error_details : {}),
+          feed_id: falabellaFeedId,
+          action: result.data?.action || 'ProductCreate',
+          status: 'processing',
+          sku: task.payload?.sku || task.external_id || null,
+          warnings: falabellaHasWarnings ? falabellaWarnings : undefined,
+          warning_message: falabellaHasWarnings ? (result.warning_message || null) : undefined
+        },
+        external_id: externalId || task.external_id,
+        external_url: result.data?.permalink || task.external_url || null,
+        api_response: result.data || null
+      });
+
+      await ProductMarketplaceLinkRepository.upsert({
+        product_id: task.product_id,
+        marketplace_id: task.marketplace_id,
+        credential_id: task.credential_id,
+        user_id: task.user_id,
+        company_id: task.company_id,
+        branch_id: task.branch_id,
+        status: 'processing',
+        external_id: externalId || task.external_id,
+        external_url: result.data?.permalink || task.external_url || null,
+        published_stock: normalizePublishedStock(task.payload),
+        published_payload: task.payload,
+        last_synced_at: new Date()
+      });
+
+      return {
+        success: true,
+        task_id: task.id,
+        external_id: externalId || task.external_id,
+        data: result.data,
+        error: result.error,
+        details: result.details,
+        auth_required: result.auth_required,
+        auth_url: result.auth_url,
+        has_warnings: falabellaHasWarnings,
+        warnings: falabellaWarnings,
+        warning_message: result.warning_message || 'Producto reenviado a Falabella. El estado se actualizará automáticamente.',
+        verification: null,
+        status: 'processing',
+        error_details: null
+      };
+    }
+
     const shouldVerifyMlPublication = Boolean(
       result.success &&
       externalId &&
@@ -839,3 +949,5 @@ static async republishProduct(task, marketplace, credential, userId) {
 }
 
 module.exports = PublishingService;
+
+

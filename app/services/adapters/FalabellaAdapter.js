@@ -161,6 +161,45 @@ class FalabellaAdapter extends BaseAdapter {
     return Array.isArray(value) ? value : [value];
   }
 
+  normalizeFalabellaImages(images = []) {
+    const flattened = [];
+
+    const visit = (value) => {
+      if (value === null || value === undefined) return;
+      if (Array.isArray(value)) {
+        value.forEach(visit);
+        return;
+      }
+
+      if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (trimmed) flattened.push(trimmed);
+        return;
+      }
+
+      if (typeof value === 'object') {
+        if (typeof value.fullUrl === 'string') {
+          visit(value.fullUrl);
+          return;
+        }
+        if (typeof value.url === 'string') {
+          visit(value.url);
+          return;
+        }
+        if (typeof value.src === 'string') {
+          visit(value.src);
+          return;
+        }
+
+        Object.values(value).forEach(visit);
+      }
+    };
+
+    visit(images);
+
+    return [...new Set(flattened)];
+  }
+
   getFirstDefined(...values) {
     for (const value of values) {
       if (value !== null && value !== undefined) {
@@ -730,6 +769,7 @@ _transformImages(images = []) {
     };
 
     prepared.attributes = this.buildFalabellaAttributes(prepared);
+    prepared.images = this.normalizeFalabellaImages(prepared.images);
 
     // ✅ Ajuste de precio por configuración económica (si aplica)
     if (productData.economic_config) {
@@ -1261,6 +1301,12 @@ async getCategoryAttributes(categoryId) {
   }
 // ✅ Publicar producto con firma correcta (igual que GetCategorySuggestion que funcionó
     buildProductXml(product) {
+      logger.info(
+  `[DEBUG IMAGES] ${JSON.stringify({
+    images: product.images,
+    MainImage: product.MainImage
+  })}`
+);
     const escape = (str) => {
       if (typeof str !== 'string') return String(str || '');
       return str
@@ -1407,9 +1453,11 @@ async getCategoryAttributes(categoryId) {
 <Variation>${escape(String(variationValue))}</Variation>`;
     }
     
-    const mainImage = Array.isArray(product.images) && product.images.length > 0
-      ? product.images[0]
+    const normalizedImages = this.normalizeFalabellaImages(product.images);
+    const mainImage = normalizedImages.length > 0
+      ? normalizedImages[0]
       : null;
+    const extraImages = normalizedImages.slice(1);
     
     if (!mainImage) {
       logger.error(`[FalabellaAdapter] ❌ ERROR CRÍTICO: No hay imagen principal para SKU ${sku}. Falabella RECHAZARÁ el producto sin imágenes.`);
@@ -1419,6 +1467,8 @@ async getCategoryAttributes(categoryId) {
     }
     
     const mainImageXml = mainImage ? `\n    <MainImage>${escape(mainImage)}</MainImage>` : '';
+    logger.info(`[FalabellaAdapter] 📦 XML Payload (${product?.__falabella_action || 'ProductCreate'}):`);
+    logger.info(`\n${`<?xml version="1.0" encoding="UTF-8"?>\n<Request>\n  <Product>\n    <SellerSku>${sku}</SellerSku>\n    <Name>${name}</Name>\n    <PrimaryCategory>${categoryId}</PrimaryCategory>\n    <Description>${description}</Description>\n    <Brand>${brand}</Brand>${mainImageXml}${variationXml}${marketplaceProductId ? `\n    <ProductId>${escape(marketplaceProductId)}</ProductId>` : ''}\n    <BusinessUnits>\n      <BusinessUnit>\n        <OperatorCode>facl</OperatorCode>\n        <Price>${price}</Price>\n        <Stock>${stock}</Stock>\n        <Status>active</Status>\n      </BusinessUnit>\n    </BusinessUnits>\n    <ProductData>${productDataXml}\n    </ProductData>\n  </Product>\n</Request>`}`);
 
     return `<?xml version="1.0" encoding="UTF-8"?>
 <Request>
@@ -1473,6 +1523,7 @@ async getCategoryAttributes(categoryId) {
       }
 
       // ✅ Construir XML payload
+      transformedProduct.__falabella_action = action;
       const xmlPayload = this.buildProductXml(transformedProduct);
 
       // ✅ Generar timestamp en hora de Chile (-03:00)
@@ -1509,8 +1560,8 @@ async getCategoryAttributes(categoryId) {
 
       logger.info(`[FalabellaAdapter] 👤 Headers:`);
       logger.info(JSON.stringify(headers, null, 2));
-      logger.info(`[FalabellaAdapter] 📦 XML Payload (${action}):\n
-${JSON.stringify(xmlPayload)}`);
+      logger.info(`[FalabellaAdapter] 📦 XML Payload (${action}):`);
+      logger.info(xmlPayload);
 
       // ✅ Enviar solicitud POST
       const response = await axios.post(apiUrl, xmlPayload, {
@@ -1540,6 +1591,33 @@ ${JSON.stringify(xmlPayload)}`);
         // El webhook onFeedCompleted se encargará de actualizar el estado
         logger.info(`[FalabellaAdapter] ✅ Feed enviado exitosamente. FeedID: ${requestId}`);
 
+        const normalizedImages = this.normalizeFalabellaImages(transformedProduct.images);
+        const extraImages = normalizedImages.slice(1);
+        let imageUploadResult = { success: true, skipped: true };
+        if (extraImages.length > 0) {
+          imageUploadResult = {
+            success: true,
+            queued: true,
+            images_count: extraImages.length
+          };
+
+          setImmediate(() => {
+            this.uploadProductImages(transformedProduct.sku, extraImages)
+              .then((uploadResult) => {
+                if (!uploadResult?.success) {
+                  logger.warn(
+                    `[FalabellaAdapter] Publicación aceptada pero la carga de imágenes falló para SKU ${transformedProduct.sku}: ${uploadResult?.error || 'unknown'}`
+                  );
+                }
+              })
+              .catch((uploadError) => {
+                logger.warn(
+                  `[FalabellaAdapter] Publicación aceptada pero la carga de imágenes falló para SKU ${transformedProduct.sku}: ${uploadError.message}`
+                );
+              });
+          });
+        }
+
         return {
           success: true,
           external_id: transformedProduct.sku,
@@ -1549,8 +1627,14 @@ ${JSON.stringify(xmlPayload)}`);
             status: 'processing',
             sku: transformedProduct.sku,
             category_id: transformedProduct.PrimaryCategory,
-            category_name: transformedProduct.categoryName
+            category_name: transformedProduct.categoryName,
+            image_upload: imageUploadResult
           },
+          has_warnings: false,
+          warnings: [],
+          warning_message: imageUploadResult.queued
+            ? 'Producto enviado a Falabella. La subida de imágenes se ejecuta en segundo plano.'
+            : 'Producto enviado a Falabella. El estado se actualizará automáticamente cuando Falabella termine de procesar.',
           message: 'Producto enviado a Falabella. El estado se actualizará automáticamente cuando Falabella termine de procesar.'
         };
 

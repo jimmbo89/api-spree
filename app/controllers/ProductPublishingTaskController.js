@@ -2445,9 +2445,11 @@ async retryBatch(req, res) {
             // Determinar status para JobProduct (mapeo desde ProductPublishingTask)
             const jobProductStatus = result.status === 'published' || result.status === 'published_with_warnings'
               ? 'success'
-              : result.status === 'failed'
-                ? 'error'
-                : jobProduct.status;
+              : result.status === 'processing'
+                ? 'processing'
+                : result.status === 'failed'
+                  ? 'error'
+                  : jobProduct.status;
 
             await JobProductRepository.update(jobProduct, {
               status: jobProductStatus,
