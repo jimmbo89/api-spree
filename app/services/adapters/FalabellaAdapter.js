@@ -1260,162 +1260,175 @@ async getCategoryAttributes(categoryId) {
     };
   }
 // ✅ Publicar producto con firma correcta (igual que GetCategorySuggestion que funcionó
-buildProductXml(product) {
-  const escape = (str) => {
-    if (typeof str !== 'string') return String(str || '');
-    return str
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&apos;');
-  };
+    buildProductXml(product) {
+    const escape = (str) => {
+      if (typeof str !== 'string') return String(str || '');
+      return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&apos;');
+    };
 
-  const sku = escape((product.sku || '').substring(0, 50));
-  const name = escape((product.productName || 'Producto sin nombre').substring(0, 255));
-  
-  // ✅ 🔑 CORRECCIÓN: Usar el atributo Brand si existe, sino usar product.brand
-  const brandAttr = product.attributes?.find(a => a.id === 'Brand');
-  const brand = escape((brandAttr?.value_name || brandAttr?.value || product.brand || 'Genérica').substring(0, 50));
-  
-  const description = escape((product.description || 'Producto sin descripción').substring(0, 25000));
-  const categoryId = Number(product.PrimaryCategory);
-  const price = Number(product.price).toFixed(2);
-  const stock = Math.max(0, Math.round(Number(product.stock)));
-  const marketplaceProductId = this.resolveMarketplaceProductId(product);
+    const sku = escape((product.sku || '').substring(0, 50));
+    const name = escape((product.productName || 'Producto sin nombre').substring(0, 255));
+    
+    // ✅ 🔑 CORRECCIÓN: Usar el atributo Brand si existe, sino usar product.brand
+    const brandAttr = product.attributes?.find(a => a.id === 'Brand');
+    const brand = escape((brandAttr?.value_name || brandAttr?.value || product.brand || 'Genérica').substring(0, 50));
+    
+    const description = escape((product.description || 'Producto sin descripción').substring(0, 25000));
+    const categoryId = Number(product.PrimaryCategory);
+    const price = Number(product.price).toFixed(2);
+    const stock = Math.max(0, Math.round(Number(product.stock)));
+    const marketplaceProductId = this.resolveMarketplaceProductId(product);
 
-  // ✅ 🔑 CORRECCIÓN: Validar y ajustar dimensiones según rangos de Falabella
-  const validateDimension = (value, fieldName) => {
-    const numValue = Number(value);
-    if (!Number.isFinite(numValue) || numValue < 2) {
-      logger.warn(`[FalabellaAdapter] ⚠️ ${fieldName} valor ${value} fuera de rango (mínimo 2), ajustando a 2`);
-      return 2;
+    // ✅ 🔑 CORRECCIÓN: Validar y ajustar dimensiones según rangos de Falabella
+    const validateDimension = (value, fieldName) => {
+      const numValue = Number(value);
+      if (!Number.isFinite(numValue) || numValue < 2) {
+        logger.warn(`[FalabellaAdapter] ⚠️ ${fieldName} valor ${value} fuera de rango (mínimo 2), ajustando a 2`);
+        return 2;
+      }
+      if (numValue > 303) {
+        logger.warn(`[FalabellaAdapter] ⚠️ ${fieldName} valor ${value} fuera de rango (máximo 303), ajustando a 303`);
+        return 303;
+      }
+      return numValue;
+    };
+
+    // ✅ Buscar valores en atributos primero, luego en product
+    const getHeight = () => {
+      const attr = product.attributes?.find(a => a.id === 'PackageHeight');
+      const value = attr?.value_name || attr?.value || product.package_height || 10;
+      return validateDimension(value, 'PackageHeight');
+    };
+
+    const getWidth = () => {
+      const attr = product.attributes?.find(a => a.id === 'PackageWidth');
+      const value = attr?.value_name || attr?.value || product.package_width || 10;
+      return validateDimension(value, 'PackageWidth');
+    };
+
+    const getLength = () => {
+      const attr = product.attributes?.find(a => a.id === 'PackageLength');
+      const value = attr?.value_name || attr?.value || product.package_length || 10;
+      return validateDimension(value, 'PackageLength');
+    };
+
+    const getWeight = () => {
+      const attr = product.attributes?.find(a => a.id === 'PackageWeight');
+      const value = attr?.value_name || attr?.value || product.package_weight || 0.5;
+      const numValue = Number(value);
+      if (!Number.isFinite(numValue) || numValue < 0.001) {
+        logger.warn(`[FalabellaAdapter] ⚠️ PackageWeight valor ${value} inválido, ajustando a 0.5`);
+        return 0.5;
+      }
+      return numValue;
+    };
+
+    const height = getHeight();
+    const width = getWidth();
+    const length = getLength();
+    const weight = getWeight();
+
+    const effectiveAttributes = this.buildFalabellaAttributes(product);
+
+    const productDataAttrs = {
+      ConditionType: this.normalizeFalabellaAttributeValue(
+        effectiveAttributes?.find(a => ['condition_type', 'ConditionType'].includes(a.id))
+      ) || 'Nuevo',
+      PackageHeight: height,
+      PackageWidth: width,
+      PackageLength: length,
+      PackageWeight: weight.toFixed(3)
+    };
+
+    if (Array.isArray(effectiveAttributes)) {
+      for (const attr of effectiveAttributes) {
+        if (['SellerSku', 'Name', 'Brand', 'Description', 'PrimaryCategory', 'Variation', 'ProductId', 'images', 'productId', 'categoryName', 'category_attributes'].includes(attr.id)) {
+          continue;
+        }
+        if (this.isVariationAttribute(attr)) {
+          continue;
+        }
+        
+        // ✅ 🔑 CORRECCIÓN: Saltar atributos de dimensiones ya procesados
+        if (['PackageHeight', 'PackageWidth', 'PackageLength', 'PackageWeight'].includes(attr.id)) {
+          continue;
+        }
+
+        let value = this.normalizeFalabellaAttributeValue(attr);
+        if ([
+          'DuracionEnCondicionesPrevisiblesDeUso',
+          'PlazoDeDisponibilidadDeRepuestos',
+          'PlazoDeDisponibilidadDeServicioTecnico',
+          'WarrantyTime',
+          'WarrantyMonths'
+        ].includes(attr.id) && typeof value === 'string') {
+          const match = value.match(/^\d+/);
+          if (match) value = match[0];
+        }
+        if (value !== '' && value !== null && value !== undefined) {
+          productDataAttrs[attr.id] = value;
+        }
+      }
     }
-    if (numValue > 303) {
-      logger.warn(`[FalabellaAdapter] ⚠️ ${fieldName} valor ${value} fuera de rango (máximo 303), ajustando a 303`);
-      return 303;
-    }
-    return numValue;
-  };
 
-  // ✅ Buscar valores en atributos primero, luego en product
-  const getHeight = () => {
-    const attr = product.attributes?.find(a => a.id === 'PackageHeight');
-    const value = attr?.value_name || attr?.value || product.package_height || 10;
-    return validateDimension(value, 'PackageHeight');
-  };
-
-  const getWidth = () => {
-    const attr = product.attributes?.find(a => a.id === 'PackageWidth');
-    const value = attr?.value_name || attr?.value || product.package_width || 10;
-    return validateDimension(value, 'PackageWidth');
-  };
-
-  const getLength = () => {
-    const attr = product.attributes?.find(a => a.id === 'PackageLength');
-    const value = attr?.value_name || attr?.value || product.package_length || 10;
-    return validateDimension(value, 'PackageLength');
-  };
-
-  const getWeight = () => {
-    const attr = product.attributes?.find(a => a.id === 'PackageWeight');
-    const value = attr?.value_name || attr?.value || product.package_weight || 0.5;
-    const numValue = Number(value);
-    if (!Number.isFinite(numValue) || numValue < 0.001) {
-      logger.warn(`[FalabellaAdapter] ⚠️ PackageWeight valor ${value} inválido, ajustando a 0.5`);
-      return 0.5;
-    }
-    return numValue;
-  };
-
-  const height = getHeight();
-  const width = getWidth();
-  const length = getLength();
-  const weight = getWeight();
-
-  const effectiveAttributes = this.buildFalabellaAttributes(product);
-
-  const productDataAttrs = {
-    ConditionType: this.normalizeFalabellaAttributeValue(
-      effectiveAttributes?.find(a => ['condition_type', 'ConditionType'].includes(a.id))
-    ) || 'Nuevo',
-    PackageHeight: height,
-    PackageWidth: width,
-    PackageLength: length,
-    PackageWeight: weight.toFixed(3)
-  };
-
-  if (Array.isArray(effectiveAttributes)) {
-    for (const attr of effectiveAttributes) {
-      if (['SellerSku', 'Name', 'Brand', 'Description', 'PrimaryCategory', 'Variation', 'ProductId', 'images', 'productId', 'categoryName', 'category_attributes'].includes(attr.id)) {
-        continue;
-      }
-      if (this.isVariationAttribute(attr)) {
-        continue;
-      }
-      
-      // ✅ 🔑 CORRECCIÓN: Saltar atributos de dimensiones ya procesados
-      if (['PackageHeight', 'PackageWidth', 'PackageLength', 'PackageWeight'].includes(attr.id)) {
-        continue;
-      }
-
-      let value = this.normalizeFalabellaAttributeValue(attr);
-      if ([
-        'DuracionEnCondicionesPrevisiblesDeUso',
-        'PlazoDeDisponibilidadDeRepuestos',
-        'PlazoDeDisponibilidadDeServicioTecnico',
-        'WarrantyTime',
-        'WarrantyMonths'
-      ].includes(attr.id) && typeof value === 'string') {
-        const match = value.match(/^\d+/);
-        if (match) value = match[0];
-      }
-      if (value !== '' && value !== null && value !== undefined) {
-        productDataAttrs[attr.id] = value;
-      }
-    }
-  }
-
-  let productDataXml = '';
-  for (const [key, value] of Object.entries(productDataAttrs)) {
-    if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key)) {
-      productDataXml += `
+    let productDataXml = '';
+    for (const [key, value] of Object.entries(productDataAttrs)) {
+      if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key)) {
+        productDataXml += `
 <${key}>${escape(String(value))}</${key}>`;
+      }
     }
-  }
 
-  let variationXml = '';
-  const variationProductAttrs = Array.isArray(effectiveAttributes)
-    ? effectiveAttributes
-      .filter(attr => this.isVariationAttribute(attr))
-      .map(attr => ({ key: attr.id, value: this.normalizeFalabellaAttributeValue(attr) }))
-      .filter(attr => attr.value)
-    : [];
+    let variationXml = '';
+    const variationProductAttrs = Array.isArray(effectiveAttributes)
+      ? effectiveAttributes
+        .filter(attr => this.isVariationAttribute(attr))
+        .map(attr => ({ key: attr.id, value: this.normalizeFalabellaAttributeValue(attr) }))
+        .filter(attr => attr.value)
+      : [];
 
-  if (variationProductAttrs.length > 0) {
-    variationXml = variationProductAttrs
-      .filter(attr => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(attr.key))
-      .map(attr => `
+    if (variationProductAttrs.length > 0) {
+      variationXml = variationProductAttrs
+        .filter(attr => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(attr.key))
+        .map(attr => `
 <${attr.key}>${escape(String(attr.value))}</${attr.key}>`)
-      .join('');
-  } else {
-    const variationAttr = effectiveAttributes?.find(a => a.id === 'Variation');
-    const variationValue = variationAttr
-      ? (this.normalizeFalabellaAttributeValue(variationAttr) || '...')
-      : '...';
-    variationXml = `
+        .join('');
+    } else {
+      const variationAttr = effectiveAttributes?.find(a => a.id === 'Variation');
+      const variationValue = variationAttr
+        ? (this.normalizeFalabellaAttributeValue(variationAttr) || '...')
+        : '...';
+      variationXml = `
 <Variation>${escape(String(variationValue))}</Variation>`;
-  }
+    }
+    
+    const mainImage = Array.isArray(product.images) && product.images.length > 0
+      ? product.images[0]
+      : null;
+    
+    if (!mainImage) {
+      logger.error(`[FalabellaAdapter] ❌ ERROR CRÍTICO: No hay imagen principal para SKU ${sku}. Falabella RECHAZARÁ el producto sin imágenes.`);
+      logger.error(`[FalabellaAdapter] ❌ product.images = ${JSON.stringify(product.images)}`);
+    } else {
+      logger.info(`[FalabellaAdapter] ✅ Imagen principal encontrada: ${mainImage}`);
+    }
+    
+    const mainImageXml = mainImage ? `\n    <MainImage>${escape(mainImage)}</MainImage>` : '';
 
-  return `<?xml version="1.0" encoding="UTF-8"?>
+    return `<?xml version="1.0" encoding="UTF-8"?>
 <Request>
   <Product>
     <SellerSku>${sku}</SellerSku>
     <Name>${name}</Name>
     <PrimaryCategory>${categoryId}</PrimaryCategory>
     <Description>${description}</Description>
-    <Brand>${brand}</Brand>${variationXml}${marketplaceProductId ? `
-<ProductId>${escape(marketplaceProductId)}</ProductId>` : ''}
+    <Brand>${brand}</Brand>${mainImageXml}${variationXml}${marketplaceProductId ? `
+    <ProductId>${escape(marketplaceProductId)}</ProductId>` : ''}
     <BusinessUnits>
       <BusinessUnit>
         <OperatorCode>facl</OperatorCode>
@@ -1425,10 +1438,10 @@ buildProductXml(product) {
       </BusinessUnit>
     </BusinessUnits>
     <ProductData>${productDataXml}
-</ProductData>
+    </ProductData>
   </Product>
 </Request>`;
-}
+  }
 
     async publish(transformedProduct) {
     try {
@@ -1496,7 +1509,7 @@ buildProductXml(product) {
 
       logger.info(`[FalabellaAdapter] 👤 Headers:`);
       logger.info(JSON.stringify(headers, null, 2));
-      logger.info(`[FalabellaAdapter] 📦 XML Payload (${action}):
+      logger.info(`[FalabellaAdapter] 📦 XML Payload (${action}):\n
 ${JSON.stringify(xmlPayload)}`);
 
       // ✅ Enviar solicitud POST
@@ -1523,42 +1536,23 @@ ${JSON.stringify(xmlPayload)}`);
           };
         }
 
-        const { feed, timedOut } = await this.pollFeedStatus(requestId);
-        
-        // ✅ CREAR resultado base del feed
-        const feedResult = this.buildFeedDrivenResult({
-          transformedProduct,
-          requestId,
-          feed,
-          timedOut,
-          action: 'ProductCreate'
-        });
+        // ✅ 🔑 CORRECCIÓN CLAVE: NO hacer poll, retornar inmediatamente con el feed_id
+        // El webhook onFeedCompleted se encargará de actualizar el estado
+        logger.info(`[FalabellaAdapter] ✅ Feed enviado exitosamente. FeedID: ${requestId}`);
 
-        // ✅ DESPUÉS DE PUBLICAR EXITOSAMENTE, SUBIR IMÁGENES
-        if (feedResult.success && transformedProduct.images && transformedProduct.images.length > 0) {
-          logger.info(`[FalabellaAdapter] 📸 Producto publicado, subiendo ${transformedProduct.images.length} imágenes...`);
-          
-          // Esperar un poco para que Falabella procese el producto
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          
-          const imageResult = await this.uploadProductImages(
-            transformedProduct.sku,
-            transformedProduct.images
-          );
-          
-          if (imageResult.success) {
-            logger.info(`[FalabellaAdapter] ✅ Imágenes subidas exitosamente`);
-            feedResult.images_uploaded = true;
-            feedResult.images_data = imageResult;
-          } else {
-            logger.warn(`[FalabellaAdapter] ⚠️ Error subiendo imágenes: ${imageResult.error}`);
-            feedResult.images_uploaded = false;
-            feedResult.images_error = imageResult.error;
-            // No fallar la publicación completa por error de imágenes
-          }
-        }
-
-        return feedResult;
+        return {
+          success: true,
+          external_id: transformedProduct.sku,
+          data: {
+            feed_id: requestId,
+            action: action,
+            status: 'processing',
+            sku: transformedProduct.sku,
+            category_id: transformedProduct.PrimaryCategory,
+            category_name: transformedProduct.categoryName
+          },
+          message: 'Producto enviado a Falabella. El estado se actualizará automáticamente cuando Falabella termine de procesar.'
+        };
 
       } else if (responseBody.includes('<ErrorResponse>')) {
         const errorMsgMatch =
@@ -1576,39 +1570,6 @@ ${JSON.stringify(xmlPayload)}`);
         logger.error(
           `[FalabellaAdapter] ❌ Error API Falabella (Código ${errorCode}): ${errorMsg}`
         );
-
-        // 🔑 ERROR 1000 = payload duplicado aún procesándose
-        if (
-          errorCode === '1000' &&
-          errorMsg.includes('FeedID:')
-        ) {
-          const feedMatch =
-            errorMsg.match(/FeedID:\s*([a-zA-Z0-9\-]+)/);
-          const duplicatedFeedId =
-            feedMatch?.[1];
-
-          if (duplicatedFeedId) {
-            logger.warn(
-              `[FalabellaAdapter] Feed duplicado detectado. Consultando estado real ${duplicatedFeedId}`
-            );
-            try {
-              const { feed, timedOut } =
-                await this.pollFeedStatus(duplicatedFeedId);
-              return this.buildFeedDrivenResult({
-                transformedProduct,
-                requestId: duplicatedFeedId,
-                feed,
-                timedOut,
-                action: 'ProductCreate'
-              });
-            } catch (feedErr) {
-              logger.error(
-                `[FalabellaAdapter] Error consultando FeedStatus`,
-                feedErr
-              );
-            }
-          }
-        }
 
         return {
           success: false,
@@ -1987,6 +1948,64 @@ ${JSON.stringify(xmlPayload)}`);
         error: error.message
       };
     }
+  }
+
+    // ✅ MÉTODO ESTÁTICO: Extraer errores REALES del response de Falabella
+  static extractRealFalabellaErrors(productRaw) {
+    if (!productRaw || typeof productRaw !== 'object') {
+      return [];
+    }
+
+    const errors = [];
+
+    // ✅ 1. Errores del Feed
+    if (productRaw.FeedErrors) {
+      const feedErrors = Array.isArray(productRaw.FeedErrors) 
+        ? productRaw.FeedErrors 
+        : (productRaw.FeedErrors.Error ? [productRaw.FeedErrors.Error] : []);
+      
+      feedErrors.forEach(err => {
+        errors.push({
+          source: 'feed',
+          code: err.Code || err.code || null,
+          message: err.Message || err.message || String(err),
+          field: err.Field || err.field || null
+        });
+      });
+    }
+
+    // ✅ 2. Errores de QC (rechazado)
+    if (productRaw.QCStatus === 'rejected' || productRaw.qc_status === 'rejected') {
+      errors.push({
+        source: 'qc',
+        code: 'QC_REJECTED',
+        message: productRaw.QCMessage || 'Producto rechazado por control de calidad',
+        field: 'QCStatus'
+      });
+    }
+
+    // ✅ 3. Sin imágenes
+    if (!productRaw.MainImage || productRaw.MainImage === '') {
+      errors.push({
+        source: 'validation',
+        code: 'MISSING_IMAGE',
+        message: 'Sin imágenes - El producto debe tener al menos una imagen principal',
+        field: 'MainImage'
+      });
+    }
+
+    // ✅ 4. No publicado
+    if (productRaw.BusinessUnits?.BusinessUnit?.IsPublished === '0' || 
+        productRaw.BusinessUnits?.BusinessUnit?.IsPublished === 0) {
+      errors.push({
+        source: 'publication',
+        code: 'NOT_PUBLISHED',
+        message: `Producto no publicado. ContentScore: ${productRaw.ContentScore || 'N/A'}`,
+        field: 'IsPublished'
+      });
+    }
+
+    return errors;
   }
 }
 

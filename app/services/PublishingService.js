@@ -248,22 +248,18 @@ class PublishingService {
     return { success, errors };
   }
 
-  static async publishProduct(productData, marketplace, warehouse, userId, credentialId = null, options = {}) {
-    // ← NUEVO: credentialId opcional
-    //logger.info(`datos llegados al servicio: \n productsData:\n ${JSON.stringify(productData)} \n marketplace: \n ${JSON.stringify(marketplace)} \n warehouse: \n ${JSON.stringify(warehouse)} \n userId: ${userId} \n crdentialId: \n ${credentialId}`);
-    // ✅ Pasar credentialId al adapter factory
-      const { batch_id, job_id } = options || {};
-      const adapter = PublishingAdapterFactory.getAdapter(
+      static async publishProduct(productData, marketplace, warehouse, userId, credentialId = null, options = {}) {
+    const { batch_id, job_id } = options || {};
+    const adapter = PublishingAdapterFactory.getAdapter(
       marketplace,
       warehouse.company_id,
       warehouse.branch_id,
       userId,
-      credentialId  // ← NUEVO: credential_id específico
+      credentialId
     );
 
     if (!adapter) {
       logger.error(`[PublishingService] Adapter no encontrado para marketplace ${marketplace.name}`);
-      // ✅ Crear task fallido incluso para adapter_not_found
       const failedTask = await ProductPublishingTaskRepository.create({
         product_id: productData.id,
         marketplace_id: marketplace.marketplace_id,
@@ -289,13 +285,10 @@ class PublishingService {
     }
 
     try {
-      // === 1. Preparar producto (el adapter ya usa credentialId internamente) ===
+      // === 1. Preparar producto ===
       const preparedProduct = await adapter.prepareProduct(productData);
 
-      //logger.info(`[PublishingService] Producto preparado para ${marketplace.name}`);
-      //logger.info(`Preparado:\n ${JSON.stringify(preparedProduct, null, 2)}`);
-
-      // === 2. Transformar usando mapeos genéricos ===
+      // === 2. Transformar ===
       let transformer = MarketplaceTransformer;
       if (typeof adapter.constructor.getTransformer === 'function') {
         transformer = adapter.constructor.getTransformer();
@@ -309,7 +302,6 @@ class PublishingService {
 
       if (!transformed) {
         logger.error(`[PublishingService] Transformación fallida`);
-        // ✅ Crear task fallido para productTransformFailed
         const failedTask = await ProductPublishingTaskRepository.create({
           product_id: productData.id,
           marketplace_id: marketplace.marketplace_id,
@@ -348,20 +340,15 @@ class PublishingService {
         }
       }
 
-      // ✅ Fallback para family_name/title
       if (!transformed.family_name && !transformed.title) {
         transformed.title = productData.name || productData.title || `Producto ${productData.id}`;
         logger.warn(`[PublishingService] ⚠️ Sin family_name ni title → usando título fallback: "${transformed.title}"`);
       }
 
-      //logger.info(`[PublishingService] Producto transformado`);
-      //logger.info(`Transformado:\n ${JSON.stringify(transformed, null, 2)}`);
-
-      // === 3. Validar antes de publicar ===
+      // === 3. Validar ===
       const validation = adapter.validateProduct(transformed);
       if (!validation.valid) {
         logger.error(`[PublishingService] Validación fallida: ${JSON.stringify(validation.errors)}`);
-        // ✅ Crear task fallido para validation_failed
         const failedTask = await ProductPublishingTaskRepository.create({
           product_id: productData.id,
           marketplace_id: marketplace.marketplace_id,
@@ -403,7 +390,6 @@ class PublishingService {
         : null;
 
       if (result.auth_required) {
-        // ✅ Crear task en estado pending para auth_required (esperando re-autorización)
         const pendingTask = await ProductPublishingTaskRepository.create({
           product_id: productData.id,
           marketplace_id: marketplace.marketplace_id,
@@ -436,7 +422,79 @@ class PublishingService {
       }
 
       if (result.success) {
-        // ✅ Detectar si hay warnings
+        // ✅ 🔑 DETECTAR SI ES FALABELLA
+        const isFalabella = String(marketplace?.domain || '').toLowerCase().includes('falabella');
+        
+        // ✅ 🔑 EXTRAER feed_id SOLO PARA FALABELLA
+        const feedId = isFalabella 
+          ? (result.data?.feed_id || result.data?.feed?.FeedID || result.request_id || null)
+          : null;
+
+        // ✅ 🔑 PARA FALABELLA: Crear tarea con status "processing" inmediatamente
+        if (isFalabella && feedId) {
+          logger.info(`[PublishingService] 🔑 Falabella: Creando tarea con status=processing y feed_id=${feedId}`);
+          
+          const task = await ProductPublishingTaskRepository.create({
+            product_id: productData.id,
+            marketplace_id: marketplace.marketplace_id,
+            credential_id: credentialId,
+            warehouse_id: warehouse.id,
+            company_id: warehouse.company_id || null,
+            branch_id: warehouse.branch_id || null,
+            user_id: userId,
+            date: new Date(),
+            status: 'processing', // ✅ Status inicial: procesando
+            payload: transformed,
+            external_id: externalId,
+            external_url: null, // Se actualizará cuando llegue el webhook
+            error_message: 'Producto enviado a Falabella, esperando confirmación del webhook...',
+            error_details: {
+              feed_id: feedId,
+              action: result.data?.action || 'ProductCreate',
+              status: 'processing',
+              sku: transformed.sku,
+              category_id: transformed.PrimaryCategory,
+              category_name: transformed.categoryName,
+              sent_at: new Date().toISOString()
+            },
+            api_response: result.data,
+            batch_id: batch_id || null,
+          });
+
+          // ✅ Crear link con status "processing"
+          await ProductMarketplaceLinkRepository.upsert({
+            product_id: productData.id,
+            marketplace_id: marketplace.marketplace_id,
+            credential_id: credentialId,
+            user_id: userId,
+            company_id: warehouse.company_id,
+            branch_id: warehouse.branch_id,
+            status: 'processing',
+            external_id: externalId,
+            external_url: null,
+            published_stock: normalizePublishedStock(transformed),
+            published_payload: transformed,
+            last_synced_at: new Date()
+          });
+
+          logger.info(`[PublishingService] ✅ Tarea creada con status=processing. El webhook onFeedCompleted actualizará el estado.`);
+          
+          return {
+            success: true,
+            task_id: task.id,
+            external_id: externalId,
+            product_id: productData.id,
+            credential_id: credentialId,
+            has_warnings: false,
+            warnings: null,
+            warning_message: result.message || 'Producto enviado a Falabella. El estado se actualizará automáticamente.',
+            verification: null,
+            status: 'processing',
+            error: null
+          };
+        }
+
+        // ✅ Para otros marketplaces (ML), mantener lógica existente
         const verificationWarningMessage = buildVerificationWarningMessage(verification);
         const warningsArtifacts = buildWarningArtifacts({
           marketplaceWarnings: result.warnings,
@@ -445,8 +503,6 @@ class PublishingService {
           verificationWarningMessage
         });
 
-        // ✅ Determinar status según si hay warnings
-        // Los warnings NO son errores, el producto SÍ se publicó
         const verificationFailed = shouldVerifyMlPublication && verification && !verification.item_found;
         const finalSuccess = result.success && !verificationFailed;
         const status = finalSuccess
@@ -458,20 +514,6 @@ class PublishingService {
         const warningsData = warningsArtifacts.warningsData;
 
         const verificationDetails = buildVerificationDetails(verification);
-
-        const externalId = resolveExternalId(result);
-
-        // ✅ 🔑 DETECTAR SI ES FALABELLA (SOLO para agregar datos específicos)
-        const isFalabella = String(marketplace?.domain || '').toLowerCase().includes('falabella');
-        
-        // ✅ 🔑 EXTRAER feed_id SOLO PARA FALABELLA
-        const feedId = isFalabella 
-          ? (result.data?.feed_id || result.data?.feed?.FeedID || result.request_id || null)
-          : null;
-
-        // ✅ 🔑 EXTRAER datos de imágenes SOLO PARA FALABELLA
-        const imagesUploaded = isFalabella ? (result.images_uploaded || null) : null;
-        const imagesError = isFalabella ? (result.images_error || null) : null;
 
         const task = await ProductPublishingTaskRepository.create({
           product_id: productData.id,
@@ -486,36 +528,25 @@ class PublishingService {
           payload: transformed,
           external_id: externalId,
           external_url: result.data?.permalink,
-          // ✅ Guardar warnings como error_message para compatibilidad con el front
           error_message: warningMessage,
-          // ✅ Guardar warnings estructurados en error_details
           error_details: {
             ...(verificationDetails || {}),
-            ...(warningsData || {}),
-            // ✅ 🔑 SOLO AGREGAR SI ES FALABELLA Y HAY DATOS
-            ...(feedId ? { feed_id: feedId } : {}),
-            ...(imagesUploaded !== null ? { images_uploaded: imagesUploaded } : {}),
-            ...(imagesError ? { images_error: imagesError } : {})
+            ...(warningsData || {})
           },
-          api_response: {
-            ...result.data,
-            // ✅ 🔑 SOLO AGREGAR SI ES FALABELLA Y HAY DATOS
-            ...(feedId ? { feed_id: feedId } : {}),
-            ...(imagesUploaded !== null ? { images_uploaded: imagesUploaded } : {})
-          },
+          api_response: result.data,
           batch_id: batch_id || null,
         });
 
         if (finalSuccess) {
-        await ProductMarketplaceLinkRepository.upsert({
-          product_id: productData.id,
-          marketplace_id: marketplace.marketplace_id,
-          credential_id: credentialId,
-          user_id: userId,
-          company_id: warehouse.company_id,
-          branch_id: warehouse.branch_id,
-          status: status,
-          external_id: externalId,
+          await ProductMarketplaceLinkRepository.upsert({
+            product_id: productData.id,
+            marketplace_id: marketplace.marketplace_id,
+            credential_id: credentialId,
+            user_id: userId,
+            company_id: warehouse.company_id,
+            branch_id: warehouse.branch_id,
+            status: status,
+            external_id: externalId,
             external_url: result.data?.permalink,
             published_stock: normalizePublishedStock(transformed),
             published_payload: transformed,
@@ -551,8 +582,8 @@ class PublishingService {
         branch_id: warehouse.branch_id || null,
         user_id: userId,
         date: new Date(),
-        status: 'failed',  // ← Error de publicación real
-        payload: transformed,  // ← Para editar y reintentar
+        status: 'failed',
+        payload: transformed,
         error_message: result.error || 'Error desconocido en el adapter',
         error_details: result.details || null,
         api_response: result.status_code ? {
@@ -573,13 +604,12 @@ class PublishingService {
         payload: transformed,
         product_id: productData.id,
         credential_id: credentialId,
-        task_id: failedTask.id  // ← Para referencia en frontend
+        task_id: failedTask.id
       };
 
     } catch (error) {
       logger.error(`[PublishingService] ❌ Error al publicar producto ${productData.id}:`, error);
 
-      // ✅ Crear task fallido para errores excepcionales
       const failedTask = await ProductPublishingTaskRepository.create({
         product_id: productData.id,
         marketplace_id: marketplace.marketplace_id,

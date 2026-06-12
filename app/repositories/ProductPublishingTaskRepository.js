@@ -207,17 +207,20 @@ const ProductPublishingTaskRepository = {
     });
   },
 
-  async findPublishedProducts({
+    async findPublishedProducts({
     companyId = null,
     userId = null,
     marketplaceId = null,
     productId = null,
     startDate = null,
-    endDate = null
+    endDate = null,
+    includeProcessing = false
   } = {}) {
     const where = {
       status: {
-        [Op.in]: ['published', 'published_with_warnings']
+        [Op.in]: includeProcessing
+          ? ['published', 'published_with_warnings', 'processing', 'failed']
+          : ['published', 'published_with_warnings']
       }
     };
 
@@ -289,47 +292,45 @@ const ProductPublishingTaskRepository = {
   },
 
   // ✅ NUEVO MÉTODO: Buscar tarea por FeedID (para webhooks de Falabella)
-  async findLatestByFeedId(marketplaceId, feedId) {
+   async findLatestByFeedId(marketplaceId, feedId) {
     try {
-      if (!marketplaceId || !feedId) {
+      if (!feedId) {
         return null;
       }
 
-      logger.info(`[REPO] Buscando tarea por feedId=${feedId} marketplace=${marketplaceId}`);
+      logger.info(`[REPO] Buscando tarea por feedId=${feedId} marketplace=${marketplaceId || 'any'}`);
 
-      // ✅ Búsqueda en múltiples ubicaciones donde puede estar el feed_id
-      const task = await ProductPublishingTask.findOne({
-        where: {
-          marketplace_id: marketplaceId,
-          [Op.or]: [
-            // 1. Búsqueda directa en external_id (a veces el FeedID se guarda ahí)
-            { external_id: feedId },
-            
-            // 2. Búsqueda en error_details.feed_id (JSON)
-            Sequelize.where(
-              Sequelize.fn('JSON_EXTRACT', Sequelize.col('error_details'), '$.feed_id'),
-              feedId
-            ),
-            
-            // 3. Búsqueda en api_response.feed_id (JSON)
-            Sequelize.where(
-              Sequelize.fn('JSON_EXTRACT', Sequelize.col('api_response'), '$.feed_id'),
-              feedId
-            ),
-            
-            // 4. Búsqueda en api_response.feed.FeedID (JSON anidado)
-            Sequelize.where(
-              Sequelize.fn('JSON_EXTRACT', Sequelize.col('api_response'), '$.feed.FeedID'),
-              feedId
-            ),
-            
-            // 5. Búsqueda en api_response.data.feed_id (JSON anidado)
-            Sequelize.where(
-              Sequelize.fn('JSON_EXTRACT', Sequelize.col('api_response'), '$.data.feed_id'),
-              feedId
-            )
-          ]
-        },
+      const { Op, Sequelize } = require('sequelize');
+
+      // ✅ ESTRATEGIA 1: Búsqueda por JSON_EXTRACT (funciona si el campo es JSON nativo)
+      const whereJsonExtract = {
+        [Op.or]: [
+          { external_id: feedId },
+          Sequelize.where(
+            Sequelize.fn('JSON_EXTRACT', Sequelize.col('error_details'), '$.feed_id'),
+            feedId
+          ),
+          Sequelize.where(
+            Sequelize.fn('JSON_EXTRACT', Sequelize.col('api_response'), '$.feed_id'),
+            feedId
+          ),
+          Sequelize.where(
+            Sequelize.fn('JSON_EXTRACT', Sequelize.col('api_response'), '$.feed.FeedID'),
+            feedId
+          ),
+          Sequelize.where(
+            Sequelize.fn('JSON_EXTRACT', Sequelize.col('api_response'), '$.data.feed_id'),
+            feedId
+          )
+        ]
+      };
+
+      if (marketplaceId) {
+        whereJsonExtract.marketplace_id = marketplaceId;
+      }
+
+      let task = await ProductPublishingTask.findOne({
+        where: whereJsonExtract,
         include: [
           { model: Product, as: 'product' },
           { model: Marketplace, as: 'marketplace' },
@@ -344,12 +345,106 @@ const ProductPublishingTaskRepository = {
       });
 
       if (task) {
-        logger.info(`[REPO] ✅ Tarea encontrada por feedId: ID=${task.id}, status=${task.status}`);
-      } else {
-        logger.warn(`[REPO] ⚠️ No se encontró tarea para feedId=${feedId}`);
+        logger.info(`[REPO] ✅ Tarea encontrada por JSON_EXTRACT: ID=${task.id}, status=${task.status}`);
+        return task;
       }
 
-      return task;
+      // ✅ ESTRATEGIA 2: Búsqueda por LIKE (fallback si el campo es TEXT/VARCHAR)
+      logger.info(`[REPO] JSON_EXTRACT no encontró resultado, intentando LIKE...`);
+      
+      const whereLike = {
+        [Op.or]: [
+          Sequelize.where(
+            Sequelize.col('error_details'),
+            { [Op.like]: `%"feed_id":"${feedId}"%` }
+          ),
+          Sequelize.where(
+            Sequelize.col('error_details'),
+            { [Op.like]: `%"feed_id": "${feedId}"%` }
+          ),
+          Sequelize.where(
+            Sequelize.col('api_response'),
+            { [Op.like]: `%"feed_id":"${feedId}"%` }
+          ),
+          Sequelize.where(
+            Sequelize.col('api_response'),
+            { [Op.like]: `%"feed_id": "${feedId}"%` }
+          )
+        ]
+      };
+
+      if (marketplaceId) {
+        whereLike.marketplace_id = marketplaceId;
+      }
+
+      task = await ProductPublishingTask.findOne({
+        where: whereLike,
+        include: [
+          { model: Product, as: 'product' },
+          { model: Marketplace, as: 'marketplace' },
+          { model: MarketplaceCredential, as: 'credential' },
+          {
+            model: Job,
+            as: 'job',
+            attributes: ['id', 'batch_id', 'config', 'company_id', 'user_id']
+          }
+        ],
+        order: [['createdAt', 'DESC']]
+      });
+
+      if (task) {
+        logger.info(`[REPO] ✅ Tarea encontrada por LIKE: ID=${task.id}, status=${task.status}`);
+        return task;
+      }
+
+      // ✅ ESTRATEGIA 3: Búsqueda sin filtro de marketplace (búsqueda global)
+      if (marketplaceId) {
+        logger.info(`[REPO] LIKE con marketplace no encontró, intentando sin filtro de marketplace...`);
+        
+        const whereGlobal = {
+          [Op.or]: [
+            Sequelize.where(
+              Sequelize.col('error_details'),
+              { [Op.like]: `%"feed_id":"${feedId}"%` }
+            ),
+            Sequelize.where(
+              Sequelize.col('error_details'),
+              { [Op.like]: `%"feed_id": "${feedId}"%` }
+            ),
+            Sequelize.where(
+              Sequelize.col('api_response'),
+              { [Op.like]: `%"feed_id":"${feedId}"%` }
+            ),
+            Sequelize.where(
+              Sequelize.col('api_response'),
+              { [Op.like]: `%"feed_id": "${feedId}"%` }
+            )
+          ]
+        };
+
+        task = await ProductPublishingTask.findOne({
+          where: whereGlobal,
+          include: [
+            { model: Product, as: 'product' },
+            { model: Marketplace, as: 'marketplace' },
+            { model: MarketplaceCredential, as: 'credential' },
+            {
+              model: Job,
+              as: 'job',
+              attributes: ['id', 'batch_id', 'config', 'company_id', 'user_id']
+            }
+          ],
+          order: [['createdAt', 'DESC']]
+        });
+
+        if (task) {
+          logger.info(`[REPO] ✅ Tarea encontrada por LIKE global: ID=${task.id}, status=${task.status}`);
+          return task;
+        }
+      }
+
+      logger.warn(`[REPO] ⚠️ No se encontró tarea para feedId=${feedId} (se intentaron 3 estrategias)`);
+      return null;
     } catch (error) {
       logger.error(`[REPO] ERROR buscando por feedId ${feedId}: ${error.message}`);
       return null;

@@ -1067,7 +1067,6 @@ async function processFalabellaFeedWebhook(payload, topic, options = {}) {
 
   logger.info(`[FB Webhook] Procesando evento de feed: ${topic}, FeedID: ${feedId}`);
 
-  // ✅ Guardar evento en la BD
   const eventResult = await MarketplaceWebhookEventRepository.createUnique({
     marketplace: FB_MARKETPLACE_KEY,
     topic,
@@ -1087,17 +1086,11 @@ async function processFalabellaFeedWebhook(payload, topic, options = {}) {
   const event = eventResult.record;
 
   try {
-    // ✅ 🔑 CORRECCIÓN: Resolver credencial con manejo de errores
     const credential = await resolveFalabellaCredential(payload);
     
     if (!credential || !credential.seller_email || !credential.api_key) {
-      logger.warn(`[FB Webhook] Credencial Falabella no encontrada para feed ${feedId}`);
-      
-      // ✅ Intentar buscar la tarea directamente por feed_id
-      const task = await ProductPublishingTaskRepository.findLatestByFeedId(
-        null, // marketplaceId null para búsqueda más amplia
-        String(feedId)
-      );
+      // Intentar buscar la tarea directamente por feed_id
+      const task = await ProductPublishingTaskRepository.findLatestByFeedId(null, String(feedId));
 
       if (!task) {
         await MarketplaceWebhookEventRepository.updateById(event.id, {
@@ -1109,7 +1102,6 @@ async function processFalabellaFeedWebhook(payload, topic, options = {}) {
         return;
       }
 
-      // ✅ Si encontramos la tarea, usar su credential_id
       const taskCredential = await MarketplaceCredentialRepository.findById(task.credential_id);
       
       if (!taskCredential || !taskCredential.seller_email || !taskCredential.api_key) {
@@ -1118,16 +1110,52 @@ async function processFalabellaFeedWebhook(payload, topic, options = {}) {
           error_message: "credential_not_found_for_task",
           processed_at: new Date()
         });
-        logger.warn(`[FB Webhook] Credencial de la tarea ${task.id} no válida`);
         return;
       }
 
-      // ✅ Procesar con la credencial de la tarea
       await processFeedWithCredential(taskCredential, feedId, topic, event);
       return;
     }
 
-    // ✅ Procesar con la credencial encontrada
+    // ✅ 🔑 CORRECCIÓN: Para onFeedCompleted, reintentar varias veces si no encuentra la tarea
+    if (topic === 'onfeedcompleted') {
+      let taskFound = false;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const task = await ProductPublishingTaskRepository.findLatestByFeedId(
+          credential.marketplace_id,
+          String(feedId)
+        );
+        
+        if (task) {
+          taskFound = true;
+          break;
+        }
+        
+        if (attempt < 3) {
+          logger.info(`[FB Webhook] Tarea no encontrada aún (intento ${attempt}/3), esperando 3s...`);
+          await sleep(3000);
+        }
+      }
+      
+      if (!taskFound) {
+        // Último recurso: buscar por external_id (SKU)
+        const taskByExternalId = await ProductPublishingTaskRepository.findLatestByExternalId(
+          credential.marketplace_id,
+          String(feedId)
+        );
+        
+        if (!taskByExternalId) {
+          logger.warn(`[FB Webhook] No se encontró tarea asociada al feed ${feedId} después de 3 intentos`);
+          await MarketplaceWebhookEventRepository.updateById(event.id, {
+            status: "processed",
+            error_message: "task_not_found_for_feed_after_retries",
+            processed_at: new Date()
+          });
+          return;
+        }
+      }
+    }
+
     await processFeedWithCredential(credential, feedId, topic, event);
 
   } catch (error) {
@@ -1229,37 +1257,41 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
   const failedRecords = parseInt(feedStatus.FailedRecords || '0', 10);
   const processedRecords = parseInt(feedStatus.ProcessedRecords || '0', 10);
   const totalRecords = parseInt(feedStatus.TotalRecords || '0', 10);
-  const feedErrors = feedStatus.FeedErrors || [];
-  const feedWarnings = feedStatus.FeedWarnings || [];
+  
+  // ✅ NORMALIZAR ERRORES REALES DEL FEED
+  const feedErrors = normalizeFeedErrors(feedStatus.FeedErrors || []);
+  const feedWarnings = normalizeFeedErrors(feedStatus.FeedWarnings || []);
 
-  logger.info(`[FB Webhook] Procesando resultado de feed ${feedId} para tarea ${task.id}`);
-
-  // ✅ Si el feed terminó con errores
+  // ✅ Si el feed terminó con errores, guardar errores REALES
   if (feedStatusLower === 'error' || feedStatusLower === 'canceled' || failedRecords > 0) {
-    const errorMessage = feedErrors.length > 0
-      ? feedErrors.map(e => e.message || e.Message || String(e)).join(' | ')
-      : `Feed ${feedId} falló con estado: ${feedStatusLower}`;
+    // ✅ Construir mensaje con errores REALES
+    const realErrorMessage = feedErrors.length > 0
+      ? feedErrors.map(e => {
+          const field = e.field ? `${e.field}: ` : '';
+          return `${field}${e.message}`;
+        }).join(' | ')
+      : `Feed falló con estado: ${feedStatusLower}`;
 
-    logger.error(`[FB Webhook] Feed ${feedId} falló: ${errorMessage}`);
+    logger.error(`[FB Webhook] Feed ${feedId} falló: ${realErrorMessage}`);
 
-    // Actualizar tarea como fallida
     await ProductPublishingTaskRepository.updateTask(task, {
       status: 'failed',
-      error_message: errorMessage,
+      error_message: realErrorMessage, // ✅ GUARDAR ERROR REAL
       error_details: {
         feed_id: feedId,
         feed_status: feedStatus,
-        feed_errors: feedErrors,
+        feed_errors: feedErrors, // ✅ GUARDAR ERRORES REALES ESTRUCTURADOS
         feed_warnings: feedWarnings,
         failed_records: failedRecords,
         processed_records: processedRecords,
         total_records: totalRecords,
-        source: 'feed_webhook'
+        source: 'feed_webhook',
+        // ✅ GUARDAR RESPONSE COMPLETO DE FALABELLA
+        falabella_raw_response: feedStatus
       },
       api_response: feedStatus
     });
 
-    // Actualizar link si existe
     if (task.external_id) {
       const link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
         task.marketplace_id,
@@ -1279,9 +1311,8 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
     return;
   }
 
-  // ✅ Si el feed terminó exitosamente, consultar el estado real del producto
+  // ✅ Si el feed terminó exitosamente, consultar estado REAL del producto
   if (feedStatusLower === 'finished' && processedRecords > 0) {
-    // Extraer el SellerSku del payload de la tarea
     const sellerSku = task.payload?.sku || task.payload?.SellerSku || task.external_id || null;
     
     if (!sellerSku) {
@@ -1289,54 +1320,46 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
       return;
     }
 
-    // ✅ Consultar estado real del producto en Falabella (incluye QC)
+    // ✅ Consultar estado REAL del producto en Falabella
     const productStatus = await adapter.fetchProductStatus(sellerSku);
     
-    logger.info(`[FB Webhook] Estado real del producto ${sellerSku}: ${JSON.stringify(productStatus)}`);
+    logger.info(`[FB Webhook] Estado REAL del producto ${sellerSku}:`, JSON.stringify(productStatus, null, 2));
 
-    // Determinar estado final basado en QC y status
+    // ✅ EXTRAER ERRORES REALES del raw response
+    const realErrors = FalabellaAdapter.extractRealFalabellaErrors(productStatus.raw || {});
+    
     let finalStatus = 'published';
-    let statusMessage = null;
-    let hasWarnings = feedWarnings.length > 0;
+    let realErrorMessage = null;
 
     if (!productStatus.found) {
       finalStatus = 'failed';
-      statusMessage = 'Producto no encontrado en Falabella después del feed';
-    } else if (productStatus.qc_status) {
-      const qcLower = String(productStatus.qc_status).toLowerCase();
-      
-      if (qcLower === 'rejected' || qcLower === 'fail') {
-        finalStatus = 'failed';
-        statusMessage = `Producto rechazado en QC: ${productStatus.qc_status}`;
-      } else if (qcLower === 'pending' || qcLower === 'processing') {
-        finalStatus = 'published_with_warnings';
-        statusMessage = `Producto en catálogo pero pendiente de aprobación QC: ${productStatus.qc_status}`;
-        hasWarnings = true;
-      } else if (qcLower === 'approved' || qcLower === 'active') {
-        finalStatus = 'published';
-        statusMessage = 'Producto aprobado y activo';
-      } else {
-        finalStatus = 'published_with_warnings';
-        statusMessage = `Producto en catálogo con estado QC: ${productStatus.qc_status}`;
-        hasWarnings = true;
-      }
-    } else if (productStatus.status === 'active') {
+      realErrorMessage = 'Producto no encontrado en Falabella';
+    } else if (realErrors.length > 0) {
+      // ✅ Hay errores REALES de Falabella
+      finalStatus = 'failed';
+      realErrorMessage = realErrors.map(err => {
+        const field = err.field ? `${err.field}: ` : '';
+        return `${field}${err.message}`;
+      }).join(' | ');
+    } else if (productStatus.qc_status === 'rejected') {
+      finalStatus = 'failed';
+      // ✅ Buscar motivo REAL de rechazo
+      const rejectionReason = productStatus.raw?.QCMessage || 
+                             productStatus.raw?.rejection_reason ||
+                             'Rechazado por QC (sin motivo específico)';
+      realErrorMessage = `QC RECHAZADO: ${rejectionReason}`;
+    } else if (productStatus.status === 'active' && productStatus.is_published === true) {
       finalStatus = 'published';
-      statusMessage = 'Producto activo en Falabella';
-    } else if (productStatus.status === 'inactive') {
-      finalStatus = 'published_with_warnings';
-      statusMessage = 'Producto en catálogo pero inactivo';
-      hasWarnings = true;
+      realErrorMessage = null;
     } else {
       finalStatus = 'published_with_warnings';
-      statusMessage = `Producto en catálogo con estado: ${productStatus.status || 'desconocido'}`;
-      hasWarnings = true;
+      realErrorMessage = `Estado: ${productStatus.status} | Publicado: ${productStatus.is_published} | QC: ${productStatus.qc_status}`;
     }
 
-    // ✅ Preparar datos de actualización
+    // ✅ Preparar datos de actualización con errores REALES
     const updateData = {
       status: finalStatus,
-      error_message: statusMessage,
+      error_message: realErrorMessage, // ✅ GUARDAR ERROR REAL
       error_details: {
         feed_id: feedId,
         feed_status: feedStatus,
@@ -1344,7 +1367,12 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
         feed_warnings: feedWarnings,
         source: 'feed_webhook',
         qc_status: productStatus.qc_status,
-        marketplace_status: productStatus.status
+        marketplace_status: productStatus.status,
+        is_published: productStatus.is_published,
+        // ✅ GUARDAR ERRORES REALES EXTRAÍDOS
+        real_errors: realErrors,
+        // ✅ GUARDAR RESPONSE COMPLETO DE FALABELLA
+        falabella_raw_response: productStatus.raw
       },
       api_response: {
         feed: feedStatus,
@@ -1352,15 +1380,12 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
       }
     };
 
-    // Si tiene external_url del producto, actualizarlo
     if (productStatus.url) {
       updateData.external_url = productStatus.url;
     }
 
-    // Actualizar tarea
     await ProductPublishingTaskRepository.updateTask(task, updateData);
 
-    // Actualizar link
     if (task.external_id) {
       const link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
         task.marketplace_id,
@@ -1380,10 +1405,39 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
       }
     }
 
-    logger.info(
-      `[FB Webhook] ✅ Tarea ${task.id} actualizada: ${finalStatus} - ${statusMessage}`
-    );
+    logger.info(`[FB Webhook] ✅ Tarea ${task.id} actualizada: ${finalStatus} - ${realErrorMessage || 'Sin errores'}`);
   }
+}
+
+// ✅ NUEVA FUNCIÓN: Normalizar errores del feed
+function normalizeFeedErrors(errors) {
+  if (!errors) return [];
+  
+  // Manejar diferentes estructuras de errores
+  let errorList = [];
+  
+  if (Array.isArray(errors)) {
+    errorList = errors;
+  } else if (errors.Error) {
+    errorList = Array.isArray(errors.Error) ? errors.Error : [errors.Error];
+  } else if (errors.Warning) {
+    errorList = Array.isArray(errors.Warning) ? errors.Warning : [errors.Warning];
+  } else if (typeof errors === 'object') {
+    errorList = [errors];
+  }
+  
+  return errorList.map(err => {
+    if (typeof err === 'string') {
+      return { message: err, code: null, field: null };
+    }
+    
+    return {
+      code: err.Code || err.code || null,
+      message: err.Message || err.message || err.error || String(err),
+      field: err.Field || err.field || err.Attribute || err.attribute || null,
+      sku: err.SellerSku || err.sku || null
+    };
+  });
 }
 
 async function processFalabellaOrderWebhook(payload, options = {}) {
@@ -1481,6 +1535,13 @@ async function processFalabellaProductWebhook(payload, options = {}) {
       return;
     }
 
+    // ✅ 🔑 CORRECCIÓN: Esperar un poco antes de consultar el producto
+    // Falabella necesita tiempo para procesar el producto después del feed
+    if (topic === 'onproductupdated' || topic === 'onproductqcstatuschanged') {
+      logger.info(`[FB Webhook] ${topic} recibido para SKU ${sellerSku}, esperando 3s antes de consultar...`);
+      await sleep(3000);
+    }
+
     const fetchPromise = fetchFalabellaProductWithRetry(sellerSku, credential);
     const product = await withTimeout(fetchPromise, timeoutMs);
 
@@ -1513,6 +1574,68 @@ async function processFalabellaProductWebhook(payload, options = {}) {
       product: effectiveProduct,
       payload
     });
+
+    // ✅ 🔑 NUEVO: Si se encontró la tarea, actualizarla con el estado real del producto
+    if (persistResult.taskUpdated && persistResult.taskId) {
+      const task = await ProductPublishingTaskRepository.findById(persistResult.taskId);
+      if (task && task.status === 'processing') {
+        const snapshot = persistResult.snapshot || {};
+        const qcStatus = snapshot.qc_status || null;
+        const productStatus = snapshot.status || null;
+        
+        let finalStatus = 'published_with_warnings';
+        let statusMessage = null;
+        
+        if (qcStatus) {
+          const qcLower = String(qcStatus).toLowerCase();
+          if (qcLower === 'rejected' || qcLower === 'fail') {
+            finalStatus = 'failed';
+            statusMessage = `Producto rechazado en QC: ${qcStatus}`;
+          } else if (qcLower === 'pending' || qcLower === 'processing') {
+            finalStatus = 'published_with_warnings';
+            statusMessage = `Producto pendiente de aprobación QC: ${qcStatus}`;
+          } else if (qcLower === 'approved' || qcLower === 'active' || qcLower === 'live') {
+            finalStatus = 'published';
+            statusMessage = 'Producto aprobado y activo';
+          }
+        } else if (productStatus === 'active') {
+          finalStatus = 'published';
+          statusMessage = 'Producto activo en Falabella';
+        } else {
+          statusMessage = `Producto en catálogo con estado: ${productStatus || 'desconocido'}`;
+        }
+
+        await ProductPublishingTaskRepository.updateTask(task, {
+          status: finalStatus,
+          error_message: statusMessage || task.error_message,
+          error_details: {
+            ...(task.error_details || {}),
+            qc_status: qcStatus,
+            marketplace_status: productStatus,
+            updated_by_webhook: topic,
+            updated_at: new Date().toISOString()
+          }
+        });
+
+        // ✅ Actualizar link
+        if (task.external_id) {
+          const link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
+            task.marketplace_id,
+            task.external_id,
+            task.company_id,
+            task.branch_id
+          );
+          if (link) {
+            await link.update({
+              status: finalStatus === 'published' ? 'active' : finalStatus,
+              last_synced_at: new Date()
+            });
+          }
+        }
+
+        logger.info(`[FB Webhook] ✅ Tarea ${task.id} actualizada por webhook ${topic}: ${finalStatus} - ${statusMessage}`);
+      }
+    }
 
     await MarketplaceWebhookEventRepository.updateById(event.id, {
       status: "processed",
@@ -1920,12 +2043,23 @@ async function fetchFalabellaProduct(sellerSku, credential) {
 }
 
 function extractFalabellaSellerSku(payload) {
+  // ✅ 🔑 CORRECCIÓN: Soportar SellerSkus (array) y SellerSku (singular)
   const candidates = [
+    // ✅ NUEVO: Soportar array de SellerSkus (onProductCreated, onProductQcStatusChanged)
+    ...(Array.isArray(payload?.payload?.SellerSkus) ? payload.payload.SellerSkus : []),
+    ...(Array.isArray(payload?.SellerSkus) ? payload.SellerSkus : []),
+    ...(Array.isArray(payload?.data?.SellerSkus) ? payload.data.SellerSkus : []),
+    // Singular
     payload?.SellerSku,
     payload?.seller_sku,
     payload?.sellerSku,
     payload?.SKU,
     payload?.sku,
+    payload?.payload?.SellerSku,
+    payload?.payload?.seller_sku,
+    payload?.payload?.sellerSku,
+    payload?.payload?.SKU,
+    payload?.payload?.sku,
     payload?.data?.SellerSku,
     payload?.data?.seller_sku,
     payload?.data?.sellerSku,
