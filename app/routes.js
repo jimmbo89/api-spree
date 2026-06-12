@@ -111,9 +111,8 @@ router.post('/login-companies', CompanyController.index_login);
 router.post('/ml-callback', OAuthController.mercadoLibreCallback);
 router.post('/webhooks-mercadolibre', MarketplaceWebhookController.mercadoLibre);
 router.post('/webhooks-falabella', MarketplaceWebhookController.falabella);
-router.get("/images/:foldername/:filename", (req, res) => {
-  const { foldername, filename } = req.params;
-  const safeFoldername = path.basename(foldername); // prevención de path traversal
+function serveUploadImage(req, res, foldername, filename) {
+  const safeFoldername = path.basename(foldername);
   const safeFile = path.basename(filename);
   const imagePath = path.join(UPLOAD_BASE_PATH, safeFoldername, safeFile);
 
@@ -123,33 +122,51 @@ router.get("/images/:foldername/:filename", (req, res) => {
 
   const contentType = getMimeTypeFromExtension(safeFile);
   const stats = fs.statSync(imagePath);
-
-  // Headers de caché HTTP (1 año para imágenes estáticas)
-  res.writeHead(200, {
-    "Content-Type": contentType,
-    "Cache-Control": "public, max-age=31536000, immutable",
-    "ETag": `"${stats.mtimeMs}-${stats.size}"`,
-    "Last-Modified": stats.mtime.toUTCString()
-  });
-
-  // Soporte para validación de caché (304 Not Modified)
+  const etag = `"${stats.mtimeMs}-${stats.size}"`;
   const ifNoneMatch = req.headers["if-none-match"];
   const ifModifiedSince = req.headers["if-modified-since"];
-  
-  if (ifNoneMatch && ifNoneMatch === `"${stats.mtimeMs}-${stats.size}"`) {
-    return res.writeHead(304).end();
-  }
-  
-  if (ifModifiedSince && new Date(ifModifiedSince) >= stats.mtime) {
-    return res.writeHead(304).end();
+
+  if (ifNoneMatch && ifNoneMatch === etag) {
+    return res.status(304).end();
   }
 
-  fs.readFile(imagePath, (err, file) => {
-    if (err) {
-      return res.status(500).send("Error al leer la imagen");
-    }
-    res.end(file);
+  if (ifModifiedSince && new Date(ifModifiedSince) >= stats.mtime) {
+    return res.status(304).end();
+  }
+
+  res.status(200);
+  res.set({
+    "Content-Type": contentType,
+    "Content-Length": stats.size,
+    "Cache-Control": "public, max-age=31536000, immutable",
+    "ETag": etag,
+    "Last-Modified": stats.mtime.toUTCString(),
+    "Accept-Ranges": "bytes"
   });
+
+  if (req.method === "HEAD") {
+    return res.end();
+  }
+
+  const stream = fs.createReadStream(imagePath);
+  stream.on("error", (err) => {
+    logger.error(`[images] Error al leer ${imagePath}: ${err.message}`);
+    if (!res.headersSent) {
+      res.status(500);
+    }
+    res.end("Error al leer la imagen");
+  });
+  stream.pipe(res);
+}
+
+router.get("/images/:foldername/:filename", (req, res) => {
+  const { foldername, filename } = req.params;
+  return serveUploadImage(req, res, foldername, filename);
+});
+
+router.head("/images/:foldername/:filename", (req, res) => {
+  const { foldername, filename } = req.params;
+  return serveUploadImage(req, res, foldername, filename);
 });
 //rutas protegidas
 router.use(auth);
@@ -184,43 +201,12 @@ router.get("/upload-diagnostics", async (req, res) => {
 
 router.get("/images-protect/:foldername/:filename", (req, res) => {
   const { foldername, filename } = req.params;
-  const safeFoldername = path.basename(foldername);
-  const safeFile = path.basename(filename);
-  const imagePath = path.join(UPLOAD_BASE_PATH, safeFoldername, safeFile);
+  return serveUploadImage(req, res, foldername, filename);
+});
 
-  if (!fs.existsSync(imagePath)) {
-    return res.status(404).send("Imagen no encontrada");
-  }
-
-  const contentType = getMimeTypeFromExtension(safeFile);
-  const stats = fs.statSync(imagePath);
-
-  // Headers de caché HTTP (1 año para imágenes estáticas)
-  res.writeHead(200, {
-    "Content-Type": contentType,
-    "Cache-Control": "public, max-age=31536000, immutable",
-    "ETag": `"${stats.mtimeMs}-${stats.size}"`,
-    "Last-Modified": stats.mtime.toUTCString()
-  });
-
-  // Soporte para validación de caché (304 Not Modified)
-  const ifNoneMatch = req.headers["if-none-match"];
-  const ifModifiedSince = req.headers["if-modified-since"];
-  
-  if (ifNoneMatch && ifNoneMatch === `"${stats.mtimeMs}-${stats.size}"`) {
-    return res.writeHead(304).end();
-  }
-  
-  if (ifModifiedSince && new Date(ifModifiedSince) >= stats.mtime) {
-    return res.writeHead(304).end();
-  }
-
-  fs.readFile(imagePath, (err, file) => {
-    if (err) {
-      return res.status(500).send("Error al leer la imagen");
-    }
-    res.end(file);
-  });
+router.head("/images-protect/:foldername/:filename", (req, res) => {
+  const { foldername, filename } = req.params;
+  return serveUploadImage(req, res, foldername, filename);
 });
 
 router.get("/logout", AuthController.logout);

@@ -22,6 +22,21 @@ const MarketplaceWebhookEventRepository = {
     });
   },
 
+  async findLatestByEventId(eventId, marketplace = null) {
+    const where = {
+      event_id: String(eventId)
+    };
+
+    if (marketplace) {
+      where.marketplace = marketplace;
+    }
+
+    return await MarketplaceWebhookEvent.findOne({
+      where,
+      order: [['createdAt', 'DESC']]
+    });
+  },
+
   async findByMarketplaceAndExternalId(marketplace, externalId, statuses = null) {
     const where = {
       marketplace,

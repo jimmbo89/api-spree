@@ -1592,30 +1592,36 @@ async getCategoryAttributes(categoryId) {
         logger.info(`[FalabellaAdapter] ✅ Feed enviado exitosamente. FeedID: ${requestId}`);
 
         const normalizedImages = this.normalizeFalabellaImages(transformedProduct.images);
-        const extraImages = normalizedImages.slice(1);
         let imageUploadResult = { success: true, skipped: true };
-        if (extraImages.length > 0) {
-          imageUploadResult = {
-            success: true,
-            queued: true,
-            images_count: extraImages.length
-          };
+        if (normalizedImages.length > 0) {
+          logger.info(
+            `[FalabellaAdapter] 📸 Cargando imágenes para SKU ${transformedProduct.sku} (${normalizedImages.length}) como parte del flujo de publicación`
+          );
+          try {
+            const uploadResult = await this.uploadProductImages(transformedProduct.sku, normalizedImages);
+            imageUploadResult = {
+              success: Boolean(uploadResult?.success),
+              queued: false,
+              images_count: normalizedImages.length,
+              ...(uploadResult || {})
+            };
 
-          setImmediate(() => {
-            this.uploadProductImages(transformedProduct.sku, extraImages)
-              .then((uploadResult) => {
-                if (!uploadResult?.success) {
-                  logger.warn(
-                    `[FalabellaAdapter] Publicación aceptada pero la carga de imágenes falló para SKU ${transformedProduct.sku}: ${uploadResult?.error || 'unknown'}`
-                  );
-                }
-              })
-              .catch((uploadError) => {
-                logger.warn(
-                  `[FalabellaAdapter] Publicación aceptada pero la carga de imágenes falló para SKU ${transformedProduct.sku}: ${uploadError.message}`
-                );
-              });
-          });
+            if (!uploadResult?.success) {
+              logger.warn(
+                `[FalabellaAdapter] Publicación aceptada pero la carga de imágenes falló para SKU ${transformedProduct.sku}: ${uploadResult?.error || 'unknown'}`
+              );
+            }
+          } catch (uploadError) {
+            imageUploadResult = {
+              success: false,
+              queued: false,
+              images_count: normalizedImages.length,
+              error: uploadError.message
+            };
+            logger.warn(
+              `[FalabellaAdapter] Publicación aceptada pero la carga de imágenes falló para SKU ${transformedProduct.sku}: ${uploadError.message}`
+            );
+          }
         }
 
         return {

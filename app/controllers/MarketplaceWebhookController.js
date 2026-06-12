@@ -38,6 +38,7 @@ const FB_WEBHOOK_TIMEOUT_MS = 30000;
 const FB_FETCH_RETRY_MAX = 3;
 const FB_FETCH_RETRY_BASE_DELAY_MS = 1500;
 const FB_FETCH_RETRY_MAX_DELAY_MS = 8000;
+const FB_WEBHOOK_RECOVERY_GRACE_MS = Number(process.env.FB_WEBHOOK_RECOVERY_GRACE_MS || 3000);
 const FB_ORDER_TOPICS = new Set(["onordercreated", "ordercreated", "onorderitemsstatuschanged"]);
 const FB_FEED_TOPICS = new Set(["onfeedcompleted", "onfeedcreated"]);
 const FB_PRODUCT_TOPICS = new Set([
@@ -94,6 +95,58 @@ const MarketplaceWebhookController = {
     });
   }
 };
+
+async function createFalabellaWebhookEvent(payload, topic, resource, eventId, externalId, marketplaceUserId) {
+  const eventResult = await MarketplaceWebhookEventRepository.createUnique({
+    marketplace: FB_MARKETPLACE_KEY,
+    topic,
+    resource,
+    event_id: eventId,
+    external_id: String(externalId),
+    marketplace_user_id: marketplaceUserId,
+    status: "received",
+    payload
+  });
+
+  if (eventResult.created) {
+    return eventResult;
+  }
+
+  const existingEvent = await MarketplaceWebhookEventRepository.findLatestByEventId(
+    eventId,
+    FB_MARKETPLACE_KEY
+  );
+
+  if (!existingEvent) {
+    return eventResult;
+  }
+
+  const createdAt = existingEvent.createdAt ? new Date(existingEvent.createdAt).getTime() : 0;
+  const ageMs = createdAt > 0 ? Date.now() - createdAt : Number.POSITIVE_INFINITY;
+  const status = String(existingEvent.status || '').toLowerCase();
+  const recoverableStatus = ['received', 'processing', 'error', 'timeout'].includes(status);
+
+  if (!recoverableStatus || ageMs < FB_WEBHOOK_RECOVERY_GRACE_MS) {
+    logger.info(`[FB Webhook] Duplicado ignorado: ${resource}`);
+    return eventResult;
+  }
+
+  await MarketplaceWebhookEventRepository.updateById(existingEvent.id, {
+    status: 'received',
+    error_message: null,
+    processed_at: null,
+    payload
+  });
+
+  logger.warn(
+    `[FB Webhook] Evento duplicado recuperable: ${resource} (status=${status}, age_ms=${ageMs})`
+  );
+
+  return {
+    created: true,
+    record: await MarketplaceWebhookEventRepository.findLatestByEventId(eventId, FB_MARKETPLACE_KEY)
+  };
+}
 
 async function processMercadoLibreWebhook(payload, options = {}) {
   const validation = validateMercadoLibrePayload(payload);
@@ -1067,16 +1120,15 @@ async function processFalabellaFeedWebhook(payload, topic, options = {}) {
 
   logger.info(`[FB Webhook] Procesando evento de feed: ${topic}, FeedID: ${feedId}`);
 
-  const eventResult = await MarketplaceWebhookEventRepository.createUnique({
-    marketplace: FB_MARKETPLACE_KEY,
+  const eventId = buildFalabellaEventId(payload, `feeds/${feedId}`);
+  const eventResult = await createFalabellaWebhookEvent(
+    payload,
     topic,
-    resource: `feeds/${feedId}`,
-    event_id: buildFalabellaEventId(payload, `feeds/${feedId}`),
-    external_id: String(feedId),
-    marketplace_user_id: getFalabellaSellerId(payload),
-    status: "received",
-    payload
-  });
+    `feeds/${feedId}`,
+    eventId,
+    feedId,
+    getFalabellaSellerId(payload)
+  );
 
   if (!eventResult.created) {
     logger.info(`[FB Webhook] Duplicado ignorado: feed/${feedId}`);
@@ -1450,16 +1502,15 @@ async function processFalabellaOrderWebhook(payload, options = {}) {
   const resource = payload?.resource || `orders/${orderId}`;
   const topic = payload?.event || payload?.event_type || payload?.topic || payload?.type || "onOrderCreated";
 
-  const eventResult = await MarketplaceWebhookEventRepository.createUnique({
-    marketplace: FB_MARKETPLACE_KEY,
+  const eventId = buildFalabellaEventId(payload, resource);
+  const eventResult = await createFalabellaWebhookEvent(
+    payload,
     topic,
     resource,
-    event_id: buildFalabellaEventId(payload, resource),
-    external_id: String(orderId),
-    marketplace_user_id: getFalabellaSellerId(payload),
-    status: "received",
-    payload
-  });
+    eventId,
+    orderId,
+    getFalabellaSellerId(payload)
+  );
 
   if (!eventResult.created) {
     logger.info(`[FB Webhook] Duplicado ignorado: ${resource}`);
@@ -1501,16 +1552,15 @@ async function processFalabellaProductWebhook(payload, options = {}) {
 
   const resource = payload?.resource || `products/${sellerSku}`;
   const topic = payload?.event || payload?.event_type || payload?.topic || payload?.type || "onProductUpdated";
-  const eventResult = await MarketplaceWebhookEventRepository.createUnique({
-    marketplace: FB_MARKETPLACE_KEY,
+  const eventId = buildFalabellaEventId(payload, resource);
+  const eventResult = await createFalabellaWebhookEvent(
+    payload,
     topic,
     resource,
-    event_id: buildFalabellaEventId(payload, resource),
-    external_id: String(sellerSku),
-    marketplace_user_id: getFalabellaSellerId(payload),
-    status: "received",
-    payload
-  });
+    eventId,
+    sellerSku,
+    getFalabellaSellerId(payload)
+  );
 
   if (!eventResult.created) {
     logger.info(`[FB Webhook] Duplicado ignorado: ${resource}`);
