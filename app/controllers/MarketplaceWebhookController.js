@@ -24,6 +24,7 @@ const {
 } = require("../repositories");
 const MarketplaceStockSyncService = require("../services/MarketplaceStockSyncService");
 const { verifyMercadoLibreItem } = require("../services/MarketplaceItemVerificationService");
+const FalabellaAdapter = require('../services/adapters/FalabellaAdapter');
 
 const ML_MARKETPLACE_KEY = "mercadolibre";
 const FB_MARKETPLACE_KEY = "falabella";
@@ -1139,18 +1140,31 @@ async function processFalabellaFeedWebhook(payload, topic, options = {}) {
   }
 }
 
-// ✅ 🔑 NUEVO MÉTODO AUXILIAR: Procesar feed con credencial específica
+// ✅ 🔑 MÉTODO AUXILIAR COMPLETO CORREGIDO: Procesar feed con credencial específica
 async function processFeedWithCredential(credential, feedId, topic, event) {
-  try {
-    // ✅ IMPORTAR FalabellaAdapter dinámicamente
-    const FalabellaAdapter = require('../services/adapters/FalabellaAdapter');
-    
-    // Crear instancia del adapter
+  try {    
+    // ✅ CORRECCIÓN: Crear adapter y asignar credencial DIRECTAMENTE
     const adapter = new FalabellaAdapter(
       credential.marketplace_id,
       null,
       credential.id
     );
+    
+    // ✅ 🔑 CLAVE: Asignar la credencial directamente al adapter
+    adapter.credential = credential;
+    
+    // ✅ Verificar que la credencial tenga los campos necesarios
+    if (!adapter.credential?.seller_email || !adapter.credential?.api_key) {
+      await MarketplaceWebhookEventRepository.updateById(event.id, {
+        status: "error",
+        error_message: "credential_missing_required_fields",
+        processed_at: new Date()
+      });
+      logger.error(`[FB Webhook] Credencial incompleta: seller_email=${!!adapter.credential?.seller_email}, api_key=${!!adapter.credential?.api_key}`);
+      return;
+    }
+
+    logger.info(`[FB Webhook] Procesando feed ${feedId} con credencial ID=${credential.id}, seller_email=${credential.seller_email}`);
 
     // ✅ Consultar estado final del feed
     const feedStatus = await adapter.fetchFeedStatus(feedId);
@@ -1201,7 +1215,7 @@ async function processFeedWithCredential(credential, feedId, topic, event) {
     });
 
   } catch (error) {
-    logger.error(`[FB Webhook] Error en processFeedWithCredential: ${error.message}`);
+    logger.error(`[FB Webhook] Error en processFeedWithCredential: ${error.message}`, error.stack);
     await MarketplaceWebhookEventRepository.updateById(event.id, {
       status: "error",
       error_message: error.message || 'feed_processing_error',
