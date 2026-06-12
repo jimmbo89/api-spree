@@ -2008,6 +2008,7 @@ async getCategoryAttributes(categoryId) {
 
       const product = products[0];
       const rawProduct = product.raw || {};
+      const hasMainImage = FalabellaAdapter.hasFalabellaImage(rawProduct);
       
       // Extraer QCStatus del producto
       const qcStatus = rawProduct.QCStatus || rawProduct.qc_status || null;
@@ -2028,6 +2029,7 @@ async getCategoryAttributes(categoryId) {
         product_id: rawProduct.ProductId || null,
         shop_sku: rawProduct.ShopSku || null,
         url: rawProduct.Url || null,
+        has_image: hasMainImage,
         raw: rawProduct
       };
     } catch (error) {
@@ -2040,7 +2042,45 @@ async getCategoryAttributes(categoryId) {
     }
   }
 
-    // ✅ MÉTODO ESTÁTICO: Extraer errores REALES del response de Falabella
+  // ✅ MÉTODO ESTÁTICO: Extraer errores REALES del response de Falabella
+  static hasFalabellaImage(productRaw) {
+    if (!productRaw || typeof productRaw !== 'object') {
+      return false;
+    }
+
+    const candidates = [
+      productRaw.MainImage,
+      productRaw.mainImage,
+      productRaw.Image,
+      productRaw.image,
+      productRaw.Images,
+      productRaw.images
+    ];
+
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' && candidate.trim()) {
+        return true;
+      }
+
+      if (Array.isArray(candidate) && candidate.length > 0) {
+        return true;
+      }
+
+      if (candidate && typeof candidate === 'object') {
+        const values = Object.values(candidate);
+        if (values.some(value => {
+          if (typeof value === 'string') return value.trim().length > 0;
+          if (Array.isArray(value)) return value.length > 0;
+          return Boolean(value);
+        })) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
   static extractRealFalabellaErrors(productRaw) {
     if (!productRaw || typeof productRaw !== 'object') {
       return [];
@@ -2064,36 +2104,79 @@ async getCategoryAttributes(categoryId) {
       });
     }
 
-    // ✅ 2. Errores de QC (rechazado)
-    if (productRaw.QCStatus === 'rejected' || productRaw.qc_status === 'rejected') {
-      errors.push({
-        source: 'qc',
-        code: 'QC_REJECTED',
-        message: productRaw.QCMessage || 'Producto rechazado por control de calidad',
-        field: 'QCStatus'
-      });
+    // ✅ 2. Errores/razones explícitas del QC
+    const qcStatus = String(productRaw.QCStatus || productRaw.qc_status || '').trim().toLowerCase();
+    if (qcStatus === 'rejected' || qcStatus === 'fail') {
+      const qcReason =
+        productRaw.QCMessage ||
+        productRaw.qc_message ||
+        productRaw.Reason ||
+        productRaw.reason ||
+        productRaw.Message ||
+        productRaw.message ||
+        null;
+
+      if (qcReason) {
+        errors.push({
+          source: 'qc',
+          code: 'QC_REJECTED',
+          message: qcReason,
+          field: 'QCStatus'
+        });
+      }
     }
 
-    // ✅ 3. Sin imágenes
-    if (!productRaw.MainImage || productRaw.MainImage === '') {
-      errors.push({
-        source: 'validation',
-        code: 'MISSING_IMAGE',
-        message: 'Sin imágenes - El producto debe tener al menos una imagen principal',
-        field: 'MainImage'
-      });
-    }
+    // ✅ 3. Errores explícitos en el payload raíz
+    const rootMessages = [
+      productRaw.Error,
+      productRaw.error,
+      productRaw.ErrorMessage,
+      productRaw.error_message,
+      productRaw.Reason,
+      productRaw.reason,
+      productRaw.Detail,
+      productRaw.detail
+    ].filter(value => typeof value === 'string' && value.trim());
 
-    // ✅ 4. No publicado
-    if (productRaw.BusinessUnits?.BusinessUnit?.IsPublished === '0' || 
-        productRaw.BusinessUnits?.BusinessUnit?.IsPublished === 0) {
+    rootMessages.forEach((message) => {
       errors.push({
-        source: 'publication',
-        code: 'NOT_PUBLISHED',
-        message: `Producto no publicado. ContentScore: ${productRaw.ContentScore || 'N/A'}`,
-        field: 'IsPublished'
+        source: 'response',
+        code: null,
+        message: message.trim(),
+        field: null
       });
-    }
+    });
+
+    // ✅ 4. Errores/advertencias estructurados extra
+    const genericCollections = [
+      productRaw.Errors,
+      productRaw.Warnings,
+      productRaw.Issues,
+      productRaw.Messages
+    ];
+
+    genericCollections.forEach((collection) => {
+      const list = Array.isArray(collection)
+        ? collection
+        : collection && typeof collection === 'object'
+          ? Object.values(collection)
+          : [];
+
+      list.forEach((item) => {
+        if (!item) return;
+        if (typeof item === 'string') {
+          errors.push({ source: 'response', code: null, message: item, field: null });
+          return;
+        }
+
+        errors.push({
+          source: 'response',
+          code: item.Code || item.code || null,
+          message: item.Message || item.message || item.Error || item.error || String(item),
+          field: item.Field || item.field || item.Attribute || item.attribute || null
+        });
+      });
+    });
 
     return errors;
   }

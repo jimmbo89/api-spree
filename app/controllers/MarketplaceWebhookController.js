@@ -1395,11 +1395,8 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
       }).join(' | ');
     } else if (productStatus.qc_status === 'rejected') {
       finalStatus = 'failed';
-      // ✅ Buscar motivo REAL de rechazo
-      const rejectionReason = productStatus.raw?.QCMessage || 
-                             productStatus.raw?.rejection_reason ||
-                             'Rechazado por QC (sin motivo específico)';
-      realErrorMessage = `QC RECHAZADO: ${rejectionReason}`;
+      // ✅ Falabella rechazó pero no entregó un motivo explícito
+      realErrorMessage = null;
     } else if (productStatus.status === 'active' && productStatus.is_published === true) {
       finalStatus = 'published';
       realErrorMessage = null;
