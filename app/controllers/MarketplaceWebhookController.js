@@ -1046,12 +1046,330 @@ async function processFalabellaWebhook(payload, options = {}) {
     return;
   }
 
+  // ✅ PROCESAR EVENTOS DE FEED
   if (normalizedTopic && FB_FEED_TOPICS.has(normalizedTopic)) {
     logger.info(`[FB Webhook] Evento de feed recibido: ${topicRaw}`);
+    await processFalabellaFeedWebhook(payload, normalizedTopic, options);
     return;
   }
 
   logger.info(`[FB Webhook] Evento ignorado: ${topicRaw}`);
+}
+
+async function processFalabellaFeedWebhook(payload, topic, options = {}) {
+  const feedId = payload?.payload?.Feed || payload?.Feed || payload?.data?.Feed || null;
+  
+  if (!feedId) {
+    logger.warn(`[FB Webhook] No se pudo extraer FeedID del payload de feed`);
+    return;
+  }
+
+  logger.info(`[FB Webhook] Procesando evento de feed: ${topic}, FeedID: ${feedId}`);
+
+  // ✅ Guardar evento en la BD
+  const eventResult = await MarketplaceWebhookEventRepository.createUnique({
+    marketplace: FB_MARKETPLACE_KEY,
+    topic,
+    resource: `feeds/${feedId}`,
+    event_id: buildFalabellaEventId(payload, `feeds/${feedId}`),
+    external_id: String(feedId),
+    marketplace_user_id: getFalabellaSellerId(payload),
+    status: "received",
+    payload
+  });
+
+  if (!eventResult.created) {
+    logger.info(`[FB Webhook] Duplicado ignorado: feed/${feedId}`);
+    return;
+  }
+
+  const event = eventResult.record;
+
+  try {
+    // ✅ 🔑 CORRECCIÓN: Resolver credencial con manejo de errores
+    const credential = await resolveFalabellaCredential(payload);
+    
+    if (!credential || !credential.seller_email || !credential.api_key) {
+      logger.warn(`[FB Webhook] Credencial Falabella no encontrada para feed ${feedId}`);
+      
+      // ✅ Intentar buscar la tarea directamente por feed_id
+      const task = await ProductPublishingTaskRepository.findLatestByFeedId(
+        null, // marketplaceId null para búsqueda más amplia
+        String(feedId)
+      );
+
+      if (!task) {
+        await MarketplaceWebhookEventRepository.updateById(event.id, {
+          status: "error",
+          error_message: "credential_not_found_and_task_not_found",
+          processed_at: new Date()
+        });
+        logger.warn(`[FB Webhook] No se encontró credencial ni tarea para feed ${feedId}`);
+        return;
+      }
+
+      // ✅ Si encontramos la tarea, usar su credential_id
+      const taskCredential = await MarketplaceCredentialRepository.findById(task.credential_id);
+      
+      if (!taskCredential || !taskCredential.seller_email || !taskCredential.api_key) {
+        await MarketplaceWebhookEventRepository.updateById(event.id, {
+          status: "error",
+          error_message: "credential_not_found_for_task",
+          processed_at: new Date()
+        });
+        logger.warn(`[FB Webhook] Credencial de la tarea ${task.id} no válida`);
+        return;
+      }
+
+      // ✅ Procesar con la credencial de la tarea
+      await processFeedWithCredential(taskCredential, feedId, topic, event);
+      return;
+    }
+
+    // ✅ Procesar con la credencial encontrada
+    await processFeedWithCredential(credential, feedId, topic, event);
+
+  } catch (error) {
+    logger.error(`[FB Webhook] Error procesando feed ${feedId}: ${error.message}`);
+    await MarketplaceWebhookEventRepository.updateById(event.id, {
+      status: "error",
+      error_message: error.message || 'feed_processing_error',
+      processed_at: new Date()
+    });
+  }
+}
+
+// ✅ 🔑 NUEVO MÉTODO AUXILIAR: Procesar feed con credencial específica
+async function processFeedWithCredential(credential, feedId, topic, event) {
+  try {
+    // ✅ IMPORTAR FalabellaAdapter dinámicamente
+    const FalabellaAdapter = require('../services/adapters/FalabellaAdapter');
+    
+    // Crear instancia del adapter
+    const adapter = new FalabellaAdapter(
+      credential.marketplace_id,
+      null,
+      credential.id
+    );
+
+    // ✅ Consultar estado final del feed
+    const feedStatus = await adapter.fetchFeedStatus(feedId);
+    
+    if (!feedStatus) {
+      await MarketplaceWebhookEventRepository.updateById(event.id, {
+        status: "error",
+        error_message: "feed_status_not_found",
+        processed_at: new Date()
+      });
+      logger.warn(`[FB Webhook] No se pudo obtener FeedStatus para ${feedId}`);
+      return;
+    }
+
+    logger.info(`[FB Webhook] FeedStatus para ${feedId}: ${JSON.stringify(feedStatus)}`);
+
+    // ✅ Buscar la tarea asociada
+    const task = await ProductPublishingTaskRepository.findLatestByFeedId(
+      credential.marketplace_id,
+      String(feedId)
+    );
+
+    if (!task) {
+      const taskByRequestId = await ProductPublishingTaskRepository.findLatestByExternalId(
+        credential.marketplace_id,
+        String(feedId)
+      );
+      
+      if (!taskByRequestId) {
+        logger.warn(`[FB Webhook] No se encontró tarea asociada al feed ${feedId}`);
+        await MarketplaceWebhookEventRepository.updateById(event.id, {
+          status: "processed",
+          error_message: "task_not_found_for_feed",
+          processed_at: new Date()
+        });
+        return;
+      }
+      
+      await processFeedResultForTask(taskByRequestId, adapter, feedStatus, feedId, topic);
+    } else {
+      await processFeedResultForTask(task, adapter, feedStatus, feedId, topic);
+    }
+
+    await MarketplaceWebhookEventRepository.updateById(event.id, {
+      status: "processed",
+      processed_at: new Date(),
+      error_message: null
+    });
+
+  } catch (error) {
+    logger.error(`[FB Webhook] Error en processFeedWithCredential: ${error.message}`);
+    await MarketplaceWebhookEventRepository.updateById(event.id, {
+      status: "error",
+      error_message: error.message || 'feed_processing_error',
+      processed_at: new Date()
+    });
+  }
+}
+
+async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic) {
+  const feedStatusLower = String(feedStatus.Status || '').toLowerCase();
+  const failedRecords = parseInt(feedStatus.FailedRecords || '0', 10);
+  const processedRecords = parseInt(feedStatus.ProcessedRecords || '0', 10);
+  const totalRecords = parseInt(feedStatus.TotalRecords || '0', 10);
+  const feedErrors = feedStatus.FeedErrors || [];
+  const feedWarnings = feedStatus.FeedWarnings || [];
+
+  logger.info(`[FB Webhook] Procesando resultado de feed ${feedId} para tarea ${task.id}`);
+
+  // ✅ Si el feed terminó con errores
+  if (feedStatusLower === 'error' || feedStatusLower === 'canceled' || failedRecords > 0) {
+    const errorMessage = feedErrors.length > 0
+      ? feedErrors.map(e => e.message || e.Message || String(e)).join(' | ')
+      : `Feed ${feedId} falló con estado: ${feedStatusLower}`;
+
+    logger.error(`[FB Webhook] Feed ${feedId} falló: ${errorMessage}`);
+
+    // Actualizar tarea como fallida
+    await ProductPublishingTaskRepository.updateTask(task, {
+      status: 'failed',
+      error_message: errorMessage,
+      error_details: {
+        feed_id: feedId,
+        feed_status: feedStatus,
+        feed_errors: feedErrors,
+        feed_warnings: feedWarnings,
+        failed_records: failedRecords,
+        processed_records: processedRecords,
+        total_records: totalRecords,
+        source: 'feed_webhook'
+      },
+      api_response: feedStatus
+    });
+
+    // Actualizar link si existe
+    if (task.external_id) {
+      const link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
+        task.marketplace_id,
+        task.external_id,
+        task.company_id,
+        task.branch_id
+      );
+
+      if (link) {
+        await link.update({
+          status: 'failed',
+          last_synced_at: new Date()
+        });
+      }
+    }
+
+    return;
+  }
+
+  // ✅ Si el feed terminó exitosamente, consultar el estado real del producto
+  if (feedStatusLower === 'finished' && processedRecords > 0) {
+    // Extraer el SellerSku del payload de la tarea
+    const sellerSku = task.payload?.sku || task.payload?.SellerSku || task.external_id || null;
+    
+    if (!sellerSku) {
+      logger.warn(`[FB Webhook] No se pudo extraer SellerSku de la tarea ${task.id}`);
+      return;
+    }
+
+    // ✅ Consultar estado real del producto en Falabella (incluye QC)
+    const productStatus = await adapter.fetchProductStatus(sellerSku);
+    
+    logger.info(`[FB Webhook] Estado real del producto ${sellerSku}: ${JSON.stringify(productStatus)}`);
+
+    // Determinar estado final basado en QC y status
+    let finalStatus = 'published';
+    let statusMessage = null;
+    let hasWarnings = feedWarnings.length > 0;
+
+    if (!productStatus.found) {
+      finalStatus = 'failed';
+      statusMessage = 'Producto no encontrado en Falabella después del feed';
+    } else if (productStatus.qc_status) {
+      const qcLower = String(productStatus.qc_status).toLowerCase();
+      
+      if (qcLower === 'rejected' || qcLower === 'fail') {
+        finalStatus = 'failed';
+        statusMessage = `Producto rechazado en QC: ${productStatus.qc_status}`;
+      } else if (qcLower === 'pending' || qcLower === 'processing') {
+        finalStatus = 'published_with_warnings';
+        statusMessage = `Producto en catálogo pero pendiente de aprobación QC: ${productStatus.qc_status}`;
+        hasWarnings = true;
+      } else if (qcLower === 'approved' || qcLower === 'active') {
+        finalStatus = 'published';
+        statusMessage = 'Producto aprobado y activo';
+      } else {
+        finalStatus = 'published_with_warnings';
+        statusMessage = `Producto en catálogo con estado QC: ${productStatus.qc_status}`;
+        hasWarnings = true;
+      }
+    } else if (productStatus.status === 'active') {
+      finalStatus = 'published';
+      statusMessage = 'Producto activo en Falabella';
+    } else if (productStatus.status === 'inactive') {
+      finalStatus = 'published_with_warnings';
+      statusMessage = 'Producto en catálogo pero inactivo';
+      hasWarnings = true;
+    } else {
+      finalStatus = 'published_with_warnings';
+      statusMessage = `Producto en catálogo con estado: ${productStatus.status || 'desconocido'}`;
+      hasWarnings = true;
+    }
+
+    // ✅ Preparar datos de actualización
+    const updateData = {
+      status: finalStatus,
+      error_message: statusMessage,
+      error_details: {
+        feed_id: feedId,
+        feed_status: feedStatus,
+        product_status: productStatus,
+        feed_warnings: feedWarnings,
+        source: 'feed_webhook',
+        qc_status: productStatus.qc_status,
+        marketplace_status: productStatus.status
+      },
+      api_response: {
+        feed: feedStatus,
+        product: productStatus
+      }
+    };
+
+    // Si tiene external_url del producto, actualizarlo
+    if (productStatus.url) {
+      updateData.external_url = productStatus.url;
+    }
+
+    // Actualizar tarea
+    await ProductPublishingTaskRepository.updateTask(task, updateData);
+
+    // Actualizar link
+    if (task.external_id) {
+      const link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
+        task.marketplace_id,
+        task.external_id,
+        task.company_id,
+        task.branch_id
+      );
+
+      if (link) {
+        await link.update({
+          status: finalStatus === 'published' ? 'active' : finalStatus,
+          external_url: productStatus.url || link.external_url,
+          published_stock: productStatus.stock || link.published_stock,
+          published_payload: productStatus.raw || link.published_payload,
+          last_synced_at: new Date()
+        });
+      }
+    }
+
+    logger.info(
+      `[FB Webhook] ✅ Tarea ${task.id} actualizada: ${finalStatus} - ${statusMessage}`
+    );
+  }
 }
 
 async function processFalabellaOrderWebhook(payload, options = {}) {

@@ -461,6 +461,18 @@ class PublishingService {
 
         const externalId = resolveExternalId(result);
 
+        // ✅ 🔑 DETECTAR SI ES FALABELLA (SOLO para agregar datos específicos)
+        const isFalabella = String(marketplace?.domain || '').toLowerCase().includes('falabella');
+        
+        // ✅ 🔑 EXTRAER feed_id SOLO PARA FALABELLA
+        const feedId = isFalabella 
+          ? (result.data?.feed_id || result.data?.feed?.FeedID || result.request_id || null)
+          : null;
+
+        // ✅ 🔑 EXTRAER datos de imágenes SOLO PARA FALABELLA
+        const imagesUploaded = isFalabella ? (result.images_uploaded || null) : null;
+        const imagesError = isFalabella ? (result.images_error || null) : null;
+
         const task = await ProductPublishingTaskRepository.create({
           product_id: productData.id,
           marketplace_id: marketplace.marketplace_id,
@@ -477,8 +489,20 @@ class PublishingService {
           // ✅ Guardar warnings como error_message para compatibilidad con el front
           error_message: warningMessage,
           // ✅ Guardar warnings estructurados en error_details
-          error_details: verificationDetails || warningsData,
-          api_response: result.data,
+          error_details: {
+            ...(verificationDetails || {}),
+            ...(warningsData || {}),
+            // ✅ 🔑 SOLO AGREGAR SI ES FALABELLA Y HAY DATOS
+            ...(feedId ? { feed_id: feedId } : {}),
+            ...(imagesUploaded !== null ? { images_uploaded: imagesUploaded } : {}),
+            ...(imagesError ? { images_error: imagesError } : {})
+          },
+          api_response: {
+            ...result.data,
+            // ✅ 🔑 SOLO AGREGAR SI ES FALABELLA Y HAY DATOS
+            ...(feedId ? { feed_id: feedId } : {}),
+            ...(imagesUploaded !== null ? { images_uploaded: imagesUploaded } : {})
+          },
           batch_id: batch_id || null,
         });
 

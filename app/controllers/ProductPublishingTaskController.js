@@ -360,6 +360,7 @@ function buildPublishedStatusOptions() {
     { id: 'inactive', name: 'Inactiva', marketplaces: ['falabella'], shared: false },
     { id: 'pending', name: 'Pendiente', marketplaces: ['falabella'], shared: false },
     { id: 'rejected', name: 'Rechazada', marketplaces: ['falabella'], shared: false },
+    { id: 'not_published', name: 'No publicada', marketplaces: ['falabella'], shared: false }, // ✅ NUEVO
     { id: 'sold_out', name: 'Sin stock', marketplaces: ['falabella'], shared: false },
     { id: 'image_missing', name: 'Sin imagen', marketplaces: ['falabella'], shared: false },
     { id: 'unknown', name: 'Desconocido', marketplaces: ['mercadolibre', 'falabella'], shared: false }
@@ -411,12 +412,27 @@ function classifyMarketplaceState(status) {
     return 'unknown';
   }
 
-  if (normalized === 'active') {
+  // ✅ Estados que cuentan como "activo" (visible en marketplace)
+  if (normalized === 'active' || normalized === 'live') {
     return 'active';
   }
 
-  if (normalized === 'deleted' || normalized === 'closed') {
+  // ✅ Estados que cuentan como "inactivo" (no visible)
+  if (normalized === 'deleted' || normalized === 'closed' || normalized === 'inactive') {
     return 'deleted';
+  }
+
+  // ✅ NUEVO: Estados específicos de Falabella
+  if (normalized === 'rejected') {
+    return 'inactive'; // Rechazado por QC → no visible
+  }
+
+  if (normalized === 'pending') {
+    return 'inactive'; // Pendiente de aprobación → no visible aún
+  }
+
+  if (normalized === 'not_published') {
+    return 'inactive'; // No publicado → no visible
   }
 
   return 'inactive';
@@ -455,6 +471,39 @@ function normalizeFalabellaEditRequestValue(value) {
   return value;
 }
 
+function buildFalabellaPublicationNote(productState) {
+  // ✅ Basado en documentación oficial Falabella:
+  // Un producto es visible solo si Status=active Y IsPublished=1 Y QCStatus=approved
+
+  if (!productState) return null;
+
+  const rawStatus = productState.raw_status || productState.status;
+  const isPublished = productState.is_published;
+  const qcStatus = productState.qc_status;
+
+  if (rawStatus !== 'active') {
+    return `El producto está inactivo (${rawStatus}). Actívalo para que pueda publicarse.`;
+  }
+
+  if (isPublished === false) {
+    return `El producto está activo pero NO está publicado en el marketplace. Verifica que cumpla todos los requisitos de Falabella.`;
+  }
+
+  if (qcStatus === 'rejected') {
+    return `El producto fue RECHAZADO por el control de calidad de Falabella. Revisa las observaciones en el Seller Center de Falabella.`;
+  }
+
+  if (qcStatus === 'pending') {
+    return `El producto está pendiente de aprobación por el control de calidad de Falabella. Esto puede tomar hasta 48 horas.`;
+  }
+
+  if (rawStatus === 'active' && isPublished === true && (!qcStatus || qcStatus === 'approved')) {
+    return `✅ Producto publicado y visible en falabella.com`;
+  }
+
+  return null;
+}
+
 function buildFalabellaPublishedStateSnapshot(product, sellerSku) {
   // ✅ Manejar diferentes estructuras de respuesta de GetProducts de Falabella
   let businessUnit = null;
@@ -469,18 +518,45 @@ function buildFalabellaPublishedStateSnapshot(product, sellerSku) {
     businessUnit = product.BusinessUnit;
   }
 
-  const status = String(businessUnit?.Status || product?.status || 'unknown').trim().toLowerCase() || 'unknown';
+  const rawStatus = String(businessUnit?.Status || product?.status || 'unknown').trim().toLowerCase() || 'unknown';
+
+  // ✅ NUEVO: Extraer IsPublished según documentación oficial Falabella
+  // "1" = publicado en marketplace, "0" = no publicado
+  const isPublishedRaw = businessUnit?.IsPublished ?? product?.IsPublished ?? null;
+  const isPublished = isPublishedRaw !== null
+    ? (String(isPublishedRaw).trim() === '1' || isPublishedRaw === 1 || isPublishedRaw === true)
+    : null;
+
+  // ✅ NUEVO: Extraer QCStatus según documentación oficial
+  // approved, rejected, pending
+  const qcStatus = String(businessUnit?.QCStatus || product?.QCStatus || product?.qc_status || '').trim().toLowerCase() || null;
+
+  // ✅ NUEVO: Determinar estado REAL de publicación según los 3 campos
+  // Un producto está realmente publicado solo si:
+  // Status=active Y IsPublished=1 Y QCStatus=approved (o null)
+  let realStatus = rawStatus;
+  if (rawStatus === 'active') {
+    if (isPublished === false) {
+      realStatus = 'not_published'; // Status=active pero IsPublished=0
+    } else if (qcStatus === 'rejected') {
+      realStatus = 'rejected'; // Rechazado por QC
+    } else if (qcStatus === 'pending') {
+      realStatus = 'pending'; // Pendiente de aprobación
+    }
+  }
 
   return {
     sku: String(product?.SellerSku || sellerSku || '').trim(),
-    status: status === 'live' ? 'active' : status,
+    status: realStatus, // ✅ Estado REAL
+    raw_status: rawStatus, // ✅ Status original para referencia
+    is_published: isPublished, // ✅ NUEVO: Si está publicado
+    qc_status: qcStatus, // ✅ NUEVO: Estado de QC
     price: businessUnit?.Price !== undefined && businessUnit?.Price !== null
       ? Number(businessUnit.Price)
       : null,
     available_quantity: businessUnit?.Stock !== undefined && businessUnit?.Stock !== null
       ? Number(businessUnit.Stock)
       : null,
-    qc_status: String(product?.QCStatus || product?.qc_status || '').trim().toLowerCase() || null,
     permalink: product?.Url || product?.url || null,
     raw: product
   };
@@ -2426,7 +2502,7 @@ async retryBatch(req, res) {
     results
   });
 },
-  async publishedProducts(req, res) {
+async publishedProducts(req, res) {
   logger.info(`${req.user?.name || 'Unknown'} - Lista productos publicados`);
   const metadata = getRequestMetadata(req);
 
@@ -2560,7 +2636,53 @@ async retryBatch(req, res) {
         task.credential_id || null,
         task.user_id || null
       );
-      const marketplaceStatus = extractPublishedMarketplaceStatus(task, marketplaceLink);
+
+      // ✅ DETECTAR MARKETPLACE
+      const marketplaceKey = resolveMarketplaceKey(marketplace);
+
+      // ✅ CALCULAR marketplace_status (ESTADO REAL)
+      let marketplaceStatus;
+      let isPublished = null;
+      let qcStatus = null;
+
+      if (marketplaceKey === 'falabella') {
+        // ✅ Falabella: estado REAL según Status + IsPublished + QCStatus
+        const falabellaPayload = normalizePublishedPayload(marketplaceLink?.published_payload);
+        const falabellaBU = falabellaPayload?.BusinessUnits?.BusinessUnit || {};
+
+        const rawStatus = String(falabellaBU.Status || 'unknown').trim().toLowerCase();
+        const isPublishedRaw = falabellaBU.IsPublished;
+        isPublished = isPublishedRaw !== undefined && isPublishedRaw !== null
+          ? (String(isPublishedRaw).trim() === '1' || isPublishedRaw === 1 || isPublishedRaw === true)
+          : null;
+        qcStatus = String(falabellaPayload?.QCStatus || falabellaBU.QCStatus || '').trim().toLowerCase() || null;
+
+        // ✅ Determinar estado REAL según los 3 campos (documentación oficial Falabella)
+        if (rawStatus === 'active') {
+          if (isPublished === false) {
+            marketplaceStatus = 'not_published';
+          } else if (qcStatus === 'rejected') {
+            marketplaceStatus = 'rejected';
+          } else if (qcStatus === 'pending') {
+            marketplaceStatus = 'pending';
+          } else {
+            marketplaceStatus = 'active';
+          }
+        } else {
+          marketplaceStatus = rawStatus || 'unknown';
+        }
+
+        logger.debug(`[publishedProducts] Falabella estado real para ${task.external_id}:`, {
+          rawStatus,
+          isPublished,
+          qcStatus,
+          marketplaceStatus
+        });
+      } else {
+        // ✅ MercadoLibre y otros: usar el método estándar
+        marketplaceStatus = extractPublishedMarketplaceStatus(task, marketplaceLink);
+      }
+
       const statusBucket = classifyMarketplaceState(marketplaceStatus);
       const normalizedMarketplaceStatus = String(marketplaceStatus || '').trim().toLowerCase();
 
@@ -2568,27 +2690,19 @@ async retryBatch(req, res) {
         continue;
       }
 
-      // ✅ DETECTAR MARKETPLACE Y SELECCIONAR PAYLOAD CORRECTO
-      const marketplaceKey = resolveMarketplaceKey(marketplace);
-
-      // ✅ Para Falabella: usar published_payload del link (tiene datos actualizados tras updateFalabellaItem)
-      // ✅ Para MercadoLibre: usar api_response del task (respuesta directa de la API con datos actuales)
+      // ✅ Seleccionar payload correcto según marketplace
       let payloadForMetrics;
       if (marketplaceKey === 'falabella') {
-        // Falabella: priorizar published_payload del link (actualizado por updateFalabellaItem)
         const linkPayload = marketplaceLink?.published_payload;
         const normalizedLinkPayload = normalizePublishedPayload(linkPayload);
-        payloadForMetrics = normalizedLinkPayload 
-          || normalizePublishedPayload(task.api_response) 
-          || normalizePublishedPayload(task.payload) 
+        payloadForMetrics = normalizedLinkPayload
+          || normalizePublishedPayload(task.api_response)
+          || normalizePublishedPayload(task.payload)
           || {};
-        logger.info(`[publishedProducts] Falabella: usando published_payload del link para ${task.external_id}`);
       } else {
-        // MercadoLibre y otros: usar api_response del task
         const apiResponsePayload = normalizePublishedPayload(task.api_response);
         const taskPayload = normalizePublishedPayload(task.payload);
         payloadForMetrics = apiResponsePayload || taskPayload || {};
-        logger.info(`[publishedProducts] ${marketplaceKey}: usando api_response para ${task.external_id}`);
       }
 
       const productImages = normalizeProductImages(product.images);
@@ -2596,7 +2710,8 @@ async retryBatch(req, res) {
       statusSummary.total += 1;
       statusSummary[statusBucket] = (statusSummary[statusBucket] || 0) + 1;
 
-      publishedProducts.push({
+      // ✅ Construir objeto de respuesta LIMPIO
+      const productResponse = {
         task_id: task.id,
         product_id: task.product_id,
         product_name: product.name || 'N/A',
@@ -2611,7 +2726,7 @@ async retryBatch(req, res) {
         marketplace_key: marketplaceKey,
         marketplace_name: credential.name || marketplace.name || 'N/A',
         marketplace_domain: marketplace.domain || null,
-        marketplace_status: marketplaceStatus || 'unknown',
+        marketplace_status: marketplaceStatus || 'unknown', // ✅ ESTADO REAL
         publication_status: task.status,
         published_stock: extractPublishedStock(payloadForMetrics),
         published_price: extractPublishedPrice(payloadForMetrics),
@@ -2625,7 +2740,20 @@ async retryBatch(req, res) {
         last_synced_at: formatDateTimeDisplay(task.updatedAt),
         last_synced_at_iso: task.updatedAt ? new Date(task.updatedAt).toISOString() : null,
         live_verification: null
-      });
+      };
+
+      // ✅ Agregar información adicional SOLO para Falabella (sin redundancias)
+      if (marketplaceKey === 'falabella') {
+        productResponse.is_published = isPublished;
+        productResponse.qc_status = qcStatus;
+        productResponse.publication_note = buildFalabellaPublicationNote({
+          raw_status: marketplaceStatus === 'not_published' ? 'active' : marketplaceStatus,
+          is_published: isPublished,
+          qc_status: qcStatus
+        });
+      }
+
+      publishedProducts.push(productResponse);
     }
 
     await LogRepository.create({
@@ -3183,7 +3311,6 @@ async retryBatch(req, res) {
       logger.info(`[updateFalabellaItem] Feed exitoso: ${feedFinishedSuccessfully}`);
 
       // ✅ CORRECCIÓN CRÍTICA: Obtener el link ANTES de construir el snapshot
-      // Esto nos da el estado REAL actual (stock, precio, status) desde la BD
       const link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
         marketplaceId,
         externalId,
@@ -3193,15 +3320,27 @@ async retryBatch(req, res) {
         userId
       );
 
+      // ✅ CORRECCIÓN CRÍTICA #2: Leer el payload ACTUAL del link (para hacer MERGE, no sobrescribir)
+      const existingPublishedPayload = normalizePublishedPayload(link?.published_payload) || {};
+
       // ✅ Estado base: leer desde ProductMarketplaceLink (datos reales actualizados)
+      const existingBusinessUnit = existingPublishedPayload?.BusinessUnits?.BusinessUnit || {};
       const currentState = {
         sku: externalId,
         status: link?.status || 'active',
-        price: link?.published_payload?.BusinessUnits?.BusinessUnit?.Price != null 
-          ? Number(link.published_payload.BusinessUnits.BusinessUnit.Price) 
+        raw_status: existingBusinessUnit.Status || link?.status || 'active',
+        price: existingBusinessUnit.Price != null
+          ? Number(existingBusinessUnit.Price)
           : null,
-        available_quantity: link?.published_stock != null 
-          ? Number(link.published_stock) 
+        available_quantity: link?.published_stock != null
+          ? Number(link.published_stock)
+          : (existingBusinessUnit.Stock != null ? Number(existingBusinessUnit.Stock) : null),
+        // ✅ PRESERVAR IsPublished y QCStatus del payload existente
+        is_published: existingBusinessUnit.IsPublished !== undefined
+          ? (String(existingBusinessUnit.IsPublished).trim() === '1' || existingBusinessUnit.IsPublished === 1 || existingBusinessUnit.IsPublished === true)
+          : null,
+        qc_status: existingPublishedPayload.QCStatus
+          ? String(existingPublishedPayload.QCStatus).trim().toLowerCase()
           : null,
         permalink: link?.external_url || task.external_url || null
       };
@@ -3214,13 +3353,17 @@ async retryBatch(req, res) {
       if (feedFinishedSuccessfully) {
         // ✅ CASO 1: Feed confirmado exitosamente
         // Construimos el snapshot mezclando: estado actual + solo los campos enviados
-        
         currentProductState = {
           sku: externalId,
           // ✅ Status: si se envió, usar el nuevo; si no, mantener el actual
           status: hasStatus
             ? String(status).trim().toLowerCase()
-            : currentState.status,
+            : (currentState.status === 'active' && currentState.is_published === false
+                ? 'not_published'
+                : (currentState.qc_status === 'rejected' ? 'rejected' : currentState.status)),
+          raw_status: hasStatus
+            ? String(status).trim().toLowerCase()
+            : currentState.raw_status,
           // ✅ Precio: si se envió, usar el nuevo; si no, mantener el actual
           price: hasPrice
             ? Number(price)
@@ -3229,7 +3372,9 @@ async retryBatch(req, res) {
           available_quantity: hasQuantity
             ? Number(available_quantity)
             : currentState.available_quantity,
-          qc_status: null,
+          // ✅ PRESERVAR IsPublished y QCStatus del estado existente
+          is_published: currentState.is_published,
+          qc_status: currentState.qc_status,
           permalink: currentState.permalink,
           raw: null
         };
@@ -3237,8 +3382,11 @@ async retryBatch(req, res) {
         logger.info(`[updateFalabellaItem] ✅ Feed confirmado exitoso. Snapshot construido (solo campos enviados):`, {
           sku: currentProductState.sku,
           status: currentProductState.status,
+          raw_status: currentProductState.raw_status,
           price: currentProductState.price,
           stock: currentProductState.available_quantity,
+          is_published: currentProductState.is_published,
+          qc_status: currentProductState.qc_status,
           changedFields
         });
       } else {
@@ -3258,8 +3406,11 @@ async retryBatch(req, res) {
           logger.info(`[updateFalabellaItem] Snapshot desde GetProducts:`, {
             sku: currentProductState.sku,
             status: currentProductState.status,
+            raw_status: currentProductState.raw_status,
             price: currentProductState.price,
-            stock: currentProductState.available_quantity
+            stock: currentProductState.available_quantity,
+            is_published: currentProductState.is_published,
+            qc_status: currentProductState.qc_status
           });
         } else {
           // Fallback último: usar estado actual del link + solo campos enviados
@@ -3268,21 +3419,28 @@ async retryBatch(req, res) {
             status: hasStatus
               ? String(status).trim().toLowerCase()
               : currentState.status,
+            raw_status: hasStatus
+              ? String(status).trim().toLowerCase()
+              : currentState.raw_status,
             price: hasPrice
               ? Number(price)
               : currentState.price,
             available_quantity: hasQuantity
               ? Number(available_quantity)
               : currentState.available_quantity,
-            qc_status: null,
+            is_published: currentState.is_published,
+            qc_status: currentState.qc_status,
             permalink: currentState.permalink,
             raw: null
           };
           logger.warn(`[updateFalabellaItem] ⚠️ GetProducts no devolvió datos. Snapshot desde fallback:`, {
             sku: currentProductState.sku,
             status: currentProductState.status,
+            raw_status: currentProductState.raw_status,
             price: currentProductState.price,
-            stock: currentProductState.available_quantity
+            stock: currentProductState.available_quantity,
+            is_published: currentProductState.is_published,
+            qc_status: currentProductState.qc_status
           });
         }
       }
@@ -3299,7 +3457,9 @@ async retryBatch(req, res) {
         marketplace_item_state: {
           marketplace: 'falabella',
           status: currentProductState.status,
+          raw_status: currentProductState.raw_status,
           qc_status: currentProductState.qc_status,
+          is_published: currentProductState.is_published,
           stock: currentProductState.available_quantity,
           price: currentProductState.price,
           verified: feedFinishedSuccessfully,
@@ -3313,19 +3473,33 @@ async retryBatch(req, res) {
         }
       };
 
-      // ✅ CORRECCIÓN: Guardar el snapshot completo como api_response
-      const apiResponseToSave = refreshedProduct?.raw || {
+      // ✅ CORRECCIÓN CRÍTICA #3: MERGE del payload en lugar de sobrescribir
+      // Preservamos TODA la información existente (QCStatus, IsPublished, ProductData, Name, etc.)
+      // y solo actualizamos los campos que cambiaron
+      const mergedPayload = {
+        ...existingPublishedPayload, // ✅ PRESERVAR todo el payload existente
         SellerSku: currentProductState.sku,
         BusinessUnits: {
+          ...(existingPublishedPayload.BusinessUnits || {}),
           BusinessUnit: {
-            Status: currentProductState.status,
-            Price: currentProductState.price,
-            Stock: currentProductState.available_quantity
+            ...(existingPublishedPayload.BusinessUnits?.BusinessUnit || {}),
+            Status: currentProductState.raw_status || currentProductState.status,
+            Price: currentProductState.price != null ? String(currentProductState.price) : existingBusinessUnit.Price,
+            Stock: currentProductState.available_quantity != null ? String(currentProductState.available_quantity) : existingBusinessUnit.Stock,
+            // ✅ PRESERVAR IsPublished y QCStatus del payload existente
+            IsPublished: existingBusinessUnit.IsPublished,
+            QCStatus: existingPublishedPayload.QCStatus
           }
         },
+        // ✅ PRESERVAR todos los demás campos del payload existente:
+        // Name, Brand, Description, ProductData, PrimaryCategory, etc.
         _feed_status: result.data,
-        _updated_at: new Date().toISOString()
+        _updated_at: new Date().toISOString(),
+        _last_update_fields: changedFields
       };
+
+      // ✅ Si GetProducts devolvió datos completos, usarlos (tienen información fresca)
+      const apiResponseToSave = refreshedProduct?.raw || mergedPayload;
 
       const taskUpdate = {
         api_response: apiResponseToSave,
@@ -3348,20 +3522,24 @@ async retryBatch(req, res) {
 
       await ProductPublishingTaskRepository.updateTask(task, taskUpdate);
 
-      // ✅ CORRECCIÓN CRÍTICA: Actualizar ProductMarketplaceLink con el stock/precio correcto
+      // ✅ CORRECCIÓN CRÍTICA #4: Actualizar ProductMarketplaceLink con el payload MERGEADO
+      // Esto preserva IsPublished, QCStatus, ProductData, etc.
       if (link) {
         await link.update({
           status: currentProductState.status || link.status,
           external_url: currentProductState.permalink || link.external_url || null,
           published_stock: currentProductState.available_quantity,
-          published_payload: apiResponseToSave,
+          published_payload: apiResponseToSave, // ✅ Payload completo con MERGE
           last_synced_at: new Date()
         });
 
         logger.info(`[updateFalabellaItem] ✅ ProductMarketplaceLink actualizado:`, {
           published_stock: currentProductState.available_quantity,
           published_price: currentProductState.price,
-          status: currentProductState.status
+          status: currentProductState.status,
+          raw_status: currentProductState.raw_status,
+          is_published: currentProductState.is_published,
+          qc_status: currentProductState.qc_status
         });
       }
 
@@ -3400,13 +3578,17 @@ async retryBatch(req, res) {
         item: {
           sku: currentProductState.sku || externalId,
           status: currentProductState.status || null,
+          raw_status: currentProductState.raw_status || null,
+          is_published: currentProductState.is_published ?? null,
+          qc_status: currentProductState.qc_status || null,
           price: currentProductState.price ?? null,
           available_quantity: currentProductState.available_quantity ?? null,
-          qc_status: currentProductState.qc_status || null,
           permalink: currentProductState.permalink || null,
           feed_status: result.data?.feed_status || null,
           feed_id: result.data?.feed_id || null,
-          sub_status: []
+          sub_status: [],
+          // ✅ NUEVO: Mensaje explicativo del estado real
+          publication_note: buildFalabellaPublicationNote(currentProductState)
         }
       });
     } catch (error) {

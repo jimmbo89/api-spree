@@ -1,4 +1,4 @@
-const { Op } = require('sequelize');
+const { Op, Sequelize } = require('sequelize');
 const { ProductPublishingTask, Product, Marketplace, Warehouse, Branch, Company, User, MarketplaceCredential, Job, sequelize } = require('../models');
 const logger = require('../../config/logger');
 
@@ -287,6 +287,96 @@ const ProductPublishingTaskRepository = {
       throw error;
     }
   },
+
+  // ✅ NUEVO MÉTODO: Buscar tarea por FeedID (para webhooks de Falabella)
+  async findLatestByFeedId(marketplaceId, feedId) {
+    try {
+      if (!marketplaceId || !feedId) {
+        return null;
+      }
+
+      logger.info(`[REPO] Buscando tarea por feedId=${feedId} marketplace=${marketplaceId}`);
+
+      // ✅ Búsqueda en múltiples ubicaciones donde puede estar el feed_id
+      const task = await ProductPublishingTask.findOne({
+        where: {
+          marketplace_id: marketplaceId,
+          [Op.or]: [
+            // 1. Búsqueda directa en external_id (a veces el FeedID se guarda ahí)
+            { external_id: feedId },
+            
+            // 2. Búsqueda en error_details.feed_id (JSON)
+            Sequelize.where(
+              Sequelize.fn('JSON_EXTRACT', Sequelize.col('error_details'), '$.feed_id'),
+              feedId
+            ),
+            
+            // 3. Búsqueda en api_response.feed_id (JSON)
+            Sequelize.where(
+              Sequelize.fn('JSON_EXTRACT', Sequelize.col('api_response'), '$.feed_id'),
+              feedId
+            ),
+            
+            // 4. Búsqueda en api_response.feed.FeedID (JSON anidado)
+            Sequelize.where(
+              Sequelize.fn('JSON_EXTRACT', Sequelize.col('api_response'), '$.feed.FeedID'),
+              feedId
+            ),
+            
+            // 5. Búsqueda en api_response.data.feed_id (JSON anidado)
+            Sequelize.where(
+              Sequelize.fn('JSON_EXTRACT', Sequelize.col('api_response'), '$.data.feed_id'),
+              feedId
+            )
+          ]
+        },
+        include: [
+          { model: Product, as: 'product' },
+          { model: Marketplace, as: 'marketplace' },
+          { model: MarketplaceCredential, as: 'credential' },
+          {
+            model: Job,
+            as: 'job',
+            attributes: ['id', 'batch_id', 'config', 'company_id', 'user_id']
+          }
+        ],
+        order: [['createdAt', 'DESC']]
+      });
+
+      if (task) {
+        logger.info(`[REPO] ✅ Tarea encontrada por feedId: ID=${task.id}, status=${task.status}`);
+      } else {
+        logger.warn(`[REPO] ⚠️ No se encontró tarea para feedId=${feedId}`);
+      }
+
+      return task;
+    } catch (error) {
+      logger.error(`[REPO] ERROR buscando por feedId ${feedId}: ${error.message}`);
+      return null;
+    }
+  },
+
+  // ✅ NUEVO MÉTODO: Buscar tarea por producto y marketplace (más flexible)
+  async findLatestByProductAndMarketplaceWithStatus(productId, marketplaceId, statuses = null) {
+    const where = {
+      product_id: productId,
+      marketplace_id: marketplaceId
+    };
+
+    if (statuses && Array.isArray(statuses) && statuses.length > 0) {
+      where.status = { [Op.in]: statuses };
+    }
+
+    return await ProductPublishingTask.findOne({
+      where,
+      include: [
+        { model: Product, as: 'product' },
+        { model: Marketplace, as: 'marketplace' },
+        { model: MarketplaceCredential, as: 'credential' }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+  }
 };
 
 module.exports = ProductPublishingTaskRepository;
