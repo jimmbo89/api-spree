@@ -9,6 +9,7 @@ const logger = require('../config/logger');
 const { getUploadPathDiagnostics } = require('../config/upload');
 const JobBackgroundProcessor = require('./services/JobBackgroundProcessor');
 const FalabellaOrderReconciliationService = require('./services/FalabellaOrderReconciliationService');
+const { waitForPendingOperations, getPendingOperationCount } = require('./utils/pendingOperations');
 
 // // Sesión
 // app.use(session({
@@ -105,24 +106,33 @@ async function gracefulShutdown() {
     FalabellaOrderReconciliationService.stop();
     logger.info('🔄 FalabellaOrderReconciliationService detenido');
 
-    // 2. Cerrar conexión a la base de datos
+    logger.info(`⏳ Esperando operaciones en curso: ${getPendingOperationCount()}`);
+    await waitForPendingOperations(25000);
+
+    // 2. Cerrar servidor HTTP
+    await new Promise((resolve) => {
+      server.close(() => {
+        logger.info('🔌 Servidor HTTP cerrado');
+        resolve();
+      });
+    });
+
+    // 3. Cerrar conexión a la base de datos
     await sequelize.close();
     logger.info('🔄 Conexión a BD cerrada');
 
-    // 3. Cerrar servidor HTTP
-    server.close(() => {
-      logger.info('🔌 Servidor HTTP cerrado');
-      process.exit(0);
-    });
-
-    // Forzar salida si server.close() se cuelga (timeout 10s)
-    setTimeout(() => {
-      logger.warn('⚠️ Timeout en server.close(), forzando salida');
-      process.exit(1);
-    }, 10000);
+    process.exit(0);
 
   } catch (error) {
     logger.error('❌ Error en shutdown:', error);
     process.exit(1);
   }
 }
+
+process.on('unhandledRejection', (reason) => {
+  logger.error('❌ unhandledRejection:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+  logger.error('❌ uncaughtException:', error);
+});

@@ -25,6 +25,7 @@ const {
 const MarketplaceStockSyncService = require("../services/MarketplaceStockSyncService");
 const { verifyMercadoLibreItem } = require("../services/MarketplaceItemVerificationService");
 const FalabellaAdapter = require('../services/adapters/FalabellaAdapter');
+const { trackPendingOperation } = require("../utils/pendingOperations");
 
 const ML_MARKETPLACE_KEY = "mercadolibre";
 const FB_MARKETPLACE_KEY = "falabella";
@@ -66,11 +67,17 @@ const MarketplaceWebhookController = {
 
     res.status(200).json({ success: true });
 
-    setImmediate(() => {
-      processMercadoLibreWebhook(payload, { timeoutMs: ML_WEBHOOK_TIMEOUT_MS }).catch((err) => {
-        logger.error(`[ML Webhook] Error en procesamiento async: ${err.message}`);
+    trackPendingOperation(new Promise((resolve) => {
+      setImmediate(async () => {
+        try {
+          await processMercadoLibreWebhook(payload, { timeoutMs: ML_WEBHOOK_TIMEOUT_MS });
+        } catch (err) {
+          logger.error(`[ML Webhook] Error en procesamiento async: ${err.message}`);
+        } finally {
+          resolve();
+        }
       });
-    });
+    }));
   },
 
   async falabella(req, res) {
@@ -88,11 +95,17 @@ const MarketplaceWebhookController = {
 
     res.status(200).json({ success: true });
 
-    setImmediate(() => {
-      processFalabellaWebhook(payload, { timeoutMs: FB_WEBHOOK_TIMEOUT_MS }).catch((err) => {
-        logger.error(`[FB Webhook] Error en procesamiento async: ${err.message}`);
+    trackPendingOperation(new Promise((resolve) => {
+      setImmediate(async () => {
+        try {
+          await processFalabellaWebhook(payload, { timeoutMs: FB_WEBHOOK_TIMEOUT_MS });
+        } catch (err) {
+          logger.error(`[FB Webhook] Error en procesamiento async: ${err.message}`);
+        } finally {
+          resolve();
+        }
       });
-    });
+    }));
   }
 };
 
@@ -1120,7 +1133,7 @@ async function processFalabellaFeedWebhook(payload, topic, options = {}) {
 
   logger.info(`[FB Webhook] Procesando evento de feed: ${topic}, FeedID: ${feedId}`);
 
-  const eventId = buildFalabellaEventId(payload, `feeds/${feedId}`);
+  const eventId = buildFalabellaEventId(payload, `feeds/${feedId}`, topic);
   const eventResult = await createFalabellaWebhookEvent(
     payload,
     topic,
@@ -1509,7 +1522,7 @@ async function processFalabellaOrderWebhook(payload, options = {}) {
   const resource = payload?.resource || `orders/${orderId}`;
   const topic = payload?.event || payload?.event_type || payload?.topic || payload?.type || "onOrderCreated";
 
-  const eventId = buildFalabellaEventId(payload, resource);
+  const eventId = buildFalabellaEventId(payload, resource, topic);
   const eventResult = await createFalabellaWebhookEvent(
     payload,
     topic,
@@ -1559,7 +1572,7 @@ async function processFalabellaProductWebhook(payload, options = {}) {
 
   const resource = payload?.resource || `products/${sellerSku}`;
   const topic = payload?.event || payload?.event_type || payload?.topic || payload?.type || "onProductUpdated";
-  const eventId = buildFalabellaEventId(payload, resource);
+  const eventId = buildFalabellaEventId(payload, resource, topic);
   const eventResult = await createFalabellaWebhookEvent(
     payload,
     topic,
@@ -1598,6 +1611,13 @@ async function processFalabellaProductWebhook(payload, options = {}) {
       logger.info(`[FB Webhook] ${topic} recibido para SKU ${sellerSku}, esperando 3s antes de consultar...`);
       await sleep(3000);
     }
+
+    const adapter = new FalabellaAdapter(
+      credential.marketplace_id,
+      null,
+      credential.id
+    );
+    adapter.credential = credential;
 
     const taskForSku = await ProductPublishingTaskRepository.findLatestByExternalId(
       credential.marketplace_id,
@@ -3779,14 +3799,17 @@ function validateFalabellaPayload(payload) {
   return { ok: true };
 }
 
-function buildFalabellaEventId(payload, resource) {
+function buildFalabellaEventId(payload, resource, topic = null) {
+  const topicPart = String(topic || payload?.event || payload?.event_type || payload?.topic || payload?.type || '').trim().toLowerCase();
   const eventId =
     payload?.event_id ||
     payload?.EventId ||
     payload?.eventId ||
     payload?.data?.event_id ||
     null;
-  if (eventId) return String(eventId);
+  if (eventId) {
+    return topicPart ? `${topicPart}:${String(eventId)}` : String(eventId);
+  }
 
   const timestamp =
     payload?.timestamp ||
@@ -3794,9 +3817,11 @@ function buildFalabellaEventId(payload, resource) {
     payload?.createdAt ||
     payload?.data?.created_at ||
     null;
-  if (timestamp) return `ts:${resource}:${timestamp}`;
+  if (timestamp) {
+    return topicPart ? `ts:${topicPart}:${resource}:${timestamp}` : `ts:${resource}:${timestamp}`;
+  }
 
-  return `resource:${resource}`;
+  return topicPart ? `resource:${topicPart}:${resource}` : `resource:${resource}`;
 }
 
 function rfc3986Encode(str) {
