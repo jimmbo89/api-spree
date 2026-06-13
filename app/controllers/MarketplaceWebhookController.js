@@ -1386,7 +1386,8 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
 
   // ✅ Si el feed terminó exitosamente, consultar estado REAL del producto
   if (feedStatusLower === 'finished' && processedRecords > 0) {
-    const sellerSku = task.payload?.sku || task.payload?.SellerSku || task.external_id || null;
+    const taskPayload = normalizeTaskPayload(task?.payload);
+    const sellerSku = taskPayload?.sku || taskPayload?.SellerSku || task.external_id || null;
     
     if (!sellerSku) {
       logger.warn(`[FB Webhook] No se pudo extraer SellerSku de la tarea ${task.id}`);
@@ -1394,20 +1395,38 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
     }
 
     // ✅ Consultar estado REAL del producto en Falabella
-    const productStatus = await adapter.fetchProductStatus(sellerSku);
+    let productStatus = await fetchFalabellaProductStatusWithRetry(adapter, sellerSku);
     
-    logger.info(`[FB Webhook] Estado REAL del producto ${sellerSku}:`, JSON.stringify(productStatus, null, 2));
+    logger.info(`[FB Webhook] Estado REAL del producto ${sellerSku}: ${JSON.stringify(productStatus)}`);
 
     // ✅ EXTRAER ERRORES REALES del raw response
-    const realErrors = FalabellaAdapter.extractRealFalabellaErrors(productStatus.raw || {});
-    const hasImage = productStatus.has_image !== false;
+    let realErrors = FalabellaAdapter.extractRealFalabellaErrors(productStatus.raw || {});
+    const taskImages = extractFalabellaTaskImages(task, { images: taskPayload?.images, images_with_version: taskPayload?.images_with_version }, sellerSku, adapter);
+    logger.info(`[FB Webhook] Feed ${feedId}: imágenes recuperadas para ${sellerSku}: ${taskImages.length}`);
+    let imageUploadResult = null;
+    let hasImage = productStatus.has_image !== false;
+
+    if (productStatus.found && productStatus.has_image === false && taskImages.length > 0) {
+      logger.info(`[FB Webhook] Feed ${feedId}: SKU ${sellerSku} sin imagen, asociando ${taskImages.length} imagen(es) via Action=Image`);
+      imageUploadResult = await adapter.uploadProductImages(sellerSku, taskImages);
+      logger.info(`[FB Webhook] Feed ${feedId}: Resultado Action=Image para ${sellerSku}: ${JSON.stringify(imageUploadResult)}`);
+
+      if (imageUploadResult?.success) {
+        await sleep(2000);
+        productStatus = await fetchFalabellaProductStatusWithRetry(adapter, sellerSku, { attempts: 2, delayMs: 2000 });
+        realErrors = FalabellaAdapter.extractRealFalabellaErrors(productStatus.raw || {});
+        hasImage = productStatus.has_image !== false;
+      }
+    } else if (productStatus.found && productStatus.has_image === false) {
+      logger.warn(`[FB Webhook] Feed ${feedId}: SKU ${sellerSku} sin imagen, pero no hay imágenes guardadas en la tarea ${task.id}`);
+    }
     
     let finalStatus = 'published';
     let realErrorMessage = null;
 
     if (!productStatus.found) {
-      finalStatus = 'failed';
-      realErrorMessage = 'Producto no encontrado en Falabella';
+      finalStatus = 'published_with_warnings';
+      realErrorMessage = null;
     } else if (realErrors.length > 0) {
       // ✅ Hay errores REALES de Falabella
       finalStatus = 'failed';
@@ -1419,7 +1438,7 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
       finalStatus = 'failed';
       // ✅ Falabella rechazó pero no entregó un motivo explícito
       realErrorMessage = null;
-    } else if (productStatus.status === 'active' && productStatus.is_published === true && hasImage) {
+    } else if (productStatus.status === 'active' && productStatus.is_published !== false && hasImage) {
       finalStatus = 'published';
       realErrorMessage = null;
     } else {
@@ -1435,6 +1454,7 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
         feed_id: feedId,
         feed_status: feedStatus,
         product_status: productStatus,
+        image_upload: imageUploadResult,
         feed_warnings: feedWarnings,
         source: 'feed_webhook',
         qc_status: productStatus.qc_status,
@@ -1624,6 +1644,7 @@ async function processFalabellaProductWebhook(payload, options = {}) {
       String(sellerSku)
     );
     const taskImages = extractFalabellaTaskImages(taskForSku, payload, sellerSku, adapter);
+    logger.info(`[FB Webhook] Producto ${sellerSku}: imágenes recuperadas desde tarea/payload: ${taskImages.length}`);
 
     const fetchPromise = fetchFalabellaProductWithRetry(sellerSku, credential);
     let product = await withTimeout(fetchPromise, timeoutMs);
@@ -1652,8 +1673,10 @@ async function processFalabellaProductWebhook(payload, options = {}) {
       : product;
 
     let imageUploadResult = null;
+    let currentStatus = !effectiveProduct.__falabella_not_found
+      ? await fetchFalabellaProductStatusWithRetry(adapter, sellerSku)
+      : null;
     if (!effectiveProduct.__falabella_not_found && taskImages.length > 0) {
-      const currentStatus = await adapter.fetchProductStatus(sellerSku);
       if (currentStatus?.found && currentStatus.has_image === false) {
         logger.info(`[FB Webhook] SKU ${sellerSku} sin imagen en Falabella, asociando ${taskImages.length} imagen(es) via Action=Image`);
         imageUploadResult = await adapter.uploadProductImages(sellerSku, taskImages);
@@ -1661,15 +1684,16 @@ async function processFalabellaProductWebhook(payload, options = {}) {
 
         if (imageUploadResult?.success) {
           await sleep(2000);
-          const refreshedProduct = await fetchFalabellaProductWithRetry(sellerSku, credential);
-          if (refreshedProduct) {
-            product = refreshedProduct;
-            if (!refreshedProduct.__falabella_not_found) {
-              effectiveProduct = refreshedProduct;
-            }
+          currentStatus = await fetchFalabellaProductStatusWithRetry(adapter, sellerSku, { attempts: 2, delayMs: 2000 });
+          if (currentStatus?.raw) {
+            effectiveProduct = currentStatus.raw;
           }
         }
       }
+    }
+
+    if (currentStatus?.raw) {
+      effectiveProduct = currentStatus.raw;
     }
 
     const persistResult = await persistFalabellaProductState({
@@ -2107,6 +2131,25 @@ async function fetchFalabellaProductWithRetry(sellerSku, credential) {
   return null;
 }
 
+async function fetchFalabellaProductStatusWithRetry(adapter, sellerSku, options = {}) {
+  const attempts = Number(options.attempts || 4);
+  const delayMs = Number(options.delayMs || 2000);
+  let lastStatus = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    lastStatus = await adapter.fetchProductStatus(sellerSku);
+    const statusKnown = lastStatus?.found && (lastStatus.status || lastStatus.qc_status || lastStatus.raw);
+    if (statusKnown || attempt === attempts) {
+      return lastStatus;
+    }
+
+    logger.info(`[FB Webhook] GetProducts aún no refleja estado completo para ${sellerSku}; reintento ${attempt + 1}/${attempts} en ${delayMs}ms`);
+    await sleep(delayMs);
+  }
+
+  return lastStatus;
+}
+
 async function fetchFalabellaProduct(sellerSku, credential) {
   try {
     const timestamp = timestampMinus03();
@@ -2243,30 +2286,75 @@ function buildFalabellaProductStateSnapshot({ product, payload, source = "webhoo
   };
 }
 
+function normalizeTaskPayload(payload) {
+  if (!payload) return {};
+  if (typeof payload === 'object') return payload;
+  if (typeof payload === 'string') {
+    try {
+      const parsed = JSON.parse(payload);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (error) {
+      return {};
+    }
+  }
+  return {};
+}
+
 function extractFalabellaTaskImages(task, payload, sellerSku, adapter) {
-  const taskPayload = task?.payload || task?.job?.config || {};
+  const taskPayload = normalizeTaskPayload(task?.payload || task?.job?.config);
+  const productImages = normalizeTaskPayload(task?.product)?.images || task?.product?.images || [];
   const candidateSources = [
     taskPayload?.images_with_version,
     taskPayload?.images,
+    taskPayload?.MainImage,
     taskPayload?.product?.images_with_version,
     taskPayload?.product?.images,
+    taskPayload?.product?.MainImage,
     taskPayload?.variants?.flatMap?.(variant => variant?.images || []) || [],
+    productImages,
     payload?.images_with_version,
-    payload?.images
+    payload?.images,
+    payload?.MainImage
   ];
 
-  const flattened = adapter.normalizeFalabellaImages(candidateSources);
+  const flattened = adapter.normalizeFalabellaImages(candidateSources)
+    .map(toPublicFalabellaImageUrl)
+    .filter(Boolean);
   if (flattened.length > 0) {
-    return flattened;
+    return [...new Set(flattened)];
   }
 
   const fallback = adapter.normalizeFalabellaImages([
     taskPayload?.product?.image,
     taskPayload?.image,
-    payload?.image
-  ]);
+    taskPayload?.MainImage,
+    task?.product?.image,
+    task?.product?.MainImage,
+    payload?.image,
+    payload?.MainImage
+  ]).map(toPublicFalabellaImageUrl).filter(Boolean);
 
-  return fallback;
+  return [...new Set(fallback)];
+}
+
+function toPublicFalabellaImageUrl(imageUrl) {
+  const value = String(imageUrl || '').trim();
+  if (!value) return null;
+  if (/^https:\/\//i.test(value)) return value;
+  if (/^http:\/\//i.test(value)) return value.replace(/^http:\/\//i, 'https://');
+
+  const baseUrl = String(process.env.APP_URL || 'https://spree.api.klint.cl/api').replace(/\/+$/, '');
+  if (value.startsWith('/images/')) {
+    return `${baseUrl}${value}`;
+  }
+  if (value.startsWith('images/')) {
+    return `${baseUrl}/${value}`;
+  }
+  if (/^(products|warehouses|certificates)\//i.test(value)) {
+    return `${baseUrl}/images/${value}`;
+  }
+
+  return `${baseUrl}/images/${value.replace(/^\/+/, '')}`;
 }
 
 async function persistFalabellaProductState({ credential, sellerSku, product, payload, imageUploadResult = null }) {

@@ -3,6 +3,19 @@ const { ProductMarketplaceLink, MarketplaceCredential } = require('../models');
 const logger = require('../../config/logger');
 
 const ProductMarketplaceLinkRepository = {
+  buildScopeWhere(linkData = {}) {
+    const where = {};
+
+    if (linkData.product_id != null) where.product_id = linkData.product_id;
+    if (linkData.marketplace_id != null) where.marketplace_id = linkData.marketplace_id;
+    if (linkData.company_id != null) where.company_id = linkData.company_id;
+    if (linkData.branch_id != null) where.branch_id = linkData.branch_id;
+    if (linkData.credential_id != null) where.credential_id = linkData.credential_id;
+    if (linkData.user_id != null) where.user_id = linkData.user_id;
+
+    return where;
+  },
+
   /**
    * Busca un link por producto y marketplace
    * @param {number} productId - ID del producto
@@ -36,8 +49,18 @@ const ProductMarketplaceLinkRepository = {
         throw new Error('Debe proporcionar company_id o branch_id');
       }
 
-      const [record] = await ProductMarketplaceLink.upsert(linkData, options);
-      return record;
+      const scopeWhere = this.buildScopeWhere(linkData);
+      const existing = await ProductMarketplaceLink.findOne({
+        where: scopeWhere,
+        order: [['updatedAt', 'DESC'], ['id', 'DESC']]
+      });
+
+      if (existing) {
+        await existing.update(linkData, options);
+        return existing;
+      }
+
+      return await ProductMarketplaceLink.create(linkData, options);
     } catch (error) {
       logger.error(`[REPO] ERROR al guardar link:`, error.message);
       throw error;

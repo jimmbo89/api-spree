@@ -123,6 +123,10 @@ const ProductPublishingTaskRepository = {
       },
       include: [
         {
+          model: Product,
+          as: 'product'
+        },
+        {
           model: MarketplaceCredential,
           as: 'credential',
           attributes: ['id', 'name', 'seller_email', 'active']
