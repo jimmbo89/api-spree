@@ -1454,21 +1454,14 @@ async getCategoryAttributes(categoryId) {
     }
     
     const normalizedImages = this.normalizeFalabellaImages(product.images);
-    const mainImage = normalizedImages.length > 0
-      ? normalizedImages[0]
-      : null;
-    const extraImages = normalizedImages.slice(1);
-    
-    if (!mainImage) {
-      logger.error(`[FalabellaAdapter] ❌ ERROR CRÍTICO: No hay imagen principal para SKU ${sku}. Falabella RECHAZARÁ el producto sin imágenes.`);
-      logger.error(`[FalabellaAdapter] ❌ product.images = ${JSON.stringify(product.images)}`);
+    if (normalizedImages.length > 0) {
+      logger.info(`[FalabellaAdapter] ✅ Imágenes preparadas para asociación post-creación: ${normalizedImages.length}`);
     } else {
-      logger.info(`[FalabellaAdapter] ✅ Imagen principal encontrada: ${mainImage}`);
+      logger.info(`[FalabellaAdapter] ℹ️ Sin imágenes en payload para SKU ${sku}`);
     }
-    
-    const mainImageXml = mainImage ? `\n    <MainImage>${escape(mainImage)}</MainImage>` : '';
+
     logger.info(`[FalabellaAdapter] 📦 XML Payload (${product?.__falabella_action || 'ProductCreate'}):`);
-    logger.info(`\n${`<?xml version="1.0" encoding="UTF-8"?>\n<Request>\n  <Product>\n    <SellerSku>${sku}</SellerSku>\n    <Name>${name}</Name>\n    <PrimaryCategory>${categoryId}</PrimaryCategory>\n    <Description>${description}</Description>\n    <Brand>${brand}</Brand>${mainImageXml}${variationXml}${marketplaceProductId ? `\n    <ProductId>${escape(marketplaceProductId)}</ProductId>` : ''}\n    <BusinessUnits>\n      <BusinessUnit>\n        <OperatorCode>facl</OperatorCode>\n        <Price>${price}</Price>\n        <Stock>${stock}</Stock>\n        <Status>active</Status>\n      </BusinessUnit>\n    </BusinessUnits>\n    <ProductData>${productDataXml}\n    </ProductData>\n  </Product>\n</Request>`}`);
+    logger.info(`\n${`<?xml version="1.0" encoding="UTF-8"?>\n<Request>\n  <Product>\n    <SellerSku>${sku}</SellerSku>\n    <Name>${name}</Name>\n    <PrimaryCategory>${categoryId}</PrimaryCategory>\n    <Description>${description}</Description>\n    <Brand>${brand}</Brand>${variationXml}${marketplaceProductId ? `\n    <ProductId>${escape(marketplaceProductId)}</ProductId>` : ''}\n    <BusinessUnits>\n      <BusinessUnit>\n        <OperatorCode>facl</OperatorCode>\n        <Price>${price}</Price>\n        <Stock>${stock}</Stock>\n        <Status>active</Status>\n      </BusinessUnit>\n    </BusinessUnits>\n    <ProductData>${productDataXml}\n    </ProductData>\n  </Product>\n</Request>`}`);
 
     return `<?xml version="1.0" encoding="UTF-8"?>
 <Request>
@@ -1477,7 +1470,7 @@ async getCategoryAttributes(categoryId) {
     <Name>${name}</Name>
     <PrimaryCategory>${categoryId}</PrimaryCategory>
     <Description>${description}</Description>
-    <Brand>${brand}</Brand>${mainImageXml}${variationXml}${marketplaceProductId ? `
+    <Brand>${brand}</Brand>${variationXml}${marketplaceProductId ? `
     <ProductId>${escape(marketplaceProductId)}</ProductId>` : ''}
     <BusinessUnits>
       <BusinessUnit>
@@ -1591,39 +1584,6 @@ async getCategoryAttributes(categoryId) {
         // El webhook onFeedCompleted se encargará de actualizar el estado
         logger.info(`[FalabellaAdapter] ✅ Feed enviado exitosamente. FeedID: ${requestId}`);
 
-        const normalizedImages = this.normalizeFalabellaImages(transformedProduct.images);
-        let imageUploadResult = { success: true, skipped: true };
-        if (normalizedImages.length > 0) {
-          logger.info(
-            `[FalabellaAdapter] 📸 Cargando imágenes para SKU ${transformedProduct.sku} (${normalizedImages.length}) como parte del flujo de publicación`
-          );
-          try {
-            const uploadResult = await this.uploadProductImages(transformedProduct.sku, normalizedImages);
-            imageUploadResult = {
-              success: Boolean(uploadResult?.success),
-              queued: false,
-              images_count: normalizedImages.length,
-              ...(uploadResult || {})
-            };
-
-            if (!uploadResult?.success) {
-              logger.warn(
-                `[FalabellaAdapter] Publicación aceptada pero la carga de imágenes falló para SKU ${transformedProduct.sku}: ${uploadResult?.error || 'unknown'}`
-              );
-            }
-          } catch (uploadError) {
-            imageUploadResult = {
-              success: false,
-              queued: false,
-              images_count: normalizedImages.length,
-              error: uploadError.message
-            };
-            logger.warn(
-              `[FalabellaAdapter] Publicación aceptada pero la carga de imágenes falló para SKU ${transformedProduct.sku}: ${uploadError.message}`
-            );
-          }
-        }
-
         return {
           success: true,
           external_id: transformedProduct.sku,
@@ -1634,13 +1594,11 @@ async getCategoryAttributes(categoryId) {
             sku: transformedProduct.sku,
             category_id: transformedProduct.PrimaryCategory,
             category_name: transformedProduct.categoryName,
-            image_upload: imageUploadResult
+            image_upload: { success: true, skipped: true }
           },
           has_warnings: false,
           warnings: [],
-          warning_message: imageUploadResult.queued
-            ? 'Producto enviado a Falabella. La subida de imágenes se ejecuta en segundo plano.'
-            : 'Producto enviado a Falabella. El estado se actualizará automáticamente cuando Falabella termine de procesar.',
+          warning_message: 'Producto enviado a Falabella. La asociación de imágenes se realizará tras la confirmación del producto.',
           message: 'Producto enviado a Falabella. El estado se actualizará automáticamente cuando Falabella termine de procesar.'
         };
 
@@ -1927,7 +1885,7 @@ async getCategoryAttributes(categoryId) {
 
       const timestamp = this.timestampMinus03();
       const params = {
-        Action: 'UploadAndUpdateImages',
+        Action: 'Image',
         Format: 'XML',
         Timestamp: timestamp,
         UserID: this.credential.seller_email.trim(),
@@ -1944,7 +1902,7 @@ async getCategoryAttributes(categoryId) {
       };
 
       logger.info(`[FalabellaAdapter] 📸 Subiendo ${images.length} imágenes para SKU ${sellerSku}`);
-      logger.info(`[FalabellaAdapter] 📸 XML Payload (UploadAndUpdateImages): ${xmlPayload.substring(0, 500)}`);
+      logger.info(`[FalabellaAdapter] 📸 XML Payload (Image): ${xmlPayload.substring(0, 500)}`);
 
       const response = await axios.post(apiUrl, xmlPayload, {
         headers,
@@ -1952,7 +1910,7 @@ async getCategoryAttributes(categoryId) {
       });
 
       const responseBody = response.data;
-      logger.info(`[FalabellaAdapter] 📸 Respuesta UploadAndUpdateImages: ${String(responseBody).substring(0, 500)}`);
+      logger.info(`[FalabellaAdapter] 📸 Respuesta Image: ${String(responseBody).substring(0, 500)}`);
 
       if (typeof responseBody === 'string' && responseBody.includes('<SuccessResponse>')) {
         const requestIdMatch = responseBody.match(/<RequestId>([^<]+)<\/RequestId>/);
@@ -2009,10 +1967,30 @@ async getCategoryAttributes(categoryId) {
       const product = products[0];
       const rawProduct = product.raw || {};
       const hasMainImage = FalabellaAdapter.hasFalabellaImage(rawProduct);
+      const parseBoolean = (value) => {
+        if (value === true || value === false) return value;
+        if (value === 1 || value === 0) return value === 1;
+        const normalized = String(value || '').trim().toLowerCase();
+        if (!normalized) return null;
+        if (['1', 'true', 'yes', 'y', 'si', 'sí', 'active', 'published'].includes(normalized)) {
+          return true;
+        }
+        if (['0', 'false', 'no', 'n', 'inactive', 'draft', 'unpublished'].includes(normalized)) {
+          return false;
+        }
+        return null;
+      };
       
       // Extraer QCStatus del producto
       const qcStatus = rawProduct.QCStatus || rawProduct.qc_status || null;
       const status = product.status || null;
+      const isPublished = parseBoolean(
+        rawProduct.IsPublished ??
+        rawProduct.is_published ??
+        rawProduct.BusinessUnits?.BusinessUnit?.IsPublished ??
+        rawProduct.BusinessUnits?.BusinessUnit?.is_published ??
+        null
+      );
       
       // Extraer información adicional de BusinessUnits
       const businessUnit = Array.isArray(rawProduct?.BusinessUnits?.BusinessUnit)
@@ -2024,12 +2002,13 @@ async getCategoryAttributes(categoryId) {
         sku: product.sku,
         status: status || businessUnit.Status || null,
         qc_status: qcStatus,
+        is_published: isPublished,
+        has_image: hasMainImage,
         price: businessUnit.Price || null,
         stock: businessUnit.Stock || null,
         product_id: rawProduct.ProductId || null,
         shop_sku: rawProduct.ShopSku || null,
         url: rawProduct.Url || null,
-        has_image: hasMainImage,
         raw: rawProduct
       };
     } catch (error) {

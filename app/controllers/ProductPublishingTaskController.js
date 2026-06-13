@@ -505,36 +505,7 @@ function buildFalabellaPublicationNote(productState) {
     return `❌ ${productState.error_message}`;
   }
 
-  // ✅ Si no hay errores, mostrar estado normal
-  const rawStatus = productState.raw_status || productState.status;
-  const isPublished = productState.is_published;
-  const qcStatus = productState.qc_status;
-
-  if (qcStatus === 'rejected') {
-    const rejectionReason =
-      rawProduct.QCMessage ||
-      rawProduct.qc_message ||
-      rawProduct.Reason ||
-      rawProduct.reason ||
-      rawProduct.Message ||
-      rawProduct.message ||
-      null;
-
-    return rejectionReason
-      ? `❌ QC RECHAZADO: ${rejectionReason}`
-      : '❌ QC RECHAZADO';
-  }
-
-  if (isPublished === false) {
-    const contentScore = rawProduct.ContentScore || 'N/A';
-    return `⚠️ No publicado (IsPublished=0). ContentScore: ${contentScore}`;
-  }
-
-  if (rawStatus === 'active' && isPublished === true && (!qcStatus || qcStatus === 'approved')) {
-    return `✅ Publicado y visible`;
-  }
-
-  return `Estado: ${rawStatus} | Publicado: ${isPublished} | QC: ${qcStatus || 'N/A'}`;
+  return null;
 }
 
 function buildFalabellaPublishedStateSnapshot(product, sellerSku) {
