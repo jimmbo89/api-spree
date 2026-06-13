@@ -511,12 +511,18 @@ function buildFalabellaPublicationNote(productState) {
   const qcStatus = productState.qc_status;
 
   if (qcStatus === 'rejected') {
-    // ✅ Buscar mensaje REAL de rechazo en el raw
-    const rejectionReason = rawProduct.QCMessage || 
-                           rawProduct.rejection_reason ||
-                           rawProduct.RejectionReason ||
-                           'Rechazado por control de calidad (sin motivo específico)';
-    return `❌ QC RECHAZADO: ${rejectionReason}`;
+    const rejectionReason =
+      rawProduct.QCMessage ||
+      rawProduct.qc_message ||
+      rawProduct.Reason ||
+      rawProduct.reason ||
+      rawProduct.Message ||
+      rawProduct.message ||
+      null;
+
+    return rejectionReason
+      ? `❌ QC RECHAZADO: ${rejectionReason}`
+      : '❌ QC RECHAZADO';
   }
 
   if (isPublished === false) {
