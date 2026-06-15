@@ -99,6 +99,29 @@ function buildWarningArtifacts(result) {
   };
 }
 
+function buildProductMarketplaceLinkScope(pool = {}) {
+  const primaryWarehouse = pool?.primary_warehouse || {};
+
+  if (pool?.company_id != null) {
+    return {
+      company_id: pool.company_id,
+      branch_id: null
+    };
+  }
+
+  if (primaryWarehouse?.branch_id != null) {
+    return {
+      company_id: null,
+      branch_id: primaryWarehouse.branch_id
+    };
+  }
+
+  return {
+    company_id: null,
+    branch_id: null
+  };
+}
+
 function normalizePublishedPayload(rawPayload) {
   if (!rawPayload) return null;
 
@@ -1331,7 +1354,7 @@ async store(req, res) {
   if (Array.isArray(marketplaces) && marketplaces.length > 0) {
     for (const product of products) {
       for (const mpConfig of marketplaces) {
-        await JobProductRepository.create({
+        const jobProduct = await JobProductRepository.create({
           job_id: jobId,  // ← ✅ jobId ya es un número
           product_id: product.id,
           marketplace_id: mpConfig.marketplace_id,
@@ -1341,6 +1364,32 @@ async store(req, res) {
           status: 'pending',
           attempt_count: 0
         });
+
+        const marketplaceDomain = String(mpConfig?.domain || mpConfig?.marketplace_name || '').toLowerCase();
+        const isFalabellaMarketplace = marketplaceDomain.includes('falabella');
+
+        if (isFalabellaMarketplace) {
+          const linkScope = buildProductMarketplaceLinkScope(pool);
+          try {
+            await ProductMarketplaceLinkRepository.upsert({
+              product_id: product.id,
+              marketplace_id: mpConfig.marketplace_id,
+              credential_id: mpConfig.id,
+              user_id: req.user.id,
+              ...linkScope,
+              status: 'pending',
+              external_id: null,
+              external_url: null,
+              published_stock: null,
+              published_payload: null,
+              last_synced_at: new Date()
+            });
+          } catch (linkError) {
+            logger.error(
+              `[Controller] No se pudo crear link inicial Falabella product=${product.id} marketplace=${mpConfig.marketplace_id}: ${linkError.message}`
+            );
+          }
+        }
       }
     }
   }

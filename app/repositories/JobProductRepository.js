@@ -321,7 +321,8 @@ async findById(id, options = {}) {
       const {
         job_id, product_id, marketplace_id, credential_id,
         product_payload, marketplace_payload,  // ← NUEVO: marketplace_payload
-        status = 'pending'
+        status = 'pending',
+        task_id = null
       } = data;
 
       // Validaciones
@@ -364,7 +365,8 @@ async findById(id, options = {}) {
         attempt_count: 0,
         last_attempt_at: null,
         product_payload: preparePayload(product_payload),
-        marketplace_payload: preparePayload(marketplace_payload)  // ← NUEVO
+        marketplace_payload: preparePayload(marketplace_payload),  // ← NUEVO
+        task_id: task_id ? Number(task_id) : null
       });
 
       logger.debug(`JobProduct creado: ID ${jobProduct.id}, Producto ${product_id}, Marketplace ${marketplace_id}, Credential ${credential_id}`);
@@ -411,6 +413,7 @@ async findById(id, options = {}) {
           status: item.status || 'pending',
           product_payload: preparePayload(item.product_payload),
           marketplace_payload: preparePayload(item.marketplace_payload),  // ← NUEVO
+          task_id: item.task_id ? Number(item.task_id) : null,
           attempt_count: 0,
           external_id: null,
           external_url: null,
