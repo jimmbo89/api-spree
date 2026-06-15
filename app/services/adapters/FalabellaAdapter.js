@@ -16,24 +16,25 @@ class FalabellaAdapter extends BaseAdapter {
     return MarketplaceTransformerFalabella; // 🔑 Usar transformer específico
   }
 
-    async ensureValidCredentials() {
-    // ← NUEVO: Si hay credentialId, buscar por ID específico
-    if (this.credentialId) {
-    if (typeof this.credentialId === 'object' && this.credentialId !== null) {
-      // Ya es el objeto completo
-      this.credential = this.credentialId;
-    } else {
-      // Es un ID, buscar en repositorio
-      this.credential = await MarketplaceCredentialRepository.findById(this.credentialId);
+  async ensureValidCredentials() {
+    if (this.credential && this.credential.seller_email && this.credential.api_key) {
+      return { valid: true };
     }
-  } else {
-    // Fallback al comportamiento original
-    this.credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
-      this.marketplaceId,
-      this.userId
-    );
-  }
 
+    // Si hay credentialId, buscar por ID específico
+    if (this.credentialId) {
+      if (typeof this.credentialId === 'object' && this.credentialId !== null) {
+        this.credential = this.credentialId;
+      } else {
+        this.credential = await MarketplaceCredentialRepository.findById(this.credentialId);
+      }
+    } else if (this.userId !== undefined && this.userId !== null) {
+      // Fallback al comportamiento original, pero solo si hay userId definido
+      this.credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
+        this.marketplaceId,
+        this.userId
+      );
+    }
 
     if (!this.credential || !this.credential.seller_email || !this.credential.api_key) {
       return {
@@ -1901,6 +1902,24 @@ async getCategoryAttributes(categoryId) {
         'User-Agent': `${this.credential.seller_id || 'SC72B9D'}/Node/${process.versions.node}/PROPIA/FACL`
       };
 
+      const logFalabellaResponse = (label, value) => {
+        if (value === null || value === undefined) {
+          logger.info(`[FalabellaAdapter] ${label}: <empty>`);
+          return;
+        }
+
+        if (typeof value === 'string') {
+          logger.info(`[FalabellaAdapter] ${label}: ${value}`);
+          return;
+        }
+
+        try {
+          logger.info(`[FalabellaAdapter] ${label}: ${JSON.stringify(value)}`);
+        } catch (jsonError) {
+          logger.info(`[FalabellaAdapter] ${label}: ${String(value)}`);
+        }
+      };
+
       logger.info(`[FalabellaAdapter] 📸 Subiendo ${images.length} imágenes para SKU ${sellerSku}`);
       logger.info(`[FalabellaAdapter] 📸 XML Payload (Image): ${xmlPayload.substring(0, 500)}`);
 
@@ -1910,7 +1929,8 @@ async getCategoryAttributes(categoryId) {
       });
 
       const responseBody = response.data;
-      logger.info(`[FalabellaAdapter] 📸 Respuesta Image: ${String(responseBody).substring(0, 500)}`);
+      logger.info(`[FalabellaAdapter] 📸 Response status (Image): ${response.status}`);
+      logFalabellaResponse('📸 Respuesta Image', responseBody);
 
       if (typeof responseBody === 'string' && responseBody.includes('<SuccessResponse>')) {
         const requestIdMatch = responseBody.match(/<RequestId>([^<]+)<\/RequestId>/);
@@ -1927,6 +1947,7 @@ async getCategoryAttributes(categoryId) {
         const errorCodeMatch = responseBody.match(/<ErrorCode>([^<]+)<\/ErrorCode>/);
         
         logger.error(`[FalabellaAdapter] ❌ Error subiendo imágenes: ${errorMsgMatch?.[1] || 'unknown'}`);
+        logFalabellaResponse('❌ Respuesta Error Image', responseBody);
         
         return {
           success: false,
@@ -1944,10 +1965,15 @@ async getCategoryAttributes(categoryId) {
 
     } catch (error) {
       logger.error(`[FalabellaAdapter] ❌ Error subiendo imágenes para SKU ${sellerSku}: ${error.message}`);
+      if (error.response) {
+        logger.error(`[FalabellaAdapter] ❌ Image HTTP status: ${error.response.status}`);
+        logFalabellaResponse('❌ Image error response', error.response.data);
+      }
       return {
         success: false,
         error: error.message || 'Error subiendo imágenes',
-        details: error.response?.data || null
+        details: error.response?.data || null,
+        status_code: error.response?.status || null
       };
     }
   }
