@@ -508,6 +508,88 @@ function buildFalabellaPublicationNote(productState) {
   return null;
 }
 
+function extractFalabellaRawMessages(source) {
+  if (!source || typeof source !== 'object') return [];
+
+  const messages = [];
+  const pushText = (value) => {
+    if (typeof value !== 'string') return;
+    const text = value.trim();
+    if (text) messages.push(text);
+  };
+
+  const visit = (value) => {
+    if (!value) return;
+    if (typeof value === 'string') {
+      pushText(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (typeof value === 'object') {
+      [
+        value.QCMessage,
+        value.qc_message,
+        value.QCReason,
+        value.qc_reason,
+        value.ErrorMessage,
+        value.error_message,
+        value.Reason,
+        value.reason,
+        value.Message,
+        value.message,
+        value.Detail,
+        value.detail,
+        value.Error,
+        value.error
+      ].forEach(pushText);
+
+      if (value.Error || value.Errors || value.Warning || value.Warnings) {
+        visit(value.Error || value.Errors || value.Warning || value.Warnings);
+      }
+    }
+  };
+
+  [
+    source.QCMessage,
+    source.qc_message,
+    source.QCReason,
+    source.qc_reason,
+    source.ErrorMessage,
+    source.error_message,
+    source.Reason,
+    source.reason,
+    source.Message,
+    source.message,
+    source.Detail,
+    source.detail,
+    source.FeedErrors,
+    source.FeedWarnings,
+    source.Errors,
+    source.Warnings,
+    source.Issues,
+    source.Messages
+  ].forEach(visit);
+
+  return [...new Set(messages)];
+}
+
+function buildFalabellaPublicationNoteExact(productState) {
+  if (!productState) return null;
+
+  const exactMessages = [
+    ...extractFalabellaRawMessages(productState.raw || {}),
+    ...extractFalabellaRawMessages(productState.feed_status || {}),
+    ...extractFalabellaRawMessages(productState.product_status || {}),
+    ...extractFalabellaRawMessages(productState)
+  ];
+
+  const uniqueMessages = [...new Set(exactMessages)];
+  return uniqueMessages.length > 0 ? uniqueMessages.join('\n') : null;
+}
+
 function buildFalabellaPublishedStateSnapshot(product, sellerSku) {
   // ✅ Manejar diferentes estructuras de respuesta de GetProducts de Falabella
   let businessUnit = null;
@@ -2787,10 +2869,8 @@ async publishedProducts(req, res) {
           productResponse.sent_at = errorDetails.sent_at || null;
           productResponse.publication_note = 'Producto enviado a Falabella, esperando confirmación del webhook...';
         } else {
-          productResponse.publication_note = buildFalabellaPublicationNote({
-            raw_status: marketplaceStatus === 'not_published' ? 'active' : marketplaceStatus,
-            is_published: isPublished,
-            qc_status: qcStatus
+          productResponse.publication_note = buildFalabellaPublicationNoteExact({
+            raw: marketplaceLink?.published_payload || task.api_response || task.payload || null
           });
         }
       }
@@ -3597,7 +3677,7 @@ async publishedProducts(req, res) {
           feed_id: result.data?.feed_id || null,
           sub_status: [],
           // ✅ NUEVO: Mensaje explicativo del estado real
-          publication_note: buildFalabellaPublicationNote(currentProductState)
+          publication_note: buildFalabellaPublicationNoteExact(currentProductState)
         }
       });
     } catch (error) {

@@ -1450,12 +1450,33 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
     });
 
     if (task.external_id) {
-      const link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
+      let link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
         task.marketplace_id,
         task.external_id,
         task.company_id,
         task.branch_id
       );
+
+      if (!link && (task.company_id != null || task.branch_id != null)) {
+        try {
+          link = await ProductMarketplaceLinkRepository.upsert({
+            product_id: task.product_id,
+            marketplace_id: task.marketplace_id,
+            credential_id: task.credential_id || credential?.id || null,
+            user_id: task.user_id || null,
+            company_id: task.company_id != null ? task.company_id : null,
+            branch_id: task.branch_id != null ? task.branch_id : null,
+            status: 'failed',
+            external_id: task.external_id,
+            external_url: null,
+            published_stock: null,
+            published_payload: null,
+            last_synced_at: new Date()
+          });
+        } catch (linkError) {
+          logger.warn(`[FB Webhook] No se pudo crear link fallback para task ${task.id} en error feed: ${linkError.message}`);
+        }
+      }
 
       if (link) {
         await link.update({
@@ -1554,6 +1575,7 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
         feed_warnings: feedWarnings,
         source: 'feed_webhook',
         qc_status: productStatus.qc_status,
+        qc_reason: productStatus.qc_reason || null,
         marketplace_status: productStatus.status,
         is_published: productStatus.is_published,
         has_image: hasImage,
@@ -1567,6 +1589,7 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
           : (imageSyncAlreadySucceeded ? taskDetails?.image_sync || { attempted: true, success: true } : null),
         // ✅ GUARDAR ERRORES REALES EXTRAÍDOS
         real_errors: realErrors,
+        product_errors: productStatus.product_errors || [],
         // ✅ GUARDAR RESPONSE COMPLETO DE FALABELLA
         falabella_raw_response: productStatus.raw
       },
@@ -1583,12 +1606,33 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
     await ProductPublishingTaskRepository.updateTask(task, updateData);
 
     if (task.external_id) {
-      const link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
+      let link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
         task.marketplace_id,
         task.external_id,
         task.company_id,
         task.branch_id
       );
+
+      if (!link && (task.company_id != null || task.branch_id != null)) {
+        try {
+          link = await ProductMarketplaceLinkRepository.upsert({
+            product_id: task.product_id,
+            marketplace_id: task.marketplace_id,
+            credential_id: task.credential_id || credential?.id || null,
+            user_id: task.user_id || null,
+            company_id: task.company_id != null ? task.company_id : null,
+            branch_id: task.branch_id != null ? task.branch_id : null,
+            status: finalStatus === 'published' ? 'active' : finalStatus,
+            external_id: task.external_id,
+            external_url: productStatus.url || null,
+            published_stock: productStatus.stock || null,
+            published_payload: productStatus.raw || null,
+            last_synced_at: new Date()
+          });
+        } catch (linkError) {
+          logger.warn(`[FB Webhook] No se pudo crear link fallback para task ${task.id}: ${linkError.message}`);
+        }
+      }
 
       if (link) {
         await link.update({
@@ -1809,7 +1853,8 @@ async function processFalabellaProductWebhook(payload, options = {}) {
       sellerSku,
       product: effectiveProduct,
       payload,
-      imageUploadResult
+      imageUploadResult,
+      task: taskForSku
     });
 
     // ✅ 🔑 NUEVO: Si se encontró la tarea, actualizarla con el estado real del producto
@@ -1848,24 +1893,47 @@ async function processFalabellaProductWebhook(payload, options = {}) {
           error_details: {
             ...(task.error_details || {}),
             qc_status: qcStatus,
+            qc_reason: snapshot.qc_reason || null,
             marketplace_status: productStatus,
             has_image: snapshot.has_image !== false,
+            product_errors: snapshot.product_errors || [],
             updated_by_webhook: topic,
             updated_at: new Date().toISOString()
           }
         });
 
         // ✅ Actualizar link
-        if (task.external_id) {
-          const link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
-            task.marketplace_id,
-            task.external_id,
-            task.company_id,
-            task.branch_id
-          );
-          if (link) {
-            await link.update({
-              status: finalStatus === 'published' ? 'active' : finalStatus,
+    if (task.external_id) {
+      let link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
+        task.marketplace_id,
+        task.external_id,
+        task.company_id,
+        task.branch_id
+      );
+
+      if (!link && (task.company_id != null || task.branch_id != null)) {
+        try {
+          link = await ProductMarketplaceLinkRepository.upsert({
+            product_id: task.product_id,
+            marketplace_id: task.marketplace_id,
+            credential_id: task.credential_id || credential?.id || null,
+            user_id: task.user_id || null,
+            company_id: task.company_id != null ? task.company_id : null,
+            branch_id: task.branch_id != null ? task.branch_id : null,
+            status: finalStatus === 'published' ? 'active' : finalStatus,
+            external_id: task.external_id,
+            external_url: productStatus.url || null,
+            published_stock: productStatus.stock || null,
+            published_payload: productStatus.raw || null,
+            last_synced_at: new Date()
+          });
+        } catch (linkError) {
+          logger.warn(`[FB Webhook] No se pudo crear link fallback para task ${task.id}: ${linkError.message}`);
+        }
+      }
+      if (link) {
+        await link.update({
+          status: finalStatus === 'published' ? 'active' : finalStatus,
               last_synced_at: new Date()
             });
           }
@@ -2365,8 +2433,27 @@ function buildFalabellaProductStateSnapshot({ product, payload, source = "webhoo
     businessUnit?.Status || product?.Status || product?.status || null
   );
   const qcStatus = normalizeFalabellaProductStatusValue(
-    product?.QCStatus || product?.qc_status || null
+    product?.QCStatus || product?.qc_status || businessUnit?.QCStatus || businessUnit?.qc_status || null
   );
+  const qcReason = [
+    product?.QCMessage,
+    product?.qc_message,
+    product?.QCReason,
+    product?.qc_reason,
+    product?.Reason,
+    product?.reason,
+    product?.ErrorMessage,
+    product?.error_message,
+    businessUnit?.QCMessage,
+    businessUnit?.qc_message,
+    businessUnit?.QCReason,
+    businessUnit?.qc_reason,
+    businessUnit?.Reason,
+    businessUnit?.reason,
+    businessUnit?.ErrorMessage,
+    businessUnit?.error_message
+  ].find((value) => typeof value === 'string' && value.trim()) || null;
+  const productErrors = FalabellaAdapter.extractRealFalabellaErrors(product || {});
   const hasImage = product?.has_image === true
     || product?.image_upload?.success === true
     || FalabellaAdapter.hasFalabellaImage(product || {});
@@ -2382,6 +2469,8 @@ function buildFalabellaProductStateSnapshot({ product, payload, source = "webhoo
     has_image: hasImage,
     stock: parseInt(businessUnit?.Stock || product?.stock || 0, 10) || 0,
     price: parseFloat(businessUnit?.Price || product?.price || 0) || 0,
+    qc_reason: qcReason,
+    product_errors: productErrors,
     verified: true,
     item_found: true,
     note: source,
@@ -2498,7 +2587,7 @@ function shouldAttemptFalabellaImageSync({ productStatus, taskImages, imageSyncA
   return true;
 }
 
-async function persistFalabellaProductState({ credential, sellerSku, product, payload, imageUploadResult = null }) {
+async function persistFalabellaProductState({ credential, sellerSku, product, payload, imageUploadResult = null, task: sourceTask = null }) {
   const marketplaceId = credential?.marketplace_id || null;
   const snapshot = buildFalabellaProductStateSnapshot({ product, payload });
   if (imageUploadResult?.success) {
@@ -2538,13 +2627,35 @@ async function persistFalabellaProductState({ credential, sellerSku, product, pa
     );
   }
 
-  let task = await ProductPublishingTaskRepository.findLatestByExternalId(
+  if (!link && sourceTask && (sourceTask.company_id != null || sourceTask.branch_id != null)) {
+    try {
+      link = await ProductMarketplaceLinkRepository.upsert({
+        product_id: sourceTask.product_id,
+        marketplace_id: sourceTask.marketplace_id,
+        credential_id: sourceTask.credential_id || credential?.id || null,
+        user_id: sourceTask.user_id || null,
+        company_id: sourceTask.company_id != null ? sourceTask.company_id : null,
+        branch_id: sourceTask.branch_id != null ? sourceTask.branch_id : null,
+        status: snapshot.status || 'unpublished',
+        external_id: String(sellerSku),
+        external_url: product?.Url || product?.url || null,
+        published_stock: snapshot.stock,
+        published_payload: product,
+        last_synced_at: new Date()
+      });
+      logger.info(`[FB Webhook] Link creado por fallback para SKU ${sellerSku}: task_id=${sourceTask.id}, link_id=${link?.id || 'n/a'}`);
+    } catch (linkError) {
+      logger.warn(`[FB Webhook] No se pudo crear link fallback para SKU ${sellerSku}: ${linkError.message}`);
+    }
+  }
+
+  let latestTask = await ProductPublishingTaskRepository.findLatestByExternalId(
     marketplaceId,
     String(sellerSku)
   );
 
-  if (!task && link?.company_id) {
-    task = await ProductPublishingTaskRepository.findLatestByExternalIdAndContext({
+  if (!latestTask && link?.company_id) {
+    latestTask = await ProductPublishingTaskRepository.findLatestByExternalIdAndContext({
       marketplaceId,
       externalId: String(sellerSku),
       companyId: link.company_id,
@@ -2568,9 +2679,9 @@ async function persistFalabellaProductState({ credential, sellerSku, product, pa
     await link.update(updatePayload);
   }
 
-  if (task) {
-    const currentDetails = task.error_details && typeof task.error_details === "object"
-      ? task.error_details
+  if (latestTask) {
+    const currentDetails = latestTask.error_details && typeof latestTask.error_details === "object"
+      ? latestTask.error_details
       : {};
     const mergedDetails = {
       ...currentDetails,
@@ -2580,7 +2691,7 @@ async function persistFalabellaProductState({ credential, sellerSku, product, pa
     };
 
     const taskUpdate = {
-      api_response: product || task.api_response || null,
+      api_response: product || latestTask.api_response || null,
       error_message: isActive
         ? null
         : (isDeleted
@@ -2589,21 +2700,21 @@ async function persistFalabellaProductState({ credential, sellerSku, product, pa
       error_details: isActive ? null : mergedDetails
     };
 
-    if (isActive && task.status === "published_with_warnings") {
+    if (isActive && latestTask.status === "published_with_warnings") {
       taskUpdate.status = "published";
-    } else if (!isActive && !isDeleted && task.status === "published") {
+    } else if (!isActive && !isDeleted && latestTask.status === "published") {
       taskUpdate.status = "published_with_warnings";
     }
 
-    await task.update(taskUpdate);
+    await latestTask.update(taskUpdate);
   }
 
   return {
     snapshot,
     linkUpdated: !!link,
-    taskUpdated: !!task,
+    taskUpdated: !!latestTask,
     linkId: link?.id || null,
-    taskId: task?.id || null
+    taskId: latestTask?.id || null
   };
 }
 

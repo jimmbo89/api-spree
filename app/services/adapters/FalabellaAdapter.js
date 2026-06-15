@@ -2008,6 +2008,9 @@ async getCategoryAttributes(categoryId) {
       const product = products[0];
       const rawProduct = product.raw || {};
       const hasMainImage = FalabellaAdapter.hasFalabellaImage(rawProduct);
+      const businessUnit = Array.isArray(rawProduct?.BusinessUnits?.BusinessUnit)
+        ? rawProduct.BusinessUnits.BusinessUnit[0]
+        : rawProduct?.BusinessUnits?.BusinessUnit || {};
       const parseBoolean = (value) => {
         if (value === true || value === false) return value;
         if (value === 1 || value === 0) return value === 1;
@@ -2022,27 +2025,46 @@ async getCategoryAttributes(categoryId) {
         return null;
       };
       
-      // Extraer QCStatus del producto
-      const qcStatus = rawProduct.QCStatus || rawProduct.qc_status || null;
+      // Extraer QCStatus y causa posible desde raíz y BusinessUnit
+      const qcStatus = rawProduct.QCStatus
+        || rawProduct.qc_status
+        || businessUnit.QCStatus
+        || businessUnit.qc_status
+        || null;
+      const qcReason = [
+        rawProduct.QCMessage,
+        rawProduct.qc_message,
+        rawProduct.QCReason,
+        rawProduct.qc_reason,
+        rawProduct.Reason,
+        rawProduct.reason,
+        rawProduct.ErrorMessage,
+        rawProduct.error_message,
+        businessUnit.QCMessage,
+        businessUnit.qc_message,
+        businessUnit.QCReason,
+        businessUnit.qc_reason,
+        businessUnit.Reason,
+        businessUnit.reason,
+        businessUnit.ErrorMessage,
+        businessUnit.error_message
+      ].find((value) => typeof value === 'string' && value.trim()) || null;
+      const productErrors = FalabellaAdapter.extractRealFalabellaErrors(rawProduct);
       const status = product.status || null;
       const isPublished = parseBoolean(
         rawProduct.IsPublished ??
         rawProduct.is_published ??
-        rawProduct.BusinessUnits?.BusinessUnit?.IsPublished ??
-        rawProduct.BusinessUnits?.BusinessUnit?.is_published ??
+        businessUnit.IsPublished ??
+        businessUnit.is_published ??
         null
       );
-      
-      // Extraer información adicional de BusinessUnits
-      const businessUnit = Array.isArray(rawProduct?.BusinessUnits?.BusinessUnit)
-        ? rawProduct.BusinessUnits.BusinessUnit[0]
-        : rawProduct?.BusinessUnits?.BusinessUnit || {};
 
       return {
         found: true,
         sku: product.sku,
         status: status || businessUnit.Status || null,
         qc_status: qcStatus,
+        qc_reason: qcReason,
         is_published: isPublished,
         has_image: hasMainImage,
         price: businessUnit.Price || null,
@@ -2050,6 +2072,7 @@ async getCategoryAttributes(categoryId) {
         product_id: rawProduct.ProductId || null,
         shop_sku: rawProduct.ShopSku || null,
         url: rawProduct.Url || null,
+        product_errors: productErrors,
         raw: rawProduct
       };
     } catch (error) {
@@ -2107,6 +2130,40 @@ async getCategoryAttributes(categoryId) {
     }
 
     const errors = [];
+    const businessUnits = Array.isArray(productRaw?.BusinessUnits?.BusinessUnit)
+      ? productRaw.BusinessUnits.BusinessUnit
+      : productRaw?.BusinessUnits?.BusinessUnit
+        ? [productRaw.BusinessUnits.BusinessUnit]
+        : [];
+
+    const collectReason = (source, sourceName) => {
+      if (!source || typeof source !== 'object') return;
+
+      const qcStatus = String(source.QCStatus || source.qc_status || '').trim().toLowerCase();
+      const reason = [
+        source.QCMessage,
+        source.qc_message,
+        source.QCReason,
+        source.qc_reason,
+        source.Reason,
+        source.reason,
+        source.ErrorMessage,
+        source.error_message,
+        source.Message,
+        source.message,
+        source.Detail,
+        source.detail
+      ].find((value) => typeof value === 'string' && value.trim()) || null;
+
+      if (reason && (qcStatus === 'rejected' || qcStatus === 'fail' || sourceName !== 'response')) {
+        errors.push({
+          source: sourceName,
+          code: qcStatus === 'rejected' || qcStatus === 'fail' ? 'QC_REJECTED' : null,
+          message: reason,
+          field: qcStatus === 'rejected' || qcStatus === 'fail' ? 'QCStatus' : null
+        });
+      }
+    };
 
     // ✅ 1. Errores del Feed
     if (productRaw.FeedErrors) {
@@ -2130,10 +2187,14 @@ async getCategoryAttributes(categoryId) {
       const qcReason =
         productRaw.QCMessage ||
         productRaw.qc_message ||
+        productRaw.QCReason ||
+        productRaw.qc_reason ||
         productRaw.Reason ||
         productRaw.reason ||
         productRaw.Message ||
         productRaw.message ||
+        productRaw.ErrorMessage ||
+        productRaw.error_message ||
         null;
 
       if (qcReason) {
@@ -2145,6 +2206,36 @@ async getCategoryAttributes(categoryId) {
         });
       }
     }
+
+    businessUnits.forEach((unit) => {
+      const unitQcStatus = String(unit?.QCStatus || unit?.qc_status || '').trim().toLowerCase();
+      if (unitQcStatus === 'rejected' || unitQcStatus === 'fail') {
+        const unitReason = [
+          unit.QCMessage,
+          unit.qc_message,
+          unit.QCReason,
+          unit.qc_reason,
+          unit.Reason,
+          unit.reason,
+          unit.Message,
+          unit.message,
+          unit.ErrorMessage,
+          unit.error_message
+        ].find((value) => typeof value === 'string' && value.trim()) || null;
+
+        if (unitReason) {
+          errors.push({
+            source: 'business_unit_qc',
+            code: 'QC_REJECTED',
+            message: unitReason,
+            field: 'QCStatus'
+          });
+        }
+      }
+      collectReason(unit, 'business_unit');
+    });
+
+    collectReason(productRaw, 'response');
 
     // ✅ 3. Errores explícitos en el payload raíz
     const rootMessages = [
