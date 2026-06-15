@@ -174,7 +174,18 @@ class FalabellaAdapter extends BaseAdapter {
 
       if (typeof value === 'string') {
         const trimmed = value.trim();
-        if (trimmed) flattened.push(trimmed);
+        if (!trimmed) return;
+
+        if ((trimmed.startsWith('[') && trimmed.endsWith(']')) || (trimmed.startsWith('{') && trimmed.endsWith('}'))) {
+          try {
+            visit(JSON.parse(trimmed));
+            return;
+          } catch (error) {
+            // Si no parsea, caer al string raw
+          }
+        }
+
+        flattened.push(trimmed);
         return;
       }
 

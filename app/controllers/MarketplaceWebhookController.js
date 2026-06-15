@@ -60,6 +60,71 @@ const STOCK_REVERSE_EVENT_TYPE = "stock_reversed";
 const FB_API_VERSION = process.env.FB_API_VERSION || "2.0";
 const FB_USER_AGENT = process.env.FB_USER_AGENT || "Spree/1.0";
 
+function buildFalabellaAsyncPayload(input) {
+  if (!input || typeof input !== 'object') return {};
+
+  const sourcePayload = input.payload && typeof input.payload === 'object'
+    ? input.payload
+    : {};
+
+  const nestedPayload = {};
+  const copyKeys = [
+    'Feed',
+    'SellerSkus',
+    'SellerSku',
+    'OrderId',
+    'OrderID',
+    'sku',
+    'Sku',
+    'resource',
+    'user_id',
+    'userId',
+    'seller_id',
+    'sellerId',
+    'seller_email',
+    'sellerEmail',
+    'EventId',
+    'event_id',
+    'eventId',
+    'timestamp',
+    'created_at',
+    'createdAt',
+    'images',
+    'images_with_version',
+    'MainImage'
+  ];
+
+  for (const key of copyKeys) {
+    if (sourcePayload[key] !== undefined) {
+      nestedPayload[key] = sourcePayload[key];
+    }
+  }
+
+  const safePayload = {
+    event: input.event || null,
+    event_type: input.event_type || null,
+    topic: input.topic || null,
+    type: input.type || null,
+    resource: input.resource || null,
+    user_id: input.user_id ?? input.userId ?? sourcePayload.user_id ?? sourcePayload.userId ?? null,
+    seller_email: input.seller_email ?? input.sellerEmail ?? sourcePayload.seller_email ?? sourcePayload.sellerEmail ?? null,
+    seller_id: input.seller_id ?? input.sellerId ?? sourcePayload.seller_id ?? sourcePayload.sellerId ?? null,
+    timestamp: input.timestamp || sourcePayload.timestamp || null,
+    created_at: input.created_at || sourcePayload.created_at || null,
+    payload: nestedPayload
+  };
+
+  if (sourcePayload && typeof sourcePayload === 'object') {
+    for (const key of ['Feed', 'SellerSkus', 'SellerSku', 'OrderId', 'OrderID', 'resource']) {
+      if (sourcePayload[key] !== undefined) {
+        safePayload[key] = sourcePayload[key];
+      }
+    }
+  }
+
+  return safePayload;
+}
+
 const MarketplaceWebhookController = {
   async mercadoLibre(req, res) {
     logger.info(`Datos llegados desde el webhook-Mercado-Libre:\n ${JSON.stringify(req.body)}`);
@@ -81,8 +146,7 @@ const MarketplaceWebhookController = {
   },
 
   async falabella(req, res) {
-    logger.info(`Datos llegados desde el webhook-Falabella:\n ${JSON.stringify(req.body)}`);
-    const payload = req.body || {};
+    const payload = buildFalabellaAsyncPayload(req.body);
     const topicRaw =
       payload?.event ||
       payload?.event_type ||
@@ -90,8 +154,19 @@ const MarketplaceWebhookController = {
       payload?.type ||
       null;
 
+    logger.info(`Datos llegados desde el webhook-Falabella:\n ${JSON.stringify({
+      event: payload.event,
+      event_type: payload.event_type,
+      topic: payload.topic,
+      type: payload.type,
+      resource: payload.resource,
+      user_id: payload.user_id,
+      seller_email: payload.seller_email,
+      feed: payload.payload?.Feed || payload.Feed || null,
+      seller_skus: Array.isArray(payload.payload?.SellerSkus) ? payload.payload.SellerSkus : null
+    })}`);
     logger.info(`[FB Webhook] Request recibida ip=${req.ip || req.socket?.remoteAddress || 'unknown'} ua=${req.headers['user-agent'] || 'unknown'} ct=${req.headers['content-type'] || 'unknown'} topic=${topicRaw || 'unknown'}`);
-    logger.info(`[FB Webhook] Payload recibido: ${JSON.stringify(payload).substring(0, 2000)}`);
+    logger.info(`[FB Webhook] Payload recibido (liviano): ${JSON.stringify(payload).substring(0, 2000)}`);
 
     res.status(200).json({ success: true });
 
@@ -2373,6 +2448,25 @@ function extractFalabellaTaskImages(task, payload, sellerSku, adapter) {
 function toPublicFalabellaImageUrl(imageUrl) {
   const value = String(imageUrl || '').trim();
   if (!value) return null;
+
+  if ((value.startsWith('[') && value.endsWith(']')) || (value.startsWith('{') && value.endsWith('}'))) {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return toPublicFalabellaImageUrl(parsed[0]);
+      }
+      if (parsed && typeof parsed === 'object') {
+        return toPublicFalabellaImageUrl(parsed.fullUrl || parsed.url || parsed.src || parsed.image || parsed.path || '');
+      }
+    } catch (error) {
+      // Ignorar y seguir con el valor crudo si no es JSON válido
+    }
+  }
+
+  if (value.includes('[') || value.includes(']') || value.includes('{') || value.includes('}')) {
+    return null;
+  }
+
   if (/^https:\/\//i.test(value)) return value;
   if (/^http:\/\//i.test(value)) return value.replace(/^http:\/\//i, 'https://');
 
