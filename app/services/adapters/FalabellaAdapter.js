@@ -1859,7 +1859,7 @@ async getCategoryAttributes(categoryId) {
         return credentialStatus;
       }
 
-      // Construir XML para UploadAndUpdateImages
+      // Construir XML según la documentación oficial de Falabella para Action=Image
       const escape = (str) => {
         if (typeof str !== 'string') return String(str || '');
         return str
@@ -1872,14 +1872,18 @@ async getCategoryAttributes(categoryId) {
 
       const sku = escape(String(sellerSku || '').substring(0, 50));
       
-      // Falabella espera las imágenes en formato específico
-      let imagesXml = '';
-      images.forEach((imageUrl, index) => {
-        if (imageUrl && typeof imageUrl === 'string' && imageUrl.trim()) {
-          imagesXml += `
-          <Image>${escape(imageUrl.trim())}</Image>`;
-        }
-      });
+      const normalizedImages = images
+        .filter((imageUrl) => typeof imageUrl === 'string' && imageUrl.trim())
+        .map((imageUrl) => imageUrl.trim())
+        .slice(0, 8);
+
+      if (normalizedImages.length > 0) {
+        logger.info(`[FalabellaAdapter] 📸 Preparando ${normalizedImages.length} imagen(es) para SKU ${sellerSku} (máximo 8 según doc)`);
+      }
+
+      const imagesXml = normalizedImages
+        .map((imageUrl) => `        <Image>${escape(imageUrl)}</Image>`)
+        .join('\n');
 
       if (!imagesXml) {
         logger.info(`[FalabellaAdapter] No hay URLs de imagen válidas para SKU ${sellerSku}`);
@@ -1888,11 +1892,11 @@ async getCategoryAttributes(categoryId) {
 
       const xmlPayload = `<?xml version="1.0" encoding="UTF-8"?>
 <Request>
-  <Product>
+  <ProductImage>
     <SellerSku>${sku}</SellerSku>
     <Images>${imagesXml}
     </Images>
-  </Product>
+  </ProductImage>
 </Request>`;
 
       const timestamp = this.timestampMinus03();

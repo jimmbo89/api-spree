@@ -57,6 +57,27 @@ function normalizePublishedStock(payload) {
   return totals.reduce((sum, value) => sum + value, 0);
 }
 
+function buildProductMarketplaceLinkScope(warehouse = {}) {
+  if (warehouse.company_id != null) {
+    return {
+      company_id: warehouse.company_id,
+      branch_id: null
+    };
+  }
+
+  if (warehouse.branch_id != null) {
+    return {
+      company_id: null,
+      branch_id: warehouse.branch_id
+    };
+  }
+
+  return {
+    company_id: null,
+    branch_id: null
+  };
+}
+
 function resolveExternalId(result, fallback = null) {
   return result?.external_id || result?.data?.id || fallback || null;
 }
@@ -409,13 +430,13 @@ class PublishingService {
           attempt_count: 1
         });
 
+        const falabellaLinkScope = buildProductMarketplaceLinkScope(warehouse);
         await ProductMarketplaceLinkRepository.upsert({
           product_id: productData.id,
           marketplace_id: marketplace.marketplace_id,
           credential_id: credentialId,
           user_id: userId,
-          company_id: warehouse.company_id,
-          branch_id: warehouse.branch_id,
+          ...falabellaLinkScope,
           status: 'processing',
           external_id: transformed.sku,
           external_url: null,
@@ -810,8 +831,7 @@ static async republishProduct(task, marketplace, credential, userId) {
         marketplace_id: task.marketplace_id,
         credential_id: task.credential_id,
         user_id: task.user_id,
-        company_id: task.company_id,
-        branch_id: task.branch_id,
+        ...buildProductMarketplaceLinkScope(task),
         status: 'processing',
         external_id: externalId || task.external_id,
         external_url: result.data?.permalink || task.external_url || null,
@@ -908,8 +928,7 @@ static async republishProduct(task, marketplace, credential, userId) {
         marketplace_id: task.marketplace_id,
         credential_id: task.credential_id,
         user_id: task.user_id,
-        company_id: task.company_id,
-        branch_id: task.branch_id,
+        ...buildProductMarketplaceLinkScope(task),
         status,
         external_id: externalId,
         external_url: result.data?.permalink,

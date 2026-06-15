@@ -44,12 +44,17 @@ const ProductMarketplaceLinkRepository = {
   async upsert(linkData, options = {}) {
     logger.info(`[REPO] Guardando link para producto ${linkData.product_id}`);
     try {
-      // Validar contexto
-      if ((linkData.company_id && linkData.branch_id) || (!linkData.company_id && !linkData.branch_id)) {
+      // Validar contexto: el link debe quedar ligado a company o branch, pero no a ambos a la vez.
+      const hasCompany = linkData.company_id != null;
+      const hasBranch = linkData.branch_id != null;
+
+      if ((hasCompany && hasBranch) || (!hasCompany && !hasBranch)) {
         throw new Error('Debe proporcionar company_id o branch_id');
       }
 
       const scopeWhere = this.buildScopeWhere(linkData);
+      logger.info(`[REPO] Scope link marketplace=${linkData.marketplace_id} product=${linkData.product_id}: ${JSON.stringify(scopeWhere)}`);
+
       const existing = await ProductMarketplaceLink.findOne({
         where: scopeWhere,
         order: [['updatedAt', 'DESC'], ['id', 'DESC']]
@@ -57,10 +62,13 @@ const ProductMarketplaceLinkRepository = {
 
       if (existing) {
         await existing.update(linkData, options);
+        logger.info(`[REPO] Link actualizado id=${existing.id} product=${linkData.product_id} marketplace=${linkData.marketplace_id}`);
         return existing;
       }
 
-      return await ProductMarketplaceLink.create(linkData, options);
+      const created = await ProductMarketplaceLink.create(linkData, options);
+      logger.info(`[REPO] Link creado id=${created.id} product=${linkData.product_id} marketplace=${linkData.marketplace_id}`);
+      return created;
     } catch (error) {
       logger.error(`[REPO] ERROR al guardar link:`, error.message);
       throw error;

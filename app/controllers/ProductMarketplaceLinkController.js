@@ -33,6 +33,7 @@ const ProductMarketplaceLinkController = {
         marketplace_id,
         company_id,
         branch_id,
+        null,
         user_id || null
       );
 
