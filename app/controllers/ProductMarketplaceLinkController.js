@@ -13,7 +13,7 @@ const { getRequestMetadata } = require('../util/requestUtil');
 const ProductMarketplaceLinkController = {
   async list(req, res) {
     logger.info(`${req.user?.name || 'Unknown'} - Lista links de marketplace`);
-    const { marketplace_id, company_id, branch_id, user_id } = req.body;
+      const { marketplace_id, credential_id, company_id, branch_id, user_id } = req.body;
     const metadata = getRequestMetadata(req);
 
     try {
@@ -33,7 +33,7 @@ const ProductMarketplaceLinkController = {
         marketplace_id,
         company_id,
         branch_id,
-        null,
+        credential_id || null,
         user_id || null
       );
 
@@ -59,15 +59,16 @@ const ProductMarketplaceLinkController = {
 
   async show(req, res) {
     try {
-      const { product_id, marketplace_id, company_id, branch_id, user_id } = req.body;
+      const { product_id, marketplace_id, credential_id, external_id, company_id, branch_id, user_id } = req.body;
       
       const link = await ProductMarketplaceLinkRepository.findByProductAndMarketplace(
         product_id,
         marketplace_id,
         company_id,
         branch_id,
-        null,
-        user_id || null
+        credential_id || null,
+        user_id || null,
+        external_id || null
       );
       
       if (!link) return res.status(404).json({ msg: "LinkNotFound" });

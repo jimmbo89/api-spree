@@ -226,7 +226,20 @@ class FalabellaAdapter extends BaseAdapter {
   }
 
   resolveMarketplaceProductId(product) {
+    const attributeProductId = Array.isArray(product?.attributes)
+      ? product.attributes.find(attr => this.normalizeFalabellaText(attr?.id) === 'productid')
+      : null;
+    const categoryAttributeProductId = Array.isArray(product?.category_attributes)
+      ? product.category_attributes.find(attr => this.normalizeFalabellaText(attr?.id || attr?.FeedName || attr?.Name) === 'productid')
+      : null;
+
     const candidates = [
+      attributeProductId?.value_name,
+      attributeProductId?.value,
+      attributeProductId?.value_id,
+      categoryAttributeProductId?.value_name,
+      categoryAttributeProductId?.value,
+      categoryAttributeProductId?.value_id,
       product?.ProductId,
       product?.productIdentifier,
       product?.gtin,

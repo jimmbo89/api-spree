@@ -25,12 +25,21 @@ const ProductMarketplaceLinkRepository = {
    * @param {number|null} credentialId - ID de la credencial (opcional, NUEVO)
    * @returns {Promise<Object|null>} Link encontrado o null
    */
-  async findByProductAndMarketplace(productId, marketplaceId, companyId = null, branchId = null, credentialId = null, userId = null) {
+  async findByProductAndMarketplace(
+    productId,
+    marketplaceId,
+    companyId = null,
+    branchId = null,
+    credentialId = null,
+    userId = null,
+    externalId = null
+  ) {
     const where = { product_id: productId, marketplace_id: marketplaceId };
     if (companyId) where.company_id = companyId;
     if (branchId) where.branch_id = branchId;
     if (credentialId) where.credential_id = credentialId;
     if (userId) where.user_id = userId;
+    if (externalId) where.external_id = externalId;
 
     return await ProductMarketplaceLink.findOne({ where });
   },

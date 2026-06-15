@@ -1454,7 +1454,9 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
         task.marketplace_id,
         task.external_id,
         task.company_id,
-        task.branch_id
+        task.branch_id,
+        task.credential_id || credential?.id || null,
+        task.user_id || null
       );
 
       if (!link && (task.company_id != null || task.branch_id != null)) {
@@ -1610,7 +1612,9 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
         task.marketplace_id,
         task.external_id,
         task.company_id,
-        task.branch_id
+        task.branch_id,
+        task.credential_id || credential?.id || null,
+        task.user_id || null
       );
 
       if (!link && (task.company_id != null || task.branch_id != null)) {
@@ -1908,7 +1912,9 @@ async function processFalabellaProductWebhook(payload, options = {}) {
         task.marketplace_id,
         task.external_id,
         task.company_id,
-        task.branch_id
+        task.branch_id,
+        task.credential_id || credential?.id || null,
+        task.user_id || null
       );
 
       if (!link && (task.company_id != null || task.branch_id != null)) {

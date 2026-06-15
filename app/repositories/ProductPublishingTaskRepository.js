@@ -3,6 +3,20 @@ const { ProductPublishingTask, Product, Marketplace, Warehouse, Branch, Company,
 const logger = require('../../config/logger');
 
 const ProductPublishingTaskRepository = {
+  buildFeedIdSearchClauses(feedId) {
+    return [
+      { external_id: feedId },
+      Sequelize.where(Sequelize.fn('JSON_EXTRACT', Sequelize.col('error_details'), '$.feed_id'), feedId),
+      Sequelize.where(Sequelize.fn('JSON_EXTRACT', Sequelize.col('error_details'), '$.image_sync.request_id'), feedId),
+      Sequelize.where(Sequelize.fn('JSON_EXTRACT', Sequelize.col('error_details'), '$.image_upload.request_id'), feedId),
+      Sequelize.where(Sequelize.fn('JSON_EXTRACT', Sequelize.col('api_response'), '$.feed_id'), feedId),
+      Sequelize.where(Sequelize.fn('JSON_EXTRACT', Sequelize.col('api_response'), '$.feed.FeedID'), feedId),
+      Sequelize.where(Sequelize.fn('JSON_EXTRACT', Sequelize.col('api_response'), '$.data.feed_id'), feedId),
+      Sequelize.where(Sequelize.fn('JSON_EXTRACT', Sequelize.col('api_response'), '$.image_sync.request_id'), feedId),
+      Sequelize.where(Sequelize.fn('JSON_EXTRACT', Sequelize.col('api_response'), '$.image_upload.request_id'), feedId)
+    ];
+  },
+
   async create(taskData, options = {}) {
     logger.info(`[REPO] Creando tarea de publicación para producto ${taskData.product_id}`);
     try {
@@ -308,25 +322,7 @@ const ProductPublishingTaskRepository = {
 
       // ✅ ESTRATEGIA 1: Búsqueda por JSON_EXTRACT (funciona si el campo es JSON nativo)
       const whereJsonExtract = {
-        [Op.or]: [
-          { external_id: feedId },
-          Sequelize.where(
-            Sequelize.fn('JSON_EXTRACT', Sequelize.col('error_details'), '$.feed_id'),
-            feedId
-          ),
-          Sequelize.where(
-            Sequelize.fn('JSON_EXTRACT', Sequelize.col('api_response'), '$.feed_id'),
-            feedId
-          ),
-          Sequelize.where(
-            Sequelize.fn('JSON_EXTRACT', Sequelize.col('api_response'), '$.feed.FeedID'),
-            feedId
-          ),
-          Sequelize.where(
-            Sequelize.fn('JSON_EXTRACT', Sequelize.col('api_response'), '$.data.feed_id'),
-            feedId
-          )
-        ]
+        [Op.or]: this.buildFeedIdSearchClauses(feedId)
       };
 
       if (marketplaceId) {
@@ -358,22 +354,14 @@ const ProductPublishingTaskRepository = {
       
       const whereLike = {
         [Op.or]: [
-          Sequelize.where(
-            Sequelize.col('error_details'),
-            { [Op.like]: `%"feed_id":"${feedId}"%` }
-          ),
-          Sequelize.where(
-            Sequelize.col('error_details'),
-            { [Op.like]: `%"feed_id": "${feedId}"%` }
-          ),
-          Sequelize.where(
-            Sequelize.col('api_response'),
-            { [Op.like]: `%"feed_id":"${feedId}"%` }
-          ),
-          Sequelize.where(
-            Sequelize.col('api_response'),
-            { [Op.like]: `%"feed_id": "${feedId}"%` }
-          )
+          Sequelize.where(Sequelize.col('error_details'), { [Op.like]: `%"feed_id":"${feedId}"%` }),
+          Sequelize.where(Sequelize.col('error_details'), { [Op.like]: `%"feed_id": "${feedId}"%` }),
+          Sequelize.where(Sequelize.col('error_details'), { [Op.like]: `%"request_id":"${feedId}"%` }),
+          Sequelize.where(Sequelize.col('error_details'), { [Op.like]: `%"request_id": "${feedId}"%` }),
+          Sequelize.where(Sequelize.col('api_response'), { [Op.like]: `%"feed_id":"${feedId}"%` }),
+          Sequelize.where(Sequelize.col('api_response'), { [Op.like]: `%"feed_id": "${feedId}"%` }),
+          Sequelize.where(Sequelize.col('api_response'), { [Op.like]: `%"request_id":"${feedId}"%` }),
+          Sequelize.where(Sequelize.col('api_response'), { [Op.like]: `%"request_id": "${feedId}"%` })
         ]
       };
 
@@ -407,22 +395,14 @@ const ProductPublishingTaskRepository = {
         
         const whereGlobal = {
           [Op.or]: [
-            Sequelize.where(
-              Sequelize.col('error_details'),
-              { [Op.like]: `%"feed_id":"${feedId}"%` }
-            ),
-            Sequelize.where(
-              Sequelize.col('error_details'),
-              { [Op.like]: `%"feed_id": "${feedId}"%` }
-            ),
-            Sequelize.where(
-              Sequelize.col('api_response'),
-              { [Op.like]: `%"feed_id":"${feedId}"%` }
-            ),
-            Sequelize.where(
-              Sequelize.col('api_response'),
-              { [Op.like]: `%"feed_id": "${feedId}"%` }
-            )
+            Sequelize.where(Sequelize.col('error_details'), { [Op.like]: `%"feed_id":"${feedId}"%` }),
+            Sequelize.where(Sequelize.col('error_details'), { [Op.like]: `%"feed_id": "${feedId}"%` }),
+            Sequelize.where(Sequelize.col('error_details'), { [Op.like]: `%"request_id":"${feedId}"%` }),
+            Sequelize.where(Sequelize.col('error_details'), { [Op.like]: `%"request_id": "${feedId}"%` }),
+            Sequelize.where(Sequelize.col('api_response'), { [Op.like]: `%"feed_id":"${feedId}"%` }),
+            Sequelize.where(Sequelize.col('api_response'), { [Op.like]: `%"feed_id": "${feedId}"%` }),
+            Sequelize.where(Sequelize.col('api_response'), { [Op.like]: `%"request_id":"${feedId}"%` }),
+            Sequelize.where(Sequelize.col('api_response'), { [Op.like]: `%"request_id": "${feedId}"%` })
           ]
         };
 
