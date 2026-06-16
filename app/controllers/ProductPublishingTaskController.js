@@ -2794,20 +2794,48 @@ async publishedProducts(req, res) {
       let qcStatus = null;
 
       if (marketplaceKey === 'falabella') {
-        // ✅ 🔑 CORRECCIÓN: Si la tarea está en "processing", mostrar ese estado
+        const errorDetails = task.error_details || {};
+        const snapshotState = errorDetails.marketplace_item_state || {};
+
+        const snapshotStatus = String(snapshotState.status || '').trim().toLowerCase();
+        const snapshotQcStatus = String(snapshotState.qc_status || '').trim().toLowerCase() || null;
+        const snapshotIsPublished = snapshotState.is_published ?? null;
+        const snapshotHasImage = snapshotState.has_image !== false;
+        const snapshotHasUrl = typeof snapshotState.url === 'string' && snapshotState.url.trim().length > 0;
+        const snapshotHasShopSku = typeof snapshotState.shop_sku === 'string' && snapshotState.shop_sku.trim().length > 0;
+        const snapshotHasErrors = Array.isArray(snapshotState.product_errors) && snapshotState.product_errors.length > 0;
+        const snapshotLooksPublished = ['active', 'live'].includes(snapshotStatus)
+          && snapshotQcStatus !== 'pending'
+          && snapshotQcStatus !== 'rejected'
+          && snapshotHasImage
+          && !snapshotHasErrors
+          && (snapshotHasUrl || snapshotHasShopSku || snapshotIsPublished === true);
+
         if (task.status === 'processing') {
-          marketplaceStatus = 'processing';
-          
-          // Intentar extraer info adicional del error_details
-          const errorDetails = task.error_details || {};
-          const feedId = errorDetails.feed_id || null;
-          const sentAt = errorDetails.sent_at || null;
-          
-          logger.debug(`[publishedProducts] Falabella tarea en processing para ${task.external_id}:`, {
-            feedId,
-            sentAt,
-            taskStatus: task.status
-          });
+          if (snapshotLooksPublished) {
+            marketplaceStatus = 'active';
+            isPublished = snapshotIsPublished;
+            qcStatus = snapshotQcStatus;
+          } else if (snapshotQcStatus === 'rejected') {
+            marketplaceStatus = 'rejected';
+            isPublished = snapshotIsPublished;
+            qcStatus = snapshotQcStatus;
+          } else if (snapshotStatus === 'inactive' || snapshotStatus === 'deleted') {
+            marketplaceStatus = snapshotStatus;
+            isPublished = snapshotIsPublished;
+            qcStatus = snapshotQcStatus;
+          } else {
+            marketplaceStatus = 'processing';
+
+            const feedId = errorDetails.feed_id || null;
+            const sentAt = errorDetails.sent_at || null;
+
+            logger.debug(`[publishedProducts] Falabella tarea en processing para ${task.external_id}:`, {
+              feedId,
+              sentAt,
+              taskStatus: task.status
+            });
+          }
         } else {
           // ✅ Falabella: estado REAL según Status + IsPublished + QCStatus
           const falabellaPayload = normalizePublishedPayload(marketplaceLink?.published_payload);
@@ -2819,10 +2847,23 @@ async publishedProducts(req, res) {
             ? (String(isPublishedRaw).trim() === '1' || isPublishedRaw === 1 || isPublishedRaw === true)
             : null;
           qcStatus = String(falabellaPayload?.QCStatus || falabellaBU.QCStatus || '').trim().toLowerCase() || null;
+          const payloadHasUrl = typeof falabellaPayload?.Url === 'string' && falabellaPayload.Url.trim().length > 0;
+          const payloadHasShopSku = typeof falabellaPayload?.ShopSku === 'string' && falabellaPayload.ShopSku.trim().length > 0;
+          const payloadHasImage = Boolean(
+            (typeof falabellaPayload?.MainImage === 'string' && falabellaPayload.MainImage.trim().length > 0)
+            || falabellaPayload?.Images
+          );
+          const payloadHasErrors = Array.isArray(falabellaPayload?.product_errors) && falabellaPayload.product_errors.length > 0;
+          const payloadLooksPublished = ['approved', 'active', 'live'].includes(qcStatus)
+            && payloadHasImage
+            && !payloadHasErrors
+            && (payloadHasUrl || payloadHasShopSku || isPublished === true);
 
           // ✅ Determinar estado REAL según los 3 campos (documentación oficial Falabella)
           if (rawStatus === 'active') {
-            if (isPublished === false) {
+            if (payloadLooksPublished) {
+              marketplaceStatus = 'active';
+            } else if (isPublished === false) {
               marketplaceStatus = 'not_published';
             } else if (qcStatus === 'rejected') {
               marketplaceStatus = 'rejected';

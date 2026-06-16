@@ -1540,30 +1540,12 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
       logger.warn(`[FB Webhook] Feed ${feedId}: SKU ${sellerSku} sin imagen, pero no hay imágenes guardadas en la tarea ${task.id}`);
     }
     
-    const terminalProductState = isFalabellaTerminalProductState(productStatus.status);
-    let finalStatus = 'published';
-    let realErrorMessage = null;
-
-    if (!productStatus.found) {
-      finalStatus = 'published_with_warnings';
-      realErrorMessage = null;
-    } else if (realErrors.length > 0) {
-      // ✅ Hay errores REALES de Falabella
-      finalStatus = 'failed';
-      realErrorMessage = realErrors.map(err => {
-        const field = err.field ? `${err.field}: ` : '';
-        return `${field}${err.message}`;
-      }).join(' | ');
-    } else if (terminalProductState) {
-      finalStatus = 'failed';
-      realErrorMessage = `Falabella marcó el producto como ${productStatus.status}`;
-    } else if (productStatus.status === 'active' && productStatus.is_published !== false && hasImage) {
-      finalStatus = 'published';
-      realErrorMessage = null;
-    } else {
-      finalStatus = 'published_with_warnings';
-      realErrorMessage = null;
-    }
+    const lifecycle = determineFalabellaTaskLifecycle(productStatus, {
+      realErrors,
+      hasImage
+    });
+    const finalStatus = lifecycle.status;
+    const realErrorMessage = lifecycle.errorMessage;
 
     // ✅ Preparar datos de actualización con errores REALES
     const updateData = {
@@ -1744,6 +1726,7 @@ async function processFalabellaProductWebhook(payload, options = {}) {
 
   const resource = payload?.resource || `products/${sellerSku}`;
   const topic = payload?.event || payload?.event_type || payload?.topic || payload?.type || "onProductUpdated";
+  const normalizedTopic = normalizeFalabellaTopicName(topic);
   const eventId = buildFalabellaEventId(payload, resource, topic);
   const eventResult = await createFalabellaWebhookEvent(
     payload,
@@ -1779,8 +1762,8 @@ async function processFalabellaProductWebhook(payload, options = {}) {
 
     // ✅ 🔑 CORRECCIÓN: Esperar un poco antes de consultar el producto
     // Falabella necesita tiempo para procesar el producto después del feed
-    if (topic === 'onproductupdated' || topic === 'onproductqcstatuschanged') {
-      logger.info(`[FB Webhook] ${topic} recibido para SKU ${sellerSku}, esperando 3s antes de consultar...`);
+    if (normalizedTopic === 'onproductupdated' || normalizedTopic === 'onproductqcstatuschanged') {
+      logger.info(`[FB Webhook] ${normalizedTopic} recibido para SKU ${sellerSku}, esperando 3s antes de consultar...`);
       await sleep(3000);
     }
 
@@ -1868,27 +1851,22 @@ async function processFalabellaProductWebhook(payload, options = {}) {
         const snapshot = persistResult.snapshot || {};
         const qcStatus = snapshot.qc_status || null;
         const productStatus = snapshot.status || null;
-        
-        let finalStatus = 'published_with_warnings';
-        let statusMessage = null;
-        
-        if (qcStatus) {
-          const qcLower = String(qcStatus).toLowerCase();
-          if (qcLower === 'rejected' || qcLower === 'fail') {
-            finalStatus = 'published_with_warnings';
-            statusMessage = `Producto en revisión QC: ${qcStatus}`;
-          } else if (qcLower === 'pending' || qcLower === 'processing') {
-            finalStatus = 'published_with_warnings';
-            statusMessage = `Producto pendiente de aprobación QC: ${qcStatus}`;
-          } else if (qcLower === 'approved' || qcLower === 'active' || qcLower === 'live') {
-            finalStatus = 'published';
+        const lifecycle = determineFalabellaTaskLifecycle(snapshot, {
+          realErrors: Array.isArray(snapshot.product_errors) ? snapshot.product_errors : [],
+          hasImage: snapshot.has_image !== false
+        });
+
+        const finalStatus = lifecycle.status;
+        let statusMessage = lifecycle.errorMessage;
+
+        if (!statusMessage) {
+          if (finalStatus === 'published') {
             statusMessage = 'Producto aprobado y activo';
+          } else if (finalStatus === 'failed' && qcStatus) {
+            statusMessage = `Producto rechazado o desactivado: ${qcStatus}`;
+          } else if (finalStatus === 'processing' && qcStatus) {
+            statusMessage = `Producto pendiente de aprobación QC: ${qcStatus}`;
           }
-        } else if (productStatus === 'active' && snapshot.has_image !== false) {
-          finalStatus = 'published';
-          statusMessage = 'Producto activo en Falabella';
-        } else {
-          statusMessage = null;
         }
 
         await ProductPublishingTaskRepository.updateTask(task, {
@@ -1901,7 +1879,7 @@ async function processFalabellaProductWebhook(payload, options = {}) {
             marketplace_status: productStatus,
             has_image: snapshot.has_image !== false,
             product_errors: snapshot.product_errors || [],
-            updated_by_webhook: topic,
+            updated_by_webhook: normalizedTopic || topic,
             updated_at: new Date().toISOString()
           }
         });
@@ -1928,9 +1906,9 @@ async function processFalabellaProductWebhook(payload, options = {}) {
             branch_id: task.branch_id != null ? task.branch_id : null,
             status: finalStatus === 'published' ? 'active' : finalStatus,
             external_id: task.external_id,
-            external_url: productStatus.url || null,
-            published_stock: productStatus.stock || null,
-            published_payload: productStatus.raw || null,
+            external_url: snapshot.url || null,
+            published_stock: snapshot.stock || null,
+            published_payload: snapshot.raw || null,
             last_synced_at: new Date()
           });
         } catch (linkError) {
@@ -1940,12 +1918,15 @@ async function processFalabellaProductWebhook(payload, options = {}) {
       if (link) {
         await link.update({
           status: finalStatus === 'published' ? 'active' : finalStatus,
-              last_synced_at: new Date()
-            });
-          }
-        }
+          external_url: snapshot.url || link.external_url,
+          published_stock: snapshot.stock || link.published_stock,
+          published_payload: snapshot.raw || link.published_payload,
+          last_synced_at: new Date()
+        });
+      }
+    }
 
-        logger.info(`[FB Webhook] ✅ Tarea ${task.id} actualizada por webhook ${topic}: ${finalStatus} - ${statusMessage}`);
+        logger.info(`[FB Webhook] ✅ Tarea ${task.id} actualizada por webhook ${normalizedTopic || topic}: ${finalStatus} - ${statusMessage}`);
       }
     }
 
@@ -2475,6 +2456,9 @@ function buildFalabellaProductStateSnapshot({ product, payload, source = "webhoo
     has_image: hasImage,
     stock: parseInt(businessUnit?.Stock || product?.stock || 0, 10) || 0,
     price: parseFloat(businessUnit?.Price || product?.price || 0) || 0,
+    url: product?.Url || product?.url || null,
+    shop_sku: product?.ShopSku || product?.shop_sku || null,
+    raw: product || null,
     qc_reason: qcReason,
     product_errors: productErrors,
     verified: true,
@@ -2584,6 +2568,72 @@ function isFalabellaTerminalProductState(status) {
   return ['inactive', 'deleted'].includes(normalized);
 }
 
+function isFalabellaConfirmedPublishedState(productStatus, { hasImage = true } = {}) {
+  if (!productStatus || typeof productStatus !== 'object') {
+    return false;
+  }
+
+  if (productStatus.found === false) {
+    return false;
+  }
+
+  const status = String(productStatus.status || '').trim().toLowerCase();
+  const qcStatus = String(productStatus.qc_status || '').trim().toLowerCase();
+  const isPublished = productStatus.is_published;
+  const productErrors = Array.isArray(productStatus.product_errors) ? productStatus.product_errors : [];
+  const hasPublicUrl = typeof productStatus.url === 'string' && productStatus.url.trim().length > 0;
+  const hasShopSku = typeof productStatus.shop_sku === 'string' && productStatus.shop_sku.trim().length > 0;
+  const qcApproved = ['approved', 'active', 'live'].includes(qcStatus);
+  const strongPublishSignal = hasPublicUrl || hasShopSku || isPublished === true;
+  const legacyPublishSignal = isPublished === true
+    && qcStatus !== 'pending'
+    && qcStatus !== 'rejected';
+
+  return ['active', 'live'].includes(status)
+    && hasImage !== false
+    && productErrors.length === 0
+    && (
+      (qcApproved && strongPublishSignal)
+      || legacyPublishSignal
+    );
+}
+
+function determineFalabellaTaskLifecycle(productStatus, { realErrors = [], hasImage = true } = {}) {
+  const status = String(productStatus?.status || '').trim().toLowerCase();
+  const qcStatus = String(productStatus?.qc_status || '').trim().toLowerCase();
+
+  if (!productStatus || productStatus.found === false) {
+    return { status: 'processing', isFinal: false, errorMessage: null };
+  }
+
+  if (realErrors.length > 0) {
+    return {
+      status: 'failed',
+      isFinal: true,
+      errorMessage: realErrors.map(err => {
+        const field = err.field ? `${err.field}: ` : '';
+        return `${field}${err.message}`;
+      }).join(' | ')
+    };
+  }
+
+  if (qcStatus === 'rejected' || ['inactive', 'deleted'].includes(status)) {
+    return {
+      status: 'failed',
+      isFinal: true,
+      errorMessage: qcStatus === 'rejected'
+        ? 'Falabella rechazó el producto'
+        : `Falabella marcó el producto como ${status || 'desconocido'}`
+    };
+  }
+
+  if (isFalabellaConfirmedPublishedState(productStatus, { hasImage })) {
+    return { status: 'published', isFinal: true, errorMessage: null };
+  }
+
+  return { status: 'processing', isFinal: false, errorMessage: null };
+}
+
 function shouldAttemptFalabellaImageSync({ productStatus, taskImages, imageSyncAlreadySucceeded }) {
   if (imageSyncAlreadySucceeded) return false;
   if (!productStatus?.found) return false;
@@ -2599,6 +2649,13 @@ async function persistFalabellaProductState({ credential, sellerSku, product, pa
   if (imageUploadResult?.success) {
     snapshot.has_image = true;
   }
+  const isActive = snapshot.status === "active";
+  const isDeleted = snapshot.status === "deleted";
+  const lifecycle = determineFalabellaTaskLifecycle(snapshot, {
+    realErrors: Array.isArray(snapshot.product_errors) ? snapshot.product_errors : [],
+    hasImage: snapshot.has_image !== false
+  });
+  const resolvedStatus = isDeleted ? "deleted" : lifecycle.status;
 
   logger.info(
     `[FB Webhook] Producto ${sellerSku} verificado: ${JSON.stringify({
@@ -2642,11 +2699,11 @@ async function persistFalabellaProductState({ credential, sellerSku, product, pa
         user_id: sourceTask.user_id || null,
         company_id: sourceTask.company_id != null ? sourceTask.company_id : null,
         branch_id: sourceTask.branch_id != null ? sourceTask.branch_id : null,
-        status: snapshot.status || 'unpublished',
+        status: resolvedStatus,
         external_id: String(sellerSku),
-        external_url: product?.Url || product?.url || null,
+        external_url: snapshot.url || null,
         published_stock: snapshot.stock,
-        published_payload: product,
+        published_payload: snapshot.raw || product,
         last_synced_at: new Date()
       });
       logger.info(`[FB Webhook] Link creado por fallback para SKU ${sellerSku}: task_id=${sourceTask.id}, link_id=${link?.id || 'n/a'}`);
@@ -2670,14 +2727,11 @@ async function persistFalabellaProductState({ credential, sellerSku, product, pa
     });
   }
 
-  const isActive = snapshot.status === "active";
-  const isDeleted = snapshot.status === "deleted";
-
   const updatePayload = {
-    status: isDeleted ? "deleted" : (snapshot.status || link?.status || "unpublished"),
-    external_url: product?.Url || product?.url || link?.external_url || null,
+    status: resolvedStatus,
+    external_url: snapshot.url || link?.external_url || null,
     published_stock: snapshot.stock,
-    published_payload: product,
+    published_payload: snapshot.raw || product,
     last_synced_at: new Date()
   };
 
@@ -2696,20 +2750,24 @@ async function persistFalabellaProductState({ credential, sellerSku, product, pa
       terminal_state: isDeleted ? "deleted" : null
     };
 
-    const taskUpdate = {
-      api_response: product || latestTask.api_response || null,
-      error_message: isActive
+    const taskErrorMessage = lifecycle.isFinal
+      ? (lifecycle.status === 'published' ? null : lifecycle.errorMessage)
+      : (isActive
         ? null
         : (isDeleted
           ? "Falabella item eliminado"
-          : `Falabella item status: ${snapshot.status}${snapshot.qc_status ? ` (${snapshot.qc_status})` : ''}`),
-      error_details: isActive ? null : mergedDetails
+          : `Falabella item status: ${snapshot.status}${snapshot.qc_status ? ` (${snapshot.qc_status})` : ''}`));
+
+    const taskUpdate = {
+      status: resolvedStatus,
+      api_response: product || latestTask.api_response || null,
+      error_message: taskErrorMessage,
+      error_details: lifecycle.isFinal && lifecycle.status === 'published' ? null : mergedDetails
     };
 
-    if (isActive && latestTask.status === "published_with_warnings") {
-      taskUpdate.status = "published";
-    } else if (!isActive && !isDeleted && latestTask.status === "published") {
-      taskUpdate.status = "published_with_warnings";
+    if (lifecycle.isFinal) {
+      taskUpdate.error_message = lifecycle.errorMessage;
+      taskUpdate.error_details = lifecycle.status === 'published' ? null : mergedDetails;
     }
 
     await latestTask.update(taskUpdate);
@@ -4145,8 +4203,14 @@ function validateFalabellaPayload(payload) {
   return { ok: true };
 }
 
+function normalizeFalabellaTopicName(topic) {
+  return topic ? String(topic).trim().toLowerCase() : null;
+}
+
 function buildFalabellaEventId(payload, resource, topic = null) {
-  const topicPart = String(topic || payload?.event || payload?.event_type || payload?.topic || payload?.type || '').trim().toLowerCase();
+  const topicPart = normalizeFalabellaTopicName(
+    topic || payload?.event || payload?.event_type || payload?.topic || payload?.type || ''
+  );
   const eventId =
     payload?.event_id ||
     payload?.EventId ||
@@ -4165,6 +4229,10 @@ function buildFalabellaEventId(payload, resource, topic = null) {
     null;
   if (timestamp) {
     return topicPart ? `ts:${topicPart}:${resource}:${timestamp}` : `ts:${resource}:${timestamp}`;
+  }
+
+  if (['onproductcreated', 'onproductupdated', 'onproductqcstatuschanged'].includes(topicPart)) {
+    return `volatile:${topicPart}:${resource}:${Date.now()}`;
   }
 
   return topicPart ? `resource:${topicPart}:${resource}` : `resource:${resource}`;
