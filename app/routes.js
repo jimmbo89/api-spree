@@ -365,6 +365,7 @@ router.post('/mercado-libre-suggested-categories', OAuthController.mercadoLibreS
 router.post('/mercado-libre-category-calculations', OAuthController.mercadoLibreSuggestedCategoriesWithAttributes);
 router.post("/mercado-libre-category", OAuthController.mercadoLibreCategory);
 router.post("/mercado-libre-attributes", OAuthController.mercadoLibreAttributes);
+router.post("/mercado-libre-category-structure", OAuthController.mercadoLibreCategoryStructure);
 router.post("/falabella-suggested-categories", OAuthController.falabellaSuggestedCategoriesWithAttributes);
 router.post("/falabella-categories", OAuthController.falabellaCategories);
 router.post("/falabella-category-attributes", OAuthController.falabellaAttributes);

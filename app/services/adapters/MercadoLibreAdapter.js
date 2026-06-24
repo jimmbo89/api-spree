@@ -191,6 +191,41 @@ class MercadoLibreAdapter extends BaseAdapter {
       };
     }
 
+    if (String(attr.id).trim() === 'BRAND') {
+      const rawValueName = attr.value_name != null ? String(attr.value_name).trim() : '';
+      const rawValueId = attr.value_id != null ? String(attr.value_id).trim() : '';
+      const allowCustomValue = attrMeta?.tags?.allow_custom_value === true;
+      const categoryValues = Array.isArray(attrMeta?.values) ? attrMeta.values : [];
+
+      const matchById = rawValueId
+        ? categoryValues.find((value) => String(value?.id || '').trim() === rawValueId)
+        : null;
+      const matchByName = rawValueName
+        ? categoryValues.find((value) =>
+            this.normalizeForComparison(value?.name || value?.value_name || '') ===
+            this.normalizeForComparison(rawValueName)
+          )
+        : null;
+
+      const processedBrand = { id: attr.id };
+      const resolvedValueId = matchById?.id || matchByName?.id || rawValueId || null;
+      const resolvedValueName = matchById?.name || matchByName?.name || rawValueName || null;
+
+      if (resolvedValueId) {
+        processedBrand.value_id = String(resolvedValueId).trim();
+      }
+
+      if (resolvedValueName && (allowCustomValue || processedBrand.value_id)) {
+        processedBrand.value_name = String(resolvedValueName).trim();
+      }
+
+      if (!processedBrand.value_name && rawValueName) {
+        processedBrand.value_name = rawValueName;
+      }
+
+      return processedBrand;
+    }
+
     const processed = {
       id: attr.id,
       value_name: attr.value_name ? String(attr.value_name).trim() : undefined,
@@ -366,36 +401,7 @@ class MercadoLibreAdapter extends BaseAdapter {
 
     // ✅ PASO 5: INCLUIR atributos del frontend + FILTRAR read_only/hidden/ITEM_CONDITION
     if (Array.isArray(mlData.attributes) && mlData.attributes.length > 0) {
-      prepared.attributes = mlData.attributes
-        .filter(attr => attr.id && (attr.value_name || attr.value_id))
-        // ✅ FILTRAR: Eliminar atributos problemáticos
-        .filter(attr => {
-          const attrMeta = categoryInfo.attributes?.find(a => a.id === attr.id);
-          const isReadOnly = attrMeta?.tags?.read_only === true;
-          const isHidden = attrMeta?.tags?.hidden === true;
-          const isItemCondition = attr.id === 'ITEM_CONDITION';
-          
-          if (isReadOnly || isHidden || isItemCondition) {
-            logger.warn(`[ML Adapter] ⚠️ Atributo ${attr.id} filtrado (read_only/hidden/ITEM_CONDITION)`);
-            return false;
-          }
-          return true;
-        })
-        .map(attr => {
-          const processed = {
-            id: attr.id,
-            value_name: attr.value_name ? String(attr.value_name).trim() : undefined,
-            value_id: attr.value_id ? String(attr.value_id).trim() : undefined
-          };
-          
-          // ✅ Convertir booleanos a "Sí"/"No"
-          if (['true', 'false'].includes(String(processed.value_name).toLowerCase())) {
-            processed.value_name = String(processed.value_name).toLowerCase() === 'true' ? 'Sí' : 'No';
-            logger.info(`[ML Adapter] ✅ Convertido valor booleano para ${attr.id}: "${processed.value_name}"`);
-          }
-          
-          return processed;
-        });
+      prepared.attributes = this.buildMercadoLibreAttributes(mlData.attributes, categoryInfo.attributes);
     }
 
     // ✅ PASO 6: Asegurar que GTIN esté incluido (requerido para esta categoría)
@@ -458,67 +464,13 @@ class MercadoLibreAdapter extends BaseAdapter {
         logger.info(`[ML Adapter] ✅ Variaciones construidas: ${variations.length}`);
       } else {
         logger.warn(`[ML Adapter] ⚠️ No se construyeron variaciones válidas. Restaurando atributos.`);
-        prepared.attributes = mlData.attributes
-          .filter(attr => attr.id && (attr.value_name || attr.value_id))
-          // ✅ MISMO FILTRO para fallback
-          .filter(attr => {
-            const attrMeta = categoryInfo.attributes?.find(a => a.id === attr.id);
-            const isReadOnly = attrMeta?.tags?.read_only === true;
-            const isHidden = attrMeta?.tags?.hidden === true;
-            const isItemCondition = attr.id === 'ITEM_CONDITION';
-            
-            if (isReadOnly || isHidden || isItemCondition) {
-              return false;
-            }
-            return true;
-          })
-          .map(attr => {
-            const processed = {
-              id: attr.id,
-              value_name: attr.value_name ? String(attr.value_name).trim() : undefined,
-              value_id: attr.value_id ? String(attr.value_id).trim() : undefined
-            };
-            
-            // ✅ Convertir booleanos
-            if (['true', 'false'].includes(String(processed.value_name).toLowerCase())) {
-              processed.value_name = String(processed.value_name).toLowerCase() === 'true' ? 'Sí' : 'No';
-            }
-            
-            return processed;
-          });
+        prepared.attributes = this.buildMercadoLibreAttributes(mlData.attributes, categoryInfo.attributes);
         prepared.variations = undefined;
       }
     } else if (hasSingleVariant) {
       // 1 variante → ML acepta atributos de variación en nivel base
       logger.info(`[ML Adapter] Producto con 1 variante. Permitiendo atributos de variación en nivel base.`);
-      prepared.attributes = mlData.attributes
-        .filter(attr => attr.id && (attr.value_name || attr.value_id))
-        // ✅ MISMO FILTRO para variantes
-        .filter(attr => {
-          const attrMeta = categoryInfo.attributes?.find(a => a.id === attr.id);
-          const isReadOnly = attrMeta?.tags?.read_only === true;
-          const isHidden = attrMeta?.tags?.hidden === true;
-          const isItemCondition = attr.id === 'ITEM_CONDITION';
-          
-          if (isReadOnly || isHidden || isItemCondition) {
-            return false;
-          }
-          return true;
-        })
-        .map(attr => {
-          const processed = {
-            id: attr.id,
-            value_name: attr.value_name ? String(attr.value_name).trim() : undefined,
-            value_id: attr.value_id ? String(attr.value_id).trim() : undefined
-          };
-          
-          // ✅ Convertir booleanos
-          if (['true', 'false'].includes(String(processed.value_name).toLowerCase())) {
-            processed.value_name = String(processed.value_name).toLowerCase() === 'true' ? 'Sí' : 'No';
-          }
-          
-          return processed;
-        });
+      prepared.attributes = this.buildMercadoLibreAttributes(mlData.attributes, categoryInfo.attributes);
       
       const singleVariant = publishableVariants[0];
       prepared.available_quantity = Number(singleVariant.publishStock ?? singleVariant.totalStock ?? productData.totalStock) || 0;
@@ -744,6 +696,7 @@ class MercadoLibreAdapter extends BaseAdapter {
         value_type: attr.value_type,
         tags: attr.tags || {},
         values: attr.values || [],
+        allow_custom_value: attr.tags?.allow_custom_value === true,
         hierarchy: attr.hierarchy,
         allowed_units: attr.allowed_units || [],
         default_unit: attr.default_unit || null,

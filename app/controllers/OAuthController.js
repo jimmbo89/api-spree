@@ -2394,6 +2394,208 @@ async mercadoLibreCallback(req, res) {
     }
   },
 
+  async mercadoLibreCategoryStructure(req, res) {
+    const { category_id, credential_id } = req.body;
+    const user_id = getUserId();
+    logger.info(
+      "Datos recibidos para obtener la estructura completa de una categoría en Mercado Libre:",
+    );
+    logger.info(JSON.stringify(req.body));
+
+    try {
+      if (!credential_id) {
+        return res.status(400).json({
+          success: false,
+          error: "credential_id es requerido",
+        });
+      }
+
+      const credential = await MarketplaceCredentialRepository.findById(credential_id);
+
+      if (!credential) {
+        return res.status(404).json({
+          success: false,
+          error: "Credencial no encontrada",
+        });
+      }
+
+      if (credential.user_id !== user_id) {
+        return res.status(403).json({
+          success: false,
+          error: "No autorizado",
+        });
+      }
+
+      const site_id = getMercadoLibreSiteId(credential.marketplace?.domain);
+      const cacheNamespace = `ml_site_${site_id}`;
+
+      const buildStructuredCategoryNode = async (categoryInput, ancestry = new Set()) => {
+        const categoryId = String(categoryInput?.id || categoryInput?.category_id || '').trim();
+        const categoryNameHint = String(categoryInput?.name || categoryInput?.category_name || '').trim();
+
+        if (!categoryId) return null;
+        if (ancestry.has(categoryId)) return null;
+
+        const cachedCategoryDetail = getFromCache(cacheNamespace, 'category_structure_v3', categoryId);
+        if (cachedCategoryDetail) {
+          return cachedCategoryDetail;
+        }
+
+        try {
+          const [attributesResponse, detailResponse] = await Promise.all([
+            axios.get(`https://api.mercadolibre.com/categories/${categoryId}/attributes`, {
+              headers: { Authorization: `Bearer ${credential.access_token}` },
+              timeout: 30000
+            }),
+            axios.get(`https://api.mercadolibre.com/categories/${categoryId}`, {
+              headers: { Authorization: `Bearer ${credential.access_token}` },
+              timeout: 30000
+            })
+          ]);
+
+          const detail = detailResponse.data || {};
+          const categoryName = String(detail.name || categoryNameHint || '').trim() || categoryId;
+          const pathFromRoot = Array.isArray(detail.path_from_root) && detail.path_from_root.length > 0
+            ? detail.path_from_root
+                .map((entry) => ({
+                  id: entry?.id || null,
+                  name: String(entry?.name || '').trim()
+                }))
+                .filter((entry) => entry.id && entry.name)
+            : [{
+                id: categoryId,
+                name: categoryName
+              }];
+
+          const searchText = [
+            categoryName,
+            Array.isArray(pathFromRoot)
+              ? pathFromRoot.map((entry) => entry?.name).filter(Boolean).join(' ')
+              : ''
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .trim();
+
+          const nextAncestry = new Set(ancestry);
+          nextAncestry.add(categoryId);
+
+          const children_categories = Array.isArray(detail.children_categories)
+            ? detail.children_categories
+                .map((childRef) => {
+                  const childId = String(childRef?.id || childRef?.category_id || '').trim();
+                  const childName = String(childRef?.name || childRef?.category_name || '').trim();
+
+                  if (!childId || !childName) return null;
+                  if (nextAncestry.has(childId)) return null;
+
+                  const childPathFromRoot = [
+                    ...pathFromRoot,
+                    {
+                      id: childId,
+                      name: childName
+                    }
+                  ];
+
+                  return {
+                    category_id: childId,
+                    category_name: childName,
+                    domain_id: childRef?.domain_id || null,
+                    domain_name: childRef?.domain_name || null,
+                    path: childPathFromRoot.map((entry) => entry.name).filter(Boolean).join(' > '),
+                    search_text: [
+                      childName,
+                      childPathFromRoot.map((entry) => entry.name).filter(Boolean).join(' ')
+                    ]
+                      .filter(Boolean)
+                      .join(' ')
+                      .trim(),
+                    attributes: [],
+                    path_from_root: childPathFromRoot,
+                    children_categories: [],
+                    category_settings: {},
+                    attributable: null,
+                    date_created: null,
+                    picture: null,
+                    permalink: null,
+                    total_items_in_this_category: null
+                  };
+                })
+                .filter(Boolean)
+            : [];
+
+          const structuredCategory = {
+            category_id: categoryId,
+            category_name: categoryName,
+            domain_id: detail.domain_id || categoryInput?.domain_id || null,
+            domain_name: detail.domain_name || categoryInput?.domain_name || null,
+            path: Array.isArray(pathFromRoot) && pathFromRoot.length > 0
+              ? pathFromRoot.map((entry) => entry.name).filter(Boolean).join(' > ')
+              : categoryName,
+            search_text: searchText,
+            attributes: Array.isArray(attributesResponse.data) ? attributesResponse.data : [],
+            path_from_root: pathFromRoot,
+            children_categories,
+            category_settings: detail.settings || {},
+            attributable: detail.attributable ?? null,
+            date_created: detail.date_created || null,
+            picture: detail.picture || null,
+            permalink: detail.permalink || null,
+            total_items_in_this_category: detail.total_items_in_this_category ?? null
+          };
+
+          saveToCache(cacheNamespace, 'category_structure_v3', categoryId, structuredCategory, 86400);
+          return structuredCategory;
+        } catch (error) {
+          logger.warn(`No se pudo obtener la estructura de la categoría ${categoryId} en site ${site_id}: ${error.message}`);
+
+          const fallbackCategory = {
+            category_id: categoryId,
+            category_name: categoryNameHint || categoryId,
+            domain_id: categoryInput?.domain_id || null,
+            domain_name: categoryInput?.domain_name || null,
+            path: categoryNameHint || categoryId,
+            search_text: categoryNameHint || categoryId,
+            attributes: [],
+            path_from_root: [{
+              id: categoryId,
+              name: categoryNameHint || categoryId
+            }],
+            children_categories: [],
+            category_settings: {},
+            attributable: null,
+            date_created: null,
+            picture: null,
+            permalink: null,
+            total_items_in_this_category: null
+          };
+
+          saveToCache(cacheNamespace, 'category_structure_v3', categoryId, fallbackCategory, 86400);
+          return fallbackCategory;
+        }
+      };
+
+      const categoryStructure = await buildStructuredCategoryNode({ id: category_id });
+
+      return res.status(200).json({
+        success: true,
+        category: categoryStructure
+      });
+    } catch (error) {
+      logger.error("OAuth Category structure error:", {
+        message: error.message,
+        stack: error.stack,
+      });
+
+      return res.status(500).json({
+        success: false,
+        error:
+          error.message ||
+          "Error interno al obtener la estructura de la categoría de Mercado Libre",
+      });
+    }
+  },
+
 /**
  * Convertir dimensiones del formato del frontend al formato de la API de MercadoLibre
  * API ML espera: "HeightxWidthxLength,Weight" - TODOS ENTEROS, en cm y gramos
@@ -3190,6 +3392,84 @@ async mercadoLibreShippingCosts(req, res) {
       const marketplace_id = credential.marketplace_id;
       const site_id = getMercadoLibreSiteId(credential.marketplace?.domain);
 
+      const fetchAllMarketplaceCategories = async (accessToken) => {
+        const cacheNamespace = `ml_site_${site_id}`;
+        const cacheKey = 'all_categories_tree_v3';
+        const cachedCategories = getFromCache(cacheNamespace, 'categories', cacheKey);
+
+        if (cachedCategories) {
+          return cachedCategories;
+        }
+
+        try {
+          const allCategoriesResponse = await axios.get(
+            `https://api.mercadolibre.com/sites/${site_id}/categories`,
+            {
+              headers: { Authorization: `Bearer ${accessToken}` },
+              timeout: 30000
+            }
+          );
+
+          const rawCategories = Array.isArray(allCategoriesResponse.data)
+            ? allCategoriesResponse.data
+            : Array.isArray(allCategoriesResponse.data?.categories)
+              ? allCategoriesResponse.data.categories
+              : Array.isArray(allCategoriesResponse.data?.results)
+                ? allCategoriesResponse.data.results
+                : [];
+
+          const normalizedCategories = rawCategories
+            .map((category) => {
+              const categoryId = String(category?.id || category?.category_id || '').trim();
+              const categoryName = String(category?.name || category?.category_name || '').trim();
+
+              if (!categoryId || !categoryName) return null;
+
+              return {
+                category_id: categoryId,
+                category_name: categoryName,
+                domain_id: category?.domain_id || null,
+                domain_name: category?.domain_name || null,
+                path: categoryName,
+                path_from_root: [{
+                  id: categoryId,
+                  name: categoryName
+                }],
+                children_categories: [],
+                category_settings: {},
+                attributable: null,
+                date_created: null,
+                picture: null,
+                permalink: null,
+                total_items_in_this_category: null
+              };
+            })
+            .filter(Boolean)
+            .filter((category, index, list) =>
+              list.findIndex((item) => item.category_id === category.category_id) === index
+            )
+            .sort((a, b) => a.category_name.localeCompare(b.category_name, 'es', { sensitivity: 'base' }));
+
+          saveToCache(cacheNamespace, 'categories', cacheKey, normalizedCategories, 86400);
+          return normalizedCategories;
+        } catch (error) {
+          logger.warn(`No se pudieron cargar todas las categorías del site ${site_id}: ${error.message}`);
+          return [];
+        }
+      };
+
+      const allCategories = await fetchAllMarketplaceCategories(credential.access_token);
+      const countCategoryTreeNodes = (nodes = []) => {
+        let total = 0;
+        for (const node of Array.isArray(nodes) ? nodes : []) {
+          if (!node) continue;
+          total += 1;
+          total += countCategoryTreeNodes(node.children_categories);
+        }
+        return total;
+      };
+      const allCategoriesCount = countCategoryTreeNodes(allCategories);
+
       const getMercadoLibreUserIdFromCredential = (cred) => {
         if (!cred) return null;
         if (cred.ml_user_id) return cred.ml_user_id;
@@ -3339,8 +3619,9 @@ async mercadoLibreShippingCosts(req, res) {
           const catResponse = await axios.get(
             `https://api.mercadolibre.com/sites/${site_id}/domain_discovery/search`,
             {
-              params: { q: nameFixed, limit: 3 },
-              timeout: 20000
+              params: { q: nameFixed },
+              headers: { Authorization: `Bearer ${credential.access_token}` },
+              timeout: 30000
             }
           );
 
@@ -3539,6 +3820,8 @@ async mercadoLibreShippingCosts(req, res) {
       return res.status(200).json({
         success: true,
         response_format_version: "v1_selection",
+        all_categories: allCategories,
+        all_categories_count: allCategoriesCount,
         selection_model: {
           strategies: [
             {
@@ -4071,12 +4354,13 @@ async mercadoLibreShippingCosts(req, res) {
             stage: "categories.domain_discovery.request",
             endpoint: domainDiscoveryUrl,
             productId: product.id,
-            params: { q: nameFixed, limit: 3 },
+            params: { q: nameFixed },
             extra: { product_name: nameFixed, site_id }
           });
           const catResponse = await axios.get(domainDiscoveryUrl, {
-            params: { q: nameFixed, limit: 3 },
-            timeout: 20000
+            params: { q: nameFixed },
+            headers: { Authorization: `Bearer ${credential.access_token}` },
+            timeout: 30000
           });
           logMercadoLibreEndpointTrace({
             stage: "categories.domain_discovery.response",
@@ -5493,6 +5777,8 @@ async falabellaSuggestedCategoriesWithAttributes(req, res) {
 
     const suggestions = [];
     let cacheHits = 0, apiCalls = 0, pricingCalls = 0, treeCalls = 0;
+    const treeData = await OAuthController.fetchFalabellaCategoryTree(baseUrl, userId, apiKey);
+    const allCategories = OAuthController.flattenFalabellaCategoryTree(treeData);
 
     // === PROCESAR CADA PRODUCTO ===
     for (const product of products) {
@@ -5620,9 +5906,6 @@ async falabellaSuggestedCategoriesWithAttributes(req, res) {
                 logger.info(`[AUTO-MAP] Categoría ${categoryId} no encontrada, consultando GetCategoryTree...`);
                 treeCalls++;
 
-                // Obtener árbol completo (se cachea en memoria si es necesario)
-                const treeData = await OAuthController.fetchFalabellaCategoryTree(baseUrl, userId, apiKey);
-
                 // 🔹 Paso 3: Normalizar nombres para coincidir con el formato de la BD
                 const treeMatch = await OAuthController.findCategoryInTree(treeData, categoryId);
 logger.info(`categoría encontrada desde el arbol: \n ${JSON.stringify(treeMatch)}`);
@@ -5746,6 +6029,8 @@ logger.info(`comisión encontrada en la bd: \n ${JSON.stringify(commissionByPath
 
     return res.status(200).json({
       success: true,
+      all_categories: allCategories,
+      all_categories_count: allCategories.length,
       suggestions,
       count: suggestions.length,
       stats: {
@@ -5778,6 +6063,13 @@ logger.info(`comisión encontrada en la bd: \n ${JSON.stringify(commissionByPath
  * @returns {Object} Respuesta de GetCategoryTree
  */
 async fetchFalabellaCategoryTree(baseUrl, userId, apiKey) {
+  const cacheNamespace = `falabella_user_${userId}`;
+  const cacheKey = 'category_tree';
+  const cachedTree = getFromCache(cacheNamespace, 'tree', cacheKey);
+  if (cachedTree) {
+    return cachedTree;
+  }
+
   const params = {
     UserID: userId,
     Version: "1.0",
@@ -5795,9 +6087,45 @@ async fetchFalabellaCategoryTree(baseUrl, userId, apiKey) {
   );
   const url = `${baseUrl}?${canonicalQuery}&Signature=${signature}`;
   
-  const response = await axios.get(url);  
-  //logger.info(`Arbol de categorías: \n ${JSON.stringify(response.data)}`);
-  return response.data?.SuccessResponse?.Body?.Categories?.Category || [];
+  const response = await axios.get(url, { timeout: 30000 });  
+  const tree = response.data?.SuccessResponse?.Body?.Categories?.Category || [];
+  saveToCache(cacheNamespace, 'tree', cacheKey, tree, 86400);
+  return tree;
+},
+
+/**
+ * Aplana el árbol de categorías de Falabella para búsqueda en UI
+ * @param {Array|Object} nodes
+ * @param {Array<string>} path
+ * @returns {Array<Object>}
+ */
+flattenFalabellaCategoryTree(nodes, path = []) {
+  const nodeList = Array.isArray(nodes) ? nodes : (nodes ? [nodes] : []);
+  const flattened = [];
+
+  for (const node of nodeList) {
+    const currentName = String(node?.Name || '').trim();
+    const currentId = String(node?.CategoryId || '').trim();
+    const currentPath = currentName ? [...path, currentName] : [...path];
+
+    if (currentId && currentName) {
+      flattened.push({
+        category_id: currentId,
+        category_name: currentName,
+        path: currentPath.join(' > '),
+        domain_id: node?.DomainId || null,
+        domain_name: node?.DomainName || null
+      });
+    }
+
+    if (node?.Children?.Category) {
+      flattened.push(
+        ...OAuthController.flattenFalabellaCategoryTree(node.Children.Category, currentPath)
+      );
+    }
+  }
+
+  return flattened;
 },
 
 /**
