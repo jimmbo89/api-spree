@@ -19,6 +19,7 @@ const {
   MarketplaceOrderEventRepository,
   MarketplaceOrderCustomerRepository,
   JobProductRepository,
+  JobRepository,
   CompanyRepository,
   UserCompanyRepository
 } = require("../repositories");
@@ -869,6 +870,15 @@ function buildMercadoLibreItemStateSnapshot({ item, verification, payload }) {
   };
 }
 
+async function recalculateJobProgressFromTask(task) {
+  if (!task?.batch_id) return;
+
+  const job = await JobRepository.findByBatchId(task.batch_id, task.company_id || null);
+  if (job?.id) {
+    await JobRepository.recalculateProgress(job.id);
+  }
+}
+
 function buildMercadoLibreDeletedItemSnapshot(itemId, verification, payload) {
   return buildMercadoLibreItemStateSnapshot({
     item: {
@@ -986,6 +996,7 @@ async function persistMercadoLibreItemState({
     }
 
     await task.update(taskUpdate);
+    await recalculateJobProgressFromTask(task);
   }
 
   let jobProduct = null;
@@ -1021,6 +1032,10 @@ async function persistMercadoLibreItemState({
             : `Advertencias: ML item status ${snapshot.status}${subStatusLabel}`),
         error_details: isActive ? null : mergedJobDetails
       });
+
+      if (jobProduct?.job_id) {
+        await JobRepository.recalculateProgress(jobProduct.job_id);
+      }
     }
   }
 
@@ -1448,6 +1463,7 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
       },
       api_response: feedStatus
     });
+    await recalculateJobProgressFromTask(task);
 
     if (task.external_id) {
       let link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
@@ -1588,6 +1604,7 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
     }
 
     await ProductPublishingTaskRepository.updateTask(task, updateData);
+    await recalculateJobProgressFromTask(task);
 
     if (task.external_id) {
       let link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
@@ -2771,6 +2788,7 @@ async function persistFalabellaProductState({ credential, sellerSku, product, pa
     }
 
     await latestTask.update(taskUpdate);
+    await recalculateJobProgressFromTask(latestTask);
   }
 
   return {

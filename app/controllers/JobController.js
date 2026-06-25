@@ -113,6 +113,30 @@ function buildMarketplaceItemStateSnapshot(item, verification, source = 'jobs-fi
   };
 }
 
+function deriveJobPublicationStatus(stats = {}, jobStatus = 'pending') {
+  const total = Number(stats.total || 0);
+  const processed = Number(stats.processed || 0);
+  const pending = Number(stats.pending || 0);
+  const processing = Number(stats.processing || 0);
+  const retrying = Number(stats.retrying || 0);
+  const errors = Number(stats.errors || 0);
+
+  if (total > 0 && processed >= total) {
+    return errors > 0 ? 'completed_with_errors' : 'completed';
+  }
+
+  if (pending > 0 || processing > 0 || retrying > 0 || processed > 0) {
+    return 'processing';
+  }
+
+  return jobStatus || 'pending';
+}
+
+function isJobPublicationActive(stats = {}, jobStatus = 'pending') {
+  const derivedStatus = deriveJobPublicationStatus(stats, jobStatus);
+  return derivedStatus === 'pending' || derivedStatus === 'processing';
+}
+
 async function refreshPausedMarketplaceItemStateForJob(job) {
   try {
     const jobProducts = await JobProductRepository.findAllErrorsByJob(job, {
@@ -310,14 +334,7 @@ async getJobProgress(req, res) {
       : 0;
 
     // 5. Determinar estado del job
-    let jobStatus = job.status;
-    if (job.status === 'processing') {
-      if (stats.errors > 0 && stats.processed >= stats.total) {
-        jobStatus = 'completed_with_errors';
-      } else if (stats.processed >= stats.total) {
-        jobStatus = stats.errors === 0 ? 'completed' : 'completed_with_errors';
-      }
-    }
+    const jobStatus = deriveJobPublicationStatus(stats, job.status);
 
     // 6. Obtener progreso por canal/marketplace (para las tarjetas)
     const channels = await JobProductRepository.getStatsByJobAndMarketplace(jobId);
@@ -341,12 +358,13 @@ if (['completed', 'completed_with_errors', 'failed'].includes(jobStatus) && incl
 };
 
     // 8. Respuesta
-const response = {
+    const response = {
   success: true,
   data: {
     job_id: job.id,
     batch_id: job.batch_id,
     status: jobStatus,
+    job_status: job.status,
     overall_progress: overallProgress,
     stats: {
       total: stats.total,
@@ -405,17 +423,24 @@ async getActiveJobs(req, res) {
       const { company_id, user_id: bodyUserId } = req.body;
     const user_id = bodyUserId || getUserId();
       
-    // 1. 🔹 Obtener solo jobs en curso (pending/processing)
-    const activeJobs = await JobRepository.findAll({
+    // 1. 🔹 Obtener jobs candidatos y filtrar por estado real de publicación
+      const activeJobs = await JobRepository.findAll({
       user_id,
       company_id,
       job_type: 'publish',
-      status: { [Op.in]: ['pending', 'processing'] },
+      status: { [Op.in]: ['pending', 'processing', 'completed', 'completed_with_errors', 'failed'] },
       limit: 50
     });
     
     // 3. 🔹 Respuesta con jobs (formato requerido por UI)
     const jobsByChannel = await Promise.all(activeJobs.map(async (job) => {
+      const stats = await JobProductRepository.getStatsByJob(job.id);
+      const derivedStatus = deriveJobPublicationStatus(stats, job.status);
+
+      if (!isJobPublicationActive(stats, job.status)) {
+        return [];
+      }
+
       const channels = await JobProductRepository.getStatsByJobAndMarketplace(job.id);
 
       if (!Array.isArray(channels) || channels.length === 0) {
@@ -423,28 +448,30 @@ async getActiveJobs(req, res) {
         return [{
           job_id: String(job.id),
           batch_id: job.batch_id,
-          status: job.status,
+          status: derivedStatus,
+          job_status: job.status,
           marketplace_name: fallbackMarketplace?.marketplace_name || fallbackMarketplace?.name || null,
           credential_id: fallbackMarketplace?.credential_id || fallbackMarketplace?.id || null,
           created_at: job.createdAt ? new Date(job.createdAt).toISOString() : null,
-          total_products: job.total_products,
-          successful: job.successful,
-          errors_count: job.errors_count,
-          percentage: job.percentage
+          total_products: stats.total || job.total_products,
+          successful: stats.successful ?? job.successful,
+          errors_count: stats.errors ?? job.errors_count,
+          percentage: stats.total > 0 ? Math.round((stats.processed / stats.total) * 100) : (job.percentage || 0)
         }];
       }
 
       return channels.map(channel => ({
         job_id: String(job.id),
         batch_id: job.batch_id,
-        status: job.status,
+        status: derivedStatus,
+        job_status: job.status,
         marketplace_name: channel.marketplace_name,
         credential_id: channel.credential_id,
         created_at: job.createdAt ? new Date(job.createdAt).toISOString() : null,
-        total_products: channel.total ?? job.total_products,
-        successful: channel.published ?? job.successful,
-        errors_count: channel.failed ?? job.errors_count,
-        percentage: channel.percentage ?? job.percentage
+        total_products: channel.total ?? stats.total ?? job.total_products,
+        successful: channel.published ?? stats.successful ?? job.successful,
+        errors_count: channel.failed ?? stats.errors ?? job.errors_count,
+        percentage: channel.percentage ?? (stats.total > 0 ? Math.round((stats.processed / stats.total) * 100) : job.percentage)
       }));
     }));
 

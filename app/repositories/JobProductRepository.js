@@ -3,6 +3,106 @@ const { JobProduct, Job, Product, Marketplace, MarketplaceCredential, ProductPub
 const { Op } = require('sequelize');
 const logger = require('../../config/logger');
 
+const TASK_SUCCESS_STATUSES = new Set(['published', 'published_with_warnings']);
+const TASK_FAILURE_STATUSES = new Set(['failed', 'deleted', 'cancelled']);
+
+function normalizeStatusValue(value) {
+  return String(value || '').trim().toLowerCase() || null;
+}
+
+function resolveJobProductProgressStatus(jobProduct) {
+  const taskStatus = normalizeStatusValue(jobProduct?.task?.status);
+  if (taskStatus) {
+    if (TASK_SUCCESS_STATUSES.has(taskStatus)) return 'success';
+    if (TASK_FAILURE_STATUSES.has(taskStatus)) return 'error';
+    if (taskStatus === 'processing' || taskStatus === 'draft' || taskStatus === 'retrying') return 'processing';
+    if (taskStatus === 'pending') return 'pending';
+  }
+
+  const fallbackStatus = normalizeStatusValue(jobProduct?.status);
+  if (['success', 'published', 'published_with_warnings'].includes(fallbackStatus)) return 'success';
+  if (['error', 'failed', 'deleted', 'cancelled'].includes(fallbackStatus)) return 'error';
+  if (fallbackStatus === 'processing') return 'processing';
+  if (fallbackStatus === 'retrying') return 'retrying';
+  return 'pending';
+}
+
+function createEmptyChannelSummary({ marketplace_id = null, marketplace_name = 'Marketplace', marketplace_domain = '', credential_id = null, credential_name = null, seller_email = null } = {}) {
+  return {
+    marketplace_id,
+    marketplace_name,
+    marketplace_domain,
+    credential_id,
+    credential_name: credential_name || (credential_id ? `Credencial ${credential_id}` : 'Credencial'),
+    seller_email,
+    total: 0,
+    processed: 0,
+    published: 0,
+    failed: 0,
+    deleted: 0,
+    pending: 0,
+    processing: 0,
+    retrying: 0
+  };
+}
+
+function updateChannelSummary(channel, status) {
+  channel.total += 1;
+
+  switch (status) {
+    case 'success':
+      channel.processed += 1;
+      channel.published += 1;
+      break;
+    case 'error':
+      channel.processed += 1;
+      channel.failed += 1;
+      break;
+    case 'processing':
+      channel.processing += 1;
+      break;
+    case 'retrying':
+      channel.retrying += 1;
+      break;
+    case 'pending':
+    default:
+      channel.pending += 1;
+      break;
+  }
+}
+
+function finalizeChannelSummary(channel) {
+  return {
+    ...channel,
+    percentage: channel.total > 0
+      ? Math.round((channel.processed / channel.total) * 100)
+      : 0,
+    status: getChannelStatus(channel)
+  };
+}
+
+function getChannelStatus(channel) {
+  const activeCount = (channel.pending || 0) + (channel.processing || 0) + (channel.retrying || 0);
+
+  if (channel.total > 0 && channel.processed >= channel.total) {
+    return channel.failed > 0 ? 'completed_with_errors' : 'completed';
+  }
+
+  if (channel.processing > 0 || channel.retrying > 0) {
+    return 'processing';
+  }
+
+  if (channel.pending > 0) {
+    return channel.processed > 0 || activeCount > channel.pending ? 'processing' : 'queued';
+  }
+
+  if (channel.processed > 0) {
+    return 'processing';
+  }
+
+  return 'queued';
+}
+
 const JobProductRepository = {
 
   // ========================================================================
@@ -12,75 +112,57 @@ const JobProductRepository = {
   /**
    * Obtiene estadísticas agrupadas por marketplace para un job
    */
-  async getStatsByJobAndMarketplace(jobId) {
+async getStatsByJobAndMarketplace(jobId) {
   try {
     if (!jobId) throw new Error('job_id es requerido');
 
-    const { JobProduct, Marketplace, MarketplaceCredential } = require('../models');
-    const { fn, col } = require('sequelize');
-
     const stats = await JobProduct.findAll({
-      attributes: [
-        'marketplace_id',
-        'credential_id', 
-        'status',
-        // 🔑 CORREGIDO: Especificar tabla JobProduct para el COUNT
-        [fn('COUNT', col('JobProduct.id')), 'count']
-      ],
+      where: { job_id: jobId },
       include: [
-        { 
-          model: Marketplace, 
-          as: 'marketplace', 
-          attributes: ['id', 'name', 'domain'], 
-          required: false 
+        {
+          model: ProductPublishingTask,
+          as: 'task',
+          attributes: ['status'],
+          required: false
         },
-        { 
-          model: MarketplaceCredential, 
-          as: 'credential', 
-          attributes: ['id', 'name', 'seller_email'], 
-          required: false 
+        {
+          model: Marketplace,
+          as: 'marketplace',
+          attributes: ['id', 'name', 'domain'],
+          required: false
+        },
+        {
+          model: MarketplaceCredential,
+          as: 'credential',
+          attributes: ['id', 'name', 'seller_email'],
+          required: false
         }
       ],
-      where: { job_id: jobId },
-      // 🔑 CORREGIDO: Prefixear columnas del GROUP BY con la tabla principal
-      group: ['JobProduct.marketplace_id', 'JobProduct.credential_id', 'JobProduct.status'],
-      raw: true,
-      nest: true
+      order: [['createdAt', 'ASC']]
     });
 
-    const grouped = {};
-    stats.forEach(row => {
-      const key = `${row.marketplace_id}-${row.credential_id}`;
-      
-      if (!grouped[key]) {
-        grouped[key] = {
-          marketplace_id: row.marketplace_id,
-          marketplace_name: row.marketplace?.name || 'Marketplace',
-          marketplace_domain: row.marketplace?.domain || '',
-          credential_id: row.credential_id,
-          credential_name: row.credential?.name || `Credencial ${row.credential_id}`,
-          seller_email: row.credential?.seller_email || null,
-          total: 0, processed: 0, published: 0, failed: 0, deleted: 0, pending: 0
-        };
+    const grouped = new Map();
+
+    for (const row of stats) {
+      const data = row.get({ plain: true });
+      const key = `${data.marketplace_id || 'null'}-${data.credential_id || 'null'}`;
+
+      if (!grouped.has(key)) {
+        grouped.set(key, createEmptyChannelSummary({
+          marketplace_id: data.marketplace_id,
+          marketplace_name: data.marketplace?.name || 'Marketplace',
+          marketplace_domain: data.marketplace?.domain || '',
+          credential_id: data.credential_id,
+          credential_name: data.credential?.name || (data.credential_id ? `Credencial ${data.credential_id}` : 'Credencial'),
+          seller_email: data.credential?.seller_email || null
+        }));
       }
-      
-      const count = parseInt(row.count) || 0;
-      grouped[key].total += count;
-      
-      if (['success', 'error', 'deleted'].includes(row.status)) grouped[key].processed += count;
-      if (row.status === 'success') grouped[key].published += count;
-      if (row.status === 'error') grouped[key].failed += count;
-      if (row.status === 'deleted') grouped[key].deleted += count;
-      if (['pending', 'processing'].includes(row.status)) grouped[key].pending += count;
-    });
 
-    return Object.values(grouped).map(channel => ({
-      ...channel,
-      percentage: channel.total > 0 
-        ? Math.round((channel.processed / channel.total) * 100) 
-        : 0,
-      status: this._getChannelStatus(channel)
-    }));
+      const channel = grouped.get(key);
+      updateChannelSummary(channel, resolveJobProductProgressStatus(data));
+    }
+
+    return Array.from(grouped.values()).map(finalizeChannelSummary);
 
   } catch (error) {
     logger.error(`Error en JobProductRepository->getStatsByJobAndMarketplace:`, error);
@@ -89,12 +171,7 @@ const JobProductRepository = {
 },
 
   _getChannelStatus(channel) {
-    if (channel.failed > 0 && channel.processed >= channel.total) return 'completed_with_errors';
-    if (channel.processed >= channel.total && channel.total > 0) {
-      return channel.failed === 0 ? 'completed' : 'completed_with_errors';
-    }
-    if (channel.processed > 0) return 'processing';
-    return 'queued';
+    return getChannelStatus(channel);
   },
 
   // ========================================================================
@@ -679,37 +756,49 @@ async findById(id, options = {}) {
   try {
     if (!jobId) throw new Error('job_id es requerido');
 
-    const { JobProduct } = require('../models');
-    const { fn, col } = require('sequelize');
-
-    const stats = await JobProduct.findAll({
-      attributes: [
-        'status',
-        // 🔑 CORREGIDO: Especificar tabla para COUNT
-        [fn('COUNT', col('JobProduct.id')), 'count']
-      ],
-      where: { job_id: jobId },
-      // 🔑 CORREGIDO: Prefixear GROUP BY
-      group: ['JobProduct.status'],
-      raw: true
-    });
-
     const result = { 
       total: 0, processed: 0, successful: 0, errors: 0, 
       pending: 0, processing: 0, retrying: 0 
     };
-    
-    stats.forEach(row => {
-      const count = parseInt(row.count) || 0;
-      result.total += count;
-      switch (row.status) {
-        case 'success': result.successful += count; result.processed += count; break;
-        case 'error': result.errors += count; result.processed += count; break;
-        case 'pending': result.pending += count; break;
-        case 'processing': result.processing += count; break;
-        case 'retrying': result.retrying += count; break;
-      }
+
+    const jobProducts = await JobProduct.findAll({
+      where: { job_id: jobId },
+      include: [
+        {
+          model: ProductPublishingTask,
+          as: 'task',
+          attributes: ['status'],
+          required: false
+        }
+      ],
+      order: [['createdAt', 'ASC']]
     });
+
+    for (const jobProduct of jobProducts) {
+      const data = jobProduct.get({ plain: true });
+      const status = resolveJobProductProgressStatus(data);
+      result.total += 1;
+      switch (status) {
+        case 'success':
+          result.successful += 1;
+          result.processed += 1;
+          break;
+        case 'error':
+          result.errors += 1;
+          result.processed += 1;
+          break;
+        case 'processing':
+          result.processing += 1;
+          break;
+        case 'retrying':
+          result.retrying += 1;
+          break;
+        case 'pending':
+        default:
+          result.pending += 1;
+          break;
+      }
+    }
     
     return result;
 

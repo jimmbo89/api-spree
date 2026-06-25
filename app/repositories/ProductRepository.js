@@ -20,7 +20,13 @@ const ProductRepository = {
     
     if (categoryId !== undefined) where.category_id = categoryId;
     if (brand !== undefined && brand !== '') where.brand = brand;
-    if (state !== undefined) where.state = state;
+    const normalizedState = state === null || state === "" ? undefined : Number(state);
+    if (normalizedState !== undefined && Number.isFinite(normalizedState)) {
+      // state = 0 se considera eliminación lógica y no debe aparecer en el listado
+      where.state = normalizedState === 0 ? { [Op.ne]: 0 } : normalizedState;
+    } else {
+      where.state = { [Op.ne]: 0 };
+    }
     if (hasGtin === true) where.gtin = { [Op.not]: null };
     if (hasGtin === false) where.gtin = null;
     if (productId) {

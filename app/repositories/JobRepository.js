@@ -397,38 +397,10 @@ async findById(id, options = {}) {
       if (!job) {
         throw new Error(`Job no encontrado (ID: ${jobId})`);
       }
-
-      // Contar JobProduct por estado
-      const { JobProduct } = require('../models');
-      const { fn, col } = require('sequelize');
-
-      const stats = await JobProduct.findAll({
-        attributes: [
-          'status',
-          [fn('COUNT', col('JobProduct.id')), 'count']
-        ],
-        where: { job_id: jobId },
-        group: ['JobProduct.status'],
-        raw: true
-      });
-
-      // Calcular totales
-      let processed = 0;
-      let successful = 0;
-      let errors_count = 0;
-
-      stats.forEach(row => {
-        const count = parseInt(row.count) || 0;
-        if (['success', 'error'].includes(row.status)) {
-          processed += count;
-        }
-        if (row.status === 'success') {
-          successful += count;
-        }
-        if (row.status === 'error') {
-          errors_count += count;
-        }
-      });
+      const stats = await JobProductRepository.getStatsByJob(jobId);
+      const processed = stats.processed || 0;
+      const successful = stats.successful || 0;
+      const errors_count = stats.errors || 0;
 
       const total = job.total_products || 0;
       const percentage = total > 0
@@ -437,9 +409,11 @@ async findById(id, options = {}) {
 
       // Determinar estado del job según progreso
       let status = job.status;
+      const hasActiveItems = (stats.pending || 0) > 0 || (stats.processing || 0) > 0 || (stats.retrying || 0) > 0;
+
       if (processed >= total && total > 0) {
         status = errors_count > 0 ? 'completed_with_errors' : 'completed';
-      } else if (processed > 0) {
+      } else if (hasActiveItems || processed > 0) {
         status = 'processing';
       } else if (job.status === 'pending') {
         status = 'processing'; // Si hay al menos un producto procesado, el job está en proceso
