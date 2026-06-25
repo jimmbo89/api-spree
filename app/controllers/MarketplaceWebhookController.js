@@ -1409,6 +1409,133 @@ async function processFeedWithCredential(credential, feedId, topic, event) {
   }
 }
 
+function extractFalabellaFeedStatusError(feedStatus) {
+  if (!feedStatus || typeof feedStatus !== 'object') return null;
+
+  if (feedStatus.response_type === 'ErrorResponse' || feedStatus.ok === false) {
+    return {
+      request_action: feedStatus.request_action || 'FeedStatus',
+      error_type: feedStatus.error_type || null,
+      error_code: feedStatus.error_code || null,
+      error_message: feedStatus.error_message || null,
+      raw: feedStatus.raw || feedStatus
+    };
+  }
+
+  const rawError = feedStatus?.raw?.ErrorResponse || feedStatus?.raw?.errorResponse || null;
+  const head = rawError?.Head || rawError?.head || null;
+
+  if (!head) return null;
+
+  return {
+    request_action: head.RequestAction || head.request_action || 'FeedStatus',
+    error_type: head.ErrorType || head.error_type || null,
+    error_code: head.ErrorCode || head.error_code || null,
+    error_message: head.ErrorMessage || head.error_message || null,
+    raw: feedStatus.raw || feedStatus
+  };
+}
+
+async function finalizeFalabellaTaskFromFeedError({ task, credential, feedId, feedStatus, topic }) {
+  const marketplaceError = extractFalabellaFeedStatusError(feedStatus);
+  const errorMessage = marketplaceError?.error_message || null;
+  const currentDetails = task?.error_details && typeof task.error_details === 'object'
+    ? task.error_details
+    : {};
+
+  await ProductPublishingTaskRepository.updateTask(task, {
+    status: 'failed',
+    error_message: errorMessage,
+    error_details: {
+      ...currentDetails,
+      feed_id: feedId,
+      feed_status: feedStatus,
+      marketplace_error: marketplaceError,
+      source: 'feed_webhook',
+      updated_by_webhook: topic || 'onFeedCompleted',
+      falabella_raw_response: feedStatus?.raw || feedStatus
+    },
+    api_response: {
+      feed: feedStatus
+    }
+  });
+
+  if (task?.job?.id && task.product_id && task.marketplace_id) {
+    const jobProduct = await JobProductRepository.findByProductAndMarketplace(
+      task.job.id,
+      task.product_id,
+      task.marketplace_id,
+      task.credential_id || credential?.id || null
+    );
+
+    if (jobProduct) {
+      const currentJobDetails = jobProduct.error_details && typeof jobProduct.error_details === 'object'
+        ? jobProduct.error_details
+        : {};
+
+      await JobProductRepository.update(jobProduct, {
+        status: 'error',
+        error_message: errorMessage,
+        error_details: {
+          ...currentJobDetails,
+          feed_id: feedId,
+          feed_status: feedStatus,
+          marketplace_error: marketplaceError,
+          source: 'feed_webhook',
+          updated_by_webhook: topic || 'onFeedCompleted',
+          falabella_raw_response: feedStatus?.raw || feedStatus
+        },
+        task_id: task.id
+      });
+    }
+  }
+
+  await recalculateJobProgressFromTask(task);
+
+  if (task.external_id) {
+    let link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
+      task.marketplace_id,
+      task.external_id,
+      task.company_id,
+      task.branch_id,
+      task.credential_id || credential?.id || null,
+      task.user_id || null
+    );
+
+    if (!link && (task.company_id != null || task.branch_id != null)) {
+      try {
+        link = await ProductMarketplaceLinkRepository.upsert({
+          product_id: task.product_id,
+          marketplace_id: task.marketplace_id,
+          credential_id: task.credential_id || credential?.id || null,
+          user_id: task.user_id || null,
+          company_id: task.company_id != null ? task.company_id : null,
+          branch_id: task.branch_id != null ? task.branch_id : null,
+          status: 'failed',
+          external_id: task.external_id,
+          external_url: null,
+          published_stock: null,
+          published_payload: null,
+          last_synced_at: new Date()
+        });
+      } catch (linkError) {
+        logger.warn(`[FB Webhook] No se pudo crear link fallback para task ${task.id} en error feed: ${linkError.message}`);
+      }
+    }
+
+    if (link) {
+      await link.update({
+        status: 'failed',
+        last_synced_at: new Date()
+      });
+    }
+  }
+
+  logger.error(
+    `[FB Webhook] Falabella devolvió error terminal para feed ${feedId}: ${errorMessage || 'sin mensaje'}`
+  );
+}
+
 async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic) {
   const latestTask = await ProductPublishingTaskRepository.findById(task.id);
   if (latestTask && ['failed', 'deleted'].includes(latestTask.status)) {
@@ -1433,6 +1560,40 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
   // ✅ NORMALIZAR ERRORES REALES DEL FEED
   const feedErrors = normalizeFeedErrors(feedStatus.FeedErrors || []);
   const feedWarnings = normalizeFeedErrors(feedStatus.FeedWarnings || []);
+
+  if (feedStatus.response_type === 'ErrorResponse') {
+    await finalizeFalabellaTaskFromFeedError({
+      task,
+      credential: adapter?.credential || null,
+      feedId,
+      feedStatus,
+      topic
+    });
+    return;
+  }
+
+  if (feedStatus.response_type === 'UnrecognizedResponse') {
+    const currentDetails = task?.error_details && typeof task.error_details === 'object'
+      ? task.error_details
+      : {};
+
+    await ProductPublishingTaskRepository.updateTask(task, {
+      api_response: {
+        feed: feedStatus
+      },
+      error_details: {
+        ...currentDetails,
+        feed_id: feedId,
+        feed_status: feedStatus,
+        source: 'feed_webhook',
+        updated_by_webhook: topic || 'onFeedCompleted',
+        falabella_raw_response: feedStatus?.raw || feedStatus
+      }
+    });
+
+    logger.warn(`[FB Webhook] FeedStatus de Falabella no reconocido para ${feedId}; se conserva la respuesta cruda sin inferir un estado terminal.`);
+    return;
+  }
 
   // ✅ Si el feed terminó con errores, guardar errores REALES
   if (feedStatusLower === 'error' || feedStatusLower === 'canceled' || failedRecords > 0) {
@@ -2639,8 +2800,8 @@ function determineFalabellaTaskLifecycle(productStatus, { realErrors = [], hasIm
       status: 'failed',
       isFinal: true,
       errorMessage: qcStatus === 'rejected'
-        ? 'Falabella rechazó el producto'
-        : `Falabella marcó el producto como ${status || 'desconocido'}`
+        ? `qc_status: ${qcStatus}`
+        : `status: ${status || 'unknown'}`
     };
   }
 

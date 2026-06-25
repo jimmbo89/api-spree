@@ -312,12 +312,30 @@ class FalabellaAdapter extends BaseAdapter {
       }
     }
 
+    const errorResponse = parsed?.ErrorResponse || parsed?.errorResponse || null;
+    if (errorResponse) {
+      const head = errorResponse.Head || errorResponse.head || {};
+      const body = errorResponse.Body || errorResponse.body || null;
+
+      return {
+        ok: false,
+        response_type: 'ErrorResponse',
+        request_action: head.RequestAction || head.request_action || 'FeedStatus',
+        error_type: head.ErrorType || head.error_type || null,
+        error_code: head.ErrorCode || head.error_code || null,
+        error_message: head.ErrorMessage || head.error_message || null,
+        body,
+        raw: parsed
+      };
+    }
+
     const success = parsed?.SuccessResponse || parsed?.successResponse || parsed;
     const body = success?.Body || success?.body || parsed?.Body || parsed?.body;
     const feedDetail = this.extractFeedNode(body);
 
     if (feedDetail) {
       return {
+        ok: true,
         FeedID: this.getFirstDefined(feedDetail.Feed, feedDetail.FeedID, feedDetail.FeedId),
         Status: this.getFirstDefined(feedDetail.Status, feedDetail.FeedStatus),
         Action: this.getFirstDefined(feedDetail.Action, feedDetail.RequestAction),
@@ -328,12 +346,18 @@ class FalabellaAdapter extends BaseAdapter {
         ProcessedRecords: this.getFirstDefined(feedDetail.ProcessedRecords, feedDetail.ProcessedRecord, feedDetail.RecordsProcessed),
         FailedRecords: this.getFirstDefined(feedDetail.FailedRecords, feedDetail.FailedRecord, feedDetail.RecordsFailed),
         FeedErrors: this.unwrapFeedSection(feedDetail.FeedErrors || feedDetail.Errors || feedDetail.Error),
-        FeedWarnings: this.unwrapFeedSection(feedDetail.FeedWarnings || feedDetail.Warnings || feedDetail.Warning)
+        FeedWarnings: this.unwrapFeedSection(feedDetail.FeedWarnings || feedDetail.Warnings || feedDetail.Warning),
+        raw: parsed
       };
     }
 
     logger.warn(`[FalabellaAdapter] FeedStatus respuesta no reconocida: ${JSON.stringify(parsed).substring(0, 1000)}`);
-    return null;
+    return {
+      ok: false,
+      response_type: 'UnrecognizedResponse',
+      error_message: null,
+      raw: parsed
+    };
   }
 
   async fetchFeedStatus(feedId) {

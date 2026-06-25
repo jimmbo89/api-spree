@@ -5,6 +5,7 @@ const logger = require('../../config/logger');
 
 const TASK_SUCCESS_STATUSES = new Set(['published', 'published_with_warnings']);
 const TASK_FAILURE_STATUSES = new Set(['failed', 'deleted', 'cancelled']);
+const TASK_ACTIVE_STATUSES = new Set(['pending', 'processing', 'retrying', 'draft']);
 
 function normalizeStatusValue(value) {
   return String(value || '').trim().toLowerCase() || null;
@@ -12,16 +13,26 @@ function normalizeStatusValue(value) {
 
 function resolveJobProductProgressStatus(jobProduct) {
   const taskStatus = normalizeStatusValue(jobProduct?.task?.status);
+  const fallbackStatus = normalizeStatusValue(jobProduct?.status);
+
+  // El estado del task solo debe mandar cuando ya es terminal.
+  // En Falabella, `processing` significa "enviado y esperando webhook", no
+  // que el producto siga bloqueando el avance del job.
   if (taskStatus) {
-    if (TASK_SUCCESS_STATUSES.has(taskStatus)) return 'success';
     if (TASK_FAILURE_STATUSES.has(taskStatus)) return 'error';
-    if (taskStatus === 'processing' || taskStatus === 'draft' || taskStatus === 'retrying') return 'processing';
-    if (taskStatus === 'pending') return 'pending';
+    if (TASK_SUCCESS_STATUSES.has(taskStatus)) return 'success';
   }
 
-  const fallbackStatus = normalizeStatusValue(jobProduct?.status);
   if (['success', 'published', 'published_with_warnings'].includes(fallbackStatus)) return 'success';
   if (['error', 'failed', 'deleted', 'cancelled'].includes(fallbackStatus)) return 'error';
+  if (taskStatus && TASK_ACTIVE_STATUSES.has(taskStatus)) {
+    if (fallbackStatus === 'error') return 'error';
+    if (fallbackStatus === 'success') return 'success';
+    if (fallbackStatus === 'retrying') return 'retrying';
+    if (fallbackStatus === 'pending' || fallbackStatus === 'processing') return fallbackStatus;
+    return taskStatus === 'pending' ? 'pending' : 'processing';
+  }
+
   if (fallbackStatus === 'processing') return 'processing';
   if (fallbackStatus === 'retrying') return 'retrying';
   return 'pending';
