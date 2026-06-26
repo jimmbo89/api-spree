@@ -2623,6 +2623,29 @@ function buildFalabellaProductStateSnapshot({ product, payload, source = "webhoo
     || product?.image_upload?.success === true
     || FalabellaAdapter.hasFalabellaImage(product || {});
 
+  const extractFalabellaNumericValue = (candidates) => {
+    for (const candidate of candidates) {
+      if (candidate === undefined || candidate === null || candidate === '') continue;
+      const parsed = Number(candidate);
+      if (Number.isFinite(parsed) && parsed >= 0) {
+        return parsed;
+      }
+    }
+    return null;
+  };
+
+  const stock = extractFalabellaNumericValue([
+    businessUnit?.Stock,
+    product?.Stock,
+    product?.stock
+  ]);
+
+  const price = extractFalabellaNumericValue([
+    businessUnit?.Price,
+    product?.Price,
+    product?.price
+  ]);
+
   return {
     marketplace: FB_MARKETPLACE_KEY,
     status,
@@ -2632,8 +2655,8 @@ function buildFalabellaProductStateSnapshot({ product, payload, source = "webhoo
       product?.IsPublished || product?.is_published || businessUnit?.IsPublished || businessUnit?.is_published || null
     ),
     has_image: hasImage,
-    stock: parseInt(businessUnit?.Stock || product?.stock || 0, 10) || 0,
-    price: parseFloat(businessUnit?.Price || product?.price || 0) || 0,
+    stock,
+    price,
     url: product?.Url || product?.url || null,
     shop_sku: product?.ShopSku || product?.shop_sku || null,
     raw: product || null,
@@ -2649,6 +2672,64 @@ function buildFalabellaProductStateSnapshot({ product, payload, source = "webhoo
       event_id: payload?.event_id || payload?.EventId || payload?.eventId || null
     }
   };
+}
+
+function mergeFalabellaPublishedPayload(basePayload, incomingPayload) {
+  const base = normalizeTaskPayload(basePayload);
+  const incoming = normalizeTaskPayload(incomingPayload);
+  const baseHasContent = base && Object.keys(base).length > 0;
+  const incomingHasContent = incoming && Object.keys(incoming).length > 0;
+
+  if (!baseHasContent && !incomingHasContent) return null;
+  if (!baseHasContent) return incoming;
+  if (!incomingHasContent) return base;
+
+  const merged = {
+    ...base,
+    ...incoming
+  };
+
+  const baseBusinessUnit = Array.isArray(base?.BusinessUnits?.BusinessUnit)
+    ? base.BusinessUnits.BusinessUnit[0]
+    : base?.BusinessUnits?.BusinessUnit || {};
+  const incomingBusinessUnit = Array.isArray(incoming?.BusinessUnits?.BusinessUnit)
+    ? incoming.BusinessUnits.BusinessUnit[0]
+    : incoming?.BusinessUnits?.BusinessUnit || {};
+
+  if (Object.keys(baseBusinessUnit).length > 0 || Object.keys(incomingBusinessUnit).length > 0) {
+    const mergedBusinessUnit = {
+      ...baseBusinessUnit,
+      ...incomingBusinessUnit
+    };
+
+    if (incomingBusinessUnit.Stock === undefined && incomingBusinessUnit.stock === undefined && baseBusinessUnit.Stock !== undefined) {
+      mergedBusinessUnit.Stock = baseBusinessUnit.Stock;
+    }
+    if (incomingBusinessUnit.Price === undefined && incomingBusinessUnit.price === undefined && baseBusinessUnit.Price !== undefined) {
+      mergedBusinessUnit.Price = baseBusinessUnit.Price;
+    }
+
+    merged.BusinessUnits = {
+      ...base.BusinessUnits,
+      ...incoming.BusinessUnits,
+      BusinessUnit: mergedBusinessUnit
+    };
+  }
+
+  if (incoming.Stock === undefined && base.Stock !== undefined) {
+    merged.Stock = base.Stock;
+  }
+  if (incoming.Price === undefined && base.Price !== undefined) {
+    merged.Price = base.Price;
+  }
+  if (incoming.stock === undefined && base.stock !== undefined) {
+    merged.stock = base.stock;
+  }
+  if (incoming.price === undefined && base.price !== undefined) {
+    merged.price = base.price;
+  }
+
+  return merged;
 }
 
 function normalizeTaskPayload(payload) {
@@ -2868,6 +2949,20 @@ async function persistFalabellaProductState({ credential, sellerSku, product, pa
     );
   }
 
+  const existingPublishedPayload = normalizeTaskPayload(link?.published_payload)
+    || normalizeTaskPayload(sourceTask?.api_response)
+    || normalizeTaskPayload(sourceTask?.payload)
+    || null;
+  const mergedPublishedPayload = mergeFalabellaPublishedPayload(
+    existingPublishedPayload,
+    snapshot.raw || product || null
+  );
+  const confirmedPublishedStock = snapshot.stock !== null && snapshot.stock !== undefined
+    ? snapshot.stock
+    : (link?.published_stock !== undefined && link?.published_stock !== null
+      ? link.published_stock
+      : null);
+
   if (!link && sourceTask && (sourceTask.company_id != null || sourceTask.branch_id != null)) {
     try {
       link = await ProductMarketplaceLinkRepository.upsert({
@@ -2880,8 +2975,8 @@ async function persistFalabellaProductState({ credential, sellerSku, product, pa
         status: resolvedStatus,
         external_id: String(sellerSku),
         external_url: snapshot.url || null,
-        published_stock: snapshot.stock,
-        published_payload: snapshot.raw || product,
+        published_stock: confirmedPublishedStock,
+        published_payload: mergedPublishedPayload || snapshot.raw || product,
         last_synced_at: new Date()
       });
       logger.info(`[FB Webhook] Link creado por fallback para SKU ${sellerSku}: task_id=${sourceTask.id}, link_id=${link?.id || 'n/a'}`);
@@ -2908,8 +3003,8 @@ async function persistFalabellaProductState({ credential, sellerSku, product, pa
   const updatePayload = {
     status: resolvedStatus,
     external_url: snapshot.url || link?.external_url || null,
-    published_stock: snapshot.stock,
-    published_payload: snapshot.raw || product,
+    published_stock: confirmedPublishedStock,
+    published_payload: mergedPublishedPayload || snapshot.raw || product,
     last_synced_at: new Date()
   };
 
@@ -2938,7 +3033,7 @@ async function persistFalabellaProductState({ credential, sellerSku, product, pa
 
     const taskUpdate = {
       status: resolvedStatus,
-      api_response: product || latestTask.api_response || null,
+      api_response: mergedPublishedPayload || product || latestTask.api_response || null,
       error_message: taskErrorMessage,
       error_details: lifecycle.isFinal && lifecycle.status === 'published' ? null : mergedDetails
     };
