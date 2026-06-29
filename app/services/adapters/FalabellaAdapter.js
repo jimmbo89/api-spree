@@ -529,7 +529,7 @@ class FalabellaAdapter extends BaseAdapter {
     if (timedOut) {
       return {
         success: false,
-        error: 'Falabella sigue procesando el feed; no se pudo confirmar el estado final dentro del tiempo de espera',
+        error: null,
         details: {
           error_code: 'feed_status_timeout',
           pending_review: true,
@@ -547,7 +547,7 @@ class FalabellaAdapter extends BaseAdapter {
       if (failedRecords > 0 || errors.length > 0) {
         const errorMessage = errors.length > 0
           ? errors.map(item => item?.message).filter(Boolean).join(' | ')
-          : 'Falabella rechazó o procesó con errores la creación del producto';
+          : null;
 
         return {
           success: false,
@@ -582,7 +582,7 @@ class FalabellaAdapter extends BaseAdapter {
 
     return {
       success: false,
-      error: `Falabella devolvió estado final no exitoso para el feed: ${feedStatus}`,
+      error: null,
       details: {
         error_code: 'feed_not_successful',
         feed: feedData

@@ -1413,11 +1413,19 @@ function extractFalabellaFeedStatusError(feedStatus) {
   if (!feedStatus || typeof feedStatus !== 'object') return null;
 
   if (feedStatus.response_type === 'ErrorResponse' || feedStatus.ok === false) {
+    const errorCode = feedStatus.error_code || null;
+    const errorMessage = feedStatus.error_message || null;
+    const isInvalidFeedId =
+      String(errorCode || '').trim().toUpperCase() === 'E012'
+      || /invalid feed id/i.test(String(errorMessage || ''))
+      || /feed id.*invalid/i.test(String(errorMessage || ''));
+
     return {
       request_action: feedStatus.request_action || 'FeedStatus',
       error_type: feedStatus.error_type || null,
-      error_code: feedStatus.error_code || null,
-      error_message: feedStatus.error_message || null,
+      error_code: errorCode,
+      error_message: errorMessage,
+      is_invalid_feed_id: isInvalidFeedId,
       raw: feedStatus.raw || feedStatus
     };
   }
@@ -1432,13 +1440,49 @@ function extractFalabellaFeedStatusError(feedStatus) {
     error_type: head.ErrorType || head.error_type || null,
     error_code: head.ErrorCode || head.error_code || null,
     error_message: head.ErrorMessage || head.error_message || null,
+    is_invalid_feed_id:
+      String(head.ErrorCode || head.error_code || '').trim().toUpperCase() === 'E012'
+      || /invalid feed id/i.test(String(head.ErrorMessage || head.error_message || '')),
     raw: feedStatus.raw || feedStatus
   };
 }
 
-async function finalizeFalabellaTaskFromFeedError({ task, credential, feedId, feedStatus, topic }) {
+function isFalabellaFeedSyncIssue(feedStatus) {
   const marketplaceError = extractFalabellaFeedStatusError(feedStatus);
-  const errorMessage = marketplaceError?.error_message || null;
+  return Boolean(
+    marketplaceError?.is_invalid_feed_id
+    || feedStatus?.response_type === 'UnrecognizedResponse'
+  );
+}
+
+async function persistFalabellaFeedReconciliationState({ task, feedId, feedStatus, topic }) {
+  const currentDetails = task?.error_details && typeof task.error_details === 'object'
+    ? task.error_details
+    : {};
+  const marketplaceError = extractFalabellaFeedStatusError(feedStatus);
+
+  await ProductPublishingTaskRepository.updateTask(task, {
+    status: task.status === 'failed' || task.status === 'deleted' ? task.status : 'processing',
+    error_message: task.error_message || null,
+    error_details: {
+      ...currentDetails,
+      feed_id: feedId,
+      feed_status: feedStatus,
+      marketplace_error: marketplaceError,
+      feed_sync_state: 'awaiting_webhook_confirmation',
+      source: 'feed_webhook',
+      updated_by_webhook: topic || 'onFeedCompleted',
+      falabella_raw_response: feedStatus?.raw || feedStatus
+    },
+    api_response: {
+      feed: feedStatus
+    }
+  });
+}
+
+async function finalizeFalabellaTaskFromFeedError({ task, credential, feedId, feedStatus, topic, marketplaceError = null }) {
+  const resolvedMarketplaceError = marketplaceError || extractFalabellaFeedStatusError(feedStatus);
+  const errorMessage = resolvedMarketplaceError?.error_message || null;
   const currentDetails = task?.error_details && typeof task.error_details === 'object'
     ? task.error_details
     : {};
@@ -1450,7 +1494,7 @@ async function finalizeFalabellaTaskFromFeedError({ task, credential, feedId, fe
       ...currentDetails,
       feed_id: feedId,
       feed_status: feedStatus,
-      marketplace_error: marketplaceError,
+      marketplace_error: resolvedMarketplaceError,
       source: 'feed_webhook',
       updated_by_webhook: topic || 'onFeedCompleted',
       falabella_raw_response: feedStatus?.raw || feedStatus
@@ -1480,7 +1524,7 @@ async function finalizeFalabellaTaskFromFeedError({ task, credential, feedId, fe
           ...currentJobDetails,
           feed_id: feedId,
           feed_status: feedStatus,
-          marketplace_error: marketplaceError,
+          marketplace_error: resolvedMarketplaceError,
           source: 'feed_webhook',
           updated_by_webhook: topic || 'onFeedCompleted',
           falabella_raw_response: feedStatus?.raw || feedStatus
@@ -1562,33 +1606,36 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
   const feedWarnings = normalizeFeedErrors(feedStatus.FeedWarnings || []);
 
   if (feedStatus.response_type === 'ErrorResponse') {
+    const marketplaceError = extractFalabellaFeedStatusError(feedStatus);
+
+    if (marketplaceError?.is_invalid_feed_id) {
+      logger.warn(`[FB Webhook] FeedStatus devolvió invalid feed id para ${feedId}; se conserva como reconciliación pendiente para evitar cierre prematuro.`);
+      await persistFalabellaFeedReconciliationState({
+        task,
+        feedId,
+        feedStatus,
+        topic
+      });
+      return;
+    }
+
     await finalizeFalabellaTaskFromFeedError({
       task,
       credential: adapter?.credential || null,
       feedId,
       feedStatus,
-      topic
+      topic,
+      marketplaceError
     });
     return;
   }
 
   if (feedStatus.response_type === 'UnrecognizedResponse') {
-    const currentDetails = task?.error_details && typeof task.error_details === 'object'
-      ? task.error_details
-      : {};
-
-    await ProductPublishingTaskRepository.updateTask(task, {
-      api_response: {
-        feed: feedStatus
-      },
-      error_details: {
-        ...currentDetails,
-        feed_id: feedId,
-        feed_status: feedStatus,
-        source: 'feed_webhook',
-        updated_by_webhook: topic || 'onFeedCompleted',
-        falabella_raw_response: feedStatus?.raw || feedStatus
-      }
+    await persistFalabellaFeedReconciliationState({
+      task,
+      feedId,
+      feedStatus,
+      topic
     });
 
     logger.warn(`[FB Webhook] FeedStatus de Falabella no reconocido para ${feedId}; se conserva la respuesta cruda sin inferir un estado terminal.`);
@@ -1603,7 +1650,7 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
           const field = e.field ? `${e.field}: ` : '';
           return `${field}${e.message}`;
         }).join(' | ')
-      : `Feed falló con estado: ${feedStatusLower}`;
+      : null;
 
     logger.error(`[FB Webhook] Feed ${feedId} falló: ${realErrorMessage}`);
 
@@ -1618,6 +1665,7 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
         failed_records: failedRecords,
         processed_records: processedRecords,
         total_records: totalRecords,
+        marketplace_error: extractFalabellaFeedStatusError(feedStatus),
         source: 'feed_webhook',
         // ✅ GUARDAR RESPONSE COMPLETO DE FALABELLA
         falabella_raw_response: feedStatus
