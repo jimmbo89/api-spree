@@ -2664,7 +2664,7 @@ async publishedProducts(req, res) {
     } = req.body || {};
 
     const companyId = bodyCompanyId ? Number(bodyCompanyId) : req.user.company_id;
-    const userId = bodyUserId ? Number(bodyUserId) : req.user.id;
+    const userId = bodyUserId ? Number(bodyUserId) : null;
     const marketplaceId = bodyMarketplaceId ? Number(bodyMarketplaceId) : null;
     const productId = bodyProductId ? Number(bodyProductId) : null;
     const selectedStatus = bodyStatus ? String(bodyStatus).trim().toLowerCase() : null;
@@ -2688,29 +2688,62 @@ async publishedProducts(req, res) {
     let marketplaces = [];
     let products = [];
     let statusOptions = buildPublishedStatusOptions();
+
+    const { startDate, endDate } = normalizeDateRange(start_date, end_date);
+
+    // ✅ 🔑 CORRECCIÓN: Incluir tareas con status "processing" para Falabella
+    const tasks = await ProductPublishingTaskRepository.findPublishedProducts({
+      companyId,
+      userId,
+      marketplaceId,
+      productId,
+      startDate,
+      endDate,
+      includeProcessing: true // ✅ NUEVO: incluir processing
+    });
+
     if (useManteinersFlag) {
-      const credentials = await MarketplaceCredentialRepository.findByUserDecifrado(userId);
-      const marketplaceIds = [
-        ...new Set(
-          (Array.isArray(credentials) ? credentials : [])
-            .map((credential) => credential?.marketplace_id || credential?.marketplace?.id)
-            .filter(Boolean)
-            .map((id) => Number(id))
-            .filter((id) => Number.isFinite(id) && id > 0)
-        )
-      ];
+      if (userId != null) {
+        const credentials = await MarketplaceCredentialRepository.findByUserDecifrado(userId);
+        const marketplaceIds = [
+          ...new Set(
+            (Array.isArray(credentials) ? credentials : [])
+              .map((credential) => credential?.marketplace_id || credential?.marketplace?.id)
+              .filter(Boolean)
+              .map((id) => Number(id))
+              .filter((id) => Number.isFinite(id) && id > 0)
+          )
+        ];
 
-      if (marketplaceIds.length > 0) {
-        const marketplacesResult = await MarketplaceRepository.findByIds(marketplaceIds);
-        const marketplacesData = Array.isArray(marketplacesResult.marketplaces)
-          ? marketplacesResult.marketplaces
-          : [];
+        if (marketplaceIds.length > 0) {
+          const marketplacesResult = await MarketplaceRepository.findByIds(marketplaceIds);
+          const marketplacesData = Array.isArray(marketplacesResult.marketplaces)
+            ? marketplacesResult.marketplaces
+            : [];
 
-        marketplaces = marketplacesData.map((marketplace) => ({
-          id: marketplace.id || null,
-          name: marketplace.name || 'N/A',
-          domain: marketplace.domain || null
-        }));
+          marketplaces = marketplacesData.map((marketplace) => ({
+            id: marketplace.id || null,
+            name: marketplace.name || 'N/A',
+            domain: marketplace.domain || null
+          }));
+        }
+      } else {
+        const marketplaceMap = new Map();
+        for (const task of tasks) {
+          const marketplace = task.marketplace || {};
+          const marketplaceIdValue = Number(task.marketplace_id || marketplace.id || 0);
+          if (!Number.isFinite(marketplaceIdValue) || marketplaceIdValue <= 0 || marketplaceMap.has(marketplaceIdValue)) {
+            continue;
+          }
+
+          marketplaceMap.set(marketplaceIdValue, {
+            id: marketplaceIdValue,
+            name: marketplace.name || 'N/A',
+            domain: marketplace.domain || null
+          });
+        }
+
+        marketplaces = Array.from(marketplaceMap.values());
       }
 
       const companyProducts = await ProductRepository.findFiltered({
@@ -2730,19 +2763,6 @@ async publishedProducts(req, res) {
 
       statusOptions = buildPublishedStatusOptions();
     }
-
-    const { startDate, endDate } = normalizeDateRange(start_date, end_date);
-
-    // ✅ 🔑 CORRECCIÓN: Incluir tareas con status "processing" para Falabella
-    const tasks = await ProductPublishingTaskRepository.findPublishedProducts({
-      companyId,
-      userId,
-      marketplaceId,
-      productId,
-      startDate,
-      endDate,
-      includeProcessing: true // ✅ NUEVO: incluir processing
-    });
 
     const uniqueByExternalId = new Map();
     for (const task of tasks) {
@@ -2940,6 +2960,9 @@ async publishedProducts(req, res) {
           ? new Date(task.published_at || task.createdAt || task.updatedAt).toISOString()
           : null,
         user_id: task.user_id,
+        user_name: task.user?.name || 'N/A',
+        user_email: task.user?.email || null,
+        user_avatar: task.user?.image || null,
         company_id: task.company_id,
         credential_id: task.credential_id,
         last_synced_at: formatDateTimeDisplay(task.updatedAt),

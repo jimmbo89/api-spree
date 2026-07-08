@@ -32,7 +32,7 @@ const availablePermissionsForRoleSchema = Joi.object({
     'number.base': 'El role_id debe ser un número entero',
     'any.required': 'El campo "role_id" es obligatorio'
   }),
-  permission_id: Joi.number().integer().positive().optional().messages({
+  permission_id: Joi.number().integer().positive().optional().allow(null, '').messages({
     'number.base': 'El permission_id debe ser un número entero'
   })
 });

@@ -38,6 +38,7 @@ const listNotificationsSchema = Joi.object({
   company_id: Joi.number().integer().positive().optional(),
   status: Joi.number().integer().valid(0, 1, 2).optional(),
   search: Joi.string().max(100).optional().allow(''),
+  cursor: Joi.string().isoDate().optional().allow(null, ''),
   page: Joi.number().integer().min(1).optional().default(1),
   limit: Joi.number().integer().min(1).max(100).optional().default(20)
 });

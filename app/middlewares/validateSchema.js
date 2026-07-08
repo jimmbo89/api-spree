@@ -7,6 +7,15 @@ const logger = require("../../config/logger");
  *   validateSchema({ body: schemaBody, params: schemaParams })
  */
 const validateSchema = (schemas) => {
+  const normalizedSchemas = (
+    schemas && typeof schemas.validate === 'function' &&
+    !Object.prototype.hasOwnProperty.call(schemas, 'body') &&
+    !Object.prototype.hasOwnProperty.call(schemas, 'params') &&
+    !Object.prototype.hasOwnProperty.call(schemas, 'query')
+  )
+    ? { body: schemas }
+    : (schemas || {});
+
   // Normalización recursiva
   const normalizeValue = (value) => {
     if (value === "" || value === null) return null;
@@ -37,9 +46,9 @@ const validateSchema = (schemas) => {
     const errors = [];
 
     for (const source of sources) {
-      if (schemas[source] && req[source]) {
+      if (normalizedSchemas[source] && req[source]) {
         const data = source === 'body' ? normalizeObject({ ...req[source] }) : { ...req[source] };
-        const { error } = schemas[source].validate(data, { abortEarly: false });
+        const { error } = normalizedSchemas[source].validate(data, { abortEarly: false });
         if (error) {
           errors.push(...error.details.map(err => ({
             source,

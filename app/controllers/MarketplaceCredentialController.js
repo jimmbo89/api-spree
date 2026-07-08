@@ -51,13 +51,14 @@ const MarketplaceCredentialController = {
     logger.info(`${req.user?.name || 'Unknown'} - Obtiene credenciales por usuario`);
 
     try {
-      const userId = req.user.id;
+      const { user_id } = req.body || {};
 
-      const credentials = await MarketplaceCredentialRepository.findByUser(userId);
+      const credentials = await MarketplaceCredentialRepository.findByUser(user_id || null);
 
       const safeCredentials = credentials.map(cred => {
         const item = {
           id: cred.id,
+          user_id: cred.user_id,
           marketplace_id: cred.marketplace_id,
           name: cred.name,
           country: cred.country,
@@ -70,7 +71,10 @@ const MarketplaceCredentialController = {
           additional_data: cred.additional_data,
           created_at: cred.createdAt,
           updated_at: cred.updatedAt,
-          marketplace: cred.marketplace
+          marketplace: cred.marketplace,
+          user_name: cred.user?.name || null,
+          user_email: cred.user?.email || null,
+          user_avatar: cred.user?.image || null
         };
         return item;
       });

@@ -261,7 +261,12 @@ const ProductPublishingTaskRepository = {
       include: [
         { model: Product, as: 'product' },
         { model: Marketplace, as: 'marketplace' },
-        { model: MarketplaceCredential, as: 'credential' }
+        { model: MarketplaceCredential, as: 'credential' },
+        {
+          model: User,
+          as: 'user',
+          attributes: ['id', 'name', 'email', 'image']
+        }
       ],
       order: [
         [sequelize.literal('DATE(COALESCE(`ProductPublishingTask`.`published_at`, `ProductPublishingTask`.`createdAt`))'), 'DESC'],

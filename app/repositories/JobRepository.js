@@ -934,7 +934,7 @@ async findAndCountFinished(filters) {
       completed_at: { [Op.ne]: null }
     };
 
-    if (user_id) where.user_id = user_id;
+    if (user_id != null) where.user_id = user_id;
     if (date_from) where.completed_at = { ...where.completed_at, [Op.gte]: date_from };
 
     if (search_term) {
@@ -955,7 +955,7 @@ async findAndCountFinished(filters) {
       include: [{
         model: User,
         as: 'user',
-        attributes: ['id', 'name']
+        attributes: ['id', 'name', 'email', 'image']
       }],
       order: [['completed_at', 'DESC']],
       limit: parseInt(limit),

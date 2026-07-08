@@ -714,7 +714,7 @@ async listFinishedJobs(req, res) {
       search,
       page = 1,
       limit = 20
-    } = req.body;
+    } = req.body || {};
 
     // Validaciones
     if (!company_id) {
@@ -762,6 +762,8 @@ async listFinishedJobs(req, res) {
         status: job.status,
         createdAt: job.completed_at || job.createdAt,
         user_name: job.user?.name || 'N/A',
+        user_email: job.user?.email || null,
+        user_avatar: job.user?.image || null,
         channelsCount: channelCount,
         productsTotal: job.total_products,
         publishedCount: job.successful,

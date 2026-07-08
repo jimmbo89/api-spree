@@ -74,9 +74,14 @@ const findByUserSchema = Joi.object({
   marketplace_id: Joi.number().integer().positive().optional()
 });
 
+const marketplaceCredentialsByUserSchema = Joi.object({
+  user_id: Joi.number().integer().positive().optional().allow(null)
+});
+
 module.exports = {
   storeMarketplaceCredentialSchema: storeSchema,
   updateMarketplaceCredentialSchema: updateSchema,
   idMarketplaceCredentialSchema: idSchema,
-  findByMarketplaceCredentialSchema: findByUserSchema // renombrado para claridad
+  findByMarketplaceCredentialSchema: findByUserSchema, // renombrado para claridad
+  marketplaceCredentialsByUserSchema
 };

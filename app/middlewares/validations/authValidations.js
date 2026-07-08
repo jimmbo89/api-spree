@@ -107,8 +107,36 @@ const updateUserSchema = Joi.object({
   role_id: Joi.number().integer().positive().optional(),
 
   // ACL
-  warehouses: Joi.array().items(Joi.number().integer().positive()).optional(),
-  pools: Joi.array().items(Joi.number().integer().positive()).optional(),
+  warehouses: Joi.alternatives().try(
+    Joi.array().items(Joi.number().integer().positive()),
+    Joi.string().custom((value, helpers) => {
+      if (value === '' || value === null) return value;
+      try {
+        const parsed = JSON.parse(value);
+        if (!Array.isArray(parsed)) {
+          return helpers.message('El campo "warehouses" debe ser un array JSON válido');
+        }
+        return value;
+      } catch (error) {
+        return helpers.message('El campo "warehouses" debe ser un array JSON válido');
+      }
+    })
+  ).optional(),
+  pools: Joi.alternatives().try(
+    Joi.array().items(Joi.number().integer().positive()),
+    Joi.string().custom((value, helpers) => {
+      if (value === '' || value === null) return value;
+      try {
+        const parsed = JSON.parse(value);
+        if (!Array.isArray(parsed)) {
+          return helpers.message('El campo "pools" debe ser un array JSON válido');
+        }
+        return value;
+      } catch (error) {
+        return helpers.message('El campo "pools" debe ser un array JSON válido');
+      }
+    })
+  ).optional(),
 
   // Imagen: si se envía como string (ej: "users/default.jpg"), se permite
   image: Joi.string().optional() // solo para resetear a default

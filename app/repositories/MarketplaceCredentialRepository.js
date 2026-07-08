@@ -74,10 +74,11 @@ const MarketplaceCredentialRepository = {
   },
 
   /**
-   * Obtiene todas las credenciales de un usuario (opcionalmente filtradas por marketplace)
+   * Obtiene credenciales filtradas por usuario; si no se pasa userId devuelve todas.
    */
   async findByUser(userId, marketplaceId = null) {
-    const where = { user_id: userId };
+    const where = {};
+    if (userId) where.user_id = userId;
     if (marketplaceId) where.marketplace_id = marketplaceId;
 
     const records = await MarketplaceCredential.findAll({
@@ -86,6 +87,11 @@ const MarketplaceCredentialRepository = {
         {
           model: Marketplace,
           as: 'marketplace',
+        },
+        {
+          model: User,
+          as: 'user',
+          attributes: ['id', 'name', 'email', 'image']
         }
       ],
       order: [['createdAt', 'DESC']]
