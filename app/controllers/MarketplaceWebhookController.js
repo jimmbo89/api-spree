@@ -971,9 +971,7 @@ async function persistMercadoLibreItemState({
     const isActive = String(snapshot.status || '').toLowerCase() === 'active';
     const isDeleted = isMercadoLibreDeletedState(snapshot.status, snapshot.sub_status);
     const subStatusLabel = snapshot.sub_status_text ? ` (${snapshot.sub_status_text})` : '';
-    const currentDetails = task.error_details && typeof task.error_details === "object"
-      ? task.error_details
-      : {};
+    const currentDetails = normalizeFalabellaDetailObject(task.error_details);
     const mergedDetails = {
       ...currentDetails,
       marketplace_item_state: snapshot,
@@ -1012,9 +1010,7 @@ async function persistMercadoLibreItemState({
       const isActive = String(snapshot.status || '').toLowerCase() === 'active';
       const isDeleted = isMercadoLibreDeletedState(snapshot.status, snapshot.sub_status);
       const subStatusLabel = snapshot.sub_status_text ? ` (${snapshot.sub_status_text})` : '';
-      const currentJobDetails = jobProduct.error_details && typeof jobProduct.error_details === "object"
-        ? jobProduct.error_details
-        : {};
+      const currentJobDetails = normalizeFalabellaDetailObject(jobProduct.error_details);
       const mergedJobDetails = {
         ...currentJobDetails,
         marketplace_item_state: snapshot,
@@ -1456,9 +1452,7 @@ function isFalabellaFeedSyncIssue(feedStatus) {
 }
 
 async function persistFalabellaFeedReconciliationState({ task, feedId, feedStatus, topic }) {
-  const currentDetails = task?.error_details && typeof task.error_details === 'object'
-    ? task.error_details
-    : {};
+  const currentDetails = normalizeFalabellaDetailObject(task?.error_details);
   const marketplaceError = extractFalabellaFeedStatusError(feedStatus);
 
   await ProductPublishingTaskRepository.updateTask(task, {
@@ -1483,9 +1477,7 @@ async function persistFalabellaFeedReconciliationState({ task, feedId, feedStatu
 async function finalizeFalabellaTaskFromFeedError({ task, credential, feedId, feedStatus, topic, marketplaceError = null }) {
   const resolvedMarketplaceError = marketplaceError || extractFalabellaFeedStatusError(feedStatus);
   const errorMessage = resolvedMarketplaceError?.error_message || null;
-  const currentDetails = task?.error_details && typeof task.error_details === 'object'
-    ? task.error_details
-    : {};
+  const currentDetails = normalizeFalabellaDetailObject(task?.error_details);
 
   await ProductPublishingTaskRepository.updateTask(task, {
     status: 'failed',
@@ -1513,9 +1505,7 @@ async function finalizeFalabellaTaskFromFeedError({ task, credential, feedId, fe
     );
 
     if (jobProduct) {
-      const currentJobDetails = jobProduct.error_details && typeof jobProduct.error_details === 'object'
-        ? jobProduct.error_details
-        : {};
+      const currentJobDetails = normalizeFalabellaDetailObject(jobProduct.error_details);
 
       await JobProductRepository.update(jobProduct, {
         status: 'error',
@@ -1588,9 +1578,7 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
   }
 
   task = latestTask || task;
-  const taskDetails = task?.error_details && typeof task.error_details === 'object'
-    ? task.error_details
-    : {};
+  const taskDetails = normalizeFalabellaDetailObject(task?.error_details);
   const imageSyncAlreadySucceeded = Boolean(
     taskDetails?.image_upload?.success === true ||
     taskDetails?.image_sync?.success === true
@@ -2099,7 +2087,7 @@ async function processFalabellaProductWebhook(payload, options = {}) {
           status: finalStatus,
           error_message: statusMessage,
           error_details: {
-            ...(task.error_details || {}),
+            ...normalizeFalabellaDetailObject(task.error_details),
             qc_status: qcStatus,
             qc_reason: snapshot.qc_reason || null,
             marketplace_status: productStatus,
@@ -2794,6 +2782,10 @@ function normalizeTaskPayload(payload) {
   return {};
 }
 
+function normalizeFalabellaDetailObject(details) {
+  return normalizeTaskPayload(details);
+}
+
 function extractFalabellaTaskImages(task, payload, sellerSku, adapter) {
   const taskPayload = normalizeTaskPayload(task?.payload || task?.job?.config);
   const productImages = normalizeTaskPayload(task?.product)?.images || task?.product?.images || [];
@@ -2903,6 +2895,57 @@ function isFalabellaConfirmedPublishedState(productStatus, { hasImage = true } =
       (qcApproved && strongPublishSignal)
       || legacyPublishSignal
     );
+}
+
+function resolveFalabellaMarketplaceDisplayStatus(productStatus, { taskStatus = null, hasImage = true } = {}) {
+  if (!productStatus || typeof productStatus !== 'object') {
+    return taskStatus === 'processing' ? 'processing' : 'unknown';
+  }
+
+  if (productStatus.found === false) {
+    return taskStatus === 'processing' ? 'processing' : 'unknown';
+  }
+
+  const status = String(productStatus.status || '').trim().toLowerCase();
+  const qcStatus = String(productStatus.qc_status || '').trim().toLowerCase();
+  const isPublished = productStatus.is_published;
+  const productErrors = Array.isArray(productStatus.product_errors) ? productStatus.product_errors : [];
+  const hasPublicUrl = typeof productStatus.url === 'string' && productStatus.url.trim().length > 0;
+  const hasShopSku = typeof productStatus.shop_sku === 'string' && productStatus.shop_sku.trim().length > 0;
+  const qcApproved = ['approved', 'active', 'live'].includes(qcStatus);
+  const strongPublishSignal = hasPublicUrl || hasShopSku || isPublished === true;
+  const legacyPublishSignal = isPublished === true
+    && qcStatus !== 'pending'
+    && qcStatus !== 'rejected';
+
+  if (['active', 'live'].includes(status)
+    && hasImage !== false
+    && productErrors.length === 0
+    && ((qcApproved && strongPublishSignal) || legacyPublishSignal)) {
+    return 'active';
+  }
+
+  if (qcStatus === 'pending') {
+    return 'under_review';
+  }
+
+  if (qcStatus === 'rejected') {
+    return 'rejected';
+  }
+
+  if (['inactive', 'deleted'].includes(status)) {
+    return status;
+  }
+
+  if (status === 'active' && isPublished === false) {
+    return 'not_published';
+  }
+
+  if (taskStatus === 'processing') {
+    return 'processing';
+  }
+
+  return status || 'unknown';
 }
 
 function determineFalabellaTaskLifecycle(productStatus, { realErrors = [], hasImage = true } = {}) {
@@ -3072,9 +3115,7 @@ async function persistFalabellaProductState({ credential, sellerSku, product, pa
   }
 
   if (latestTask) {
-    const currentDetails = latestTask.error_details && typeof latestTask.error_details === "object"
-      ? latestTask.error_details
-      : {};
+    const currentDetails = normalizeFalabellaDetailObject(latestTask.error_details);
     const mergedDetails = {
       ...currentDetails,
       marketplace_item_state: snapshot,

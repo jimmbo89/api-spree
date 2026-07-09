@@ -17,8 +17,9 @@ const validateSchema = (schemas) => {
     : (schemas || {});
 
   // Normalización recursiva
-  const normalizeValue = (value) => {
+  const normalizeValue = (value, key = '') => {
     if (value === "" || value === null) return null;
+    if (key === 'password') return value;
     if (typeof value === "string") {
       const num = Number(value);
       if (!isNaN(num) && value.trim() === value) return num;
@@ -32,9 +33,9 @@ const validateSchema = (schemas) => {
         if (typeof obj[key] === "object" && obj[key] !== null && !Array.isArray(obj[key])) {
           normalizeObject(obj[key]);
         } else if (Array.isArray(obj[key])) {
-          obj[key] = obj[key].map(item => typeof item === 'object' && item !== null ? normalizeObject({ ...item }) : normalizeValue(item));
+          obj[key] = obj[key].map(item => typeof item === 'object' && item !== null ? normalizeObject({ ...item }) : normalizeValue(item, key));
         } else {
-          obj[key] = normalizeValue(obj[key]);
+          obj[key] = normalizeValue(obj[key], key);
         }
       }
     }

@@ -1632,6 +1632,7 @@ async getCategoryAttributes(categoryId) {
         // ✅ 🔑 CORRECCIÓN CLAVE: NO hacer poll, retornar inmediatamente con el feed_id
         // El webhook onFeedCompleted se encargará de actualizar el estado
         logger.info(`[FalabellaAdapter] ✅ Feed enviado exitosamente. FeedID: ${requestId}`);
+        const marketplaceMessage = `Falabella respondió FeedID: ${requestId}`;
 
         return {
           success: true,
@@ -1647,8 +1648,8 @@ async getCategoryAttributes(categoryId) {
           },
           has_warnings: false,
           warnings: [],
-          warning_message: 'Producto enviado a Falabella. La asociación de imágenes se realizará tras la confirmación del producto.',
-          message: 'Producto enviado a Falabella. El estado se actualizará automáticamente cuando Falabella termine de procesar.'
+          warning_message: marketplaceMessage,
+          message: marketplaceMessage
         };
 
       } else if (responseBody.includes('<ErrorResponse>')) {

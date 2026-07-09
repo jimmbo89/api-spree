@@ -99,6 +99,20 @@ function buildWarningArtifacts(result) {
   };
 }
 
+function normalizeErrorDetails(value) {
+  if (!value) return {};
+  if (typeof value === 'object') return value;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (error) {
+      return {};
+    }
+  }
+  return {};
+}
+
 function buildProductMarketplaceLinkScope(pool = {}) {
   const primaryWarehouse = pool?.primary_warehouse || {};
 
@@ -3305,9 +3319,7 @@ async publishedProducts(req, res) {
       const marketplaceStateSnapshot = buildMercadoLibreItemStateSnapshotFromItem(updatedItem, 'manual_update');
       const isActive = marketplaceStateSnapshot.status === 'active';
       const shouldKeepWarning = marketplaceStateSnapshot.status && !isActive;
-      const currentDetails = task.error_details && typeof task.error_details === 'object'
-        ? task.error_details
-        : {};
+      const currentDetails = normalizeErrorDetails(task.error_details);
       const mergedDetails = {
         ...currentDetails,
         marketplace_item_state: marketplaceStateSnapshot,
@@ -3723,9 +3735,7 @@ async publishedProducts(req, res) {
       const isActive = currentProductState.status === 'active' || feedFinishedSuccessfully;
       const shouldKeepWarning = !feedFinishedSuccessfully && currentProductState.status && !isActive;
 
-      const currentDetails = task.error_details && typeof task.error_details === 'object'
-        ? task.error_details
-        : {};
+      const currentDetails = normalizeErrorDetails(task.error_details);
       const mergedDetails = {
         ...currentDetails,
         marketplace_item_state: {

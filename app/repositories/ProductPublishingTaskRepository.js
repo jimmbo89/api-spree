@@ -42,7 +42,20 @@ const ProductPublishingTaskRepository = {
   async updateTask(task, updateData, options = {}) {
     logger.info(`[REPO] Actualizando tarea ID ${task.id}`);
     try {
-      await task.update(updateData, options);
+      const sanitizedUpdateData = { ...updateData };
+      if (Object.prototype.hasOwnProperty.call(sanitizedUpdateData, 'error_details')) {
+        if (typeof sanitizedUpdateData.error_details === 'string') {
+          try {
+            const parsed = JSON.parse(sanitizedUpdateData.error_details);
+            sanitizedUpdateData.error_details = parsed && typeof parsed === 'object' ? parsed : null;
+          } catch (error) {
+            sanitizedUpdateData.error_details = null;
+          }
+        } else if (sanitizedUpdateData.error_details && typeof sanitizedUpdateData.error_details !== 'object') {
+          sanitizedUpdateData.error_details = null;
+        }
+      }
+      await task.update(sanitizedUpdateData, options);
       return task;
     } catch (error) {
       logger.error(`[REPO] ERROR al actualizar tarea:`, error.message);

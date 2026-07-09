@@ -45,6 +45,7 @@ const listWarehouseSchema = Joi.object({
   company_id: Joi.number().allow(null).empty('').optional(),
   branch_id: Joi.number().allow(null).empty('').optional(),
   user_id: Joi.number().allow(null).empty('').optional(),
+  include_products: Joi.boolean().truthy('true').falsy('false').optional(),
   status: Joi.string().valid('activo', 'inactivo', 'delete').optional(),
   type: Joi.string().valid('central', 'tienda', 'frio', 'inflamable', 'externo').optional(),
 });
