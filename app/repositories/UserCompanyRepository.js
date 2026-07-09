@@ -290,25 +290,26 @@ async activateMembership({ user_id, company_id }, transaction = null) {
 
     return memberships.map(m => {
       const user = m.user;
-      const warehouses = user.aclScopes
+      const aclScopes = Array.isArray(user?.aclScopes) ? user.aclScopes : [];
+      const warehouses = aclScopes
         .map(s => s.warehouse)
         .filter(w => w !== null);
 
-      const pools = user.aclScopes
+      const pools = aclScopes
         .map(s => s.pool)
         .filter(p => p !== null);
 
       return {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        user: user.user,
-        image: user.image,
-        user_status: user.status,
+        id: user?.id || null,
+        name: user?.name || null,
+        email: user?.email || null,
+        user: user?.user,
+        image: user?.image || null,
+        user_status: user?.status || null,
         membership_id: m.id,
         membership_status: m.status,
-        role_id: m.role.id,
-        role_name: m.role.name,
+        role_id: m.role?.id || null,
+        role_name: m.role?.name || null,
         company_id: m.company_id,
         warehouses,
         pools,

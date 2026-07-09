@@ -100,6 +100,40 @@ const MarketplaceCredentialRepository = {
     return records.map(record => record.get({ plain: true }));
   },
 
+  async findByUsers(userIds = [], marketplaceId = null) {
+    const ids = Array.isArray(userIds)
+      ? userIds.map(id => Number(id)).filter(id => Number.isInteger(id) && id > 0)
+      : [];
+
+    if (ids.length === 0) {
+      return [];
+    }
+
+    const where = {
+      user_id: { [Op.in]: ids }
+    };
+
+    if (marketplaceId) where.marketplace_id = marketplaceId;
+
+    const records = await MarketplaceCredential.findAll({
+      where,
+      include: [
+        {
+          model: Marketplace,
+          as: 'marketplace',
+        },
+        {
+          model: User,
+          as: 'user',
+          attributes: ['id', 'name', 'email', 'image']
+        }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+
+    return records.map(record => record.get({ plain: true }));
+  },
+
   /**
  * Obtiene todas las credenciales de un usuario (opcionalmente filtradas por marketplace)
  * ✅ CAMBIO: Devuelve credenciales con campos sensibles decifrados

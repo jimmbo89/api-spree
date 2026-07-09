@@ -5790,7 +5790,7 @@ async falabellaSuggestedCategoriesWithAttributes(req, res) {
 
       // === Cache de producto ===
       const cachedProductResult = getFromCache(`credential_${credential_id}`, 'product_suggestion', nameFixed);
-      if (cachedProductResult) {
+      if (Array.isArray(cachedProductResult) && cachedProductResult.length > 0) {
         cacheHits++;
         suggestions.push({ product_id: product.id, credential_id, marketplace_id, categories: cachedProductResult });
         continue;
@@ -6023,7 +6023,9 @@ logger.info(`comisión encontrada en la bd: \n ${JSON.stringify(commissionByPath
         categories.push(categoryData);
       }
 
-      saveToCache(`credential_${credential_id}`, 'product_suggestion', nameFixed, categories);
+      if (categories.length > 0) {
+        saveToCache(`credential_${credential_id}`, 'product_suggestion', nameFixed, categories);
+      }
       suggestions.push({ product_id: product.id, credential_id, marketplace_id, categories });
     }
 

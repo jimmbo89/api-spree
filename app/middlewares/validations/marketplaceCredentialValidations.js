@@ -75,6 +75,7 @@ const findByUserSchema = Joi.object({
 });
 
 const marketplaceCredentialsByUserSchema = Joi.object({
+  company_id: Joi.number().integer().positive().optional().allow(null),
   user_id: Joi.number().integer().positive().optional().allow(null)
 });
 

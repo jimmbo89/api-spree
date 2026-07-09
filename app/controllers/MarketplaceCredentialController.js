@@ -4,7 +4,8 @@ const logger = require('../../config/logger');
 const {
   MarketplaceCredentialRepository,
   MarketplaceRepository,
-  LogRepository
+  LogRepository,
+  UserCompanyRepository
 } = require('../repositories');
 const PublishingAdapterFactory = require('../services/adapters/PublishingAdapterFactory');
 const EncryptionService = require('../services/EncryptionService');
@@ -51,9 +52,55 @@ const MarketplaceCredentialController = {
     logger.info(`${req.user?.name || 'Unknown'} - Obtiene credenciales por usuario`);
 
     try {
-      const { user_id } = req.body || {};
+      const rawCompanyId = req.body?.company_id ?? req.headers['x-company-id'] ?? null;
+      const rawUserId = req.body?.user_id ?? null;
+      const companyId = rawCompanyId != null && rawCompanyId !== ''
+        ? Number(rawCompanyId)
+        : null;
+      const userId = rawUserId != null && rawUserId !== ''
+        ? Number(rawUserId)
+        : null;
 
-      const credentials = await MarketplaceCredentialRepository.findByUser(user_id || null);
+      if (companyId !== null && (!Number.isInteger(companyId) || companyId <= 0)) {
+        return res.status(400).json({
+          success: false,
+          message: 'company_id debe ser un número entero positivo'
+        });
+      }
+
+      if (userId !== null && (!Number.isInteger(userId) || userId <= 0)) {
+        return res.status(400).json({
+          success: false,
+          message: 'user_id debe ser un número entero positivo'
+        });
+      }
+
+      if (!companyId && !userId) {
+        return res.status(400).json({
+          success: false,
+          message: 'Debe enviar company_id, user_id o el header X-Company-ID'
+        });
+      }
+
+      let credentials = [];
+
+      if (userId) {
+        if (companyId) {
+          const membership = await UserCompanyRepository.findByUserIdAndCompanyId(userId, companyId);
+          if (!membership) {
+            return res.status(404).json({
+              success: false,
+              message: 'El usuario no tiene relación con la empresa indicada'
+            });
+          }
+        }
+
+        credentials = await MarketplaceCredentialRepository.findByUser(userId);
+      } else {
+        const usersInCompany = await UserCompanyRepository.getUsersByCompanyId(companyId);
+        const userIds = usersInCompany.map(user => user.id);
+        credentials = await MarketplaceCredentialRepository.findByUsers(userIds);
+      }
 
       const safeCredentials = credentials.map(cred => {
         const item = {
