@@ -2952,12 +2952,21 @@ function shouldAttemptFalabellaImageSync({ productStatus, taskImages, imageSyncA
 
 async function persistFalabellaProductState({ credential, sellerSku, product, payload, imageUploadResult = null, task: sourceTask = null }) {
   const marketplaceId = credential?.marketplace_id || null;
-  const snapshot = buildFalabellaProductStateSnapshot({ product, payload });
+  const existingPublishedPayload = normalizeTaskPayload(sourceTask?.api_response)
+    || normalizeTaskPayload(sourceTask?.payload)
+    || normalizeTaskPayload(sourceTask?.job?.config)
+    || null;
+  const productForSnapshot = mergeFalabellaPublishedPayload(existingPublishedPayload, product || null);
+  const snapshot = buildFalabellaProductStateSnapshot({ product: productForSnapshot, payload });
   if (imageUploadResult?.success) {
     snapshot.has_image = true;
   }
   const isActive = snapshot.status === "active";
   const isDeleted = snapshot.status === "deleted";
+  const marketplaceDisplayStatus = resolveFalabellaMarketplaceDisplayStatus(snapshot, {
+    taskStatus: sourceTask?.status || null,
+    hasImage: snapshot.has_image !== false
+  });
   const lifecycle = determineFalabellaTaskLifecycle(snapshot, {
     realErrors: Array.isArray(snapshot.product_errors) ? snapshot.product_errors : [],
     hasImage: snapshot.has_image !== false
@@ -2997,12 +3006,11 @@ async function persistFalabellaProductState({ credential, sellerSku, product, pa
     );
   }
 
-  const existingPublishedPayload = normalizeTaskPayload(link?.published_payload)
-    || normalizeTaskPayload(sourceTask?.api_response)
-    || normalizeTaskPayload(sourceTask?.payload)
+  const existingPublishedPayloadForLink = normalizeTaskPayload(link?.published_payload)
+    || existingPublishedPayload
     || null;
   const mergedPublishedPayload = mergeFalabellaPublishedPayload(
-    existingPublishedPayload,
+    existingPublishedPayloadForLink,
     snapshot.raw || product || null
   );
   const confirmedPublishedStock = snapshot.stock !== null && snapshot.stock !== undefined
@@ -3010,6 +3018,9 @@ async function persistFalabellaProductState({ credential, sellerSku, product, pa
     : (link?.published_stock !== undefined && link?.published_stock !== null
       ? link.published_stock
       : null);
+  const linkStatus = marketplaceDisplayStatus === 'active'
+    ? 'active'
+    : marketplaceDisplayStatus;
 
   if (!link && sourceTask && (sourceTask.company_id != null || sourceTask.branch_id != null)) {
     try {
@@ -3020,7 +3031,7 @@ async function persistFalabellaProductState({ credential, sellerSku, product, pa
         user_id: sourceTask.user_id || null,
         company_id: sourceTask.company_id != null ? sourceTask.company_id : null,
         branch_id: sourceTask.branch_id != null ? sourceTask.branch_id : null,
-        status: resolvedStatus,
+        status: linkStatus,
         external_id: String(sellerSku),
         external_url: snapshot.url || null,
         published_stock: confirmedPublishedStock,
@@ -3049,7 +3060,7 @@ async function persistFalabellaProductState({ credential, sellerSku, product, pa
   }
 
   const updatePayload = {
-    status: resolvedStatus,
+    status: linkStatus,
     external_url: snapshot.url || link?.external_url || null,
     published_stock: confirmedPublishedStock,
     published_payload: mergedPublishedPayload || snapshot.raw || product,
@@ -3067,6 +3078,7 @@ async function persistFalabellaProductState({ credential, sellerSku, product, pa
     const mergedDetails = {
       ...currentDetails,
       marketplace_item_state: snapshot,
+      marketplace_display_status: marketplaceDisplayStatus,
       image_upload: imageUploadResult || null,
       terminal_state: isDeleted ? "deleted" : null
     };

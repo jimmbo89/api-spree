@@ -378,7 +378,7 @@ function buildPublishedStatusOptions() {
     { id: 'active', name: 'Activa', marketplaces: ['mercadolibre', 'falabella'], shared: true },
     { id: 'deleted', name: 'Eliminada', marketplaces: ['mercadolibre', 'falabella'], shared: true },
     { id: 'paused', name: 'Pausada', marketplaces: ['mercadolibre'], shared: false },
-    { id: 'under_review', name: 'En revisión', marketplaces: ['mercadolibre'], shared: false },
+    { id: 'under_review', name: 'En revisión', marketplaces: ['mercadolibre', 'falabella'], shared: false },
     { id: 'closed', name: 'Cerrada', marketplaces: ['mercadolibre'], shared: false },
     { id: 'inactive', name: 'Inactiva', marketplaces: ['falabella'], shared: false },
     { id: 'pending', name: 'Pendiente', marketplaces: ['falabella'], shared: false },
@@ -445,20 +445,77 @@ function classifyMarketplaceState(status) {
     return 'deleted';
   }
 
-  // ✅ NUEVO: Estados específicos de Falabella
-  if (normalized === 'rejected') {
-    return 'inactive'; // Rechazado por QC → no visible
+  // ✅ Estados específicos de Falabella
+  if (normalized === 'pending') {
+    return 'under_review';
   }
 
-  if (normalized === 'pending') {
-    return 'inactive'; // Pendiente de aprobación → no visible aún
+  if (normalized === 'rejected') {
+    return 'rejected';
   }
 
   if (normalized === 'not_published') {
-    return 'inactive'; // No publicado → no visible
+    return 'not_published';
   }
 
-  return 'inactive';
+  if (normalized === 'processing') {
+    return 'processing';
+  }
+
+  return 'unknown';
+}
+
+function resolveFalabellaMarketplaceDisplayStatus(productStatus, { taskStatus = null, hasImage = true } = {}) {
+  if (!productStatus || typeof productStatus !== 'object') {
+    return taskStatus === 'processing' ? 'processing' : 'unknown';
+  }
+
+  if (productStatus.found === false) {
+    return taskStatus === 'processing' ? 'processing' : 'unknown';
+  }
+
+  const status = String(productStatus.status || '').trim().toLowerCase();
+  const qcStatus = String(productStatus.qc_status || '').trim().toLowerCase();
+  const isPublished = productStatus.is_published;
+  const productErrors = Array.isArray(productStatus.product_errors) ? productStatus.product_errors : [];
+  const hasPublicUrl = typeof productStatus.url === 'string' && productStatus.url.trim().length > 0;
+  const hasShopSku = typeof productStatus.shop_sku === 'string' && productStatus.shop_sku.trim().length > 0;
+  const qcApproved = ['approved', 'active', 'live'].includes(qcStatus);
+  const strongPublishSignal = hasPublicUrl || hasShopSku || isPublished === true;
+
+  const looksPublished = ['active', 'live'].includes(status)
+    && hasImage !== false
+    && productErrors.length === 0
+    && (
+      (qcApproved && strongPublishSignal)
+      || (isPublished === true && qcStatus !== 'rejected')
+    );
+
+  if (looksPublished) {
+    return 'active';
+  }
+
+  if (qcStatus === 'pending') {
+    return 'under_review';
+  }
+
+  if (qcStatus === 'rejected') {
+    return 'rejected';
+  }
+
+  if (['inactive', 'deleted'].includes(status)) {
+    return status;
+  }
+
+  if (status === 'active' && isPublished === false) {
+    return 'not_published';
+  }
+
+  if (taskStatus === 'processing') {
+    return 'processing';
+  }
+
+  return status || 'unknown';
 }
 
 function buildMercadoLibreItemStateSnapshotFromItem(item, source = 'manual_update') {
@@ -2784,13 +2841,17 @@ async publishedProducts(req, res) {
 
     const publishedProducts = [];
     const statusSummary = {
-      total: 0,
-      active: 0,
-      inactive: 0,
-      deleted: 0,
-      unknown: 0,
-      processing: 0
-    };
+    total: 0,
+    active: 0,
+    under_review: 0,
+    pending: 0,
+    rejected: 0,
+    not_published: 0,
+    inactive: 0,
+    deleted: 0,
+    unknown: 0,
+    processing: 0
+  };
 
     for (const task of uniqueByExternalId.values()) {
       const marketplace = task.marketplace || {};
@@ -2830,10 +2891,17 @@ async publishedProducts(req, res) {
           && snapshotHasImage
           && !snapshotHasErrors
           && (snapshotHasUrl || snapshotHasShopSku || snapshotIsPublished === true);
+        const snapshotLooksInReview = snapshotQcStatus === 'pending'
+          && snapshotStatus !== 'inactive'
+          && snapshotStatus !== 'deleted';
 
         if (task.status === 'processing') {
           if (snapshotLooksPublished) {
             marketplaceStatus = 'active';
+            isPublished = snapshotIsPublished;
+            qcStatus = snapshotQcStatus;
+          } else if (snapshotLooksInReview) {
+            marketplaceStatus = 'under_review';
             isPublished = snapshotIsPublished;
             qcStatus = snapshotQcStatus;
           } else if (snapshotQcStatus === 'rejected') {
@@ -2888,10 +2956,12 @@ async publishedProducts(req, res) {
             } else if (qcStatus === 'rejected') {
               marketplaceStatus = 'rejected';
             } else if (qcStatus === 'pending') {
-              marketplaceStatus = 'pending';
+              marketplaceStatus = 'under_review';
             } else {
               marketplaceStatus = 'active';
             }
+          } else if (qcStatus === 'pending') {
+            marketplaceStatus = 'under_review';
           } else {
             marketplaceStatus = rawStatus || 'unknown';
           }
@@ -2980,7 +3050,9 @@ async publishedProducts(req, res) {
           const errorDetails = task.error_details || {};
           productResponse.feed_id = errorDetails.feed_id || null;
           productResponse.sent_at = errorDetails.sent_at || null;
-          productResponse.publication_note = 'Producto enviado a Falabella, esperando confirmación del webhook...';
+          productResponse.publication_note = marketplaceStatus === 'under_review'
+            ? 'Producto en revisión por Falabella...'
+            : 'Producto enviado a Falabella, esperando confirmación del webhook...';
         } else {
           productResponse.publication_note = buildFalabellaPublicationNoteExact({
             raw: marketplaceLink?.published_payload || task.api_response || task.payload || null

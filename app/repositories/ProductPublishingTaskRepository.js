@@ -169,10 +169,7 @@ const ProductPublishingTaskRepository = {
 
     const where = {
       marketplace_id: marketplaceId,
-      external_id: externalId,
-      status: {
-        [Op.in]: ['published', 'published_with_warnings']
-      }
+      external_id: externalId
     };
 
     if (companyId) where.company_id = companyId;

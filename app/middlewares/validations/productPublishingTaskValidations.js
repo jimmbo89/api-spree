@@ -10,12 +10,12 @@ const storeSchema = Joi.object({
     warehouses: Joi.array().items(Joi.object({
       warehouse_id: Joi.number().integer().positive().required(),
       id: Joi.number().integer().positive().optional()
-    })).min(1).required(),
+    }).unknown(true)).min(1).required(),
     primary_warehouse: Joi.object({
       warehouse_id: Joi.number().integer().positive().required(),
       id: Joi.number().integer().positive().optional()
-    }).required()
-  }).required(),
+    }).unknown(true).required()
+  }).unknown(true).required(),
   products: Joi.array().items(Joi.object({
     id: Joi.number().integer().positive().required(),
     name: Joi.string().optional(),
@@ -23,8 +23,8 @@ const storeSchema = Joi.object({
       id: Joi.number().integer().positive().required(),
       publish: Joi.boolean().required(),
       publishStock: Joi.number().integer().min(0).required()
-    })).optional()
-  })).min(1).required(),
+    }).unknown(true)).optional()
+  }).unknown(true)).min(1).required(),
   // ✅ marketplaces es opcional cuando mode === 'draft' (se guarda solo el producto)
   marketplaces: Joi.array().items(Joi.object({
     id: Joi.number().integer().positive().required(), // ✅ Cambiado a number
@@ -35,8 +35,8 @@ const storeSchema = Joi.object({
       stockMode: Joi.string().valid('pool', 'limit').required(),
       stockLimit: Joi.number().min(0).allow(null),
       allowPromotions: Joi.boolean().required()
-    }).required()
-  })).min(1).optional(),
+    }).unknown(true).optional()
+  }).unknown(true)).min(1).optional(),
   // ✅ Nuevos campos para drafts
   draft_name: Joi.string().max(255).optional(), // Nombre del borrador
   batch_id: Joi.string().guid({ version: ['uuidv4'] }).optional(), // UUID para agrupar
