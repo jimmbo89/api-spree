@@ -313,7 +313,7 @@ const MarketplaceCredentialController = {
     });
   }
 },
-async refreshToken(req, res) {
+  async refreshToken(req, res) {
   logger.info(`${req.user?.name || 'Unknown'} - Refresca credenciales de marketplace`);
   logger.info(`Datos recibidos: ${JSON.stringify(req.body)}`);
   
@@ -331,15 +331,7 @@ async refreshToken(req, res) {
       });
     }
 
-    // 2. Verificar propiedad del usuario
-    if (credential.user_id !== userId) {
-      return res.status(403).json({ 
-        success: false, 
-        message: "No autorizado" 
-      });
-    }
-
-    // 3. Obtener datos del marketplace asociado
+    // 2. Obtener datos del marketplace asociado
     const marketplace = await MarketplaceRepository.findById(credential.marketplace_id);
     if (!marketplace) {
       return res.status(400).json({ 
@@ -364,7 +356,7 @@ async refreshToken(req, res) {
       });
     }
 
-    // 5. Ejecutar validación/refresh con la credencial específica
+    // 4. Ejecutar validación/refresh con la credencial específica
     const status = await adapter.ensureValidCredentials();
 
     if (status.valid) {
