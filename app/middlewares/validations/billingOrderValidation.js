@@ -9,7 +9,7 @@ const billingOrderBaseSchema = {
   total_amount: Joi.number().precision(2).positive().required(),
   currency: Joi.string().default('USD'),
   payment_method: Joi.string().valid('payment_link', 'transfer_proof', 'invoice_sii').required(),
-  payment_link_url: Joi.string().uri().optional().when('payment_method', { is: 'payment_link', then: Joi.required() }),
+  payment_link_url: Joi.string().uri().allow(null, '').optional(),
   proof_file: Joi.any()
   .custom((value, helpers) => {
     if (value) {
@@ -67,6 +67,7 @@ const updateBillingOrderSchema = Joi.object({
   id: Joi.number().integer().positive().required(),
   status: Joi.string().valid('paid', 'rejected', 'canceled').optional(),
   paid_at: Joi.date().iso().optional(),
+  payment_link_url: Joi.string().uri().allow(null, '').optional(),
   proof_file: Joi.any()
     .custom((value, helpers) => {
       if (value) {

@@ -1,14 +1,19 @@
 // validations/warehouseProductValidationSchemas.js
 const Joi = require('joi');
 
-// Esquema para variantes en el cuerpo de la petición
-const variantItemSchema = Joi.object({
-  attributes: Joi.object().optional().default({}),
-  published: Joi.boolean().optional().default(false),
-  local_sku: Joi.string().max(100).optional().allow(null, ''),
-  price: Joi.number().precision(2).min(0).required(),
-  stock: Joi.number().integer().min(0).required()
-}).unknown(false);
+const jsonArray = (label) =>
+  Joi.alternatives().try(
+    Joi.array(),
+    Joi.string().custom((value, helpers) => {
+      try {
+        const parsed = JSON.parse(value);
+        if (!Array.isArray(parsed)) return helpers.error('any.invalid');
+        return value;
+      } catch (error) {
+        return helpers.error('any.invalid');
+      }
+    }, `${label} JSON validator`)
+  );
 
 const storeWarehouseProductSchema = Joi.object({
   // ===== DATOS DE WAREHOUSE_PRODUCT =====
@@ -20,6 +25,8 @@ const storeWarehouseProductSchema = Joi.object({
 
   // ===== PRODUCTO EXISTENTE =====
   product_id: Joi.number().integer().positive().optional(),
+  active: Joi.boolean().optional(),
+  code: Joi.string().max(100).optional().allow(null, ''),
 
   // ===== NUEVO PRODUCTO (como JSON string) =====
   product: Joi.string()
@@ -56,19 +63,9 @@ const storeWarehouseProductSchema = Joi.object({
     .optional(),
 
   // ===== VARIANTES (stock/precio por variante) =====
-  variants: Joi.array().items(variantItemSchema).optional().default([]),
-
-  // ===== SI NO HAY VARIANTES, USAR ESTOS CAMPOS =====
-  price: Joi.when('variants', {
-    is: Joi.array().length(0),
-    then: Joi.number().precision(2).min(0).required(),
-    otherwise: Joi.forbidden()
-  }),
-  stock: Joi.when('variants', {
-    is: Joi.array().length(0),
-    then: Joi.number().integer().min(0).required(),
-    otherwise: Joi.forbidden()
-  }),
+  variants: jsonArray('variants').optional().default([]),
+  price: Joi.number().precision(2).min(0).optional().allow(null),
+  stock: Joi.number().integer().min(0).optional().allow(null),
 
   // ===== IMAGEN DEL PRODUCTO (si se crea nuevo) =====
   images: Joi.any().optional()
@@ -90,6 +87,8 @@ const updateWarehouseProductSchema = Joi.object({
   active: Joi.boolean().optional(),
   code: Joi.string().max(100).optional().allow(null, ''),
   minimum_stock: Joi.number().integer().min(0).optional(),
+  warehouse_id: Joi.number().integer().positive().optional().allow(null),
+  variants: jsonArray('variants').optional().default([]),
   company_id: Joi.number().integer().positive().optional().allow(null),
   branch_id: Joi.number().integer().positive().optional().allow(null),
   user_id: Joi.number().integer().positive().optional().allow(null)
@@ -103,13 +102,18 @@ const listWarehouseProductSchema = Joi.object({
   company_id: Joi.number().allow(null).empty('').optional(),
   user_id: Joi.number().allow(null).empty('').optional(),
   branch_id: Joi.number().allow(null).empty('').optional(),
-  warehouse_id: Joi.number().allow(null).empty('').optional()
+  warehouse_id: Joi.number().allow(null).empty('').optional(),
+  product_id: Joi.number().integer().positive().optional().allow(null)
 });
 
 const transferSchema = Joi.object({
   movement_type: Joi.string().trim().max(500).required(),
   origin_warehouse_id: Joi.number().integer().positive().required(),
-  destination_warehouse_id: Joi.number().integer().positive().required(),
+  destination_warehouse_id: Joi.when('movement_type', {
+    is: 'transfer',
+    then: Joi.number().integer().positive().required(),
+    otherwise: Joi.forbidden()
+  }),
   product_id: Joi.number().integer().positive().required(),
   variants: Joi.array().items(
     Joi.object({
@@ -147,15 +151,15 @@ const variantSchema = Joi.object({
   variant_id: Joi.number().integer().positive().required(),
   quantity: Joi.number().integer().min(1).required(),
   // Solo para entrada
-  local_sku: Joi.string().optional().allow(null, ''),
+  local_sku: Joi.any().optional().allow(null, ''),
   price: Joi.number().min(0).optional(),
   promotional_price: Joi.number().min(0).optional().allow(null)
-});
+}).unknown(true);
 
 const productSchema = Joi.object({
   product_id: Joi.number().integer().positive().required(),
   variants: Joi.array().items(variantSchema).min(1).required()
-});
+}).unknown(true);
 
 const bulkTransferSchema = Joi.object({
   movement_type: Joi.string().valid('entry', 'exit', 'transfer').required(),

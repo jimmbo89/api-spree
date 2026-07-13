@@ -52,7 +52,7 @@ const RolePermissionController = require("./controllers/RolePermissionController
 const { idSubscriptionSchema, listSubscriptionsSchema, storeSubscriptionSchema, updateSubscriptionSchema } = require("./middlewares/validations/subscriptionValidation.js");
 const SubscriptionController = require("./controllers/SubscriptionController.js");
 const UserCompanyController = require("./controllers/UserCompanyController.js");
-const { createUserCompanySchema, updateUserCompanyStatusSchema, userCompanyIdSchema, userCompanyByUserAndCompanySchema, userCompanyByTokenSchema, listUserCompanySchema, updateUserCompanyRoleSchema, createMembershipRequestSchema } = require("./middlewares/validations/userCompanyValidation.js");
+const { createUserCompanySchema, updateUserCompanyStatusSchema, userCompanyIdSchema, userCompanyByUserAndCompanySchema, userCompanyByTokenSchema, listUserCompanySchema, updateUserCompanyRoleSchema, createMembershipRequestSchema, destroyUserCompanySchema } = require("./middlewares/validations/userCompanyValidation.js");
 const UserAclScopeController = require("./controllers/UserAclScopeController.js");
 const { createUserAclScopeSchema, userAclScopeIdSchema, userAclScopesByUserAndCompanySchema } = require("./middlewares/validations/userAclScopeValidation.js");
 const AttributeController = require("./controllers/AttributeController.js");
@@ -212,7 +212,7 @@ router.head("/images-protect/:foldername/:filename", (req, res) => {
 router.get("/logout", AuthController.logout);
 router.post('/user-create', requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), multerImage("image", "users"), validateSchema(createUserSchema), AuthController.associateUserToCompany);
 router.post("/user-update", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), multerImage("image", "users"), validateSchema(updateUserSchema), AuthController.updateUserInCompany);
-router.post("/user-destroy", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(updateBranchSchema), AuthController.destroy);
+router.post("/user-destroy", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(destroyUserCompanySchema), AuthController.destroy);
 router.post("/get-users", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), AuthController.index);
 router.post("/get-pool-warehouse-roles", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), AuthController.getPoolWarehouseRole);
 router.post("/send-invitation", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(updateSchema), InvitationController.sendInvitation);

@@ -63,6 +63,8 @@ const ProductCategoryController = {
       // ✅ Si el registro es global (company_id null) y se pasa company_id, crear uno nuevo en lugar de editar
       if (category.company_id === null && company_id) {
         logger.info(`Categoría global ${id} - Creando nueva categoría para empresa ${company_id}`);
+        const targetName = name !== undefined && name !== null && name !== '' ? name : category.name;
+        const targetDescription = description !== undefined ? description : category.description;
         
         // Validar empresa
         const company = await CompanyRepository.findById(company_id);
@@ -71,20 +73,31 @@ const ProductCategoryController = {
         }
 
         // Validar que no exista ya una categoría con ese nombre en la empresa
-        const existingCategory = await ProductCategoryRepository.findByName(name, company_id);
+        const existingCategory = await ProductCategoryRepository.findByName(targetName, company_id);
         if (existingCategory) {
-          return res.status(409).json({
-            error: "DuplicateName",
-            message: `Ya existe una categoría con el nombre "${name}" en la empresa ${company_id}`
+          await ProductCategoryRepository.update(existingCategory, {
+            name: targetName,
+            company_id,
+            status: status !== undefined ? status : existingCategory.status,
+            description: targetDescription
+          });
+
+          const categories = await ProductCategoryRepository.findAll({ companyId: company_id });
+          return res.status(200).json({
+            categories,
+            msg: "Categoría actualizada correctamente para la empresa",
+            updated_existing_company_category: true,
+            global_category_id: id,
+            company_category_id: existingCategory.id
           });
         }
 
         // Crear nueva categoría para la empresa
         const newCategory = await ProductCategoryRepository.create({ 
-          name, 
+          name: targetName, 
           company_id, 
           status: status !== undefined ? status : category.status, 
-          description: description !== undefined ? description : category.description 
+          description: targetDescription 
         });
         
         const categories = await ProductCategoryRepository.findAll({ companyId: company_id });

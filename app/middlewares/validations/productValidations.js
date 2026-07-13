@@ -156,7 +156,9 @@ const updateProductSchema = Joi.object({
   id: Joi.number().required(),
   ...Object.fromEntries(
     Object.entries(productBaseSchema).map(([key, schema]) => [key, schema.optional()])
-  )
+  ),
+  product_variants: jsonString(Joi.array().items(productVariantSchema), 'product_variants').optional(),
+  warehouse_config: jsonString(warehouseConfigSchema, 'warehouse_config').optional()
 });
 
 const idProductSchema = Joi.object({

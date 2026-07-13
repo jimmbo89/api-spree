@@ -23,9 +23,12 @@ const storeCompanySchema = Joi.object({
   address: Joi.string().max(255).allow(null, '').optional(),
   city: Joi.string().max(100).allow(null, '').optional(),
   country: Joi.string().max(100).allow(null, '').optional(),
-  phone: Joi.string().max(20).allow(null, '').optional(),
+  phone: Joi.alternatives().try(
+    Joi.string().max(20),
+    Joi.number()
+  ).allow(null, '').optional(),
   email: Joi.string().email().max(255).optional().allow(null, ''),
-  currency: Joi.string().max(10).allow(null, '').optional(),
+  currency: Joi.string().max(50).allow(null, '').optional(),
   warehouse: Joi.string()
     .custom((value, helpers) => {
       try {
@@ -69,9 +72,12 @@ const updateCompanySchema = Joi.object({
   address: Joi.string().max(255).allow(null, '').optional(),
   city: Joi.string().max(100).allow(null, '').optional(),
   country: Joi.string().max(100).allow(null, '').optional(),
-  phone: Joi.string().max(20).allow(null, '').optional(),
+  phone: Joi.alternatives().try(
+    Joi.string().max(20),
+    Joi.number()
+  ).allow(null, '').optional(),
   email: Joi.string().email().max(255).optional().allow(null, ''),
-  currency: Joi.string().max(10).allow(null, '').optional(),
+  currency: Joi.string().max(50).allow(null, '').optional(),
   image: Joi.any()
     .custom((value, helpers) => {
       if (value) {
