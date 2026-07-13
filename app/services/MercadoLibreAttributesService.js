@@ -300,20 +300,32 @@ class MercadoLibreAttributesService {
    * Genera un GTIN válido basado en dígitos existentes
    */
   static generateValidGTIN(existingDigits) {
-    const digits = existingDigits.replace(/\D/g, '');
-    
+    const digits = String(existingDigits || '').replace(/\D/g, '');
+
+    if (!digits) {
+      return this.generateValidEAN13('000000001');
+    }
+
     if (digits.length >= 12) {
       const base12 = digits.substring(0, 12);
       const checkDigit = this.calculateGTINChecksum(base12 + '0');
       return base12 + checkDigit;
-    } else if (digits.length >= 7) {
-      const base7 = '0'.repeat(7 - digits.length) + digits.substring(0, Math.min(7, digits.length));
-      const padded7 = base7.padStart(7, '0');
-      const checkDigit = this.calculateGTINChecksum(padded7 + '0');
-      return padded7 + checkDigit;
-    } else {
+    }
+
+    if (digits.length === 7) {
+      const checkDigit = this.calculateGTINChecksum(`${digits}0`);
+      return `${digits}${checkDigit}`;
+    }
+
+    if (digits.length > 7 && digits.length < 12) {
       return this.generateValidEAN13(digits);
     }
+
+    if (digits.length > 14) {
+      return this.generateValidEAN13(digits.substring(0, 10));
+    }
+
+    return this.generateValidEAN13(digits);
   }
 }
 
