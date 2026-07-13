@@ -407,20 +407,13 @@ class MercadoLibreAdapter extends BaseAdapter {
     // ✅ PASO 6: Asegurar que GTIN esté incluido (requerido para esta categoría)
     const hasGTIN = prepared.attributes.some(attr => attr.id === 'GTIN');
     if (!hasGTIN) {
-      // Intentar obtener GTIN del producto Spree
-      let gtinValue = productData.gtin || productData.ean || productData.upc || '';
-      
-      // Si no hay GTIN válido, generar uno basado en SKU
-      if (!gtinValue || gtinValue.length < 8) {
-        gtinValue = this.generateValidGTIN(productData.sku || String(productData.id));
-        logger.warn(`[ML Adapter] ⚠️ GTIN no encontrado. Generando GTIN válido: ${gtinValue}`);
-      }
-      
-      // ✅ Añadir GTIN a mlData.attributes para que pase por el filtro
+      const gtinSeed = productData.gtin || productData.ean || productData.upc || productData.sku || String(productData.id);
+      const gtinValue = this.generateValidGTIN(gtinSeed);
+
       if (!mlData.attributes) {
         mlData.attributes = [];
       }
-      
+
       const existingGtinIndex = mlData.attributes.findIndex(a => a.id === 'GTIN');
       if (existingGtinIndex === -1) {
         mlData.attributes.push({
@@ -618,57 +611,84 @@ class MercadoLibreAdapter extends BaseAdapter {
     };
   }
 
-  // ✅ NUEVO MÉTODO: Generar GTIN válido
-  generateValidGTIN(existingDigits) {
-    const digits = String(existingDigits).replace(/\D/g, '');
-    
-    if (digits.length >= 12) {
-      // EAN-13 (13 dígitos)
-      const base12 = digits.substring(0, 12);
-      const checkDigit = this.calculateGTINChecksum(base12 + '0');
-      return base12 + checkDigit;
-    } else if (digits.length >= 7) {
-      // EAN-8 (8 dígitos)
-      const base7 = '0'.repeat(7 - digits.length) + digits.substring(0, Math.min(7, digits.length));
-      const padded7 = base7.padStart(7, '0');
-      const checkDigit = this.calculateGTINChecksum(padded7 + '0');
-      return padded7 + checkDigit;
-    } else {
-      // Generar EAN-13 genérico
-      return this.generateValidEAN13(digits);
-    }
+  // ✅ GTIN seguro: nunca lanza por longitudes raras y normaliza a un código válido
+  extractDigits(value) {
+    if (value === null || value === undefined) return '';
+    return String(value).replace(/\D/g, '');
   }
 
-  // ✅ NUEVO MÉTODO: Generar EAN-13 válido
-  generateValidEAN13(baseId) {
-    if (!baseId) baseId = '000000001';
-    
-    const genericPrefixes = ['00', '01', '02', '03', '04', '05', '06', '07', '08', '09'];
-    const randomPrefix = genericPrefixes[Math.floor(Math.random() * genericPrefixes.length)];
-    
-    const baseDigits = String(baseId).replace(/\D/g, '').substring(0, 10);
-    const padded = (baseDigits + '0000000000').substring(0, 10);
-    const code12 = randomPrefix + padded;
-    const checkDigit = this.calculateGTINChecksum(code12 + '0');
-    
-    return code12 + checkDigit;
-  }
+  calculateGTINChecksum(baseDigits) {
+    const digits = this.extractDigits(baseDigits);
+    if (!digits) return 0;
 
-  // ✅ NUEVO MÉTODO: Calcular dígito verificador GTIN
-  calculateGTINChecksum(gtinWithoutCheck) {
-    const digits = String(gtinWithoutCheck).replace(/\D/g, '');
     let sum = 0;
-    
-    const isEvenLength = digits.length % 2 === 0;
-    
-    for (let i = 0; i < digits.length - 1; i++) {
-      const digit = parseInt(digits.charAt(i));
-      const multiplier = (i % 2 === 0) ? (isEvenLength ? 3 : 1) : (isEvenLength ? 1 : 3);
-      sum += digit * multiplier;
+    let weight = 3;
+
+    for (let i = digits.length - 1; i >= 0; i--) {
+      const digit = Number(digits.charAt(i));
+      if (!Number.isFinite(digit)) {
+        continue;
+      }
+      sum += digit * weight;
+      weight = weight === 3 ? 1 : 3;
     }
-    
-    const remainder = sum % 10;
-    return remainder === 0 ? 0 : 10 - remainder;
+
+    return (10 - (sum % 10)) % 10;
+  }
+
+  isValidGTIN(gtinValue) {
+    const digits = this.extractDigits(gtinValue);
+    if (![8, 12, 13, 14].includes(digits.length)) {
+      return false;
+    }
+
+    const baseDigits = digits.slice(0, -1);
+    const expected = String(this.calculateGTINChecksum(baseDigits));
+    return digits.slice(-1) === expected;
+  }
+
+  generateFallbackGTIN(seedValue = '') {
+    const seedDigits = this.extractDigits(seedValue);
+    const fallbackSeed = seedDigits.slice(0, 12);
+    const randomLength = Math.max(0, 12 - fallbackSeed.length);
+    const randomTail = Array.from({ length: randomLength }, () => Math.floor(Math.random() * 10)).join('');
+    const base12 = `${fallbackSeed}${randomTail}`.padStart(12, '0').slice(0, 12);
+    return `${base12}${this.calculateGTINChecksum(base12)}`;
+  }
+
+  generateValidGTIN(existingValue) {
+    const digits = this.extractDigits(existingValue);
+
+    if (!digits) {
+      return this.generateFallbackGTIN(existingValue);
+    }
+
+    if ([8, 12, 13, 14].includes(digits.length)) {
+      if (this.isValidGTIN(digits)) {
+        return digits;
+      }
+
+      const baseDigits = digits.slice(0, -1);
+      if (baseDigits.length >= 1) {
+        return `${baseDigits}${this.calculateGTINChecksum(baseDigits)}`;
+      }
+
+      return this.generateFallbackGTIN(digits);
+    }
+
+    if (digits.length === 7) {
+      return `${digits}${this.calculateGTINChecksum(digits)}`;
+    }
+
+    if (digits.length > 7 && digits.length < 12) {
+      return this.generateFallbackGTIN(digits);
+    }
+
+    if (digits.length > 14) {
+      return this.generateFallbackGTIN(digits.slice(0, 12));
+    }
+
+    return this.generateFallbackGTIN(digits);
   }
 
   // ✅ NUEVO MÉTODO: Obtener SOLO metadatos de la categoría (sin valores de atributos)
@@ -944,11 +964,8 @@ class MercadoLibreAdapter extends BaseAdapter {
     const rawAttributes = Array.isArray(mlData.attributes) ? [...mlData.attributes] : [];
     const hasGTINInRaw = rawAttributes.some(attr => attr?.id === 'GTIN');
     if (!hasGTINInRaw) {
-      let gtinValue = productData.gtin || productData.ean || productData.upc || '';
-      if (!gtinValue || gtinValue.length < 8) {
-        gtinValue = this.generateValidGTIN(productData.sku || String(productData.id));
-        logger.warn(`[ML Adapter] ⚠️ GTIN no encontrado. Generando GTIN válido: ${gtinValue}`);
-      }
+      const gtinSeed = productData.gtin || productData.ean || productData.upc || productData.sku || String(productData.id);
+      const gtinValue = this.generateValidGTIN(gtinSeed);
       rawAttributes.push({
         id: 'GTIN',
         value_name: gtinValue

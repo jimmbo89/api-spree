@@ -16,7 +16,7 @@ const storeSchema = Joi.object({
     'string.length': 'El país debe ser un código ISO de 2 letras (ej: CL, PE)',
     'string.pattern.base': 'El país debe contener solo letras (ej: CL, PE)'
   }),
-  access_token: Joi.string().required(), // requerido al crear
+  access_token: Joi.string().optional().allow(null, ''),
   refresh_token: Joi.string().optional().allow(null, ''),
   expires_at: Joi.date().optional().allow(null),
   active: Joi.boolean().optional(),

@@ -121,10 +121,13 @@ const productBaseSchema = {
     ))
     .max(40)
     .optional(), 'images_order'),
-  images_to_remove: Joi.array()
-    .items(Joi.string().pattern(/\.(jpg|jpeg|png|gif|webp)$/i))
-    .optional()
-    .default([]),
+  images_to_remove: Joi.alternatives().try(
+    Joi.array()
+      .items(Joi.string().pattern(/\.(jpg|jpeg|png|gif|webp)$/i))
+      .optional()
+      .default([]),
+    Joi.string().optional().allow(null, '')
+  ),
   sync_meta: Joi.object().optional().default({}),
   state: Joi.number().integer().optional(),
   purchase_price: Joi.number().precision(2).min(0).optional().allow(null),
