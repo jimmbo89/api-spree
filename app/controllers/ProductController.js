@@ -195,6 +195,8 @@ const ProductController = {
     } = req.body;
     const user_id = bodyUserId || req.user.id;
     req.body.user_id = user_id;
+    const normalizedSku = String(sku ?? '').trim();
+    req.body.sku = normalizedSku;
 
     // Validar company_id
     if (!company_id) {
@@ -239,7 +241,7 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
     }
 
     // Validar SKU
-    if (!sku || sku.trim() === "") {
+    if (!normalizedSku) {
       return res.status(400).json({
         success: false,
         msg: "El SKU es obligatorio",
@@ -247,10 +249,10 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
     }
 
     // ✅ Validar SKU único por empresa
-    if (await ProductRepository.existsBySku(sku, company_id)) {
+    if (await ProductRepository.existsBySku(normalizedSku, company_id)) {
       return res.status(400).json({
         success: false,
-        msg: `El SKU "${sku}" ya está registrado en tu empresa`,
+        msg: `El SKU "${normalizedSku}" ya está registrado en tu empresa`,
       });
     }
 

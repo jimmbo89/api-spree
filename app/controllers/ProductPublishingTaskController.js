@@ -2895,26 +2895,13 @@ async publishedProducts(req, res) {
         const snapshotStatus = String(snapshotState.status || '').trim().toLowerCase();
         const snapshotQcStatus = String(snapshotState.qc_status || '').trim().toLowerCase() || null;
         const snapshotIsPublished = snapshotState.is_published ?? null;
-        const snapshotHasImage = snapshotState.has_image !== false;
-        const snapshotHasUrl = typeof snapshotState.url === 'string' && snapshotState.url.trim().length > 0;
-        const snapshotHasShopSku = typeof snapshotState.shop_sku === 'string' && snapshotState.shop_sku.trim().length > 0;
-        const snapshotHasErrors = Array.isArray(snapshotState.product_errors) && snapshotState.product_errors.length > 0;
-        const snapshotLooksPublished = ['active', 'live'].includes(snapshotStatus)
-          && snapshotQcStatus !== 'pending'
-          && snapshotQcStatus !== 'rejected'
-          && snapshotHasImage
-          && !snapshotHasErrors
-          && (snapshotHasUrl || snapshotHasShopSku || snapshotIsPublished === true);
-        const snapshotLooksInReview = snapshotQcStatus === 'pending'
-          && snapshotStatus !== 'inactive'
-          && snapshotStatus !== 'deleted';
 
         if (task.status === 'processing') {
-          if (snapshotLooksPublished) {
+          if (['active', 'live'].includes(snapshotStatus)) {
             marketplaceStatus = 'active';
             isPublished = snapshotIsPublished;
             qcStatus = snapshotQcStatus;
-          } else if (snapshotLooksInReview) {
+          } else if (snapshotQcStatus === 'pending') {
             marketplaceStatus = 'under_review';
             isPublished = snapshotIsPublished;
             qcStatus = snapshotQcStatus;
@@ -2924,6 +2911,10 @@ async publishedProducts(req, res) {
             qcStatus = snapshotQcStatus;
           } else if (snapshotStatus === 'inactive' || snapshotStatus === 'deleted') {
             marketplaceStatus = snapshotStatus;
+            isPublished = snapshotIsPublished;
+            qcStatus = snapshotQcStatus;
+          } else if (snapshotStatus === 'not_published' || snapshotIsPublished === false) {
+            marketplaceStatus = 'not_published';
             isPublished = snapshotIsPublished;
             qcStatus = snapshotQcStatus;
           } else {
@@ -2956,24 +2947,18 @@ async publishedProducts(req, res) {
             || falabellaPayload?.Images
           );
           const payloadHasErrors = Array.isArray(falabellaPayload?.product_errors) && falabellaPayload.product_errors.length > 0;
-          const payloadLooksPublished = ['approved', 'active', 'live'].includes(qcStatus)
-            && payloadHasImage
-            && !payloadHasErrors
-            && (payloadHasUrl || payloadHasShopSku || isPublished === true);
 
           // ✅ Determinar estado REAL según los 3 campos (documentación oficial Falabella)
-          if (rawStatus === 'active') {
-            if (payloadLooksPublished) {
-              marketplaceStatus = 'active';
-            } else if (isPublished === false) {
-              marketplaceStatus = 'not_published';
-            } else if (qcStatus === 'rejected') {
-              marketplaceStatus = 'rejected';
-            } else if (qcStatus === 'pending') {
-              marketplaceStatus = 'under_review';
-            } else {
-              marketplaceStatus = 'active';
-            }
+          if (['active', 'live'].includes(rawStatus)) {
+            marketplaceStatus = 'active';
+          } else if (rawStatus === 'inactive' || rawStatus === 'deleted') {
+            marketplaceStatus = rawStatus;
+          } else if (qcStatus === 'rejected') {
+            marketplaceStatus = 'rejected';
+          } else if (qcStatus === 'pending') {
+            marketplaceStatus = 'under_review';
+          } else if (isPublished === false || rawStatus === 'not_published') {
+            marketplaceStatus = 'not_published';
           } else if (qcStatus === 'pending') {
             marketplaceStatus = 'under_review';
           } else {
@@ -3644,12 +3629,12 @@ async publishedProducts(req, res) {
           // ✅ Status: si se envió, usar el nuevo; si no, mantener el actual
           status: hasStatus
             ? String(status).trim().toLowerCase()
-            : (currentState.status === 'active' && currentState.is_published === false
+            : (currentState.raw_status === 'active' && currentState.is_published === false
                 ? 'not_published'
-                : (currentState.qc_status === 'rejected' ? 'rejected' : currentState.status)),
+                : (currentState.qc_status === 'rejected' ? 'rejected' : (currentState.raw_status || currentState.status))),
           raw_status: hasStatus
             ? String(status).trim().toLowerCase()
-            : currentState.raw_status,
+            : (currentState.raw_status || currentState.status),
           // ✅ Precio: si se envió, usar el nuevo; si no, mantener el actual
           price: hasPrice
             ? Number(price)
@@ -3704,10 +3689,10 @@ async publishedProducts(req, res) {
             sku: externalId,
             status: hasStatus
               ? String(status).trim().toLowerCase()
-              : currentState.status,
+              : (currentState.raw_status || currentState.status),
             raw_status: hasStatus
               ? String(status).trim().toLowerCase()
-              : currentState.raw_status,
+              : (currentState.raw_status || currentState.status),
             price: hasPrice
               ? Number(price)
               : currentState.price,
@@ -3740,8 +3725,8 @@ async publishedProducts(req, res) {
         ...currentDetails,
         marketplace_item_state: {
           marketplace: 'falabella',
-          status: currentProductState.status,
-          raw_status: currentProductState.raw_status,
+          status: currentProductState.raw_status || currentProductState.status,
+          raw_status: currentProductState.raw_status || currentProductState.status,
           qc_status: currentProductState.qc_status,
           is_published: currentProductState.is_published,
           stock: currentProductState.available_quantity,
@@ -3810,7 +3795,7 @@ async publishedProducts(req, res) {
       // Esto preserva IsPublished, QCStatus, ProductData, etc.
       if (link) {
         await link.update({
-          status: currentProductState.status || link.status,
+          status: currentProductState.raw_status || currentProductState.status || link.status,
           external_url: currentProductState.permalink || link.external_url || null,
           published_stock: currentProductState.available_quantity,
           published_payload: apiResponseToSave, // ✅ Payload completo con MERGE
@@ -3856,7 +3841,7 @@ async publishedProducts(req, res) {
         marketplace_name: credential.name || marketplace.name || 'N/A',
         marketplace_domain: marketplace.domain || null,
         marketplace_key: 'falabella',
-        marketplace_status: currentProductState.status || 'unknown',
+        marketplace_status: currentProductState.raw_status || currentProductState.status || 'unknown',
         publication_status: taskUpdate.status || task.status,
         feed_confirmed: feedFinishedSuccessfully,
         item: {

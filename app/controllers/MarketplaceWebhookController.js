@@ -2869,7 +2869,7 @@ function isFalabellaTerminalProductState(status) {
   return ['inactive', 'deleted'].includes(normalized);
 }
 
-function isFalabellaConfirmedPublishedState(productStatus, { hasImage = true } = {}) {
+function isFalabellaConfirmedPublishedState(productStatus) {
   if (!productStatus || typeof productStatus !== 'object') {
     return false;
   }
@@ -2884,22 +2884,13 @@ function isFalabellaConfirmedPublishedState(productStatus, { hasImage = true } =
   const productErrors = Array.isArray(productStatus.product_errors) ? productStatus.product_errors : [];
   const hasPublicUrl = typeof productStatus.url === 'string' && productStatus.url.trim().length > 0;
   const hasShopSku = typeof productStatus.shop_sku === 'string' && productStatus.shop_sku.trim().length > 0;
-  const qcApproved = ['approved', 'active', 'live'].includes(qcStatus);
-  const strongPublishSignal = hasPublicUrl || hasShopSku || isPublished === true;
-  const legacyPublishSignal = isPublished === true
-    && qcStatus !== 'pending'
-    && qcStatus !== 'rejected';
 
   return ['active', 'live'].includes(status)
-    && hasImage !== false
     && productErrors.length === 0
-    && (
-      (qcApproved && strongPublishSignal)
-      || legacyPublishSignal
-    );
+    && (hasPublicUrl || hasShopSku || isPublished === true || qcStatus === 'pending' || qcStatus === 'approved' || qcStatus === 'active' || qcStatus === 'live' || qcStatus === null || qcStatus === '');
 }
 
-function resolveFalabellaMarketplaceDisplayStatus(productStatus, { taskStatus = null, hasImage = true } = {}) {
+function resolveFalabellaMarketplaceDisplayStatus(productStatus, { taskStatus = null } = {}) {
   if (!productStatus || typeof productStatus !== 'object') {
     return taskStatus === 'processing' ? 'processing' : 'unknown';
   }
@@ -2912,18 +2903,8 @@ function resolveFalabellaMarketplaceDisplayStatus(productStatus, { taskStatus = 
   const qcStatus = String(productStatus.qc_status || '').trim().toLowerCase();
   const isPublished = productStatus.is_published;
   const productErrors = Array.isArray(productStatus.product_errors) ? productStatus.product_errors : [];
-  const hasPublicUrl = typeof productStatus.url === 'string' && productStatus.url.trim().length > 0;
-  const hasShopSku = typeof productStatus.shop_sku === 'string' && productStatus.shop_sku.trim().length > 0;
-  const qcApproved = ['approved', 'active', 'live'].includes(qcStatus);
-  const strongPublishSignal = hasPublicUrl || hasShopSku || isPublished === true;
-  const legacyPublishSignal = isPublished === true
-    && qcStatus !== 'pending'
-    && qcStatus !== 'rejected';
 
-  if (['active', 'live'].includes(status)
-    && hasImage !== false
-    && productErrors.length === 0
-    && ((qcApproved && strongPublishSignal) || legacyPublishSignal)) {
+  if (['active', 'live'].includes(status) && productErrors.length === 0) {
     return 'active';
   }
 
@@ -2979,7 +2960,7 @@ function determineFalabellaTaskLifecycle(productStatus, { realErrors = [], hasIm
     };
   }
 
-  if (isFalabellaConfirmedPublishedState(productStatus, { hasImage })) {
+  if (['active', 'live'].includes(status)) {
     return { status: 'published', isFinal: true, errorMessage: null };
   }
 

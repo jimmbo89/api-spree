@@ -1,6 +1,96 @@
 // validations/productValidationSchemas.js
 const Joi = require('joi');
 
+const normalizeTextInput = (value) => {
+  if (value === undefined || value === null) {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    if (!value.length) {
+      return '';
+    }
+
+    return normalizeTextInput(value[0]);
+  }
+
+  if (typeof value === 'object') {
+    const candidates = [
+      value.value,
+      value.label,
+      value.text,
+      value.sku,
+      value.name,
+      value.code,
+      value.id
+    ];
+
+    for (const candidate of candidates) {
+      if (candidate !== undefined && candidate !== null && candidate !== '') {
+        return normalizeTextInput(candidate);
+      }
+    }
+
+    return String(value);
+  }
+
+  return String(value).trim();
+};
+
+const textField = ({ max, required = false, allowNull = false, defaultValue } = {}) =>
+  Joi.any().custom((value, helpers) => {
+    if (value === undefined) {
+      return defaultValue !== undefined ? defaultValue : value;
+    }
+
+    if (value === null) {
+      if (defaultValue !== undefined) {
+        return defaultValue;
+      }
+
+      if (allowNull) {
+        return null;
+      }
+
+      return required ? helpers.error('any.required') : '';
+    }
+
+    const normalized = normalizeTextInput(value);
+
+    if (normalized === undefined || normalized === null) {
+      return defaultValue !== undefined ? defaultValue : normalized;
+    }
+
+    const text = String(normalized).trim();
+
+    if (!text) {
+      if (defaultValue !== undefined) {
+        return defaultValue;
+      }
+
+      return required ? helpers.error('any.required') : '';
+    }
+
+    if (max && text.length > max) {
+      return helpers.error('string.max', { limit: max });
+    }
+
+    return text;
+  });
+
+const enumTextField = (validValues, options = {}) =>
+  textField(options).custom((value, helpers) => {
+    if (value === undefined || value === null || value === '') {
+      return value;
+    }
+
+    if (!validValues.includes(value)) {
+      return helpers.error('any.only', { valids: validValues });
+    }
+
+    return value;
+  });
+
 const jsonString = (validator, label) =>
   Joi.alternatives().try(
     validator,
@@ -57,7 +147,7 @@ const productAttributeSchema = Joi.object({
 
 const productVariantSchema = Joi.object({
   id: Joi.alternatives().try(Joi.string(), Joi.number()).optional(),
-  sku: Joi.string().max(100).required(),
+  sku: textField({ max: 100, required: true }),
   attributes: Joi.object().optional().default({}),
   variant_value_ids: Joi.array()
     .items(Joi.number().integer().positive())
@@ -81,25 +171,23 @@ const warehouseConfigSchema = Joi.array().items(
   Joi.object({
     warehouse_id: Joi.number().integer().positive().required(),
     active: Joi.boolean().optional().default(true),
-    code: Joi.string().max(100).optional().allow(null, ''),
+    code: textField({ max: 100, allowNull: true }),
     minimum_stock: Joi.number().integer().min(0).optional().default(5),
     variants: Joi.array().items(warehouseVariantSchema).required()
   })
 );
 
 const productBaseSchema = {
-  sku: Joi.string().max(100).required(),
-  name: Joi.string().max(255).required(),
-  description: Joi.string().allow(null, '').optional(),
-  brand: Joi.string().max(100).required(),
-  model: Joi.string().max(100).optional().allow(null, ''),
-  condition: Joi.string()
-    .valid('new', 'used', 'refurbished', 'not_specified')
-    .default('new'),
-  gtin: Joi.string().max(50).optional().allow(null, ''),
-  mpn: Joi.string().max(100).optional().allow(null, ''),
+  sku: textField({ max: 100, required: true }),
+  name: textField({ max: 255, required: true }),
+  description: textField({ allowNull: true }),
+  brand: textField({ max: 100, required: true }),
+  model: textField({ max: 100, allowNull: true }),
+  condition: enumTextField(['new', 'used', 'refurbished', 'not_specified'], { defaultValue: 'new' }),
+  gtin: textField({ max: 50, allowNull: true }),
+  mpn: textField({ max: 100, allowNull: true }),
   warranty_months: Joi.number().integer().min(0).optional().allow(null),
-  warranty_text: Joi.string().max(255).optional().allow(null, ''),
+  warranty_text: textField({ max: 255, allowNull: true }),
   weight_grams: Joi.number().integer().min(0).optional().allow(null),
   length_cm: Joi.number().precision(2).min(0).optional().allow(null),
   width_cm: Joi.number().precision(2).min(0).optional().allow(null),
@@ -172,7 +260,7 @@ const listProductsSchema = Joi.object({
   company_id: Joi.number().allow(null).empty('').optional(),
   branch_id: Joi.number().allow(null).empty('').optional(),
   user_id: Joi.number().allow(null).empty('').optional(),
-  brand: Joi.string().optional().allow(''),
+  brand: textField({ allowNull: true }),
   has_gtin: Joi.boolean().optional(),
   state: Joi.number().allow(null).empty('').optional(),
 });
