@@ -33,7 +33,7 @@ const { storeMarketplaceSchema, updateMarketplaceSchema, idMarketplaceSchema } =
 const MarketplaceController = require("./controllers/MarketplaceController.js");
 const { createProductFieldMappingSchema, updateProductFieldMappingSchema, idProductFieldMappingSchema, listProductFieldMappingSchema, bulkCreateProductFieldMappingSchema } = require("./middlewares/validations/productFieldMappingValidations.js");
 const ProductFieldMappingController = require("./controllers/ProductFieldMappingController.js");
-const { storeProductPublishingTaskSchema, updateProductPublishingTaskStatusSchema, listProductPublishingTaskSchema, listProductPublishingTaskWithProductSchema, retryProductPublishingTaskSchema, publishDraftSchema, listDraftsByUserSchema, publishedProductsSchema, updateMercadoLibreItemSchema, updateFalabellaItemSchema } = require("./middlewares/validations/productPublishingTaskValidations.js");
+const { storeProductPublishingTaskSchema, updateProductPublishingTaskStatusSchema, updateProductPublishingTaskPayloadSchema, listProductPublishingTaskSchema, listProductPublishingTaskWithProductSchema, retryProductPublishingTaskSchema, publishDraftSchema, listDraftsByUserSchema, publishedProductsSchema, updateMercadoLibreItemSchema, updateFalabellaItemSchema } = require("./middlewares/validations/productPublishingTaskValidations.js");
 const ProductPublishingTaskController = require("./controllers/ProductPublishingTaskController.js");
 const { storeMarketplaceCredentialSchema, findByMarketplaceCredentialSchema, updateMarketplaceCredentialSchema, idMarketplaceCredentialSchema, marketplaceCredentialsByUserSchema } = require("./middlewares/validations/marketplaceCredentialValidations.js");
 const MarketplaceCredentialController = require("./controllers/MarketplaceCredentialController.js");
@@ -398,7 +398,7 @@ router.post("/marketplaces-pools", requireRoles([ 'Backoffice', 'Admin', 'Seller
 router.post("/marketplaces-pools-with-product", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(listProductPublishingTaskWithProductSchema), ProductPublishingTaskController.warehouseMarketplacesWithProduct);
 router.post("/publishing-task", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(storeProductPublishingTaskSchema), ProductPublishingTaskController.store);
 router.post("/publishing-task-update-status", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(updateProductPublishingTaskStatusSchema), ProductPublishingTaskController.updateStatus);
-router.post("/publishing-task-update", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(updateProductPublishingTaskStatusSchema), ProductPublishingTaskController.updatePayload);
+router.post("/publishing-task-update", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(updateProductPublishingTaskPayloadSchema), ProductPublishingTaskController.updatePayload);
 router.post("/publishing-tasks-list", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(listProductPublishingTaskSchema), ProductPublishingTaskController.list);
 router.post("/publishing-task-retry", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(retryProductPublishingTaskSchema), ProductPublishingTaskController.retryBatch);
 router.post("/publishing-draft", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(publishDraftSchema), ProductPublishingTaskController.publishDraft);

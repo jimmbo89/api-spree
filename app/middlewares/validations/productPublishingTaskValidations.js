@@ -57,6 +57,24 @@ const updateStatusSchema = Joi.object({
   attempt_count: Joi.number().integer().min(1).optional() // ✅ Nuevo
 });
 
+const updatePayloadSchema = Joi.object({
+  task_id: Joi.number().integer().positive().required(),
+  payload: Joi.alternatives().try(
+    Joi.object(),
+    Joi.string().custom((value, helpers) => {
+      try {
+        const parsed = JSON.parse(value);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          return helpers.error('any.invalid');
+        }
+        return value;
+      } catch (error) {
+        return helpers.error('any.invalid');
+      }
+    }, 'payload JSON validator')
+  ).required()
+}).unknown(true);
+
 const listSchema = Joi.object({
   company_id: Joi.number().integer().positive().required(),
   user_id: Joi.number().integer().optional(),
@@ -168,6 +186,7 @@ const publishDraftSchema = Joi.alternatives().try(
 module.exports = {
   storeProductPublishingTaskSchema: storeSchema,
   updateProductPublishingTaskStatusSchema: updateStatusSchema,
+  updateProductPublishingTaskPayloadSchema: updatePayloadSchema,
   listProductPublishingTaskSchema: listSchema,
   listProductPublishingTaskWithProductSchema: listWithProductSchema,
   listDraftsByUserSchema: listDraftsByUserSchema, // ✅ Nuevo
