@@ -1,5 +1,5 @@
 // repositories/InventoryMovementRepository.js
-const { InventoryMovement, Warehouse, Product, ProductVariant, User, Company, Branch, VariantValue, ProductVariantValue, VariantDefinition } = require("../models");
+const { InventoryMovement, Warehouse, Product, ProductVariant, User, Company, Branch, VariantValue, ProductVariantValue, VariantDefinition, WarehouseProductVariant } = require("../models");
 const logger = require("../../config/logger");
 const { Op, col, fn, literal } = require("sequelize");
 const WarehouseRepository = require("./WarehouseRepository");
@@ -182,7 +182,7 @@ const InventoryMovementRepository = {
       if (variantIds.length === 0) return movements;
 
       // Obtener precios actuales desde warehouse_product_variants
-      const currentPrices = await WarehouseProductVariantRepository.findAll({
+      const currentPrices = await WarehouseProductVariant.findAll({
         where: {
           variant_id: { [Op.in]: variantIds },
           active: true
@@ -214,7 +214,10 @@ const InventoryMovementRepository = {
 
       return movements;
     } catch (error) {
-      logger.error("_enrichMovementsWithCurrentPrices error:", error.message);
+      logger.error("_enrichMovementsWithCurrentPrices error:", {
+        message: error.message,
+        stack: error.stack
+      });
       return movements; // Retornar movimientos sin enriquecer si hay error
     }
   },

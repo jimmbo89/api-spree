@@ -259,6 +259,7 @@ const idProductSchema = Joi.object({
 const listProductsSchema = Joi.object({
   company_id: Joi.number().allow(null).empty('').optional(),
   branch_id: Joi.number().allow(null).empty('').optional(),
+  warehouse_id: Joi.number().allow(null).empty('').optional(),
   user_id: Joi.number().allow(null).empty('').optional(),
   brand: textField({ allowNull: true }),
   has_gtin: Joi.boolean().optional(),

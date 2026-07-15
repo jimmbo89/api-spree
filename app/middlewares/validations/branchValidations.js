@@ -1,5 +1,22 @@
 const Joi = require('joi');
 
+const imageFieldSchema = Joi.alternatives().try(
+  Joi.string().max(255).allow(null, ''),
+  Joi.any().custom((value, helpers) => {
+    if (value && typeof value === 'object') {
+      const validMimeTypes = ['image/jpg', 'image/jpeg', 'image/png', 'image/gif'];
+      if (!validMimeTypes.includes(value.mimetype || value.type)) {
+        return helpers.message('El archivo debe ser una imagen válida (jpg, jpeg, png, gif)');
+      }
+      const maxSize = 500 * 1024;
+      if (value.size > maxSize) {
+        return helpers.message('El archivo debe pesar máximo 500 KB');
+      }
+    }
+    return value;
+  })
+);
+
 const storeBranchSchema = Joi.object({
   name: Joi.string().max(255).required(),
   address: Joi.string().max(255).allow(null, '').optional(),
@@ -22,21 +39,7 @@ const storeBranchSchema = Joi.object({
         }
       })
       .optional(),
-  image: Joi.any()
-    .custom((value, helpers) => {
-      if (value) {
-        const validMimeTypes = ['image/jpg', 'image/jpeg', 'image/png', 'image/gif'];
-        if (!validMimeTypes.includes(value.mimetype || value.type)) {
-          return helpers.message('El archivo debe ser una imagen válida (jpg, jpeg, png, gif)');
-        }
-        const maxSize = 500 * 1024;
-        if (value.size > maxSize) {
-          return helpers.message('El archivo debe pesar máximo 500 KB');
-        }
-      }
-      return value;
-    })
-    .optional()
+  image: imageFieldSchema.optional()
 });
 
 const updateBranchSchema = Joi.object({
@@ -48,21 +51,7 @@ const updateBranchSchema = Joi.object({
   status: Joi.number().integer().valid(0, 1).optional(),
   company_id: Joi.number().integer().positive().optional().allow(null),
   user_id: Joi.number().integer().positive().optional().allow(null),
-  image: Joi.any()
-    .custom((value, helpers) => {
-      if (value) {
-        const validMimeTypes = ['image/jpg', 'image/jpeg', 'image/png', 'image/gif'];
-        if (!validMimeTypes.includes(value.mimetype || value.type)) {
-          return helpers.message('El archivo debe ser una imagen válida (jpg, jpeg, png, gif)');
-        }
-        const maxSize = 500 * 1024;
-        if (value.size > maxSize) {
-          return helpers.message('El archivo debe pesar máximo 500 KB');
-        }
-      }
-      return value;
-    })
-    .optional()
+  image: imageFieldSchema.optional()
 });
 
 const idBranchSchema = Joi.object({

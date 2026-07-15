@@ -12,6 +12,25 @@ const validateRut = (value, helpers) => {
   return value;
 };
 
+const imageFieldSchema = Joi.alternatives().try(
+  Joi.string().max(255).allow(null, ''),
+  Joi.any().custom((value, helpers) => {
+    if (value && typeof value === 'object') {
+      const validMimeTypes = ['image/jpg', 'image/jpeg', 'image/png', 'image/gif'];
+      if (!validMimeTypes.includes(value.mimetype || value.type)) {
+        return helpers.message('El archivo debe ser una imagen válida (jpg, jpeg, png, gif)');
+      }
+
+      const maxSize = 500 * 1024; // 500 KB
+      if (value.size > maxSize) {
+        return helpers.message('El archivo debe pesar máximo 500 KB');
+      }
+    }
+
+    return value;
+  })
+);
+
 const storeCompanySchema = Joi.object({
   business_type_id: Joi.number().integer().positive().required(),
   plan_id: Joi.number().integer().positive().optional(), // 👈 NUEVO
@@ -43,21 +62,7 @@ const storeCompanySchema = Joi.object({
       }
     })
     .optional(),
-  image: Joi.any()
-    .custom((value, helpers) => {
-      if (value) {
-        const validMimeTypes = ['image/jpg', 'image/jpeg', 'image/png', 'image/gif'];
-        if (!validMimeTypes.includes(value.mimetype || value.type)) {
-          return helpers.message('El archivo debe ser una imagen válida (jpg, jpeg, png, gif)');
-        }
-        const maxSize = 500 * 1024; // 500 KB
-        if (value.size > maxSize) {
-          return helpers.message('El archivo debe pesar máximo 500 KB');
-        }
-      }
-      return value;
-    })
-    .optional()
+  image: imageFieldSchema.optional()
 });
 
 const updateCompanySchema = Joi.object({
@@ -78,21 +83,7 @@ const updateCompanySchema = Joi.object({
   ).allow(null, '').optional(),
   email: Joi.string().email().max(255).optional().allow(null, ''),
   currency: Joi.string().max(50).allow(null, '').optional(),
-  image: Joi.any()
-    .custom((value, helpers) => {
-      if (value) {
-        const validMimeTypes = ['image/jpg', 'image/jpeg', 'image/png', 'image/gif'];
-        if (!validMimeTypes.includes(value.mimetype || value.type)) {
-          return helpers.message('El archivo debe ser una imagen válida (jpg, jpeg, png, gif)');
-        }
-        const maxSize = 500 * 1024;
-        if (value.size > maxSize) {
-          return helpers.message('El archivo debe pesar máximo 500 KB');
-        }
-      }
-      return value;
-    })
-    .optional()
+  image: imageFieldSchema.optional()
 });
 
 const idCompanySchema = Joi.object({

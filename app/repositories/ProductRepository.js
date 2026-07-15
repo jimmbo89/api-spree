@@ -10,7 +10,7 @@ const fs = require("fs");
 const { UPLOAD_BASE_PATH } = require("../../config/upload");
 
 const ProductRepository = {
-  async findFiltered({ companyId, userId, branchId, categoryId, brand, state, hasGtin, productId }) {
+  async findFiltered({ companyId, userId, branchId, warehouseId, categoryId, brand, state, hasGtin, productId }) {
     const where = { };
     
     // ✅ FILTRAR POR EMPRESA (obligatorio para seguridad)
@@ -103,7 +103,8 @@ const ProductRepository = {
     const warehouseMap = await WarehouseProductRepository.getProductWarehousesWithStock({
       productIds,
       companyId: companyId,   // ← usa el parámetro original
-      branchId: branchId      // ← no uses commonCompanyId=1 fijo
+      branchId: branchId,     // ← no uses commonCompanyId=1 fijo
+      warehouseId: warehouseId
     });
     productToWarehousesMap = warehouseMap;
   } catch (error) {

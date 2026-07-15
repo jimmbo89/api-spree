@@ -119,7 +119,7 @@ const transferSchema = Joi.object({
     Joi.object({
       variant_id: Joi.number().integer().positive().required(),
       quantity: Joi.number().integer().min(1).required()
-    })
+    }).unknown(true)
   ).min(1).required(),
   reason: Joi.string().trim().max(500).required(), // ✅ Obligatorio
   notes: Joi.string().trim().max(1000).optional().allow(null, '') // ✅ Opcional

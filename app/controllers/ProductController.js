@@ -84,7 +84,7 @@ function getDuplicateVariantSkuError(error) {
 const ProductController = {
   async list(req, res) {
     logger.info(`${req.user?.name || "Unknown"} - Lista productos`);
-    const { company_id, user_id, branch_id, category_id, brand, state, has_gtin } =
+    const { company_id, user_id, branch_id, warehouse_id, category_id, brand, state, has_gtin } =
       req.body;
 
     if (company_id) {
@@ -109,6 +109,7 @@ const ProductController = {
         companyId: company_id,
         userId: user_id,
         branchId: branch_id,
+        warehouseId: warehouse_id,
         categoryId: category_id,
         brand,
         state: state,

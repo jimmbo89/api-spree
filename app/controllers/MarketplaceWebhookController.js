@@ -2028,11 +2028,18 @@ async function processFalabellaProductWebhook(payload, options = {}) {
     let currentStatus = !effectiveProduct.__falabella_not_found
       ? await fetchFalabellaProductStatusWithRetry(adapter, sellerSku)
       : null;
-    if (shouldAttemptFalabellaImageSync({
-      productStatus: currentStatus,
-      taskImages,
-      imageSyncAlreadySucceeded: false
-    })) {
+    // Falabella procesa la carga del producto y la asociación de imágenes como
+    // dos pasos separados. En `onProductCreated` el feed todavía puede estar en
+    // tránsito, así que dejamos la primera asociación de imágenes al cierre del
+    // feed para evitar reintentos duplicados sobre el mismo payload.
+    if (
+      normalizedTopic !== 'onproductcreated' &&
+      shouldAttemptFalabellaImageSync({
+        productStatus: currentStatus,
+        taskImages,
+        imageSyncAlreadySucceeded: false
+      })
+    ) {
         logger.info(`[FB Webhook] SKU ${sellerSku} sin imagen en Falabella, asociando ${taskImages.length} imagen(es) via Action=Image`);
         imageUploadResult = await adapter.uploadProductImages(sellerSku, taskImages);
         logger.info(`[FB Webhook] Resultado Action=Image para ${sellerSku}: ${JSON.stringify(imageUploadResult)}`);

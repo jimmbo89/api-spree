@@ -113,12 +113,12 @@ const FileService = {
     }
   },
 
-  async generateFilename(folder, id, originalName) {
+  generateFilename(folder, id, originalName) {
     const extension = path.extname(originalName).toLowerCase();
     return `${folder}/${id}${extension}`;
   },
 
-  async generateCertificateFilename(companyId, entityId, originalName) {
+  generateCertificateFilename(companyId, entityId, originalName) {
   const ext = path.extname(originalName).toLowerCase();
   const timestamp = Date.now();
   const randomStr = Math.random().toString(36).substr(2, 5); // 5 chars aleatorios

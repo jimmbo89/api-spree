@@ -289,14 +289,19 @@ async findFiltered({ companyId, userId, branchId, warehouseId }) {
   });
 },
 
-async getProductWarehousesWithStock({ productIds, companyId, branchId }) {
+async getProductWarehousesWithStock({ productIds, companyId, branchId, warehouseId }) {
   if (!productIds || productIds.length === 0) {
     return {};
   }
 
   let warehouseIds = [];
 
-  if (branchId != null && branchId !== 0) {
+  if (warehouseId != null && warehouseId !== 0) {
+    const warehouse = await Warehouse.findByPk(warehouseId, {
+      attributes: ['id']
+    });
+    warehouseIds = warehouse ? [warehouse.id] : [];
+  } else if (branchId != null && branchId !== 0) {
     // Solo almacenes de esa sucursal
     const warehouses = await Warehouse.findAll({
       where: { branch_id: branchId },
@@ -343,16 +348,13 @@ async getProductWarehousesWithStock({ productIds, companyId, branchId }) {
     attributes: [
       'product_id',
       'id', // warehouse_product_id
-      'minimum_stock',
-      [col('warehouse.id'), 'warehouse_id'],
-      [col('warehouse.name'), 'warehouse_name'],
-      [col('warehouse.image'), 'warehouse_image']
+      'minimum_stock'
     ],
     include: [
       {
         model: Warehouse,
         as: 'warehouse',
-        attributes: [],
+        attributes: ['id', 'code', 'name', 'description', 'address', 'image'],
         required: true
       },
       {
@@ -395,8 +397,9 @@ async getProductWarehousesWithStock({ productIds, companyId, branchId }) {
     raw: false
   });
 
-  const resultMap = {};
-  results.forEach(wp => {
+    const resultMap = {};
+    results.forEach(wp => {
+    const warehouse = wp.warehouse || null;
     const productId = wp.product_id;
     if (!resultMap[productId]) resultMap[productId] = [];
 
@@ -408,12 +411,23 @@ async getProductWarehousesWithStock({ productIds, companyId, branchId }) {
     const firstVariant = variants.length > 0 ? variants[0] : null;
 
     resultMap[productId].push({
-      id: wp.warehouse_id,
-      name: wp.warehouse_name,
-      image: wp.warehouse_image || null,
+      id: warehouse?.id ?? wp.warehouse_id,
+      name: warehouse?.name || null,
+      code: warehouse?.code || null,
+      description: warehouse?.description || null,
+      address: warehouse?.address || null,
+      image: warehouse?.image || null,
       stock: totalStock,
       warehouse_product_id: wp.id,
       minimum_stock: parseInt(wp.minimum_stock, 10) || 0,
+      warehouse: {
+        id: warehouse?.id ?? wp.warehouse_id,
+        name: warehouse?.name || null,
+        code: warehouse?.code || null,
+        description: warehouse?.description || null,
+        address: warehouse?.address || null,
+        image: warehouse?.image || null
+      },
       variants: variants.map(v => {
         // ⭐ Procesar variant_values si existen
         const variantValuesRaw = Array.isArray(v.variant?.variantValues) ? v.variant.variantValues : [];

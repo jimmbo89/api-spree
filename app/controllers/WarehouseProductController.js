@@ -868,6 +868,13 @@ const WarehouseProductController = {
         const salePrice = parseFloat(price) || 0;
         
         // Crear nuevo lote con su precio de compra específico
+        const totalStockBeforeEntry = await WarehouseProductVariantRepository.getTotalStockByVariantAndWarehouse(
+          actualVariantId,
+          originWp.id
+        );
+        const stockBefore = totalStockBeforeEntry?.total_stock || 0;
+        const stockAfter = stockBefore + quantity;
+
         const newStock = quantity;
         const createdLot = await WarehouseProductVariantRepository.create({
           warehouse_product_id: originWp.id,
@@ -890,8 +897,8 @@ const WarehouseProductController = {
           branch_id: originWarehouse.branch_id,
           movement_type: 'entry',
           quantity,
-          stock_before: 0,
-          stock_after: newStock,
+          stock_before: stockBefore,
+          stock_after: stockAfter,
           unit_price: salePrice,              // Precio de venta unitario
           purchase_price: actualPurchasePrice, // 💰 PRECIO DE COMPRA (nuevo campo)
           total_value: actualPurchasePrice * quantity, // Valor total de la compra
@@ -1093,10 +1100,14 @@ const WarehouseProductController = {
           );
         }
 
-        let totalStockBeforeDest = 0;
+        const totalStockBeforeDestInfo = await WarehouseProductVariantRepository.getTotalStockByVariantAndWarehouse(
+          variant_id,
+          destWp.id
+        );
+        const totalStockBeforeDest = totalStockBeforeDestInfo?.total_stock || 0;
+
         if (destLotConsolidated) {
           // Consolidar con lote existente del mismo precio
-          totalStockBeforeDest = destLotConsolidated.stock;
           const newStock = destLotConsolidated.stock + quantity;
           
           await WarehouseProductVariantRepository.update(destLotConsolidated, {
@@ -1104,7 +1115,6 @@ const WarehouseProductController = {
           }, { transaction });
         } else {
           // Crear nuevo lote en destino con el purchase_price promedio de la transferencia
-          totalStockBeforeDest = 0;
           await WarehouseProductVariantRepository.create({
             warehouse_product_id: destWp.id,
             variant_id,
@@ -1578,6 +1588,13 @@ async function _processEntry({
   const salePrice = parseFloat(price) || 0;
 
   // Crear nuevo lote con su precio de compra específico
+  const totalStockBeforeEntry = await WarehouseProductVariantRepository.getTotalStockByVariantAndWarehouse(
+    actualVariantId,
+    originWp.id
+  );
+  const stockBefore = totalStockBeforeEntry?.total_stock || 0;
+  const stockAfter = stockBefore + quantity;
+
   const newStock = quantity;
   const createdLot = await WarehouseProductVariantRepository.create({
     warehouse_product_id: originWp.id,
@@ -1599,8 +1616,8 @@ async function _processEntry({
     branch_id: originWarehouse.branch_id,
     movement_type: 'entry',
     quantity,
-    stock_before: 0,
-    stock_after: newStock,
+    stock_before: stockBefore,
+    stock_after: stockAfter,
     unit_price: salePrice,
     purchase_price: actualPurchasePrice, // 💰 PRECIO DE COMPRA
     total_value: actualPurchasePrice * quantity,
@@ -1798,16 +1815,19 @@ async function _processTransfer({
     );
   }
 
-  let totalStockBeforeDest = 0;
+  const totalStockBeforeDestInfo = await WarehouseProductVariantRepository.getTotalStockByVariantAndWarehouse(
+    variant_id,
+    destWp.id
+  );
+  const totalStockBeforeDest = totalStockBeforeDestInfo?.total_stock || 0;
+
   if (destLotConsolidated) {
-    totalStockBeforeDest = destLotConsolidated.stock;
     const newStock = destLotConsolidated.stock + quantity;
     
     await WarehouseProductVariantRepository.update(destLotConsolidated, {
       stock: newStock
     }, { transaction });
   } else {
-    totalStockBeforeDest = 0;
     await WarehouseProductVariantRepository.create({
       warehouse_product_id: destWp.id,
       variant_id,
