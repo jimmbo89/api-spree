@@ -1584,6 +1584,7 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
     taskDetails?.image_upload?.success === true ||
     taskDetails?.image_sync?.success === true
   );
+  const imageSyncInProgress = Boolean(taskDetails?.image_sync?.in_progress === true);
 
   const feedStatusLower = String(feedStatus.Status || '').toLowerCase();
   const failedRecords = parseInt(feedStatus.FailedRecords || '0', 10);
@@ -1738,7 +1739,8 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
     if (shouldAttemptFalabellaImageSync({
       productStatus,
       taskImages,
-      imageSyncAlreadySucceeded
+      imageSyncAlreadySucceeded,
+      imageSyncInProgress
     })) {
       logger.info(`[FB Webhook] Feed ${feedId}: SKU ${sellerSku} sin imagen, asociando ${taskImages.length} imagen(es) via Action=Image`);
       imageUploadResult = await adapter.uploadProductImages(sellerSku, taskImages);
@@ -2028,18 +2030,38 @@ async function processFalabellaProductWebhook(payload, options = {}) {
     let currentStatus = !effectiveProduct.__falabella_not_found
       ? await fetchFalabellaProductStatusWithRetry(adapter, sellerSku)
       : null;
-    // Falabella procesa la carga del producto y la asociación de imágenes como
-    // dos pasos separados. En `onProductCreated` el feed todavía puede estar en
-    // tránsito, así que dejamos la primera asociación de imágenes al cierre del
-    // feed para evitar reintentos duplicados sobre el mismo payload.
-    if (
-      normalizedTopic !== 'onproductcreated' &&
-      shouldAttemptFalabellaImageSync({
-        productStatus: currentStatus,
-        taskImages,
-        imageSyncAlreadySucceeded: false
-      })
-    ) {
+    const taskDetails = normalizeFalabellaDetailObject(taskForSku?.error_details);
+    const imageSyncAlreadySucceeded = Boolean(
+      taskDetails?.image_upload?.success === true ||
+      taskDetails?.image_sync?.success === true
+    );
+    const imageSyncInProgress = Boolean(taskDetails?.image_sync?.in_progress === true);
+
+    if (shouldAttemptFalabellaImageSync({
+      productStatus: currentStatus,
+      taskImages,
+      imageSyncAlreadySucceeded,
+      imageSyncInProgress
+    })) {
+        if (taskForSku && !imageSyncInProgress) {
+          try {
+            await ProductPublishingTaskRepository.updateTask(taskForSku, {
+              error_details: {
+                ...taskDetails,
+                image_sync: {
+                  attempted: true,
+                  success: false,
+                  in_progress: true,
+                  requested_by_webhook: normalizedTopic || topic,
+                  started_at: new Date().toISOString()
+                }
+              }
+            });
+          } catch (lockError) {
+            logger.warn(`[FB Webhook] No se pudo marcar image_sync en progreso para SKU ${sellerSku}: ${lockError.message}`);
+          }
+        }
+
         logger.info(`[FB Webhook] SKU ${sellerSku} sin imagen en Falabella, asociando ${taskImages.length} imagen(es) via Action=Image`);
         imageUploadResult = await adapter.uploadProductImages(sellerSku, taskImages);
         logger.info(`[FB Webhook] Resultado Action=Image para ${sellerSku}: ${JSON.stringify(imageUploadResult)}`);
@@ -2729,6 +2751,13 @@ function mergeFalabellaPublishedPayload(basePayload, incomingPayload) {
   if (!baseHasContent) return incoming;
   if (!incomingHasContent) return base;
 
+  const preferIncoming = (incomingValue, baseValue) => {
+    if (incomingValue === undefined || incomingValue === null || incomingValue === '') {
+      return baseValue;
+    }
+    return incomingValue;
+  };
+
   const merged = {
     ...base,
     ...incoming
@@ -2747,12 +2776,14 @@ function mergeFalabellaPublishedPayload(basePayload, incomingPayload) {
       ...incomingBusinessUnit
     };
 
-    if (incomingBusinessUnit.Stock === undefined && incomingBusinessUnit.stock === undefined && baseBusinessUnit.Stock !== undefined) {
-      mergedBusinessUnit.Stock = baseBusinessUnit.Stock;
-    }
-    if (incomingBusinessUnit.Price === undefined && incomingBusinessUnit.price === undefined && baseBusinessUnit.Price !== undefined) {
-      mergedBusinessUnit.Price = baseBusinessUnit.Price;
-    }
+    mergedBusinessUnit.Stock = preferIncoming(
+      incomingBusinessUnit.Stock ?? incomingBusinessUnit.stock,
+      baseBusinessUnit.Stock ?? baseBusinessUnit.stock
+    );
+    mergedBusinessUnit.Price = preferIncoming(
+      incomingBusinessUnit.Price ?? incomingBusinessUnit.price,
+      baseBusinessUnit.Price ?? baseBusinessUnit.price
+    );
 
     merged.BusinessUnits = {
       ...base.BusinessUnits,
@@ -2761,18 +2792,10 @@ function mergeFalabellaPublishedPayload(basePayload, incomingPayload) {
     };
   }
 
-  if (incoming.Stock === undefined && base.Stock !== undefined) {
-    merged.Stock = base.Stock;
-  }
-  if (incoming.Price === undefined && base.Price !== undefined) {
-    merged.Price = base.Price;
-  }
-  if (incoming.stock === undefined && base.stock !== undefined) {
-    merged.stock = base.stock;
-  }
-  if (incoming.price === undefined && base.price !== undefined) {
-    merged.price = base.price;
-  }
+  merged.Stock = preferIncoming(incoming.Stock ?? incoming.stock, base.Stock ?? base.stock);
+  merged.Price = preferIncoming(incoming.Price ?? incoming.price, base.Price ?? base.price);
+  merged.stock = preferIncoming(incoming.stock ?? incoming.Stock, base.stock ?? base.Stock);
+  merged.price = preferIncoming(incoming.price ?? incoming.Price, base.price ?? base.Price);
 
   return merged;
 }
@@ -2974,8 +2997,9 @@ function determineFalabellaTaskLifecycle(productStatus, { realErrors = [], hasIm
   return { status: 'processing', isFinal: false, errorMessage: null };
 }
 
-function shouldAttemptFalabellaImageSync({ productStatus, taskImages, imageSyncAlreadySucceeded }) {
+function shouldAttemptFalabellaImageSync({ productStatus, taskImages, imageSyncAlreadySucceeded, imageSyncInProgress }) {
   if (imageSyncAlreadySucceeded) return false;
+  if (imageSyncInProgress) return false;
   if (!productStatus?.found) return false;
   if (productStatus.has_image !== false) return false;
   if (!Array.isArray(taskImages) || taskImages.length === 0) return false;
