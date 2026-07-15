@@ -1974,7 +1974,8 @@ async getCategoryAttributes(categoryId) {
       };
 
       logger.info(`[FalabellaAdapter] 📸 Subiendo ${images.length} imágenes para SKU ${sellerSku}`);
-      logger.info(`[FalabellaAdapter] 📸 XML Payload (Image): ${xmlPayload.substring(0, 500)}`);
+      logger.info(`[FalabellaAdapter] 📸 XML Payload (ProductImageCreate):`);
+      logger.info(xmlPayload);
 
       const response = await axios.post(apiUrl, xmlPayload, {
         headers,
@@ -2018,6 +2019,7 @@ async getCategoryAttributes(categoryId) {
 
     } catch (error) {
       logger.error(`[FalabellaAdapter] ❌ Error subiendo imágenes para SKU ${sellerSku}: ${error.message}`);
+      logger.error(`[FalabellaAdapter] ❌ No se completó ProductImageCreate para SKU ${sellerSku}; xml_enviado=${Boolean(xmlPayload)}`);
       if (error.response) {
         logger.error(`[FalabellaAdapter] ❌ Image HTTP status: ${error.response.status}`);
         logFalabellaResponse('❌ Image error response', error.response.data);

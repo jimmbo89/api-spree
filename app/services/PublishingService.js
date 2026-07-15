@@ -449,6 +449,23 @@ class PublishingService {
       }
 
       // === 4. Publicar ===
+      if (isFalabellaMarketplace) {
+        const falabellaPayloadPreview = {
+          action: transformed.__falabella_action || (transformed.__ml_existing_item_id ? 'ProductUpdate' : 'ProductCreate'),
+          sku: transformed.sku || null,
+          product_id: productData.id,
+          credential_id: credentialId,
+          marketplace_id: marketplace.marketplace_id,
+          category_id: transformed.PrimaryCategory || null,
+          category_name: transformed.categoryName || null,
+          images_count: Array.isArray(transformed.images) ? transformed.images.length : 0,
+          has_main_image: Boolean(transformed.MainImage || transformed.main_image || transformed.image)
+        };
+
+        logger.info(`[PublishingService] 📦 Falabella payload preview antes de adapter.publish:`);
+        logger.info(JSON.stringify(falabellaPayloadPreview, null, 2));
+      }
+
       const result = await adapter.publish(transformed);
       const externalId = resolveExternalId(result);
       const shouldVerifyMlPublication = Boolean(
