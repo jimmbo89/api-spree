@@ -1928,7 +1928,7 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
             status: finalStatus === 'published' ? 'active' : finalStatus,
             external_id: task.external_id,
             external_url: productStatus.url || null,
-            published_stock: productStatus.stock || null,
+            published_stock: productStatus.stock ?? null,
             published_payload: productStatus.raw || null,
             last_synced_at: new Date()
           });
@@ -1941,7 +1941,7 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
         await link.update({
           status: finalStatus === 'published' ? 'active' : finalStatus,
           external_url: productStatus.url || link.external_url,
-          published_stock: productStatus.stock || link.published_stock,
+          published_stock: productStatus.stock ?? link.published_stock,
           published_payload: productStatus.raw || link.published_payload,
           last_synced_at: new Date()
         });
@@ -2293,7 +2293,7 @@ async function processFalabellaProductWebhook(payload, options = {}) {
             status: nextStatus === 'published' ? 'active' : nextStatus,
             external_id: task.external_id,
             external_url: snapshot.url || null,
-            published_stock: snapshot.stock || null,
+            published_stock: snapshot.stock ?? null,
             published_payload: snapshot.raw || null,
             last_synced_at: new Date()
           });
@@ -2305,7 +2305,7 @@ async function processFalabellaProductWebhook(payload, options = {}) {
         await link.update({
           status: nextStatus === 'published' ? 'active' : nextStatus,
           external_url: snapshot.url || link.external_url,
-          published_stock: snapshot.stock || link.published_stock,
+          published_stock: snapshot.stock ?? link.published_stock,
           published_payload: snapshot.raw || link.published_payload,
           last_synced_at: new Date()
         });
@@ -3011,6 +3011,36 @@ function extractFalabellaPublishedNumericState(payload) {
   };
 }
 
+function extractFalabellaPublishedState(payload) {
+  const normalized = normalizeTaskPayload(payload);
+  if (!normalized || typeof normalized !== 'object') {
+    return {
+      status: null,
+      qc_status: null,
+      is_published: null,
+      stock: null,
+      price: null
+    };
+  }
+
+  const status = normalizeFalabellaProductStatusValue(
+    normalized.status || normalized.raw_status || normalized.marketplace_status || null
+  );
+  const qcStatus = normalizeFalabellaProductStatusValue(
+    normalized.qc_status || normalized.QCStatus || null
+  );
+  const isPublished = normalized.is_published !== undefined && normalized.is_published !== null
+    ? toBoolean(normalized.is_published)
+    : null;
+
+  return {
+    status,
+    qc_status: qcStatus,
+    is_published: isPublished,
+    ...extractFalabellaPublishedNumericState(normalized)
+  };
+}
+
 function applyFalabellaNumericState(payload, { stock = null, price = null } = {}) {
   const merged = normalizeTaskPayload(payload);
   const target = merged && typeof merged === 'object' ? { ...merged } : {};
@@ -3338,6 +3368,12 @@ async function persistFalabellaProductState({ credential, sellerSku, product, pa
   if (imageUploadResult?.success) {
     snapshot.has_image = true;
   }
+  const previousPublishedState = extractFalabellaPublishedState(
+    normalizeFalabellaDetailObject(sourceTask?.error_details)?.marketplace_item_state
+      || normalizeTaskPayload(sourceTask?.api_response)
+      || normalizeTaskPayload(sourceTask?.payload)
+      || normalizeTaskPayload(sourceTask?.job?.config)
+  );
   const isActive = snapshot.status === "active";
   const isDeleted = snapshot.status === "deleted";
   const marketplaceDisplayStatus = resolveFalabellaMarketplaceDisplayStatus(snapshot, {
@@ -3349,11 +3385,6 @@ async function persistFalabellaProductState({ credential, sellerSku, product, pa
     hasImage: snapshot.has_image !== false
   });
   const resolvedStatus = isDeleted ? "deleted" : lifecycle.status;
-  const previousPublishedState = extractFalabellaPublishedNumericState(
-    normalizeTaskPayload(sourceTask?.payload)
-      || normalizeTaskPayload(sourceTask?.job?.config)
-      || null
-  );
 
   if ((snapshot.stock === null || snapshot.stock === undefined) && previousPublishedState.stock !== null) {
     snapshot.stock = previousPublishedState.stock;
@@ -3361,6 +3392,24 @@ async function persistFalabellaProductState({ credential, sellerSku, product, pa
 
   if ((snapshot.price === null || snapshot.price === undefined) && previousPublishedState.price !== null) {
     snapshot.price = previousPublishedState.price;
+  }
+
+  if (
+    (snapshot.status === null || snapshot.status === 'unknown' || snapshot.status === 'processing') &&
+    previousPublishedState.status &&
+    ['published', 'published_with_warnings', 'active', 'live'].includes(previousPublishedState.status)
+  ) {
+    snapshot.status = previousPublishedState.status === 'active' || previousPublishedState.status === 'live'
+      ? 'active'
+      : previousPublishedState.status;
+  }
+
+  if ((snapshot.qc_status === null || snapshot.qc_status === 'unknown') && previousPublishedState.qc_status) {
+    snapshot.qc_status = previousPublishedState.qc_status;
+  }
+
+  if (snapshot.is_published === null && previousPublishedState.is_published !== null) {
+    snapshot.is_published = previousPublishedState.is_published;
   }
 
   logger.info(
