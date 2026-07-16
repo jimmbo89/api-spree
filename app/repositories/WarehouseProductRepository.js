@@ -8,7 +8,7 @@ const { generateImageVersion } = require('../util/imageCacheUtils');
 const { UPLOAD_BASE_PATH } = require('../../config/upload');
 
 const WarehouseProductRepository = {
-async findFiltered({ companyId, userId, branchId, warehouseId }) {
+async findFiltered({ companyId, userId, branchId, warehouseId, includeInactive = false } = {}) {
   const where = {};
   const include = [];
 
@@ -46,6 +46,7 @@ async findFiltered({ companyId, userId, branchId, warehouseId }) {
 
   // Otros filtros
   if (userId != null && userId !== 0) where.user_id = userId;
+  if (!includeInactive) where.active = true;
   
   // Manejar warehouseId como array o número
   if (warehouseId !== undefined) {
@@ -97,7 +98,8 @@ async findFiltered({ companyId, userId, branchId, warehouseId }) {
               attributes: ['id', 'name']
             }]
           }
-        ]
+        ],
+        where: includeInactive ? undefined : { state: { [Op.ne]: 0 } }
       },
       {
         model: WarehouseProductVariant,
@@ -632,21 +634,61 @@ async findProductsNotInWarehouse({ warehouseId, companyId, specificProductId = n
   }
 },
 
-async findProductsByWarehouseIds({ companyId, warehouseIds }) {
+async findProductsByWarehouseIds({ companyId, warehouseIds, includeInactive = false } = {}) {
+  const normalizedWarehouseIds = Array.isArray(warehouseIds)
+    ? warehouseIds.map((id) => Number(id)).filter((id) => Number.isFinite(id))
+    : [];
+
+  if (normalizedWarehouseIds.length === 0) {
+    return [];
+  }
+
+  const productWhere = {
+    state: { [Op.ne]: 0 }
+  };
+
+  if (companyId != null && companyId !== 0) {
+    productWhere.company_id = companyId;
+  }
+
   // Paso 1: Obtener todos los warehouse_products + relaciones
   const records = await WarehouseProduct.findAll({
     where: {
-      warehouse_id: { [Op.in]: warehouseIds }
+      warehouse_id: { [Op.in]: normalizedWarehouseIds },
+      ...(includeInactive ? {} : { active: true }),
+      ...(companyId != null && companyId !== 0
+        ? {
+            [Op.or]: [
+              { company_id: companyId },
+              { '$warehouse.company_id$': companyId },
+              { '$warehouse.branch.company_id$': companyId }
+            ]
+          }
+        : {})
     },
     include: [
       {
+        model: Warehouse,
+        as: 'warehouse',
+        required: true,
+        attributes: ['id', 'code', 'name', 'description', 'address', 'image', 'company_id', 'branch_id'],
+        include: [{
+          model: Branch,
+          as: 'branch',
+          required: false,
+          attributes: ['id', 'name', 'company_id']
+        }]
+      },
+      {
         model: Product,
         as: 'product',
+        required: true,
+        where: includeInactive ? undefined : productWhere,
         attributes: [
           'id', 'sku', 'name', 'description', 'brand', 'model', 'condition', 'gtin', 'mpn',
           'attributes', 'warranty_months', 'warranty_text', 'weight_grams', 'length_cm',
           'width_cm', 'height_cm', 'product_measurements', 'packaging_measurements',
-          'images', 'category_id', 'user_id', 'company_id'
+          'images', 'category_id', 'user_id', 'company_id', 'state'
         ],
         include: [{
           model: ProductVariant,
@@ -689,7 +731,9 @@ async findProductsByWarehouseIds({ companyId, warehouseIds }) {
           }]
         }]
       }
-    ]
+    ],
+    distinct: true,
+    subQuery: false
   });
 
   // Paso 2: Consolidar por product_id
@@ -851,10 +895,12 @@ async getProductStockByWarehouseIds({ productId, warehouseIds }) {
       wp.warehouse_id,
       COALESCE(SUM(wpv.stock), 0) AS total_stock
     FROM warehouse_products wp
+    INNER JOIN products p ON p.id = wp.product_id AND p.state <> 0
     LEFT JOIN warehouse_product_variants wpv
       ON wpv.warehouse_product_id = wp.id
     WHERE wp.product_id = :productId
       AND wp.warehouse_id IN (:warehouseIds)
+      AND wp.active = 1
     GROUP BY wp.warehouse_id
   `, {
     replacements: { productId, warehouseIds },
@@ -879,8 +925,10 @@ async getCountsByWarehouse(warehouseIds) {
       COALESCE(SUM(wpv.stock), 0) AS total_stock,
       COALESCE(SUM(CASE WHEN wpv.active = 1 THEN 1 ELSE 0 END), 0) AS published_count
     FROM warehouse_products wp
+    INNER JOIN products p ON p.id = wp.product_id AND p.state <> 0
     INNER JOIN warehouse_product_variants wpv ON wpv.warehouse_product_id = wp.id
     WHERE wp.warehouse_id IN (:warehouseIds)
+      AND wp.active = 1
     GROUP BY wp.warehouse_id
   `, {
     replacements: { warehouseIds },
@@ -1052,8 +1100,10 @@ async getWarehouseSummaryByCompanyId(companyId) {
       COALESCE(AVG(CASE WHEN wpv.active = 1 THEN wpv.purchase_price ELSE NULL END), 0) AS avg_purchase_price
     FROM warehouse_products wp
     INNER JOIN warehouses w ON wp.warehouse_id = w.id
+    INNER JOIN products p ON p.id = wp.product_id AND p.state <> 0
     INNER JOIN warehouse_product_variants wpv ON wpv.warehouse_product_id = wp.id
     WHERE wp.warehouse_id IN (:warehouseIds)
+      AND wp.active = 1
     GROUP BY wp.warehouse_id, w.name
     ORDER BY w.name ASC
   `;
@@ -1093,8 +1143,12 @@ async getWarehouseSummaryByCompanyId(companyId) {
     FROM warehouse_products wp
     LEFT JOIN warehouses w ON wp.warehouse_id = w.id
     LEFT JOIN branches b ON w.branch_id = b.id
-    WHERE wp.company_id = :companyId
-       OR (b.company_id = :companyId AND wp.company_id IS NULL)
+    INNER JOIN products p ON p.id = wp.product_id AND p.state <> 0
+    WHERE wp.active = 1
+      AND (
+        wp.company_id = :companyId
+        OR (b.company_id = :companyId AND wp.company_id IS NULL)
+      )
   `;
   
   const [uniqueResult] = await sequelize.query(uniqueProductsQuery, {

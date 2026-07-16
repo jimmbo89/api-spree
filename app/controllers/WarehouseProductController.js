@@ -66,13 +66,21 @@ const WarehouseProductController = {
       return res.status(400).json({ msg: "companyNotFound" });
     }
 
+    const companyWarehouses = await WarehouseRepository.findFiltered({
+      companyId: company_id,
+      includeProducts: false
+    });
+    const validWarehouseIds = new Set(companyWarehouses.map((warehouse) => Number(warehouse.id)));
+
     const invalidIds = [];
     for (const wid of warehouse_ids) {
-      const exists = await WarehouseRepository.findById(wid);
-      if (!exists) invalidIds.push(wid);
+      if (!validWarehouseIds.has(Number(wid))) invalidIds.push(wid);
     }
     if (invalidIds.length > 0) {
-      return res.status(400).json({ msg: "Algunos warehouse_ids no existen", invalid: invalidIds });
+      return res.status(400).json({
+        msg: "Algunos warehouse_ids no existen o no pertenecen a la empresa",
+        invalid: invalidIds
+      });
     }
 
     // Obtener y consolidar

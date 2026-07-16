@@ -4,7 +4,7 @@ const storeSchema = Joi.object({
   mode: Joi.string().valid('quick', 'advanced', 'manual', 'draft', 'publish').required(), // ✅ Agregado 'draft', 'publish' y 'manual'
   pool: Joi.object({
     id: Joi.number().integer().positive().required(),
-    name: Joi.string().optional(),
+    name: Joi.string().allow(null, '').optional(),
     company_id: Joi.number().integer().positive().required(), // ✅ Nuevo
     user_id: Joi.number().integer().positive().optional(), // ✅ Nuevo
     warehouses: Joi.array().items(Joi.object({
