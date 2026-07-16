@@ -47,6 +47,8 @@ class MarketplaceTransformerMercadoLibre {
       if (product.attributes) transformed.attributes = product.attributes;
       if (product.variations) transformed.variations = product.variations;
       if (product.sale_terms) transformed.sale_terms = product.sale_terms;
+      if (product.warranty_months !== undefined) transformed.warranty_months = product.warranty_months;
+      if (product.warranty_text !== undefined) transformed.warranty_text = product.warranty_text;
       if (product.description) transformed.description = product.description;
       
       // ✅ NORMALIZAR IMÁGENES ANTES DE ASIGNAR

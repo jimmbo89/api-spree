@@ -80,25 +80,33 @@ function pickMlDataForCredential(mlConfigByCredential, credentialId) {
   return mlConfigByCredential[allKeys[0]];
 }
 
+function extractWarrantyMonths(productData) {
+  if (!productData || typeof productData !== 'object') return null;
+
+  const rawMonths = productData.warranty_months;
+  const warrantyMonths = Number(rawMonths);
+
+  if (!Number.isFinite(warrantyMonths) || warrantyMonths < 0) {
+    return null;
+  }
+
+  return Number.isInteger(warrantyMonths)
+    ? warrantyMonths
+    : Number(warrantyMonths.toFixed(2));
+}
+
 function buildWarrantySaleTerms(productData) {
-  if (!productData || typeof productData !== 'object') return [];
+  const warrantyMonths = extractWarrantyMonths(productData);
 
-  const warrantyMonthsRaw = productData.warranty_months;
-  const warrantyUnitRaw = String(productData.warranty_text || '').trim();
-  const warrantyMonths = Number(warrantyMonthsRaw);
-
-  if (!Number.isFinite(warrantyMonths) || warrantyMonths < 0 || !warrantyUnitRaw) {
+  if (warrantyMonths === null) {
     return [];
   }
 
-  const normalizedMonths = Number.isInteger(warrantyMonths)
-    ? warrantyMonths
-    : Number(warrantyMonths.toFixed(2));
-  const warrantyValue = `${normalizedMonths} ${warrantyUnitRaw}`;
+  const warrantyUnit = warrantyMonths === 1 ? 'mes' : 'meses';
 
   return [{
     id: 'WARRANTY_TIME',
-    value_name: warrantyValue
+    value_name: `${warrantyMonths} ${warrantyUnit}`
   }];
 }
 
@@ -1501,12 +1509,20 @@ class MercadoLibreAdapter extends BaseAdapter {
           this.credential?.access_token
         );
 
-        const filteredSaleTerms = allowedSaleTermIds
-          ? transformedProduct.sale_terms.filter(st => st?.id && (allowedSaleTermIds.has(st.id) || st.id === 'WARRANTY_TIME'))
+        const warrantySaleTerms = buildWarrantySaleTerms(transformedProduct);
+        const saleTermsToSend = warrantySaleTerms.length > 0
+          ? [
+              ...transformedProduct.sale_terms.filter(st => st?.id !== 'WARRANTY_TIME'),
+              ...warrantySaleTerms
+            ]
           : transformedProduct.sale_terms;
 
+        const filteredSaleTerms = allowedSaleTermIds
+          ? saleTermsToSend.filter(st => st?.id && (allowedSaleTermIds.has(st.id) || st.id === 'WARRANTY_TIME'))
+          : saleTermsToSend;
+
         const removedTerms = allowedSaleTermIds
-          ? transformedProduct.sale_terms
+          ? saleTermsToSend
             .filter(st => st?.id && !allowedSaleTermIds.has(st.id) && st.id !== 'WARRANTY_TIME')
             .map(st => st.id)
           : [];
