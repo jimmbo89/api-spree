@@ -169,21 +169,24 @@ const ProductPublishingTaskRepository = {
   },
 
   async findLatestByExternalIdAndContext({
-    marketplaceId,
+    marketplaceId = null,
     externalId,
     companyId = null,
     branchId = null,
     credentialId = null,
     userId = null
   } = {}) {
-    if (!marketplaceId || !externalId) {
+    if (!externalId) {
       return null;
     }
 
     const where = {
-      marketplace_id: marketplaceId,
       external_id: externalId
     };
+
+    if (marketplaceId) {
+      where.marketplace_id = marketplaceId;
+    }
 
     if (companyId) where.company_id = companyId;
     if (branchId) where.branch_id = branchId;

@@ -2077,7 +2077,13 @@ async function processFalabellaProductWebhook(payload, options = {}) {
       return;
     }
 
-    const taskForSku = await ProductPublishingTaskRepository.findLatestByExternalId(
+    const taskForSku = await ProductPublishingTaskRepository.findLatestByExternalIdAndContext({
+      externalId: String(sellerSku),
+      credentialId: credential.id || null,
+      companyId: credential.company_id || null,
+      branchId: credential.branch_id || null,
+      userId: credential.user_id || null
+    }) || await ProductPublishingTaskRepository.findLatestByExternalId(
       null,
       String(sellerSku)
     );
@@ -3181,11 +3187,11 @@ function isFalabellaConfirmedPublishedState(productStatus) {
 
 function resolveFalabellaMarketplaceDisplayStatus(productStatus, { taskStatus = null } = {}) {
   if (!productStatus || typeof productStatus !== 'object') {
-    return taskStatus === 'processing' ? 'processing' : 'unknown';
+    return 'processing';
   }
 
   if (productStatus.found === false) {
-    return taskStatus === 'processing' ? 'processing' : 'unknown';
+    return 'processing';
   }
 
   const status = String(productStatus.status || '').trim().toLowerCase();
@@ -3217,7 +3223,7 @@ function resolveFalabellaMarketplaceDisplayStatus(productStatus, { taskStatus = 
     return 'processing';
   }
 
-  return status || 'unknown';
+  return status || 'processing';
 }
 
 function determineFalabellaTaskLifecycle(productStatus, { realErrors = [], hasImage = true } = {}) {

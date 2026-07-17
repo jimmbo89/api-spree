@@ -155,6 +155,40 @@ function normalizePublishedPayload(rawPayload) {
   return parsed && typeof parsed === 'object' ? parsed : null;
 }
 
+function resolveFalabellaFeedId(task, marketplaceLink = null) {
+  const sources = [
+    normalizeErrorDetails(task?.error_details),
+    normalizePublishedPayload(task?.api_response),
+    normalizePublishedPayload(task?.payload),
+    normalizePublishedPayload(marketplaceLink?.published_payload)
+  ].filter(Boolean);
+
+  for (const source of sources) {
+    const feedIdCandidates = [
+      source.feed_id,
+      source.feedId,
+      source.FeedID,
+      source.FeedId,
+      source.request_id,
+      source.requestId,
+      source.feed?.FeedID,
+      source.feed?.FeedId,
+      source.feed?.feed_id,
+      source.data?.feed_id,
+      source.data?.feed?.FeedID
+    ];
+
+    for (const candidate of feedIdCandidates) {
+      const normalized = String(candidate || '').trim();
+      if (normalized) {
+        return normalized;
+      }
+    }
+  }
+
+  return null;
+}
+
 function normalizeProductImages(images) {
   if (!images) return [];
 
@@ -481,11 +515,11 @@ function classifyMarketplaceState(status) {
 
 function resolveFalabellaMarketplaceDisplayStatus(productStatus, { taskStatus = null, hasImage = true } = {}) {
   if (!productStatus || typeof productStatus !== 'object') {
-    return taskStatus === 'processing' ? 'processing' : 'unknown';
+    return 'processing';
   }
 
   if (productStatus.found === false) {
-    return taskStatus === 'processing' ? 'processing' : 'unknown';
+    return 'processing';
   }
 
   const status = String(productStatus.status || '').trim().toLowerCase();
@@ -529,7 +563,7 @@ function resolveFalabellaMarketplaceDisplayStatus(productStatus, { taskStatus = 
     return 'processing';
   }
 
-  return status || 'unknown';
+  return status || 'processing';
 }
 
 function buildMercadoLibreItemStateSnapshotFromItem(item, source = 'manual_update') {
@@ -2895,31 +2929,25 @@ async publishedProducts(req, res) {
         const snapshotStatus = String(snapshotState.status || '').trim().toLowerCase();
         const snapshotQcStatus = String(snapshotState.qc_status || '').trim().toLowerCase() || null;
         const snapshotIsPublished = snapshotState.is_published ?? null;
+        const falabellaSnapshot = {
+          found: true,
+          status: snapshotStatus,
+          qc_status: snapshotQcStatus,
+          is_published: snapshotIsPublished,
+          product_errors: Array.isArray(snapshotState.product_errors) ? snapshotState.product_errors : [],
+          url: snapshotState.url || null,
+          shop_sku: snapshotState.shop_sku || null
+        };
 
         if (task.status === 'processing') {
-          if (['active', 'live'].includes(snapshotStatus)) {
-            marketplaceStatus = 'active';
-            isPublished = snapshotIsPublished;
-            qcStatus = snapshotQcStatus;
-          } else if (snapshotQcStatus === 'pending') {
-            marketplaceStatus = 'under_review';
-            isPublished = snapshotIsPublished;
-            qcStatus = snapshotQcStatus;
-          } else if (snapshotQcStatus === 'rejected') {
-            marketplaceStatus = 'rejected';
-            isPublished = snapshotIsPublished;
-            qcStatus = snapshotQcStatus;
-          } else if (snapshotStatus === 'inactive' || snapshotStatus === 'deleted') {
-            marketplaceStatus = snapshotStatus;
-            isPublished = snapshotIsPublished;
-            qcStatus = snapshotQcStatus;
-          } else if (snapshotStatus === 'not_published' || snapshotIsPublished === false) {
-            marketplaceStatus = 'not_published';
-            isPublished = snapshotIsPublished;
-            qcStatus = snapshotQcStatus;
-          } else {
-            marketplaceStatus = 'processing';
+          marketplaceStatus = resolveFalabellaMarketplaceDisplayStatus(falabellaSnapshot, {
+            taskStatus: task.status,
+            hasImage: snapshotState.has_image
+          });
+          isPublished = snapshotIsPublished;
+          qcStatus = snapshotQcStatus;
 
+          if (marketplaceStatus === 'processing') {
             const feedId = errorDetails.feed_id || null;
             const sentAt = errorDetails.sent_at || null;
 
@@ -2947,23 +2975,20 @@ async publishedProducts(req, res) {
             || falabellaPayload?.Images
           );
           const payloadHasErrors = Array.isArray(falabellaPayload?.product_errors) && falabellaPayload.product_errors.length > 0;
+          const falabellaPublishedSnapshot = {
+            found: true,
+            status: rawStatus,
+            qc_status: qcStatus,
+            is_published: isPublished,
+            product_errors: payloadHasErrors ? (falabellaPayload.product_errors || []) : [],
+            url: falabellaPayload?.Url || null,
+            shop_sku: falabellaPayload?.ShopSku || null
+          };
 
-          // ✅ Determinar estado REAL según los 3 campos (documentación oficial Falabella)
-          if (['active', 'live'].includes(rawStatus)) {
-            marketplaceStatus = 'active';
-          } else if (rawStatus === 'inactive' || rawStatus === 'deleted') {
-            marketplaceStatus = rawStatus;
-          } else if (qcStatus === 'rejected') {
-            marketplaceStatus = 'rejected';
-          } else if (qcStatus === 'pending') {
-            marketplaceStatus = 'under_review';
-          } else if (isPublished === false || rawStatus === 'not_published') {
-            marketplaceStatus = 'not_published';
-          } else if (qcStatus === 'pending') {
-            marketplaceStatus = 'under_review';
-          } else {
-            marketplaceStatus = rawStatus || 'unknown';
-          }
+          marketplaceStatus = resolveFalabellaMarketplaceDisplayStatus(falabellaPublishedSnapshot, {
+            taskStatus: task.status,
+            hasImage: payloadHasImage
+          });
 
           logger.debug(`[publishedProducts] Falabella estado real para ${task.external_id}:`, {
             rawStatus,
@@ -3043,11 +3068,11 @@ async publishedProducts(req, res) {
       if (marketplaceKey === 'falabella') {
         productResponse.is_published = isPublished;
         productResponse.qc_status = qcStatus;
+        productResponse.feed_id = resolveFalabellaFeedId(task, marketplaceLink);
         
-        // ✅ 🔑 NUEVO: Agregar feed_id si está en processing
+        // ✅ 🔑 Mantener sent_at solo cuando exista información de envío
         if (task.status === 'processing') {
           const errorDetails = task.error_details || {};
-          productResponse.feed_id = errorDetails.feed_id || null;
           productResponse.sent_at = errorDetails.sent_at || null;
           productResponse.publication_note = marketplaceStatus === 'under_review'
             ? 'Producto en revisión por Falabella...'
