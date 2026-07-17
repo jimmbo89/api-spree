@@ -8,6 +8,7 @@ const roleSchema = Joi.object({
     'string.max': 'El campo "name" debe tener máximo 100 caracteres'
   }),
   status: Joi.boolean().optional(),
+  visible_to_companies: Joi.boolean().truthy(1).falsy(0).optional(),
   description: Joi.string().allow(null, '').optional()
 });
 
@@ -20,6 +21,7 @@ const updateRoleSchema = Joi.object({
     'string.max': 'El campo "name" debe tener máximo 100 caracteres'
   }),
   status: Joi.boolean().optional(),
+  visible_to_companies: Joi.boolean().truthy(1).falsy(0).optional(),
   description: Joi.string().allow(null, '').optional()
 });
 

@@ -24,9 +24,9 @@ const RoleController = {
     logger.info("Datos recibidos (body):");
     logger.info(JSON.stringify(req.body));
 
-    const { name, status, description } = req.body;
+    const { name, status, visible_to_companies, description } = req.body;
 
-    const roleData = { name, status, description };
+    const roleData = { name, status, visible_to_companies, description };
 
     try {
       await RoleRepository.create(roleData);
@@ -45,9 +45,9 @@ const RoleController = {
     logger.info("Datos recibidos (params + body):");
     logger.info(JSON.stringify({ params: req.params, body: req.body }));
 
-    const { name, status, description } = req.body;
+    const { name, status, visible_to_companies, description } = req.body;
     const user_id = req.body.user_id || req.user?.id;
-     const roleData = { name, status, description };
+     const roleData = { name, status, visible_to_companies, description };
     try {
       const role = await RoleRepository.findById(roleId);
       if (!role) return res.status(404).json({ msg: "RoleNotFound" });

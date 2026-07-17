@@ -10,17 +10,19 @@ module.exports = {
     try {
       // 1. Crear/obtener el rol 'BackOffice'
       await queryInterface.sequelize.query(
-        `INSERT INTO roles (name, status, description, createdAt, updatedAt)
-         VALUES (:name, :status, :description, NOW(), NOW())
+        `INSERT INTO roles (name, status, description, visible_to_companies, createdAt, updatedAt)
+         VALUES (:name, :status, :description, :visible_to_companies, NOW(), NOW())
          ON DUPLICATE KEY UPDATE
            status = VALUES(status),
            description = VALUES(description),
+           visible_to_companies = VALUES(visible_to_companies),
            updatedAt = NOW();`,
         {
           replacements: {
             name: 'BackOffice',
             status: true,
-            description: 'Usuario root global con acceso total a todas las empresas sin pertenecer a ninguna'
+            description: 'Usuario root global con acceso total a todas las empresas sin pertenecer a ninguna',
+            visible_to_companies: 0
           },
           type: Sequelize.QueryTypes.INSERT,
           transaction

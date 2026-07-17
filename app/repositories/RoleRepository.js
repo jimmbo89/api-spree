@@ -6,7 +6,7 @@ const RoleRepository = {
   async findAll() {
     try {
       const roles = await Role.findAll({
-        attributes: ["id", "name", "status", "description"],
+        attributes: ["id", "name", "status", "visible_to_companies", "description"],
         order: [["id", "ASC"]],
         include: [
           {
@@ -54,7 +54,7 @@ const RoleRepository = {
       : [];
 
     const roles = await Role.findAll({
-      attributes: ['id', 'name', 'status', 'description'],
+      attributes: ['id', 'name', 'status', 'visible_to_companies', 'description'],
       include: includeOptions,
       order: [['id', 'ASC']],
     });
@@ -81,7 +81,7 @@ const RoleRepository = {
   async findById(id) {
     try {
       const role = await Role.findByPk(id, {
-        attributes: ["id", "name", "status", "description"]
+        attributes: ["id", "name", "status", "visible_to_companies", "description"]
       });
       return role;
     } catch (error) {
@@ -98,7 +98,7 @@ const RoleRepository = {
 
     const role = await Role.findOne({
       where: { name },
-      attributes: ["id", "name", "status", "description"]
+      attributes: ["id", "name", "status", "visible_to_companies", "description"]
     });
 
     return role; // Retorna el rol o null si no se encuentra
@@ -116,7 +116,7 @@ const RoleRepository = {
 
     const role = await Role.findOne({
       where: { name },
-      attributes: ["id", "name", "status", "description"],
+      attributes: ["id", "name", "status", "visible_to_companies", "description"],
       include: [
         {
           model: Permission,
@@ -136,10 +136,11 @@ const RoleRepository = {
 
   async create(data) {
     try {
-      const { name, status, description } = data;
+      const { name, status, visible_to_companies, description } = data;
       const role = await Role.create({
         name,
         status: status !== undefined ? status : true, // valor por defecto opcional
+        visible_to_companies: visible_to_companies !== undefined ? visible_to_companies : 1,
         description: description || null
       });
       logger.info(`Nuevo rol creado: ID ${role.id}, nombre: ${role.name}`);
@@ -152,12 +153,13 @@ const RoleRepository = {
 
   async update(role, data) {
     try {
-      const { name, status, description } = data;
+      const { name, status, visible_to_companies, description } = data;
 
       // Solo actualizamos los campos que vienen definidos
       const updateData = {};
       if (name !== undefined) updateData.name = name;
       if (status !== undefined) updateData.status = status;
+      if (visible_to_companies !== undefined) updateData.visible_to_companies = visible_to_companies;
       if (description !== undefined) updateData.description = description;
 
       await role.update(updateData);

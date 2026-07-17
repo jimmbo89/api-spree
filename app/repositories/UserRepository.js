@@ -319,6 +319,21 @@ const UserRepository = {
     }
   },
 
+  async hasGlobalRole(userId) {
+    try {
+      if (!userId) return false;
+
+      const user = await User.findByPk(userId, {
+        attributes: ['id', 'role_id']
+      });
+
+      return !!user?.role_id;
+    } catch (error) {
+      logger.error(`Error al verificar rol global del usuario (${userId}):`, error);
+      throw new Error(`Error al verificar rol global: ${error.message}`);
+    }
+  },
+
 // app/repositories/UserRepository.js
 async findByEmailWithCompanyContext(identifier, companyId = null) {
   try {

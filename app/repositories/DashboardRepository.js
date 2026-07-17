@@ -27,15 +27,17 @@ const DashboardRepository = {
    */
   async getSalesStats(companyId, fromDate, toDate) {
     try {
+      const where = {
+        order_status: 'paid',
+        createdAt: {
+          [Op.gte]: fromDate,
+          [Op.lte]: toDate
+        }
+      };
+      if (companyId) where.company_id = companyId;
+
       const result = await MarketplaceOrder.findOne({
-        where: {
-          company_id: companyId,
-          order_status: 'paid',
-          createdAt: {
-            [Op.gte]: fromDate,
-            [Op.lte]: toDate
-          }
-        },
+        where,
         attributes: [
           [fn('SUM', col('total_amount')), 'totalSales'],
           [fn('COUNT', col('id')), 'totalOrders']
@@ -62,15 +64,17 @@ const DashboardRepository = {
    */
   async getSalesByDay(companyId, fromDate, toDate) {
     try {
+      const where = {
+        order_status: 'paid',
+        createdAt: {
+          [Op.gte]: fromDate,
+          [Op.lte]: toDate
+        }
+      };
+      if (companyId) where.company_id = companyId;
+
       const results = await MarketplaceOrder.findAll({
-        where: {
-          company_id: companyId,
-          order_status: 'paid',
-          createdAt: {
-            [Op.gte]: fromDate,
-            [Op.lte]: toDate
-          }
-        },
+        where,
         attributes: [
           [fn('DATE', col('createdAt')), 'date'],
           [fn('SUM', col('total_amount')), 'value']
@@ -98,6 +102,9 @@ const DashboardRepository = {
  */
 async getCriticalStockCount(companyId, threshold = 5) {
   try {
+    const productWhere = {};
+    if (companyId) productWhere.company_id = companyId;
+
     const lowStockVariants = await WarehouseProductVariant.findAll({
       include: [{
         model: WarehouseProduct,
@@ -107,10 +114,7 @@ async getCriticalStockCount(companyId, threshold = 5) {
         include: [{
           model: Product,
           as: 'product',
-          where: {
-            company_id: companyId,
-            id: { [Op.ne]: null }
-          },
+          where: productWhere,
           attributes: ['id'],
           required: true
         }]
@@ -144,6 +148,9 @@ async getCriticalStockCount(companyId, threshold = 5) {
  */
 async getOutOfStockCount(companyId) {
   try {
+    const productWhere = {};
+    if (companyId) productWhere.company_id = companyId;
+
     const outOfStockVariants = await WarehouseProductVariant.findAll({
       include: [{
         model: WarehouseProduct,
@@ -153,10 +160,7 @@ async getOutOfStockCount(companyId) {
         include: [{
           model: Product,
           as: 'product',
-          where: {
-            company_id: companyId,
-            id: { [Op.ne]: null }
-          },
+          where: productWhere,
           attributes: ['id'],
           required: true
         }],
@@ -195,18 +199,18 @@ async getOutOfStockCount(companyId) {
    */
   async getPublishingIssuesCount(companyId, fromDate, toDate) {
     try {
-      const failed = await ProductPublishingTask.count({
-        where: {
-          company_id: companyId,
-          status: {
-            [Op.in]: ['failed', 'pending', 'processing']
-          },
-          createdAt: {
-            [Op.gte]: fromDate,
-            [Op.lte]: toDate
-          }
+      const where = {
+        status: {
+          [Op.in]: ['failed', 'pending', 'processing']
+        },
+        createdAt: {
+          [Op.gte]: fromDate,
+          [Op.lte]: toDate
         }
-      });
+      };
+      if (companyId) where.company_id = companyId;
+
+      const failed = await ProductPublishingTask.count({ where });
 
       return failed;
     } catch (error) {
@@ -225,6 +229,15 @@ async getOutOfStockCount(companyId) {
    */
   async getTopProducts(companyId, fromDate, toDate, limit = 3) {
     try {
+      const orderWhere = {
+        order_status: 'paid',
+        createdAt: {
+          [Op.gte]: fromDate,
+          [Op.lte]: toDate
+        }
+      };
+      if (companyId) orderWhere.company_id = companyId;
+
       const results = await MarketplaceOrderItem.findAll({
         include: [{
           model: Product,
@@ -234,14 +247,7 @@ async getOutOfStockCount(companyId) {
           model: MarketplaceOrder,
           as: 'order',
           attributes: [],
-          where: {
-            company_id: companyId,
-            order_status: 'paid',
-            createdAt: {
-              [Op.gte]: fromDate,
-              [Op.lte]: toDate
-            }
-          }
+          where: orderWhere
         }],
         attributes: [
           'product_id',
@@ -286,6 +292,9 @@ async getOutOfStockCount(companyId) {
  */
 async getProblemProducts(companyId, limit = 3) {
   try {
+    const productWhere = {};
+    if (companyId) productWhere.company_id = companyId;
+
     const problemProductsMap = {};
 
     // 1. Productos con stock bajo - consulta corregida con validaciones
@@ -300,10 +309,7 @@ async getProblemProducts(companyId, limit = 3) {
             {
               model: Product,
               as: 'product',
-              where: { 
-                company_id: companyId,
-                id: { [Op.ne]: null }
-              },
+              where: productWhere,
               attributes: ['id', 'name', 'images'],
               required: true
             },
@@ -408,7 +414,7 @@ async getProblemProducts(companyId, limit = 3) {
         include: [{
           model: ProductMarketplaceLink,
           as: 'productLinks',
-          where: { company_id: companyId },
+          ...(companyId ? { where: { company_id: companyId } } : {}),
           attributes: ['status'],
           required: false
         }, {
@@ -429,7 +435,7 @@ async getProblemProducts(companyId, limit = 3) {
         include: [{
           model: Job,
           as: 'job',
-          where: { company_id: companyId },
+          ...(companyId ? { where: { company_id: companyId } } : {}),
           attributes: [],
           required: true
         }],
@@ -506,14 +512,16 @@ async getProblemProducts(companyId, limit = 3) {
    */
   async getProblemProcesses(companyId, limit = 5) {
     try {
+      const jobWhere = {
+        job_type: 'publish',
+        status: {
+          [Op.in]: ['completed_with_errors', 'failed']
+        }
+      };
+      if (companyId) jobWhere.company_id = companyId;
+
       const jobs = await Job.findAll({
-        where: {
-          company_id: companyId,
-          job_type: 'publish',
-          status: {
-            [Op.in]: ['completed_with_errors', 'failed']
-          }
-        },
+        where: jobWhere,
         attributes: [
           'id',
           'batch_id',
@@ -596,7 +604,7 @@ async getProblemProducts(companyId, limit = 3) {
       // 1. Obtener ProductPublishingTask recientes (publicaciones y errores)
       const publishingTasks = await ProductPublishingTask.findAll({
         where: {
-          company_id: companyId,
+          ...(companyId ? { company_id: companyId } : {}),
           status: {
             [Op.in]: ['published', 'published_with_warnings', 'failed']
           }
@@ -651,7 +659,7 @@ async getProblemProducts(companyId, limit = 3) {
       // 2. Obtener Jobs recientes completados o con errores
       const recentJobs = await Job.findAll({
         where: {
-          company_id: companyId,
+          ...(companyId ? { company_id: companyId } : {}),
           status: {
             [Op.in]: ['completed', 'completed_with_errors', 'failed']
           },
@@ -695,7 +703,7 @@ async getProblemProducts(companyId, limit = 3) {
       // 3. Obtener órdenes nuevas de marketplaces
       const newOrders = await MarketplaceOrder.findAll({
         where: {
-          company_id: companyId,
+          ...(companyId ? { company_id: companyId } : {}),
           order_status: 'paid',
           payment_status: 'paid'
         },
@@ -723,7 +731,7 @@ async getProblemProducts(companyId, limit = 3) {
       // 4. Obtener movimientos de stock relevantes (ajustes y transferencias)
       const stockMovements = await InventoryMovement.findAll({
         where: {
-          company_id: companyId,
+          ...(companyId ? { company_id: companyId } : {}),
           movement_type: {
             [Op.in]: ['adjustment', 'transfer', 'manual']
           },

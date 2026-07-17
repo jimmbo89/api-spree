@@ -265,7 +265,7 @@ const AuthController = {
         name: user.name,
         user: user.user,
         image: user.image,
-        role_id: user.role_id || null // ✅ Rol global (BackOffice)
+        role_id: user.role_id || null // Rol global (BackOffice)
       };
 
       const token = jwt.sign({ user: userNew }, authConfig.secret, {
@@ -290,7 +290,7 @@ const AuthController = {
         status: "success",
       });
 
-      // ✅ Usuario con rol global (BackOffice) - retornar solo con rol global
+      // ✅ Usuario con rol global (BackOffice) - retornar rol global y sus membresías
       if (user.role_id) {
         const globalRole = user.role ? {
           id: user.role.id,
@@ -313,8 +313,8 @@ const AuthController = {
         });
       }
 
-      // ✅ Usuario normal - procesar memberships por empresa
-      const memberships = (user.memberships || []).filter(m => m.status === 1).map(m => ({
+      const activeMemberships = (user.memberships || []).filter(m => m.status === 1);
+      const memberships = activeMemberships.map(m => ({
         id: m.id,
         company_id: m.company_id,
         role_id: m.role_id,
@@ -968,6 +968,12 @@ const AuthController = {
         return res
           .status(400)
           .json({ success: false, message: "Rol no encontrado" });
+      if (Number(role.visible_to_companies) !== 1) {
+        return res.status(400).json({
+          success: false,
+          message: "El rol seleccionado no está disponible para empresas"
+        });
+      }
 
       if (pools?.length) {
         const poolCheck = await PoolRepository.validatePoolIdsExist(pools);
@@ -1263,6 +1269,12 @@ const AuthController = {
           return res
             .status(400)
             .json({ success: false, message: "Rol no encontrado" });
+        if (Number(role.visible_to_companies) !== 1) {
+          return res.status(400).json({
+            success: false,
+            message: "El rol seleccionado no está disponible para empresas"
+          });
+        }
       }
 
       // Validar pools si se enviaron
@@ -1432,10 +1444,15 @@ const AuthController = {
       branch_id
     );
 
-    // Filter out 'Seller Manager' and 'Backoffice' roles
-    const filteredRoles = roles.filter(
-      (role) => role.name !== 'Seller Manager' && role.name !== 'Backoffice'
-    );
+    // La forma más confiable de distinguir global vs empresa es leer el
+    // role_id real guardado en users por user_id.
+    const isGlobalUser = await UserRepository.hasGlobalRole(req.user?.id);
+
+    // Usuario global: ve todos los roles.
+    // Usuario normal: solo ve roles visibles para empresas.
+    const filteredRoles = isGlobalUser
+      ? roles
+      : roles.filter((role) => Number(role.visible_to_companies) === 1);
 
     try {
       return res.status(200).json({

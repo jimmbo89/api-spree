@@ -117,6 +117,13 @@ async sendInvitation(req, res) {
         message: `El rol con ID ${role_id} no existe`
       });
     }
+    if (Number(role.visible_to_companies) !== 1) {
+      await transaction.rollback();
+      return res.status(400).json({
+        success: false,
+        message: `El rol ${role.name} no está disponible para empresas`
+      });
+    }
 
     // ✅ Validar que la empresa existe
     const company = await CompanyRepository.findById(company_id);

@@ -37,6 +37,12 @@ module.exports = (sequelize, DataTypes) => {
       defaultValue: true,
       comment: 'Estado del rol (activo/inactivo)'
     },
+    visible_to_companies: {
+      type: DataTypes.TINYINT,
+      allowNull: false,
+      defaultValue: 1,
+      comment: '0 = no visible para empresas, 1 = visible para empresas'
+    },
     description: {
       type: DataTypes.TEXT,
       allowNull: true,

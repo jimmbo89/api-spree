@@ -18,6 +18,9 @@ const UserCompanyController = {
 
     const role = await RoleRepository.findById(role_id);
     if (!role) return res.status(400).json({ success: false, message: 'Rol no encontrado' });
+    if (Number(role.visible_to_companies) !== 1) {
+      return res.status(400).json({ success: false, message: 'Este rol no está disponible para empresas' });
+    }
 
     try {
       const membership = await UserCompanyRepository.create({
@@ -62,6 +65,10 @@ const UserCompanyController = {
     
     const role = await RoleRepository.findById(role_id);
     if (!role) return res.status(400).json({ success: false, message: 'Rol no encontrado' });
+    
+    if (Number(role.visible_to_companies) !== 1) {
+      return res.status(400).json({ success: false, message: 'Este rol no está disponible para empresas' });
+    }
 
     try {
       const updated = await UserCompanyRepository.updateRole(record, role_id);

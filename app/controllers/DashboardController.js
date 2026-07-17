@@ -1,4 +1,5 @@
 const DashboardRepository = require('../repositories/DashboardRepository');
+const { UserRepository } = require('../repositories');
 const logger = require('../../config/logger');
 
 const DashboardController = {
@@ -8,13 +9,36 @@ const DashboardController = {
    */
   async getDashboard(req, res) {
     try {
-      // Obtener companyId del header o body
-      const companyId = req.headers['x-company-id'] || req.body.company_id;
-      
-      if (!companyId) {
+      const rawCompanyId = req.headers['x-company-id'] || req.body.company_id || null;
+      const companyId = rawCompanyId ? Number(rawCompanyId) : null;
+      const isGlobalUser = await UserRepository.hasGlobalRole(req.user?.id);
+
+      if (!companyId && !isGlobalUser) {
         return res.status(400).json({
           success: false,
           message: 'Company-ID es requerido (enviar en header X-Company-ID o en body como company_id)'
+        });
+      }
+
+      if (isGlobalUser && !companyId) {
+        return res.status(200).json({
+          success: true,
+          data: {
+            kpis: {
+              sales: { value: 0, delta: 0, trend: 'up' },
+              orders: { value: 0, delta: 0, trend: 'up' },
+              issues: { value: 0, delta: 0, trend: 'up' },
+              criticalStock: { value: 0, delta: 0, trend: 'up' }
+            },
+            sales: [],
+            alerts: [],
+            marketplaces: [],
+            products: {
+              topProducts: [],
+              problemProducts: []
+            },
+            processes: []
+          }
         });
       }
 
@@ -36,7 +60,8 @@ const DashboardController = {
       const alerts = await calculateAlerts(companyId);
 
       // === 4. Marketplaces ===
-      const marketplaces = await calculateMarketplaces(companyId, req.user?.id);
+      const marketplacesUserId = companyId ? req.user?.id : null;
+      const marketplaces = await calculateMarketplaces(companyId, marketplacesUserId);
 
       // === 5. Productos ===
       const products = await calculateProducts(companyId, currentPeriodStart, now);

@@ -3,21 +3,22 @@
 module.exports = {
   async up(queryInterface, Sequelize) {
     const rolesData = [
-      { name: 'Admin', description: 'Propietario del tenant. Acceso total.', status: true },
-      { name: 'Seller Manager', description: 'Responsable operativo del ecommerce interno.', status: true },
-      { name: 'Publicador', description: 'Enfocado en operación diaria básica.', status: true },
-      { name: 'Viewer', description: 'Solo lectura.', status: true },
-      { name: 'Backoffice', description: 'Acceso global de soporte (Klint + Deed).', status: true }
+      { name: 'Admin', description: 'Propietario del tenant. Acceso total.', status: true, visible_to_companies: 1 },
+      { name: 'Seller Manager', description: 'Responsable operativo del ecommerce interno.', status: true, visible_to_companies: 0 },
+      { name: 'Publicador', description: 'Enfocado en operaciÃ³n diaria bÃ¡sica.', status: true, visible_to_companies: 1 },
+      { name: 'Viewer', description: 'Solo lectura.', status: true, visible_to_companies: 1 },
+      { name: 'Backoffice', description: 'Acceso global de soporte (Klint + Deed).', status: true, visible_to_companies: 0 }
     ];
 
     // Insertar/actualizar roles
     for (const role of rolesData) {
       await queryInterface.sequelize.query(
-        `INSERT INTO roles (name, description, status, createdAt, updatedAt)
-         VALUES (:name, :description, :status, NOW(), NOW())
+        `INSERT INTO roles (name, description, status, visible_to_companies, createdAt, updatedAt)
+         VALUES (:name, :description, :status, :visible_to_companies, NOW(), NOW())
          ON DUPLICATE KEY UPDATE
            description = VALUES(description),
            status = VALUES(status),
+           visible_to_companies = VALUES(visible_to_companies),
            updatedAt = NOW()`,
         { replacements: role }
       );
@@ -41,7 +42,7 @@ module.exports = {
     const permissionMap = {};
     permissions.forEach(p => permissionMap[p.name] = p.id);
 
-    // Definir permisos por rol según la matriz IAM
+    // Definir permisos por rol segÃºn la matriz IAM
     const rolePermissions = [];
 
     const addPermission = (roleName, permissionName) => {
@@ -68,7 +69,7 @@ module.exports = {
       // INVENTARIO
       'movement.view', 'inventory.kardex.view', 'branch.view', 'pool.view', 'store.view',
 
-      // PUBLICACIÓN
+      // PUBLICACIÃ“N
       'publishing.publish', 'publishing.jobs.view',
 
       // MARKETPLACES
@@ -96,10 +97,10 @@ module.exports = {
       // INVENTARIO (solo ver)
       'movement.view', 'inventory.kardex.view',
 
-      // PUBLICACIÓN
+      // PUBLICACIÃ“N
       'publishing.jobs.view',
 
-      // ÓRDENES (si existen)
+      // Ã“RDENES (si existen)
 
       // REPORTING
       'report.sales.view'
@@ -114,7 +115,7 @@ module.exports = {
       // INVENTARIO
       'movement.view', 'inventory.kardex.view', 'branch.view', 'pool.view', 'store.view',
 
-      // PUBLICACIÓN
+      // PUBLICACIÃ“N
       'publishing.jobs.view',
 
       // MARKETPLACES
@@ -139,7 +140,7 @@ module.exports = {
       // INVENTARIO
       'movement.view', 'inventory.kardex.view', 'branch.view', 'pool.view', 'store.view',
 
-      // PUBLICACIÓN
+      // PUBLICACIÃ“N
       'publishing.publish', 'publishing.jobs.view',
 
       // MARKETPLACES
