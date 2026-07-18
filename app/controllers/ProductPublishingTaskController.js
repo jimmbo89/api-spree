@@ -3032,6 +3032,7 @@ async publishedProducts(req, res) {
       // ✅ Construir objeto de respuesta LIMPIO
       const productResponse = {
         task_id: task.id,
+        batch_id: task.batch_id || task.job?.batch_id || null,
         product_id: task.product_id,
         product_name: product.name || 'N/A',
         sku: product.sku || null,
