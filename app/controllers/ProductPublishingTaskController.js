@@ -1222,33 +1222,20 @@ async refreshExpiredTokens(credentials, userId) {
       
       if (isExpired || hasNoToken) {
         logger.info(`[warehouseMarketplaces] Token expirado/ausente para credential ${credential.id}. Intentando refresh...`);
-        
-        // ✅ Crear adapter y validar/renovar credenciales
-        const adapter = PublishingAdapterFactory.getAdapter(
-          mp, 
-          null, // companyId
-          null, // branchId
+
+        const refreshed = await ProductPublishingTaskController.refreshSingleCredential(
+          credential,
+          mp,
           userId,
-          credential // ← Pasar credencial específica
+          true
         );
-        
-        if (adapter && typeof adapter.ensureValidCredentials === 'function') {
-          const status = await adapter.ensureValidCredentials();
-          
-          if (status.valid) {
-            logger.info(`[warehouseMarketplaces] ✅ Token renovado para credential ${credential.id}`);
-            // ✅ Recargar la credencial actualizada desde la BD
-            const updated = await MarketplaceCredentialRepository.findById(credential.id);
-            if (updated) {
-              updated.marketplace = mp; // Mantener el include del marketplace
-              return updated;
-            }
-          } else if (status.auth_required) {
-            logger.warn(`[warehouseMarketplaces] ⚠️ Credential ${credential.id} requiere re-autorización: ${status.auth_url}`);
-          } else {
-            logger.warn(`[warehouseMarketplaces] ⚠️ No se pudo validar credential ${credential.id}: ${status.error || 'unknown'}`);
-          }
+
+        if (refreshed && refreshed.id) {
+          logger.info(`[warehouseMarketplaces] ✅ Token renovado para credential ${credential.id}`);
+          return refreshed;
         }
+
+        logger.warn(`[warehouseMarketplaces] ⚠️ No se pudo renovar credential ${credential.id}`);
       }
       
       return credential; // Retornar original si no hubo cambios o falló el refresh

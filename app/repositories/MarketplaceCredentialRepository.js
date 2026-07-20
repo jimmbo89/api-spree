@@ -4,6 +4,46 @@ const EncryptionService = require('../services/EncryptionService');
 const logger = require('../../config/logger');
 const { Op } = require('sequelize');
 
+function decryptCredentialRecord(record) {
+  if (!record) return record;
+
+  const plain = typeof record.get === 'function' ? record.get({ plain: true }) : { ...record };
+
+  if (plain.access_token) {
+    try {
+      plain.access_token = EncryptionService.decrypt(plain.access_token);
+    } catch (error) {
+      plain.access_token = null;
+    }
+  }
+
+  if (plain.refresh_token) {
+    try {
+      plain.refresh_token = EncryptionService.decrypt(plain.refresh_token);
+    } catch (error) {
+      plain.refresh_token = null;
+    }
+  }
+
+  if (plain.api_key) {
+    try {
+      plain.api_key = EncryptionService.decrypt(plain.api_key);
+    } catch (error) {
+      plain.api_key = null;
+    }
+  }
+
+  if (plain.marketplace?.client_secret) {
+    try {
+      plain.marketplace.client_secret = EncryptionService.decrypt(plain.marketplace.client_secret);
+    } catch (error) {
+      plain.marketplace.client_secret = null;
+    }
+  }
+
+  return plain;
+}
+
 async function getAccessibleCredentialIdsByUser(userId, companyId = null) {
   const where = {
     user_id: userId,
@@ -276,7 +316,7 @@ const MarketplaceCredentialRepository = {
       order: [['createdAt', 'DESC']]
     });
 
-    return records.map(record => record.get({ plain: true }));
+    return records.map(record => decryptCredentialRecord(record));
   },
 
   async findByCompany(companyId, marketplaceId = null) {
@@ -305,7 +345,7 @@ const MarketplaceCredentialRepository = {
       order: [['createdAt', 'DESC']]
     });
 
-    return records.map(record => record.get({ plain: true }));
+    return records.map(record => decryptCredentialRecord(record));
   },
 
   /**

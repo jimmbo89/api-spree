@@ -1,5 +1,6 @@
 const { Op } = require('sequelize');
 const { UserMarketplaceCredential, MarketplaceCredential, Marketplace, Company, User, ProductFieldMapping } = require('../models');
+const EncryptionService = require('../services/EncryptionService');
 const logger = require('../../config/logger');
 
 function normalizeCredentialItems(items = []) {
@@ -41,6 +42,48 @@ function normalizeCredentialItems(items = []) {
   });
 
   return Array.from(map.values());
+}
+
+function decryptMarketplaceCredential(record) {
+  if (!record) return record;
+
+  const plain = typeof record.get === 'function' ? record.get({ plain: true }) : { ...record };
+  const credential = plain.marketplaceCredential || {};
+
+  if (credential.access_token) {
+    try {
+      credential.access_token = EncryptionService.decrypt(credential.access_token);
+    } catch (error) {
+      credential.access_token = null;
+    }
+  }
+
+  if (credential.refresh_token) {
+    try {
+      credential.refresh_token = EncryptionService.decrypt(credential.refresh_token);
+    } catch (error) {
+      credential.refresh_token = null;
+    }
+  }
+
+  if (credential.api_key) {
+    try {
+      credential.api_key = EncryptionService.decrypt(credential.api_key);
+    } catch (error) {
+      credential.api_key = null;
+    }
+  }
+
+  if (credential.marketplace?.client_secret) {
+    try {
+      credential.marketplace.client_secret = EncryptionService.decrypt(credential.marketplace.client_secret);
+    } catch (error) {
+      credential.marketplace.client_secret = null;
+    }
+  }
+
+  plain.marketplaceCredential = credential;
+  return plain;
 }
 
 const UserMarketplaceCredentialRepository = {
@@ -117,7 +160,7 @@ const UserMarketplaceCredentialRepository = {
     });
 
     return records.map((record) => {
-      const plain = record.get({ plain: true });
+      const plain = decryptMarketplaceCredential(record);
       const credential = plain.marketplaceCredential || {};
       return {
         ...credential,

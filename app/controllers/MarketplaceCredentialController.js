@@ -5,16 +5,18 @@ const {
   MarketplaceCredentialRepository,
   MarketplaceRepository,
   LogRepository,
-  UserCompanyRepository
+  UserCompanyRepository,
+  UserMarketplaceCredentialRepository
 } = require('../repositories');
 const PublishingAdapterFactory = require('../services/adapters/PublishingAdapterFactory');
 const EncryptionService = require('../services/EncryptionService');
+const ProductPublishingTaskController = require('./ProductPublishingTaskController');
 const { getRequestMetadata } = require('../util/requestUtil');
 function formatSequelizeValidationError(error) {
   if (error.name === 'SequelizeValidationError' && error.errors?.length) {
     return error.errors.map(err => {
       const field = err.path || 'campo desconocido';
-      const message = err.message || 'validación fallida';
+      const message = err.message || 'validacion fallida';
       return `${field}: ${message}`;
     }).join('; ');
   }
@@ -49,7 +51,7 @@ const MarketplaceCredentialController = {
       if (Number.isNaN(companyId)) {
         return res.status(400).json({
           success: false,
-          message: 'company_id debe ser un número entero positivo'
+          message: 'company_id debe ser un numero entero positivo'
         });
       }
 
@@ -93,14 +95,14 @@ const MarketplaceCredentialController = {
       if (Number.isNaN(companyId)) {
         return res.status(400).json({
           success: false,
-          message: 'company_id debe ser un número entero positivo'
+          message: 'company_id debe ser un numero entero positivo'
         });
       }
 
       if (userId !== null && (!Number.isInteger(userId) || userId <= 0)) {
         return res.status(400).json({
           success: false,
-          message: 'user_id debe ser un número entero positivo'
+          message: 'user_id debe ser un numero entero positivo'
         });
       }
 
@@ -114,26 +116,30 @@ const MarketplaceCredentialController = {
       let credentials = await MarketplaceCredentialRepository.findByCompany(companyId, req.body?.marketplace_id ?? null);
 
       if (userId) {
-        if (companyId) {
-          const membership = await UserCompanyRepository.findByUserIdAndCompanyId(userId, companyId);
-          if (!membership) {
-            return res.status(404).json({
-              success: false,
+        const membership = await UserCompanyRepository.findByUserIdAndCompanyId(userId, companyId);
+        if (!membership) {
+          return res.status(404).json({
+            success: false,
             message: 'El usuario no tiene relación con la empresa indicada'
           });
         }
-        }
 
-        credentials = await MarketplaceCredentialRepository.findByUser(
+        credentials = await UserMarketplaceCredentialRepository.findActiveCredentialsByUserAndCompany(
           userId,
-          req.body?.marketplace_id ?? null,
-          companyId
+          companyId,
+          null
         );
-      } else if (false) {
-        const usersInCompany = await UserCompanyRepository.getUsersByCompanyId(companyId);
-        const userIds = usersInCompany.map(user => user.id);
-        credentials = await MarketplaceCredentialRepository.findByUsers(userIds);
+
+        if (req.body?.marketplace_id) {
+          const marketplaceId = Number(req.body.marketplace_id);
+          credentials = credentials.filter((cred) => Number(cred.marketplace_id) === marketplaceId);
+        }
       }
+
+      credentials = await ProductPublishingTaskController.refreshExpiredTokens(
+        credentials,
+        userId || req.user?.id || null
+      );
 
       const safeCredentials = credentials.map(cred => {
         const item = {
@@ -144,7 +150,7 @@ const MarketplaceCredentialController = {
           name: cred.name,
           country: cred.country,
           active: cred.active,
-          access_token: cred.access_token ? '••••••••' : null,
+          access_token: cred.access_token ? '********' : null,
           expires_at: cred.expires_at,
           seller_email: cred.seller_email,
           seller_id: cred.seller_id,
@@ -187,7 +193,7 @@ const MarketplaceCredentialController = {
 
   try {
     if (Number.isNaN(companyId)) {
-      return res.status(400).json({ success: false, message: 'company_id debe ser un número entero positivo' });
+      return res.status(400).json({ success: false, message: 'company_id debe ser un numero entero positivo' });
     }
 
     if (!companyId) {
@@ -214,7 +220,7 @@ const MarketplaceCredentialController = {
     if (nameExists) {
       return res.status(409).json({
         success: false,
-        message: 'Ya existe una conexión con este nombre para este marketplace'
+        message: 'Ya existe una conexion con este nombre para este marketplace'
       });
     }
 
@@ -224,11 +230,11 @@ const MarketplaceCredentialController = {
     if (credentialsExist) {
       return res.status(409).json({
         success: false,
-        message: 'Ya existe una conexión con las mismas credenciales para este marketplace'
+        message: 'Ya existe una conexion con las mismas credenciales para este marketplace'
       });
     }
 
-    // 3. Detectar tipo de autenticación del marketplace
+    // 3. Detectar tipo de autenticacion del marketplace
     const isOAuth = marketplace.client_id && marketplace.client_secret && marketplace.redirect_uri;
     const isManual = !isOAuth; // Falabella y similares
 
@@ -271,20 +277,20 @@ const MarketplaceCredentialController = {
       });
     }
 
-   // 5. Flujo OAuth (MercadoLibre): Guardar + Iniciar flujo de autorización
+   // 5. Flujo OAuth (MercadoLibre): Guardar + Iniciar flujo de autorizacion
     if (isOAuth) {
-      // ✅ Guardar credenciales base y CAPTURAR el registro creado
+      // Guardar credenciales base y capturar el registro creado
       newCredential = await MarketplaceCredentialRepository.createOrUpdate({
         marketplace_id,
         user_id: userId,
         company_id: companyId,
         name,
         country,
-        // Tokens se obtendrán después de la autorización
+        // Tokens se obtendran despues de la autorizacion
         access_token: null,
         refresh_token: null,
         expires_at: null,
-        active: true  // ← La credencial se crea ACTIVA (el front detectará cuando expire)
+        active: true  // La credencial se crea ACTIVA (el front detectara cuando expire)
       });
 
         logger.info(`[store] Nueva credencial creada:`, {
@@ -293,13 +299,13 @@ const MarketplaceCredentialController = {
         user_id: newCredential?.user_id
       });
 
-      // ✅ EJECUTAR LÓGICA DE OAUTH con la credencial recién creada
+      // Ejecutar logica de OAuth con la credencial recien creada
       const adapter = PublishingAdapterFactory.getAdapter(
         marketplace, 
         companyId, // companyId
         null, // branchId
         userId,
-        newCredential.id  // ← CLAVE: Pasar ID de la NUEVA credencial
+        newCredential.id  // Clave: pasar ID de la nueva credencial
       );
       
       if (!adapter) {
@@ -309,25 +315,25 @@ const MarketplaceCredentialController = {
       const status = await adapter.ensureValidCredentials();
 
       if (status.valid) {
-        // Ya está conectado (caso raro al crear, pero posible)
+        // Ya esta conectado (caso raro al crear, pero posible)
         return res.status(201).json({ 
           success: true, 
           message: "Ya conectado",
           credential_id: newCredential.id
         });
       } else if (status.auth_required) {
-        // ✅ DEVOLVER URL DE AUTORIZACIÓN - ESTO ES CLAVE
+        // Devolver URL de autorizacion
         return res.status(409).json({
           success: false,
           auth_required: true,
           auth_url: status.auth_url,
           message: status.message,
-          credential_id: newCredential.id  // ← Para referencia del frontend
+          credential_id: newCredential.id  // Para referencia del frontend
         });
       } else {
         return res.status(400).json({
           success: false,
-          error: status.error || "Error al iniciar conexión OAuth"
+          error: status.error || "Error al iniciar conexion OAuth"
         });
       }
     }
@@ -335,7 +341,7 @@ const MarketplaceCredentialController = {
     // Fallback por seguridad
     return res.status(400).json({
       success: false,
-      message: "Tipo de autenticación no reconocido"
+      message: "Tipo de autenticacion no reconocido"
     });
 
   } catch (error) {
@@ -372,10 +378,10 @@ const MarketplaceCredentialController = {
   logger.info(`Datos recibidos: ${JSON.stringify(req.body)}`);
   
   const userId = req.user.id;
-  const { id } = req.body; // ← CAMBIO: Ahora recibe credential_id
+  const { id } = req.body; // Cambio: ahora recibe credential_id
 
   try {
-    // 1. Obtener la credencial específica por ID
+    // 1. Obtener la credencial especifica por ID
     const credential = await MarketplaceCredentialRepository.findById(id);
     
     if (!credential) {
@@ -401,13 +407,13 @@ const MarketplaceCredentialController = {
       });
     }
 
-    // 4. Crear adapter pasando la credencial específica
+    // 4. Crear adapter pasando la credencial especifica
     const adapter = PublishingAdapterFactory.getAdapter(
       marketplace, 
       credential.company_id, // companyId
       null, // branchId
       userId,
-      credential// ← NUEVO: Pasar credencial específica
+      credential // Nuevo: pasar credencial especifica
     );
     
     if (!adapter) {
@@ -417,7 +423,7 @@ const MarketplaceCredentialController = {
       });
     }
 
-    // 4. Ejecutar validación/refresh con la credencial específica
+    // 4. Ejecutar validacion/refresh con la credencial especifica
     const status = await adapter.ensureValidCredentials();
 
     if (status.valid) {
@@ -481,7 +487,7 @@ const MarketplaceCredentialController = {
         );
         if (nameExists) {
           return res.status(409).json({ 
-            msg: 'Ya existe otra conexión con este nombre para este marketplace' 
+            msg: 'Ya existe otra conexion con este nombre para este marketplace' 
           });
         }
       }
@@ -501,12 +507,12 @@ const MarketplaceCredentialController = {
         );
         if (credentialsExist) {
           return res.status(409).json({ 
-            msg: 'Ya existe otra conexión con las mismas credenciales para este marketplace' 
+            msg: 'Ya existe otra conexion con las mismas credenciales para este marketplace' 
           });
         }
       }
 
-      // 4. Preparar datos para actualización parcial (solo campos enviados)
+      // 4. Preparar datos para actualizacion parcial (solo campos enviados)
       const updatePayload = {};
       if (name !== undefined) updatePayload.name = name;
       if (country !== undefined) updatePayload.country = country;
@@ -515,10 +521,10 @@ const MarketplaceCredentialController = {
       if (api_key !== undefined) updatePayload.api_key = api_key;
       if (active !== undefined) updatePayload.active = active;
 
-      // 5. Ejecutar actualización parcial
+      // 5. Ejecutar actualizacion parcial
       const credential = await MarketplaceCredentialRepository.updatePartial(id, updatePayload);
 
-      // 6. ✅ VERIFICAR CONEXIÓN AL MARKETPLACE (similar a warehouseMarketplaces)
+      // 6. Verificar conexion al marketplace (similar a warehouseMarketplaces)
       const marketplace = await MarketplaceRepository.findById(credential.marketplace_id);
       if (!marketplace) {
         return res.status(400).json({ msg: "Marketplace no encontrado" });
@@ -529,38 +535,38 @@ const MarketplaceCredentialController = {
       let connectionStatus = { valid: false, auth_required: false };
 
       if (isOAuth) {
-        // ✅ Para OAuth, verificar/renovar token usando el adapter
+        // Para OAuth, verificar/renovar token usando el adapter
         const adapter = PublishingAdapterFactory.getAdapter(
           marketplace,
           existing.company_id, // companyId
           null, // branchId
           req.user.id,
-          credential.id  // ← Pasar credencial actualizada
+          credential.id  // Pasar credencial actualizada
         );
 
         if (adapter && typeof adapter.ensureValidCredentials === 'function') {
           connectionStatus = await adapter.ensureValidCredentials();
         }
       } else {
-        // ✅ Para manual (Falabella), verificar que las credenciales existan
+        // Para manual (Falabella), verificar que las credenciales existan
         connectionStatus = {
           valid: !!(credential.seller_email && credential.seller_id && credential.api_key),
           message: credential.api_key ? "Credenciales manuales configuradas" : "Credenciales incompletas"
         };
       }
 
-      // 7. Log de éxito
+      // 7. Log de exito
       await LogRepository.create({
         user_id: metadata.user_id,
         action: 'marketplace_credential.update',
-        description: `Credenciales actualizadas para marketplace ${credential.marketplace_id} - Conexión: ${connectionStatus.valid ? 'OK' : 'Pendiente'}`,
+        description: `Credenciales actualizadas para marketplace ${credential.marketplace_id} - Conexion: ${connectionStatus.valid ? 'OK' : 'Pendiente'}`,
         ip_address: metadata.ip_address,
         user_agent: metadata.user_agent,
         status: 'success',
         meta: { id: credential.id, updated_fields: Object.keys(updatePayload), connection_valid: connectionStatus.valid }
       });
 
-      // 8. Respuesta segura (sin tokens) + estado de conexión
+      // 8. Respuesta segura (sin tokens) + estado de conexion
       const { access_token: _, refresh_token: __, api_key: ___, ...safeCredential } = credential;
       res.status(200).json({
         message: "Credenciales actualizadas correctamente",
@@ -569,7 +575,7 @@ const MarketplaceCredentialController = {
           valid: connectionStatus.valid,
           auth_required: connectionStatus.auth_required,
           auth_url: connectionStatus.auth_url,
-          message: connectionStatus.message || (connectionStatus.valid ? "Conectado" : "Requiere atención")
+          message: connectionStatus.message || (connectionStatus.valid ? "Conectado" : "Requiere atencion")
         }
       });
 
@@ -585,7 +591,7 @@ const MarketplaceCredentialController = {
       });
       logger.error('MarketplaceCredentialController->update: ' + error.message);
       
-      // Manejar errores específicos
+      // Manejar errores especificos
       if (error.message === 'credentialNotFound') {
         return res.status(404).json({ msg: "credentialNotFound" });
       }
