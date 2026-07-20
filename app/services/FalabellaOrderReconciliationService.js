@@ -125,7 +125,7 @@ function determinePublicationLifecycle(productStatus) {
   const productErrors = Array.isArray(productStatus?.product_errors) ? productStatus.product_errors : [];
 
   if (!productStatus || productStatus.found === false) {
-    return { status: 'processing', isFinal: false, errorMessage: null };
+    return { status: 'pending', isFinal: false, errorMessage: null };
   }
 
   if (productErrors.length > 0) {

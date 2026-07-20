@@ -519,7 +519,7 @@ function resolveFalabellaMarketplaceDisplayStatus(productStatus, { taskStatus = 
   }
 
   if (productStatus.found === false) {
-    return 'processing';
+    return 'pending';
   }
 
   const status = String(productStatus.status || '').trim().toLowerCase();
@@ -557,6 +557,10 @@ function resolveFalabellaMarketplaceDisplayStatus(productStatus, { taskStatus = 
 
   if (status === 'active' && isPublished === false) {
     return 'not_published';
+  }
+
+  if (taskStatus === 'pending') {
+    return 'pending';
   }
 
   if (taskStatus === 'processing') {
@@ -3121,12 +3125,12 @@ async publishedProducts(req, res) {
         productResponse.feed_id = resolveFalabellaFeedId(task, marketplaceLink);
         
         // ✅ 🔑 Mantener sent_at solo cuando exista información de envío
-        if (task.status === 'processing') {
+        if (task.status === 'processing' || task.status === 'pending') {
           const errorDetails = task.error_details || {};
           productResponse.sent_at = errorDetails.sent_at || null;
           productResponse.publication_note = marketplaceStatus === 'under_review'
             ? 'Producto en revisión por Falabella...'
-            : 'Producto enviado a Falabella, esperando confirmación del webhook...';
+            : 'Producto enviado a Falabella, esperando exposición...';
         } else {
           productResponse.publication_note = buildFalabellaPublicationNoteExact({
             raw: marketplaceLink?.published_payload || task.api_response || task.payload || null
@@ -4102,6 +4106,4 @@ async updatePayload(req, res) {
 };
 
 module.exports = ProductPublishingTaskController;
-
-
 

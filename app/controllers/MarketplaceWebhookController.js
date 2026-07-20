@@ -2238,7 +2238,7 @@ async function processFalabellaProductWebhook(payload, options = {}) {
     // ✅ 🔑 NUEVO: Si se encontró la tarea, actualizarla con el estado real del producto
     if (persistResult.taskUpdated && persistResult.taskId) {
       const task = await ProductPublishingTaskRepository.findById(persistResult.taskId);
-      if (task && ['processing', 'published_with_warnings', 'published'].includes(task.status)) {
+      if (task && ['pending', 'processing', 'published_with_warnings', 'published'].includes(task.status)) {
         const snapshot = persistResult.snapshot || {};
         const qcStatus = snapshot.qc_status || null;
         const productStatus = snapshot.status || null;
@@ -3193,7 +3193,7 @@ function resolveFalabellaMarketplaceDisplayStatus(productStatus, { taskStatus = 
   }
 
   if (productStatus.found === false) {
-    return 'processing';
+    return 'pending';
   }
 
   const status = String(productStatus.status || '').trim().toLowerCase();
@@ -3221,6 +3221,10 @@ function resolveFalabellaMarketplaceDisplayStatus(productStatus, { taskStatus = 
     return 'not_published';
   }
 
+  if (taskStatus === 'pending') {
+    return 'pending';
+  }
+
   if (taskStatus === 'processing') {
     return 'processing';
   }
@@ -3233,7 +3237,7 @@ function determineFalabellaTaskLifecycle(productStatus, { realErrors = [], hasIm
   const qcStatus = String(productStatus?.qc_status || '').trim().toLowerCase();
 
   if (!productStatus || productStatus.found === false) {
-    return { status: 'processing', isFinal: false, errorMessage: null };
+    return { status: 'pending', isFinal: false, errorMessage: null };
   }
 
   if (realErrors.length > 0) {

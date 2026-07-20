@@ -418,7 +418,7 @@ class PublishingService {
           error_details: {
             feed_id: null,
             action: 'ProductCreate',
-            status: 'processing',
+            status: 'pending',
             sku: transformed.sku,
             category_id: transformed.PrimaryCategory,
             category_name: transformed.categoryName,
@@ -562,7 +562,7 @@ class PublishingService {
 
           if (falabellaTask) {
             await ProductPublishingTaskRepository.updateTask(falabellaTask, {
-              status: 'processing',
+              status: 'pending',
               external_id: externalId || transformed.sku,
               external_url: result.data?.permalink || null,
               error_message: result.warning_message || 'Producto enviado a Falabella, esperando confirmación del webhook...',
@@ -583,7 +583,7 @@ class PublishingService {
             warnings: falabellaWarnings,
             warning_message: result.warning_message || 'Producto enviado a Falabella. El estado se actualizará automáticamente.',
             verification: null,
-            status: 'processing',
+            status: 'pending',
             error: null
           };
         }
