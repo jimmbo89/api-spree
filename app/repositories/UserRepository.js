@@ -1,6 +1,6 @@
 // app/repositories/UserRepository.js
 const { Op } = require('sequelize');
-const { User, Role, Company, UserCompany, UserAclScope, Warehouse, Pool, Plan, Permission } = require('../models'); // 👈 Añadido Role
+const { User, Role, Company, UserCompany, UserAclScope, Warehouse, Pool, Plan, Permission, UserMarketplaceCredential, MarketplaceCredential, Marketplace } = require('../models'); // 👈 Añadido Role
 const logger = require('../../config/logger');
 const ImageService = require('../services/ImageService');
 
@@ -107,6 +107,27 @@ const UserRepository = {
               }]
             }
           ]
+        },
+        {
+          model: UserMarketplaceCredential,
+          as: 'marketplaceCredentialAccess',
+          attributes: ['id', 'company_id', 'marketplace_credential_id', 'status'],
+          where: { company_id },
+          required: false,
+          include: [
+            {
+              model: MarketplaceCredential,
+              as: 'marketplaceCredential',
+              attributes: ['id', 'name', 'company_id', 'marketplace_id'],
+              include: [
+                {
+                  model: Marketplace,
+                  as: 'marketplace',
+                  attributes: ['id', 'name', 'domain']
+                }
+              ]
+            }
+          ]
         }
       ],
       order: [['name', 'ASC']],
@@ -133,6 +154,15 @@ const UserRepository = {
     const plainUsers = users.map(user => {
       // SABEMOS que user.memberships[0] existe por el INNER JOIN
       const membership = user.memberships[0];
+      const credentials = Array.isArray(user.marketplaceCredentialAccess)
+        ? user.marketplaceCredentialAccess.map((access) => ({
+            id: access.marketplaceCredential?.id || access.marketplace_credential_id || null,
+            name: access.marketplaceCredential?.name || null,
+            marketplace_domain: access.marketplaceCredential?.marketplace?.domain || null,
+            status: access.status,
+            relation_id: access.id
+          }))
+        : [];
       
       // Procesar warehouses y pools de ACL
       const warehouses = [];
@@ -203,7 +233,9 @@ const UserRepository = {
           company_name: membership.company?.name || '—',
           warehouses: warehouses,
           pools: pools
-        }]
+        }],
+
+        credentials
       };
     });
 

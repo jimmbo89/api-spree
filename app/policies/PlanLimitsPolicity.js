@@ -70,7 +70,7 @@ const checkPlanLimit = (resourceType) => {
           break;
           
         case 'marketplaces':
-          currentCount = await MarketplaceCredentialRepository.countActiveByMarketplace(user_id); // excluye borradores
+          currentCount = await MarketplaceCredentialRepository.countActiveByMarketplace(companyId); // excluye borradores
           maxLimit = plan.max_integrations;
           resourceName = 'marketplaces';
           break;

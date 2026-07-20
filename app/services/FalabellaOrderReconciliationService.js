@@ -242,13 +242,13 @@ const FalabellaOrderReconciliationService = {
     }
 
     this.runOnce().catch((err) => {
-      logger.error('[FB Reconcile] Error en ejecucion inicial:', err.message);
+      logger.error(`[FB Reconcile] Error en ejecucion inicial: ${err.message}`);
     });
 
     const intervalMs = CONFIG.INTERVAL_MINUTES * 60 * 1000;
     intervalHandle = setInterval(() => {
       this.runOnce().catch((err) => {
-        logger.error('[FB Reconcile] Error en ejecucion programada:', err.message);
+        logger.error(`[FB Reconcile] Error en ejecucion programada: ${err.message}`);
       });
     }, intervalMs);
 

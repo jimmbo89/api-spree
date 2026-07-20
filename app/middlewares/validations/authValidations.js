@@ -1,6 +1,26 @@
 // app/validations/authValidation.js
 const Joi = require('joi');
 
+const marketplaceCredentialAccessSchema = Joi.alternatives().try(
+  Joi.number().integer().positive(),
+  Joi.object({
+    marketplace_credential_id: Joi.number().integer().positive().required(),
+    status: Joi.number().valid(0, 1).optional().default(1)
+  }),
+  Joi.string().custom((value, helpers) => {
+    if (value === '' || value === null) return value;
+    try {
+      const parsed = JSON.parse(value);
+      if (!Array.isArray(parsed)) {
+        return helpers.message('El campo "marketplace_credentials" debe ser un array JSON válido');
+      }
+      return value;
+    } catch (error) {
+      return helpers.message('El campo "marketplace_credentials" debe ser un array JSON válido');
+    }
+  })
+);
+
 const registerSchema = Joi.object({
   name: Joi.string().min(2).max(255).required().messages({
     'string.min': 'El nombre debe tener al menos 2 caracteres',
@@ -117,6 +137,22 @@ const createUserSchema = Joi.object({
     })
   ).optional(),
 
+  marketplace_credentials: Joi.alternatives().try(
+    Joi.array().items(marketplaceCredentialAccessSchema),
+    Joi.string().custom((value, helpers) => {
+      if (value === '' || value === null) return value;
+      try {
+        const parsed = JSON.parse(value);
+        if (!Array.isArray(parsed)) {
+          return helpers.message('El campo "marketplace_credentials" debe ser un array JSON válido');
+        }
+        return value;
+      } catch (error) {
+        return helpers.message('El campo "marketplace_credentials" debe ser un array JSON válido');
+      }
+    })
+  ).optional(),
+
 });
 
 // Actualizar usuario
@@ -166,13 +202,29 @@ const updateUserSchema = Joi.object({
     })
   ).optional(),
 
+  marketplace_credentials: Joi.alternatives().try(
+    Joi.array().items(marketplaceCredentialAccessSchema),
+    Joi.string().custom((value, helpers) => {
+      if (value === '' || value === null) return value;
+      try {
+        const parsed = JSON.parse(value);
+        if (!Array.isArray(parsed)) {
+          return helpers.message('El campo "marketplace_credentials" debe ser un array JSON válido');
+        }
+        return value;
+      } catch (error) {
+        return helpers.message('El campo "marketplace_credentials" debe ser un array JSON válido');
+      }
+    })
+  ).optional(),
+
   // Imagen: si se envía como string (ej: "users/default.jpg"), se permite
   image: Joi.string().optional() // solo para resetear a default
 })
   .custom((value, helpers) => {
     const updatableFields = [
       'name', 'email', 'user', 'password', 'invitation_method',
-      'role_id', 'warehouses', 'pools', 'image'
+      'role_id', 'warehouses', 'pools', 'marketplace_credentials', 'image'
     ];
     const hasUpdate = updatableFields.some(field => value[field] !== undefined);
     if (!hasUpdate) {

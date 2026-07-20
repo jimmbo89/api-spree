@@ -3,6 +3,83 @@ const { ProductPublishingTask, Product, Marketplace, Warehouse, Branch, Company,
 const logger = require('../../config/logger');
 
 const ProductPublishingTaskRepository = {
+  buildSiblingTaskScope(task = {}) {
+    const where = {
+      external_id: task.external_id
+    };
+
+    if (task.marketplace_id != null) where.marketplace_id = task.marketplace_id;
+    if (task.credential_id != null) where.credential_id = task.credential_id;
+
+    if (task.company_id != null) {
+      where.company_id = task.company_id;
+    } else {
+      where.company_id = { [Op.is]: null };
+    }
+
+    if (task.branch_id != null) {
+      where.branch_id = task.branch_id;
+    } else {
+      where.branch_id = { [Op.is]: null };
+    }
+
+    return where;
+  },
+
+  async fanoutPublicationState(task, updateData = {}, options = {}) {
+    if (!task?.id || !task?.external_id) {
+      return 0;
+    }
+
+    const scope = this.buildSiblingTaskScope(task);
+    const sanitizedUpdateData = { ...updateData };
+
+    delete sanitizedUpdateData.id;
+    delete sanitizedUpdateData.user_id;
+    delete sanitizedUpdateData.company_id;
+    delete sanitizedUpdateData.branch_id;
+    delete sanitizedUpdateData.marketplace_id;
+    delete sanitizedUpdateData.credential_id;
+    delete sanitizedUpdateData.external_id;
+    delete sanitizedUpdateData.createdAt;
+    delete sanitizedUpdateData.updatedAt;
+
+    if (Object.prototype.hasOwnProperty.call(sanitizedUpdateData, 'error_details')) {
+      if (typeof sanitizedUpdateData.error_details === 'string') {
+        try {
+          const parsed = JSON.parse(sanitizedUpdateData.error_details);
+          sanitizedUpdateData.error_details = parsed && typeof parsed === 'object' ? parsed : null;
+        } catch (error) {
+          sanitizedUpdateData.error_details = null;
+        }
+      } else if (sanitizedUpdateData.error_details && typeof sanitizedUpdateData.error_details !== 'object') {
+        sanitizedUpdateData.error_details = null;
+      }
+    }
+
+    const siblingIds = await ProductPublishingTask.findAll({
+      where: {
+        ...scope,
+        id: { [Op.ne]: task.id }
+      },
+      attributes: ['id'],
+      raw: true
+    });
+
+    if (!Array.isArray(siblingIds) || siblingIds.length === 0) {
+      return 0;
+    }
+
+    await ProductPublishingTask.update(sanitizedUpdateData, {
+      where: {
+        id: { [Op.in]: siblingIds.map((record) => record.id) }
+      },
+      ...options
+    });
+
+    return siblingIds.length;
+  },
+
   buildFeedIdSearchClauses(feedId) {
     return [
       { external_id: feedId },
@@ -32,6 +109,7 @@ const ProductPublishingTaskRepository = {
     logger.info(`[REPO] Actualizando estado de tarea ID ${task.id} a: ${status}`);
     try {
       await task.update(update, options);
+      await this.fanoutPublicationState(task, update, options);
       return task;
     } catch (error) {
       logger.error(`[REPO] ERROR al actualizar estado:`, error.message);
@@ -56,6 +134,7 @@ const ProductPublishingTaskRepository = {
         }
       }
       await task.update(sanitizedUpdateData, options);
+      await this.fanoutPublicationState(task, sanitizedUpdateData, options);
       return task;
     } catch (error) {
       logger.error(`[REPO] ERROR al actualizar tarea:`, error.message);
@@ -215,7 +294,7 @@ const ProductPublishingTaskRepository = {
     });
   },
 
-  async findLatestPublishedByProductMarketplaceAndCredential(productId, marketplaceId, credentialId, userId = null) {
+  async findLatestPublishedByProductMarketplaceAndCredential(productId, marketplaceId, credentialId, companyId = null) {
     const where = {
       product_id: productId,
       marketplace_id: marketplaceId,
@@ -228,8 +307,8 @@ const ProductPublishingTaskRepository = {
       where.credential_id = credentialId;
     }
 
-    if (userId) {
-      where.user_id = userId;
+    if (companyId) {
+      where.company_id = companyId;
     }
 
     return await ProductPublishingTask.findOne({

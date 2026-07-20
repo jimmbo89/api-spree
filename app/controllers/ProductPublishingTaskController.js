@@ -1,5 +1,4 @@
 // src/controllers/ProductPublishingTaskController.js
-const { getUserId } = require('../../config/context');
 const logger = require('../../config/logger');
 const { v4: uuidv4 } = require('uuid');
 const { sequelize, Job } = require('../models');
@@ -14,6 +13,7 @@ const {
   LogRepository,
   WarehouseProductRepository,
   MarketplaceCredentialRepository,
+  UserMarketplaceCredentialRepository,
   ProductMarketplaceLinkRepository,
   PoolRepository,
   ProductCategoryRepository,
@@ -854,30 +854,48 @@ const ProductPublishingTaskController = {
 async warehouseMarketplaces(req, res) {
   logger.info(`${req.user?.name || 'Unknown'} - Lista ruta combinada de almacenes y marketplaces`);
 
-  const { company_id, user_id: bodyUserId, status } = req.body;
-  let user_id = bodyUserId || getUserId;
+  const { company_id, status } = req.body;
+  const authUserId = Number(req.user?.id || 0) || null;
+  const authCompanyId = Number(req.user?.company_id || 0) || null;
+  const bodyCompanyId = company_id ? Number(company_id) : null;
+  const userId = authUserId;
+  const companyId = authCompanyId || bodyCompanyId;
 
-  // Parsear IDs
-  const companyId = company_id ? Number(company_id) : undefined;
-  const userId = user_id ? Number(user_id) : undefined;
+  if (!userId) {
+    return res.status(401).json({ success: false, message: 'Unauthorized' });
+  }
 
-  if (company_id) {
-    const company = await CompanyRepository.findById(company_id);
+  if (authCompanyId && bodyCompanyId && authCompanyId !== bodyCompanyId) {
+    return res.status(403).json({
+      success: false,
+      message: 'companyContextMismatch'
+    });
+  }
+
+  if (!companyId) {
+    return res.status(400).json({
+      success: false,
+      message: 'company_id_required'
+    });
+  }
+
+  if (companyId) {
+    const company = await CompanyRepository.findById(companyId);
     if (!company) {
-      logger.info(`WarehouseController->list: Compañía no encontrada con ID ${company_id}`);
+      logger.info(`WarehouseController->list: Compañía no encontrada con ID ${companyId}`);
       return res.status(400).json({ success: false, message: "companyNotFound" });
     }
   }
 
   try {
     const pools = await PoolRepository.findFiltered({
-      companyId: company_id,
-      userId: user_id,
+      companyId,
+      userId,
       isActive: true
     });
 
-    const credentials = await MarketplaceCredentialRepository.findByUserDecifrado(user_id);
-    
+    const credentials = await UserMarketplaceCredentialRepository.findActiveCredentialsByUserAndCompany(userId, companyId, null);
+
     // 3. ✅ RENOVAR TOKENS EXPIRADOS ANTES DE TRANSFORMAR
     const refreshedCredentials = await ProductPublishingTaskController.refreshExpiredTokens(credentials, userId);
 
@@ -1019,27 +1037,47 @@ async warehouseMarketplaces(req, res) {
 async warehouseMarketplacesWithProduct(req, res) {
   logger.info(`${req.user?.name || 'Unknown'} - Lista ruta combinada de almacenes, marketplaces y productos por product_id`);
 
-  const { company_id, user_id: bodyUserId, product_id } = req.body;
-  let user_id = bodyUserId || getUserId;
+  const { company_id, product_id } = req.body;
+  const authUserId = Number(req.user?.id || 0) || null;
+  const authCompanyId = Number(req.user?.company_id || 0) || null;
+  const bodyCompanyId = company_id ? Number(company_id) : null;
+  const userId = authUserId;
+  const companyId = authCompanyId || bodyCompanyId;
 
-  const userId = user_id ? Number(user_id) : undefined;
+  if (!userId) {
+    return res.status(401).json({ success: false, message: 'Unauthorized' });
+  }
 
-  if (company_id) {
-    const company = await CompanyRepository.findById(company_id);
+  if (authCompanyId && bodyCompanyId && authCompanyId !== bodyCompanyId) {
+    return res.status(403).json({
+      success: false,
+      message: 'companyContextMismatch'
+    });
+  }
+
+  if (!companyId) {
+    return res.status(400).json({
+      success: false,
+      message: 'company_id_required'
+    });
+  }
+
+  if (companyId) {
+    const company = await CompanyRepository.findById(companyId);
     if (!company) {
-      logger.info(`WarehouseController->list: Compañía no encontrada con ID ${company_id}`);
+      logger.info(`WarehouseController->list: Compañía no encontrada con ID ${companyId}`);
       return res.status(400).json({ success: false, message: "companyNotFound" });
     }
   }
 
   try {
     let pools = await PoolRepository.findFiltered({
-      companyId: company_id,
-      userId: user_id,
+      companyId,
+      userId,
       isActive: true
     });
 
-    const credentials = await MarketplaceCredentialRepository.findByUserDecifrado(user_id);
+    const credentials = await UserMarketplaceCredentialRepository.findActiveCredentialsByUserAndCompany(userId, companyId, null);
     const refreshedCredentials = await ProductPublishingTaskController.refreshExpiredTokens(credentials, userId);
 
     const marketplaces = refreshedCredentials.map(credential => {
@@ -1128,7 +1166,7 @@ async warehouseMarketplacesWithProduct(req, res) {
     let products = [];
     if (selectedWarehouseIds.length > 0) {
       products = await WarehouseProductRepository.findProductsByWarehouseIds({
-        companyId: company_id,
+        companyId,
         warehouseIds: selectedWarehouseIds
       });
 
@@ -1675,9 +1713,29 @@ async store(req, res) {
 
         // ✅ REFRESCO PREVENTIVO DE TOKENS (antes de publicar)
         // Esto evita errores de autenticación durante la publicación en background
-        if (action === 'publish') {
-          const credentialIds = normalizedMarketplaces.map(mp => mp.credential_id);
-          const credentials = await MarketplaceCredentialRepository.findByIds(credentialIds);
+      if (action === 'publish') {
+        const credentialIds = normalizedMarketplaces.map(mp => mp.credential_id);
+        const accessibleCredentials = await UserMarketplaceCredentialRepository.findActiveCredentialsByUserAndCompany(
+          metadata.user_id,
+          company_id,
+          null
+        );
+        const accessibleCredentialIds = new Set(
+          (Array.isArray(accessibleCredentials) ? accessibleCredentials : [])
+            .map(cred => Number(cred.id))
+            .filter(id => Number.isInteger(id) && id > 0)
+        );
+        const unauthorizedCredentialIds = credentialIds.filter(id => !accessibleCredentialIds.has(Number(id)));
+
+        if (unauthorizedCredentialIds.length > 0) {
+          return res.status(403).json({
+            success: false,
+            msg: 'credentials_not_allowed',
+            details: `Las credenciales ${unauthorizedCredentialIds.join(', ')} no están asignadas al usuario en esta empresa`
+          });
+        }
+
+        const credentials = await MarketplaceCredentialRepository.findByIds(credentialIds);
 
           if (credentials.length > 0) {
             logger.info(`[publishDraft] 🔄 Refrescando ${credentials.length} credenciales antes de publicar...`);
@@ -2809,7 +2867,11 @@ async publishedProducts(req, res) {
 
     if (useManteinersFlag) {
       if (userId != null) {
-        const credentials = await MarketplaceCredentialRepository.findByUserDecifrado(userId);
+        const credentials = await UserMarketplaceCredentialRepository.findActiveCredentialsByUserAndCompany(
+          userId,
+          companyId ?? null,
+          null
+        );
         const marketplaceIds = [
           ...new Set(
             (Array.isArray(credentials) ? credentials : [])
@@ -3177,6 +3239,25 @@ async publishedProducts(req, res) {
         return res.status(404).json({ success: false, msg: 'credential_not_found' });
       }
 
+      if (Number(credential.company_id) !== Number(companyId)) {
+        return res.status(403).json({
+          success: false,
+          msg: 'credential_company_mismatch'
+        });
+      }
+
+      const credentialAccess = await UserMarketplaceCredentialRepository.findByUserAndCompany(userId, companyId, null);
+      const canUseCredential = Array.isArray(credentialAccess)
+        ? credentialAccess.some((access) => Number(access.marketplace_credential_id) === Number(credentialId) && Number(access.status) === 1)
+        : false;
+
+      if (!canUseCredential) {
+        return res.status(403).json({
+          success: false,
+          msg: 'credential_not_allowed'
+        });
+      }
+
       const preflightAdapter = new MercadoLibreAdapter(
         marketplace.id,
         companyId,
@@ -3210,8 +3291,7 @@ async publishedProducts(req, res) {
         externalId,
         companyId,
         branchId,
-        credentialId,
-        userId
+        credentialId
       });
 
       if (!task) {
@@ -3361,8 +3441,7 @@ async publishedProducts(req, res) {
         externalId,
         task.company_id || companyId,
         task.branch_id || branchId || null,
-        credentialId,
-        userId
+        credentialId
       );
 
       if (link) {
@@ -3371,7 +3450,8 @@ async publishedProducts(req, res) {
           external_url: updatedItem.permalink || link.external_url || null,
           published_stock: extractPublishedStock(updatedItem),
           published_payload: updatedItem,
-          last_synced_at: new Date()
+          last_synced_at: new Date(),
+          user_id: userId
         });
       }
 
@@ -3534,8 +3614,7 @@ async publishedProducts(req, res) {
         externalId,
         companyId,
         branchId,
-        credentialId,
-        userId
+        credentialId
       });
 
       if (!task) {
@@ -3825,7 +3904,8 @@ async publishedProducts(req, res) {
           external_url: currentProductState.permalink || link.external_url || null,
           published_stock: currentProductState.available_quantity,
           published_payload: apiResponseToSave, // ✅ Payload completo con MERGE
-          last_synced_at: new Date()
+          last_synced_at: new Date(),
+          user_id: userId
         });
 
         logger.info(`[updateFalabellaItem] ✅ ProductMarketplaceLink actualizado:`, {

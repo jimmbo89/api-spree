@@ -381,6 +381,7 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
   const companyInfo = await resolveCompanyFromListing(ML_MARKETPLACE_KEY, firstListingId);
   const companyId = companyInfo?.company_id || null;
   const branchId = companyInfo?.branch_id || null;
+  const publicationUserId = companyInfo?.user_id || credential.user_id || null;
   const existingOrder = await MarketplaceOrderRepository.findByMarketplaceOrderId(
     ML_MARKETPLACE_KEY,
     String(order.id)
@@ -391,7 +392,7 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
     marketplace: ML_MARKETPLACE_KEY,
     marketplace_order_id: String(order.id),
     marketplace_credential_id: credential.id,
-    user_id: credential.user_id || null,
+    user_id: publicationUserId,
     company_id: companyId,
     branch_id: branchId,
     order_status: mapMercadoLibreOrderStatus(order.order_status),
@@ -2078,13 +2079,13 @@ async function processFalabellaProductWebhook(payload, options = {}) {
     }
 
     const taskForSku = await ProductPublishingTaskRepository.findLatestByExternalIdAndContext({
+      marketplaceId: credential.marketplace_id || null,
       externalId: String(sellerSku),
       credentialId: credential.id || null,
       companyId: credential.company_id || null,
-      branchId: credential.branch_id || null,
-      userId: credential.user_id || null
+      branchId: credential.branch_id || null
     }) || await ProductPublishingTaskRepository.findLatestByExternalId(
-      null,
+      credential.marketplace_id || null,
       String(sellerSku)
     );
     credential = await resolveFalabellaCredentialForTask(taskForSku, credential) || credential;
@@ -2387,6 +2388,7 @@ async function processFalabellaEvent({ event, payload, orderId }) {
   const companyInfo = await resolveCompanyFromListing(FB_MARKETPLACE_KEY, firstSku);
   const companyId = companyInfo?.company_id || null;
   const branchId = companyInfo?.branch_id || null;
+  const publicationUserId = companyInfo?.user_id || credential.user_id || null;
   const existingOrder = await MarketplaceOrderRepository.findByMarketplaceOrderId(
     FB_MARKETPLACE_KEY,
     String(orderId)
@@ -2402,7 +2404,7 @@ async function processFalabellaEvent({ event, payload, orderId }) {
     marketplace: FB_MARKETPLACE_KEY,
     marketplace_order_id: String(orderId),
     marketplace_credential_id: credential.id,
-    user_id: credential.user_id || null,
+    user_id: publicationUserId,
     company_id: companyId,
     branch_id: branchId,
     order_status: mapFalabellaOrderStatus(orderInfo.status),
@@ -3496,19 +3498,19 @@ async function persistFalabellaProductState({ credential, sellerSku, product, pa
     }
   }
 
-  let latestTask = await ProductPublishingTaskRepository.findLatestByExternalId(
+  let latestTask = await ProductPublishingTaskRepository.findLatestByExternalIdAndContext({
     marketplaceId,
-    String(sellerSku)
-  );
+    externalId: String(sellerSku),
+    companyId: link?.company_id || sourceTask?.company_id || null,
+    branchId: link?.branch_id || sourceTask?.branch_id || null,
+    credentialId: credential?.id || sourceTask?.credential_id || link?.credential_id || null
+  });
 
-  if (!latestTask && link?.company_id) {
-    latestTask = await ProductPublishingTaskRepository.findLatestByExternalIdAndContext({
+  if (!latestTask) {
+    latestTask = await ProductPublishingTaskRepository.findLatestByExternalId(
       marketplaceId,
-      externalId: String(sellerSku),
-      companyId: link.company_id,
-      branchId: link.branch_id || null,
-      credentialId: credential?.id || null
-    });
+      String(sellerSku)
+    );
   }
 
   const updatePayload = {
@@ -5089,11 +5091,11 @@ function mapFalabellaOrderStatus(fbStatus) {
 // ==========================================
 
 /**
- * Resuelve compañía y usuario desde un listing/producto
- * Usa ProductMarketplaceLink que sí tiene company_id
+ * Resuelve compañía, sucursal y usuario operativo desde un listing/producto.
+ * Usa ProductMarketplaceLink como fuente canónica.
  * @param {String} marketplace - Nombre del marketplace
  * @param {String} listingId - ID del listing en el marketplace
- * @returns {Promise<Object|null>} { company_id, user_id }
+ * @returns {Promise<Object|null>} { company_id, branch_id, user_id }
  */
 async function resolveCompanyFromListing(marketplace, listingId) {
   try {
@@ -5105,10 +5107,10 @@ async function resolveCompanyFromListing(marketplace, listingId) {
       listingId
     );
     
-    if (link && link.company_id) {
+    if (link) {
       return {
-        company_id: link.company_id,
-        user_id: null, // El link no tiene user_id directo
+        company_id: link.company_id || null,
+        user_id: link.user_id || null,
         branch_id: link.branch_id || null
       };
     }

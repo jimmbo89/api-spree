@@ -6,8 +6,19 @@ module.exports = (sequelize, DataTypes) => {
   class MarketplaceCredential extends Model {
     static associate(models) {
       MarketplaceCredential.belongsTo(models.Marketplace, { foreignKey: 'marketplace_id', as: 'marketplace' });
+      MarketplaceCredential.belongsTo(models.Company, { foreignKey: 'company_id', as: 'company' });
       MarketplaceCredential.belongsTo(models.User, { foreignKey: 'user_id', as: 'user', onDelete: 'CASCADE' });
-      //MarketplaceCredential.belongsTo(models.Company, { foreignKey: 'company_id', as: 'company' });
+      MarketplaceCredential.hasMany(models.UserMarketplaceCredential, {
+        foreignKey: 'marketplace_credential_id',
+        as: 'userAccess',
+        onDelete: 'CASCADE'
+      });
+      MarketplaceCredential.belongsToMany(models.User, {
+        through: models.UserMarketplaceCredential,
+        foreignKey: 'marketplace_credential_id',
+        otherKey: 'user_id',
+        as: 'authorizedUsers'
+      });
       MarketplaceCredential.hasMany(models.ProductPublishingTask, { foreignKey: 'credential_id', as: 'credentials', onDelete: 'SET NULL' });
       MarketplaceCredential.hasMany(models.JobProduct, {
         foreignKey: 'credential_id',
@@ -26,6 +37,12 @@ module.exports = (sequelize, DataTypes) => {
     marketplace_id: {
       type: DataTypes.BIGINT,
       allowNull: false
+    },
+    company_id: {
+      type: DataTypes.BIGINT,
+      allowNull: true,
+      references: { model: 'companies', key: 'id' },
+      comment: 'Empresa propietaria de la conexión'
     },
     user_id: {
       type: DataTypes.BIGINT,
@@ -96,8 +113,12 @@ module.exports = (sequelize, DataTypes) => {
      indexes: [
       {
         unique: true,
-        fields: ['marketplace_id', 'user_id', 'name'],
-        name: 'mc_marketplace_user_name_unique'
+        fields: ['marketplace_id', 'company_id', 'name'],
+        name: 'mc_marketplace_company_name_unique'
+      },
+      {
+        fields: ['company_id'],
+        name: 'mc_company_idx'
       },
       {
         fields: ['name'],

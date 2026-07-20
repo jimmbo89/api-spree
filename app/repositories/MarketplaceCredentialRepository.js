@@ -1,13 +1,111 @@
 // repositories/MarketplaceCredentialRepository.js
-const { MarketplaceCredential, Marketplace, User, ProductFieldMapping } = require('../models');
+const { MarketplaceCredential, Marketplace, Company, User, ProductFieldMapping, UserMarketplaceCredential } = require('../models');
 const EncryptionService = require('../services/EncryptionService');
 const logger = require('../../config/logger');
 const { Op } = require('sequelize');
+
+async function getAccessibleCredentialIdsByUser(userId, companyId = null) {
+  const where = {
+    user_id: userId,
+    status: 1
+  };
+
+  if (companyId != null) {
+    where.company_id = companyId;
+  }
+
+  const records = await UserMarketplaceCredential.findAll({
+    where,
+    attributes: ['marketplace_credential_id'],
+    raw: true
+  });
+
+  return records
+    .map(record => Number(record.marketplace_credential_id))
+    .filter(id => Number.isInteger(id) && id > 0);
+}
+
+function dedupeById(records) {
+  const map = new Map();
+  for (const record of records) {
+    if (!record) continue;
+    const id = Number(record.id);
+    if (!Number.isInteger(id) || id <= 0) continue;
+    if (!map.has(id)) {
+      map.set(id, record);
+    }
+  }
+  return Array.from(map.values());
+}
 
 const MarketplaceCredentialRepository = {
   /**
    * Obtiene la credencial (token) de un usuario para un marketplace específico
    */
+  async findByMarketplaceAndCompany(marketplaceId, companyId, name = null) {
+    const where = {
+      marketplace_id: marketplaceId,
+      company_id: companyId
+    };
+
+    if (name) {
+      where.name = name;
+    }
+
+    const marketplace = await Marketplace.findOne({
+      where: { id: marketplaceId },
+      include: [{
+        model: MarketplaceCredential,
+        as: 'credentials',
+        where,
+        required: false
+      }]
+    });
+
+    if (!marketplace) {
+      return null;
+    }
+
+    const credential = marketplace.credentials?.[0];
+
+    let client_secret = marketplace.client_secret;
+    if (client_secret) {
+      client_secret = EncryptionService.decrypt(client_secret);
+    }
+
+    let access_token = credential?.access_token;
+    let refresh_token = credential?.refresh_token;
+    let api_key = credential?.api_key;
+    if (access_token) access_token = EncryptionService.decrypt(access_token);
+    if (refresh_token) refresh_token = EncryptionService.decrypt(refresh_token);
+    if (api_key) api_key = EncryptionService.decrypt(api_key);
+
+    return {
+      id: credential?.id || null,
+      company_id: companyId,
+      user_id: credential?.user_id || null,
+      marketplace_id: marketplace.id,
+      name: credential?.name || null,
+      country: credential?.country || null,
+      access_token: access_token || null,
+      refresh_token: refresh_token || null,
+      expires_at: credential?.expires_at || null,
+      active: credential?.active || false,
+      seller_email: credential?.seller_email || null,
+      seller_id: credential?.seller_id,
+      api_key: api_key || null,
+      additional_data: credential?.additional_data,
+      client_id: marketplace.client_id,
+      client_secret,
+      redirect_uri: marketplace.redirect_uri,
+      scopes: marketplace.scopes,
+      domain: marketplace.domain?.trim() || null,
+      marketplace_name: marketplace.name,
+      type: marketplace.type,
+      description: marketplace.description
+    };
+  },
+
   async findByMarketplaceAndUser(marketplaceId, userId, name = null) {
     const where = {
       marketplace_id: marketplaceId,
@@ -76,17 +174,25 @@ const MarketplaceCredentialRepository = {
   /**
    * Obtiene credenciales filtradas por usuario; si no se pasa userId devuelve todas.
    */
-  async findByUser(userId, marketplaceId = null) {
-    const where = {};
-    if (userId) where.user_id = userId;
-    if (marketplaceId) where.marketplace_id = marketplaceId;
+  async findByUser(userId, marketplaceId = null, companyId = null) {
+    const directWhere = {};
+    if (userId) directWhere.user_id = userId;
+    if (marketplaceId) directWhere.marketplace_id = marketplaceId;
+    if (companyId) directWhere.company_id = companyId;
 
-    const records = await MarketplaceCredential.findAll({
-      where,
+    const accessibleIds = await getAccessibleCredentialIdsByUser(userId, companyId);
+
+    const directRecords = await MarketplaceCredential.findAll({
+      where: directWhere,
       include: [
         {
           model: Marketplace,
           as: 'marketplace',
+        },
+        {
+          model: Company,
+          as: 'company',
+          attributes: ['id', 'name']
         },
         {
           model: User,
@@ -97,7 +203,41 @@ const MarketplaceCredentialRepository = {
       order: [['createdAt', 'DESC']]
     });
 
-    return records.map(record => record.get({ plain: true }));
+    const accessWhere = {
+      id: { [Op.in]: accessibleIds.length > 0 ? accessibleIds : [0] }
+    };
+    if (marketplaceId) accessWhere.marketplace_id = marketplaceId;
+    if (companyId) accessWhere.company_id = companyId;
+
+    const accessRecords = accessibleIds.length > 0
+      ? await MarketplaceCredential.findAll({
+          where: accessWhere,
+          include: [
+            {
+              model: Marketplace,
+              as: 'marketplace',
+            },
+            {
+              model: Company,
+              as: 'company',
+              attributes: ['id', 'name']
+            },
+            {
+              model: User,
+              as: 'user',
+              attributes: ['id', 'name', 'email', 'image']
+            }
+          ],
+          order: [['createdAt', 'DESC']]
+        })
+      : [];
+
+    const merged = dedupeById([
+      ...directRecords.map(record => record.get({ plain: true })),
+      ...accessRecords.map(record => record.get({ plain: true }))
+    ]);
+
+    return merged;
   },
 
   async findByUsers(userIds = [], marketplaceId = null) {
@@ -123,6 +263,40 @@ const MarketplaceCredentialRepository = {
           as: 'marketplace',
         },
         {
+          model: Company,
+          as: 'company',
+          attributes: ['id', 'name']
+        },
+        {
+          model: User,
+          as: 'user',
+          attributes: ['id', 'name', 'email', 'image']
+        }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+
+    return records.map(record => record.get({ plain: true }));
+  },
+
+  async findByCompany(companyId, marketplaceId = null) {
+    const where = {};
+    if (companyId) where.company_id = companyId;
+    if (marketplaceId) where.marketplace_id = marketplaceId;
+
+    const records = await MarketplaceCredential.findAll({
+      where,
+      include: [
+        {
+          model: Marketplace,
+          as: 'marketplace',
+        },
+        {
+          model: Company,
+          as: 'company',
+          attributes: ['id', 'name']
+        },
+        {
           model: User,
           as: 'user',
           attributes: ['id', 'name', 'email', 'image']
@@ -138,12 +312,24 @@ const MarketplaceCredentialRepository = {
  * Obtiene todas las credenciales de un usuario (opcionalmente filtradas por marketplace)
  * ✅ CAMBIO: Devuelve credenciales con campos sensibles decifrados
  */
-async findByUserDecifrado(userId, marketplaceId = null) {
-  const where = { user_id: userId };
-  if (marketplaceId) where.marketplace_id = marketplaceId;
+async findByUserDecifrado(userId, marketplaceId = null, companyId = null) {
+  const directWhere = { user_id: userId };
+  if (marketplaceId) directWhere.marketplace_id = marketplaceId;
+  if (companyId) directWhere.company_id = companyId;
+
+  const accessibleIds = await getAccessibleCredentialIdsByUser(userId, companyId);
 
   const records = await MarketplaceCredential.findAll({
-    where,
+    where: {
+      [Op.or]: [
+        directWhere,
+        ...(accessibleIds.length > 0 ? [{
+          id: { [Op.in]: accessibleIds },
+          ...(marketplaceId ? { marketplace_id: marketplaceId } : {}),
+          ...(companyId ? { company_id: companyId } : {})
+        }] : [])
+      ]
+    },
     include: [
       {
         model: Marketplace,
@@ -155,6 +341,11 @@ async findByUserDecifrado(userId, marketplaceId = null) {
             attributes: ['id', 'internal_field', 'external_field', 'required', 'data_type', 'direction', 'default_value', 'validation_rules']
           }
         ]
+      },
+      {
+        model: Company,
+        as: 'company',
+        attributes: ['id', 'name']
       }
     ],
     order: [['createdAt', 'DESC']]
@@ -212,6 +403,7 @@ async findByUserDecifrado(userId, marketplaceId = null) {
       // Campos de la credencial (decifrados)
       id: credential.id || null,
       user_id: credential.user_id || userId,
+      company_id: credential.company_id || null,
       marketplace_id: mp.id || null,
       name: credential.name || null,
       country: credential.country || null,
@@ -243,6 +435,7 @@ async findByUserDecifrado(userId, marketplaceId = null) {
         ...mp,
         client_secret: mp_client_secret || null  // ✅ Asegurar que también esté decifrado aquí
       },
+      company: credential.company || null,
       fieldMappings
     };
   });
@@ -294,8 +487,8 @@ async deleteById(id) {
   }
 },
 
-  async countActiveByMarketplace(user_id, options = {}) {
-    const where = { user_id: user_id, ...options.where };
+  async countActiveByMarketplace(company_id, options = {}) {
+    const where = { company_id: company_id, ...options.where };
     return MarketplaceCredential.count({ where });
   },
 
@@ -306,6 +499,16 @@ async deleteById(id) {
       {
         model: Marketplace,
         as: 'marketplace',
+      },
+      {
+        model: Company,
+        as: 'company',
+        attributes: ['id', 'name']
+      },
+      {
+        model: User,
+        as: 'user',
+        attributes: ['id', 'name', 'email', 'image']
       }
     ]
   });
@@ -372,6 +575,16 @@ async deleteById(id) {
           model: Marketplace,
           as: 'marketplace',
           attributes: ['name']
+        },
+        {
+          model: Company,
+          as: 'company',
+          attributes: ['id', 'name']
+        },
+        {
+          model: User,
+          as: 'user',
+          attributes: ['id', 'name', 'email', 'image']
         }
       ]
     });
@@ -385,6 +598,7 @@ async deleteById(id) {
       const { 
         id, 
         user_id, 
+        company_id,
         marketplace_id, 
         name, 
         country,
@@ -398,17 +612,17 @@ async deleteById(id) {
         expires_at 
       } = credentialData;
 
-      if (!user_id || !marketplace_id) {
-        throw new Error('user_id y marketplace_id son obligatorios');
+      if (!user_id || !company_id || !marketplace_id) {
+        throw new Error('user_id, company_id y marketplace_id son obligatorios');
       }
 
       // Name por defecto si no se proporciona
       const credentialName = name?.trim() || null;
 
-      // Verificar duplicado: (marketplace_id, user_id, name)
+      // Verificar duplicado: (marketplace_id, company_id, name)
       const conflictWhere = {
         marketplace_id,
-        user_id,
+        company_id,
         name: credentialName
       };
 
@@ -424,6 +638,7 @@ async deleteById(id) {
       const dataToSave = {
         marketplace_id,
         user_id,
+        company_id,
         name: credentialName,
         country: country || null,
         active: active ?? true,
@@ -577,6 +792,23 @@ async findByMLUserId(marketplaceId, userId, mlUserId, excludeId = null) {
   if (!matched) return null;
   return matched.get({ plain: true });
 },
+
+  async findByCompanyAndMLUserId(marketplaceId, companyId, mlUserId, excludeId = null) {
+    const credentials = await MarketplaceCredential.findAll({
+      where: {
+        marketplace_id: marketplaceId,
+        company_id: companyId
+      }
+    });
+
+    const matched = credentials.find(cred => {
+      if (excludeId && cred.id === excludeId) return false;
+      return cred.additional_data?.ml_user_id === mlUserId;
+    });
+
+    if (!matched) return null;
+    return matched.get({ plain: true });
+  },
 
   /**
    * Busca credencial activa por ml_user_id (global), con tokens descifrados.
@@ -749,10 +981,10 @@ async findByMLUserId(marketplaceId, userId, mlUserId, excludeId = null) {
     return await record.destroy();
   },
 
-    async existsByName(marketplaceId, userId, name, excludeId = null) {
+    async existsByName(marketplaceId, companyId, name, excludeId = null) {
     const where = {
       marketplace_id: marketplaceId,
-      user_id: userId,
+      company_id: companyId,
       name: name?.trim()
     };
 
@@ -764,10 +996,10 @@ async findByMLUserId(marketplaceId, userId, mlUserId, excludeId = null) {
     return !!existing;
   },
 
-    async existsByCredentials(marketplaceId, userId, credentials, excludeId = null) {
+    async existsByCredentials(marketplaceId, companyId, credentials, excludeId = null) {
     const where = {
       marketplace_id: marketplaceId,
-      user_id: userId
+      company_id: companyId
     };
 
     if (excludeId) {

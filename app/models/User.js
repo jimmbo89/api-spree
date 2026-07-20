@@ -17,6 +17,13 @@ module.exports = (sequelize, DataTypes) => {
       User.hasMany(models.UserCompany, { foreignKey: 'user_id', as: 'memberships', onDelete: 'CASCADE' });
       User.hasMany(models.UserAclScope, { foreignKey: 'user_id', as: 'aclScopes', onDelete: 'CASCADE' });
       User.hasMany(models.MarketplaceCredential, { foreignKey: 'user_id', as: 'credentials', onDelete: 'CASCADE' });
+      User.hasMany(models.UserMarketplaceCredential, { foreignKey: 'user_id', as: 'marketplaceCredentialAccess', onDelete: 'CASCADE' });
+      User.belongsToMany(models.MarketplaceCredential, {
+        through: models.UserMarketplaceCredential,
+        foreignKey: 'user_id',
+        otherKey: 'marketplace_credential_id',
+        as: 'accessibleMarketplaceCredentials'
+      });
       User.hasMany(models.Notification, { foreignKey: 'user_id', as: 'notifications', onDelete: 'SET NULL' });
       User.hasMany(models.UpgradeRequest, { foreignKey: 'user_id', as: 'upgradeRequests', onDelete: 'CASCADE' });
       User.hasMany(models.Job, { foreignKey: 'user_id', as: 'publishingJobs', onDelete: 'SET NULL' });

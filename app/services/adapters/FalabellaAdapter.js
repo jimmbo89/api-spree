@@ -28,11 +28,10 @@ class FalabellaAdapter extends BaseAdapter {
       } else {
         this.credential = await MarketplaceCredentialRepository.findById(this.credentialId);
       }
-    } else if (this.userId !== undefined && this.userId !== null) {
-      // Fallback al comportamiento original, pero solo si hay userId definido
-      this.credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
+    } else if (this.companyId !== undefined && this.companyId !== null) {
+      this.credential = await MarketplaceCredentialRepository.findByMarketplaceAndCompany(
         this.marketplaceId,
-        this.userId
+        this.companyId
       );
     }
 
@@ -1562,6 +1561,10 @@ async getCategoryAttributes(categoryId) {
         logger.info(
           `[FalabellaAdapter] SKU existente detectado (${existingProduct.sku}) -> se usará ${action}`
         );
+        // Si Falabella ya conoce el SKU, reforzamos la actualización enviando también el ProductId
+        // que devuelve GetProducts. No cambia el flujo de creación cuando no existe.
+        transformedProduct.ProductId = transformedProduct.ProductId || existingProduct.productId || null;
+        transformedProduct.productId = transformedProduct.productId || existingProduct.productId || null;
       }
 
       // ✅ Construir XML payload

@@ -10,12 +10,14 @@ const {
   RoleRepository,
   LogRepository,
   CompanyRepository,
+  MarketplaceCredentialRepository,
   UserCompanyRepository,
   WarehouseRepository,
   PoolRepository,
   UserAclScopeRepository,
   BranchRepository,
   RolePermissionRepository,
+  UserMarketplaceCredentialRepository,
 } = require("../repositories");
 const { sendEmail } = require("../services/EmailService");
 
@@ -117,6 +119,69 @@ async function sendInvitationEmail({
     user_agent: userAgent,
     status: "success",
   });
+}
+
+function parseMarketplaceCredentialAssignments(rawValue) {
+  if (rawValue === undefined) {
+    return { provided: false, items: [] };
+  }
+
+  let value = rawValue;
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return { provided: true, items: [] };
+    }
+
+    try {
+      value = JSON.parse(trimmed);
+    } catch (error) {
+      throw new Error('El campo "marketplace_credentials" debe ser un array JSON válido');
+    }
+  }
+
+  if (!Array.isArray(value)) {
+    throw new Error('El campo "marketplace_credentials" debe ser un array');
+  }
+
+  const normalized = value.map((item) => {
+    if (typeof item === 'number' || typeof item === 'string') {
+      const marketplace_credential_id = Number(item);
+      if (!Number.isInteger(marketplace_credential_id) || marketplace_credential_id <= 0) {
+        throw new Error('marketplace_credentials contiene un ID inválido');
+      }
+      return { marketplace_credential_id, status: 1 };
+    }
+
+    if (!item || typeof item !== 'object') {
+      throw new Error('marketplace_credentials contiene un elemento inválido');
+    }
+
+    const marketplace_credential_id = Number(
+      item.marketplace_credential_id ?? item.credential_id ?? item.id
+    );
+    if (!Number.isInteger(marketplace_credential_id) || marketplace_credential_id <= 0) {
+      throw new Error('marketplace_credentials contiene un ID inválido');
+    }
+
+    let status = 1;
+    if (item.status !== undefined && item.status !== null && item.status !== '') {
+      status = Number(item.status);
+      if (!Number.isInteger(status) || ![0, 1].includes(status)) {
+        throw new Error('marketplace_credentials.status debe ser 0 o 1');
+      }
+    }
+
+    return { marketplace_credential_id, status };
+  });
+
+  const map = new Map();
+  normalized.forEach((item) => {
+    map.set(Number(item.marketplace_credential_id), item);
+  });
+
+  return { provided: true, items: Array.from(map.values()) };
 }
 const AuthController = {
 
@@ -933,6 +998,7 @@ const AuthController = {
       invitation_method,
       warehouses: rawWarehouses = [],
       pools: rawPools = [],
+      marketplace_credentials: rawMarketplaceCredentials,
     } = req.body;
 
     // Parsear si son strings
@@ -1100,6 +1166,16 @@ const AuthController = {
         await UserAclScopeRepository.bulkCreate(scopes, transaction);
       }
 
+      const marketplaceCredentialsInput = parseMarketplaceCredentialAssignments(rawMarketplaceCredentials);
+      if (marketplaceCredentialsInput.provided) {
+        await UserMarketplaceCredentialRepository.syncUserMarketplaceCredentials({
+          userId: userBd.id,
+          companyId: company_id,
+          items: marketplaceCredentialsInput.items,
+          transaction
+        });
+      }
+
       await transaction.commit();
     } catch (error) {
        if (!transaction.finished) {
@@ -1200,6 +1276,7 @@ const AuthController = {
       role_id: rawRoleId,
       warehouses: rawWarehouses,
       pools: rawPools,
+      marketplace_credentials: rawMarketplaceCredentials,
     } = req.body;
 
     // Parsear company_id y role_id solo si están presentes
@@ -1234,8 +1311,10 @@ const AuthController = {
     // Parsear warehouses y pools solo si vienen
     let warehouses = [];
     let pools = [];
+    const hasWarehouses = Object.prototype.hasOwnProperty.call(req.body, "warehouses");
+    const hasPools = Object.prototype.hasOwnProperty.call(req.body, "pools");
 
-    if ("warehouses" in req.body) {
+    if (hasWarehouses) {
       if (typeof rawWarehouses === "string" && rawWarehouses.trim()) {
         warehouses = JSON.parse(rawWarehouses);
       } else if (Array.isArray(rawWarehouses)) {
@@ -1244,7 +1323,7 @@ const AuthController = {
       warehouses = warehouses.map(Number);
     }
 
-    if ("pools" in req.body) {
+    if (hasPools) {
       if (typeof rawPools === "string" && rawPools.trim()) {
         pools = JSON.parse(rawPools);
       } else if (Array.isArray(rawPools)) {
@@ -1307,6 +1386,13 @@ const AuthController = {
       return res.status(400).json({ success: false, message: error.message });
     }
 
+    let marketplaceCredentialsInput = { provided: false, items: [] };
+    try {
+      marketplaceCredentialsInput = parseMarketplaceCredentialAssignments(rawMarketplaceCredentials);
+    } catch (error) {
+      return res.status(400).json({ success: false, message: error.message });
+    }
+
     logger.info("después de validar");
 
     const transaction = await sequelize.transaction();
@@ -1344,42 +1430,51 @@ const AuthController = {
       const finalRole = await RoleRepository.findById(finalRoleId);
       const isAdminRole = finalRole?.name?.toLowerCase() === "admin";
 
-      // 5. Gestionar scopes ACL
-      // → Siempre eliminar scopes actuales de esta empresa
-      await UserAclScopeRepository.deleteAllByUserAndCompany(
-        userId,
-        company_id,
-        transaction
-      );
+      // 5. Gestionar scopes ACL de forma parcial
+      // Solo se reemplaza el tipo de scope que realmente venga en el body.
+      if (hasWarehouses) {
+        await UserAclScopeRepository.deleteWarehousesByUserAndCompany(
+          userId,
+          company_id,
+          transaction
+        );
 
-      // → Si NO es admin y se enviaron scopes (o se permiten scopes vacíos), crear nuevos
-      if (!isAdminRole) {
-        // Si no se enviaron `warehouses`/`pools`, mantener los anteriores NO es posible
-        // porque el front envía solo lo que cambió → asumimos que si no vienen, no hay cambio intencional
-        // PERO: en tu flujo, cuando se edita, el front SIEMPRE envía `selectedWarehouses` y `selectedPools`
-        // así que podemos confiar en que si están ausentes, no se modificó el alcance
+        const warehouseScopes = warehouses.map((wid) => ({
+          user_id: userId,
+          company_id,
+          warehouse_id: wid
+        }));
 
-        // Sin embargo, para alinearse con el flujo de creación y evitar inconsistencias,
-        // solo insertamos scopes si al menos uno de los dos campos fue enviado
-        const shouldApplyScopes =
-          "warehouses" in req.body ||
-          "pools" in req.body ||
-          // Caso especial: si el rol cambió de admin → editor, el front sí envía scopes
-          (finalRoleId !== membership.role_id && !isAdminRole);
-
-        if (shouldApplyScopes) {
-          const newScopes = [];
-          warehouses.forEach((wid) => {
-            newScopes.push({ user_id: userId, company_id, warehouse_id: wid });
-          });
-          pools.forEach((pid) => {
-            newScopes.push({ user_id: userId, company_id, pool_id: pid });
-          });
-
-          if (newScopes.length > 0) {
-            await UserAclScopeRepository.bulkCreate(newScopes, transaction);
-          }
+        if (warehouseScopes.length > 0) {
+          await UserAclScopeRepository.bulkCreate(warehouseScopes, transaction);
         }
+      }
+
+      if (hasPools) {
+        await UserAclScopeRepository.deletePoolsByUserAndCompany(
+          userId,
+          company_id,
+          transaction
+        );
+
+        const poolScopes = pools.map((pid) => ({
+          user_id: userId,
+          company_id,
+          pool_id: pid
+        }));
+
+        if (poolScopes.length > 0) {
+          await UserAclScopeRepository.bulkCreate(poolScopes, transaction);
+        }
+      }
+
+      if (marketplaceCredentialsInput.provided) {
+        await UserMarketplaceCredentialRepository.syncUserMarketplaceCredentials({
+          userId,
+          companyId: company_id,
+          items: marketplaceCredentialsInput.items,
+          transaction
+        });
       }
 
       await transaction.commit();
@@ -1443,6 +1538,9 @@ const AuthController = {
       company_id,
       branch_id
     );
+    const credentials = company_id
+      ? await MarketplaceCredentialRepository.findByCompany(company_id)
+      : [];
 
     // La forma más confiable de distinguir global vs empresa es leer el
     // role_id real guardado en users por user_id.
@@ -1455,12 +1553,17 @@ const AuthController = {
       : roles.filter((role) => Number(role.visible_to_companies) === 1);
 
     try {
-      return res.status(200).json({
-        success: true,
-        roles: filteredRoles, // ya están en formato plano
-        warehouses: warehouses,
-        pools: pools,
-      });
+    return res.status(200).json({
+      success: true,
+      roles: filteredRoles, // ya están en formato plano
+      warehouses: warehouses,
+      pools: pools,
+      credentials: (Array.isArray(credentials) ? credentials : []).map((credential) => ({
+        id: credential.id || null,
+        name: credential.name || null,
+        marketplace_domain: credential.marketplace?.domain || null
+      })),
+    });
     } catch (error) {
       logger.error(`UserController->index: ${error.message}`);
       return res

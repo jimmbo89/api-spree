@@ -35,7 +35,7 @@ const UserAclScopeRepository = {
         ],
         order: [['id', 'ASC']]
       });
-      return records.map(records);
+      return records.map(mapScope);
     } catch (error) {
       logger.error(`Error al obtener scopes para usuario ${user_id} y empresa ${company_id}:`, error);
       throw new Error(`Error al obtener scopes: ${error.message}`);
@@ -73,11 +73,45 @@ async bulkCreate(scopes, transaction = null) {
 
   async deleteAllByUserAndCompany(user_id, company_id, transaction = null) {
     try {
-      await UserAclScope.destroy({ where: { user_id, company_id },
-    transaction });
+      await UserAclScope.destroy({
+        where: { user_id, company_id },
+        transaction
+      });
     } catch (error) {
       logger.error(`Error al eliminar scopes para usuario ${user_id} y empresa ${company_id}:`, error);
       throw new Error(`Error al limpiar scopes: ${error.message}`);
+    }
+  },
+
+  async deleteWarehousesByUserAndCompany(user_id, company_id, transaction = null) {
+    try {
+      await UserAclScope.destroy({
+        where: {
+          user_id,
+          company_id,
+          warehouse_id: { [require('sequelize').Op.not]: null }
+        },
+        transaction
+      });
+    } catch (error) {
+      logger.error(`Error al eliminar warehouses ACL para usuario ${user_id} y empresa ${company_id}:`, error);
+      throw new Error(`Error al limpiar warehouses ACL: ${error.message}`);
+    }
+  },
+
+  async deletePoolsByUserAndCompany(user_id, company_id, transaction = null) {
+    try {
+      await UserAclScope.destroy({
+        where: {
+          user_id,
+          company_id,
+          pool_id: { [require('sequelize').Op.not]: null }
+        },
+        transaction
+      });
+    } catch (error) {
+      logger.error(`Error al eliminar pools ACL para usuario ${user_id} y empresa ${company_id}:`, error);
+      throw new Error(`Error al limpiar pools ACL: ${error.message}`);
     }
   }
 };

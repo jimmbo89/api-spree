@@ -1051,10 +1051,12 @@ class MercadoLibreAdapter extends BaseAdapter {
     }
   } else {
     // Fallback al comportamiento original
-    this.credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
-      this.marketplaceId,
-      this.userId
-    );
+    if (this.companyId !== undefined && this.companyId !== null) {
+      this.credential = await MarketplaceCredentialRepository.findByMarketplaceAndCompany(
+        this.marketplaceId,
+        this.companyId
+      );
+    }
   }
 
   if (!this.credential) {
@@ -1778,19 +1780,21 @@ class MercadoLibreAdapter extends BaseAdapter {
     if (typeof this.credentialId === 'object' && this.credentialId !== null) {
       // Ya es el objeto completo
       basicCred = this.credentialId;
-      marketplace = basicCred.marketplace || {};
+      marketplace = basicCred.marketplace || basicCred || {};
       logger.info(`[MercadoLibreAdapter] Usando credential object para auth (ID: ${basicCred.id})`);
     } else {
       // Es un ID numérico, buscar en repositorio
       basicCred = await MarketplaceCredentialRepository.findById(this.credentialId);
-      marketplace = basicCred?.marketplace || {};
+      marketplace = basicCred?.marketplace || basicCred || {};
     }
   } else {
     // Fallback al comportamiento original
-    marketplace = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
-      this.marketplaceId,
-      this.userId
-    );
+    marketplace = this.companyId
+      ? await MarketplaceCredentialRepository.findByMarketplaceAndCompany(
+          this.marketplaceId,
+          this.companyId
+        )
+      : null;
   }
   
   if (!basicCred || !marketplace.client_id || !marketplace.redirect_uri) {
@@ -1800,7 +1804,7 @@ class MercadoLibreAdapter extends BaseAdapter {
   const requiredScopes = "write offline_access urn:ml:mktp:publish-sync:/read-write";
   
   // ✅ NUEVO: Incluir credential_id en el state para el callback
-  const state = `${this.marketplaceId}_${this.userId}_${basicCred.id}`;
+  const state = `${this.marketplaceId}_${this.companyId || 0}_${this.userId}_${basicCred.id}`;
   
   // ✅ CORREGIDO: Eliminar espacios en URL
   const authUrl = `https://auth.mercadolibre.cl/authorization?response_type=code&client_id=${encodeURIComponent(marketplace.client_id)}&redirect_uri=${encodeURIComponent(marketplace.redirect_uri)}&state=${encodeURIComponent(state)}&scope=${encodeURIComponent(requiredScopes)}`;

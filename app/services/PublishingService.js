@@ -194,6 +194,7 @@ class PublishingService {
   static async resolveMercadoLibrePublicationContext({
     productId,
     marketplaceId,
+    companyId = null,
     userId = null,
     credentialId = null
   }) {
@@ -201,7 +202,7 @@ class PublishingService {
       productId,
       marketplaceId,
       credentialId,
-      userId
+      companyId
     );
 
     if (latestTask?.external_id) {
@@ -351,6 +352,7 @@ class PublishingService {
         const publicationContext = await this.resolveMercadoLibrePublicationContext({
           productId: productData.id,
           marketplaceId: marketplace.marketplace_id,
+          companyId: warehouse.company_id || null,
           userId,
           credentialId
         });
@@ -778,7 +780,7 @@ static async republishProduct(task, marketplace, credential, userId) {
       const publicationContext = await PublishingService.resolveMercadoLibrePublicationContext({
         productId: task.product_id,
         marketplaceId: task.marketplace_id,
-        userId: task.user_id,
+        companyId: task.company_id || null,
         credentialId: task.credential_id
       });
 

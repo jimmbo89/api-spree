@@ -48,7 +48,11 @@ const MarketplaceReportController = {
       }
 
       // ✅ Obtener marketplaces disponibles para el usuario
-      const credentials = await MarketplaceCredentialRepository.findByUser(req.user.id);
+      const credentials = await MarketplaceCredentialRepository.findByUser(
+        req.user.id,
+        null,
+        company_id ? parseInt(company_id) : (req.user.company_id || null)
+      );
       const availableMarketplaces = credentials.map(cred => ({
         id: cred.id,
         name: cred.name,
@@ -116,7 +120,11 @@ const MarketplaceReportController = {
       }
 
       // ✅ Obtener marketplaces disponibles para el usuario
-      const credentials = await MarketplaceCredentialRepository.findByUser(req.user.id);
+      const credentials = await MarketplaceCredentialRepository.findByUser(
+        req.user.id,
+        null,
+        company_id ? parseInt(company_id) : (req.user.company_id || null)
+      );
       const availableMarketplaces = credentials.map(cred => ({
         id: cred.id,
         name: cred.name,
@@ -193,7 +201,11 @@ const MarketplaceReportController = {
       }
 
       // ✅ Obtener marketplaces disponibles para el usuario
-      const credentials = await MarketplaceCredentialRepository.findByUser(req.user.id);
+      const credentials = await MarketplaceCredentialRepository.findByUser(
+        req.user.id,
+        null,
+        company_id ? parseInt(company_id) : (req.user.company_id || null)
+      );
       const availableMarketplaces = credentials.map(cred => ({
         id: cred.id,
         name: cred.name,

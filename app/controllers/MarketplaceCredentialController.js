@@ -20,16 +20,47 @@ function formatSequelizeValidationError(error) {
   }
   return error.message;
 }
+
+function resolveCompanyId(req) {
+  const rawCompanyId =
+    req.body?.company_id ??
+    req.query?.company_id ??
+    req.headers['x-company-id'] ??
+    req.user?.company_id ??
+    null;
+
+  if (rawCompanyId === null || rawCompanyId === undefined || rawCompanyId === '') {
+    return null;
+  }
+
+  const companyId = Number(rawCompanyId);
+  return Number.isInteger(companyId) && companyId > 0 ? companyId : NaN;
+}
+
 const MarketplaceCredentialController = {
 
   async index(req, res) {
     logger.info(`${req.user?.name || 'Unknown'} - Lista credenciales del usuario`);
 
-    const userId = req.user.id;
+    const companyId = resolveCompanyId(req);
     const { marketplace_id } = req.query || req.body;
 
     try {
-      const credentials = await MarketplaceCredentialRepository.findByUser(userId, marketplace_id);
+      if (Number.isNaN(companyId)) {
+        return res.status(400).json({
+          success: false,
+          message: 'company_id debe ser un número entero positivo'
+        });
+      }
+
+      if (!companyId) {
+        return res.status(400).json({
+          success: false,
+          message: 'company_id es requerido para listar credenciales'
+        });
+      }
+
+      const credentials = await MarketplaceCredentialRepository.findByCompany(companyId, marketplace_id);
 
       const safeCredentials = credentials.map(cred => {
         const { access_token, refresh_token, api_key, ...safe } = cred;
@@ -52,16 +83,14 @@ const MarketplaceCredentialController = {
     logger.info(`${req.user?.name || 'Unknown'} - Obtiene credenciales por usuario`);
 
     try {
-      const rawCompanyId = req.body?.company_id ?? req.headers['x-company-id'] ?? null;
+      const rawCompanyId = resolveCompanyId(req);
       const rawUserId = req.body?.user_id ?? null;
-      const companyId = rawCompanyId != null && rawCompanyId !== ''
-        ? Number(rawCompanyId)
-        : null;
+      const companyId = rawCompanyId;
       const userId = rawUserId != null && rawUserId !== ''
         ? Number(rawUserId)
         : null;
 
-      if (companyId !== null && (!Number.isInteger(companyId) || companyId <= 0)) {
+      if (Number.isNaN(companyId)) {
         return res.status(400).json({
           success: false,
           message: 'company_id debe ser un número entero positivo'
@@ -75,14 +104,14 @@ const MarketplaceCredentialController = {
         });
       }
 
-      if (!companyId && !userId) {
+      if (!companyId) {
         return res.status(400).json({
           success: false,
-          message: 'Debe enviar company_id, user_id o el header X-Company-ID'
+          message: 'company_id es requerido para listar credenciales'
         });
       }
 
-      let credentials = [];
+      let credentials = await MarketplaceCredentialRepository.findByCompany(companyId, req.body?.marketplace_id ?? null);
 
       if (userId) {
         if (companyId) {
@@ -90,13 +119,17 @@ const MarketplaceCredentialController = {
           if (!membership) {
             return res.status(404).json({
               success: false,
-              message: 'El usuario no tiene relación con la empresa indicada'
-            });
-          }
+            message: 'El usuario no tiene relación con la empresa indicada'
+          });
+        }
         }
 
-        credentials = await MarketplaceCredentialRepository.findByUser(userId);
-      } else {
+        credentials = await MarketplaceCredentialRepository.findByUser(
+          userId,
+          req.body?.marketplace_id ?? null,
+          companyId
+        );
+      } else if (false) {
         const usersInCompany = await UserCompanyRepository.getUsersByCompanyId(companyId);
         const userIds = usersInCompany.map(user => user.id);
         credentials = await MarketplaceCredentialRepository.findByUsers(userIds);
@@ -106,6 +139,7 @@ const MarketplaceCredentialController = {
         const item = {
           id: cred.id,
           user_id: cred.user_id,
+          company_id: cred.company_id,
           marketplace_id: cred.marketplace_id,
           name: cred.name,
           country: cred.country,
@@ -121,7 +155,8 @@ const MarketplaceCredentialController = {
           marketplace: cred.marketplace,
           user_name: cred.user?.name || null,
           user_email: cred.user?.email || null,
-          user_avatar: cred.user?.image || null
+          user_avatar: cred.user?.image || null,
+          company_name: cred.company?.name || null
         };
         return item;
       });
@@ -145,10 +180,27 @@ const MarketplaceCredentialController = {
   logger.info(`Datos recibidos: ${JSON.stringify(req.body)}`);
 
   const userId = req.user.id;
-  const { marketplace_id, name, seller_email, seller_id, api_key, country } = req.body;
-  const metadata = getRequestMetadata(req);
+   const { marketplace_id, name, seller_email, seller_id, api_key, country } = req.body;
+   const companyId = resolveCompanyId(req);
+   const metadata = getRequestMetadata(req);
+   let newCredential = null;
 
   try {
+    if (Number.isNaN(companyId)) {
+      return res.status(400).json({ success: false, message: 'company_id debe ser un número entero positivo' });
+    }
+
+    if (!companyId) {
+      return res.status(400).json({ success: false, message: 'company_id es requerido' });
+    }
+
+    if (!req.user?.role_id) {
+      const membership = await UserCompanyRepository.findByUserIdAndCompanyId(userId, companyId);
+      if (!membership) {
+        return res.status(403).json({ success: false, message: 'No tienes acceso a la empresa indicada' });
+      }
+    }
+
     // 1. Validar marketplace existe
     const marketplace = await MarketplaceRepository.findById(marketplace_id);
     if (!marketplace) {
@@ -157,7 +209,7 @@ const MarketplaceCredentialController = {
 
     // 2. Validaciones de duplicados (name y credentials)
     const nameExists = await MarketplaceCredentialRepository.existsByName(
-      marketplace_id, userId, name
+      marketplace_id, companyId, name
     );
     if (nameExists) {
       return res.status(409).json({
@@ -167,7 +219,7 @@ const MarketplaceCredentialController = {
     }
 
     const credentialsExist = await MarketplaceCredentialRepository.existsByCredentials(
-      marketplace_id, userId, { seller_email, seller_id, api_key }
+      marketplace_id, companyId, { seller_email, seller_id, api_key }
     );
     if (credentialsExist) {
       return res.status(409).json({
@@ -193,6 +245,7 @@ const MarketplaceCredentialController = {
       await MarketplaceCredentialRepository.createOrUpdate({
         marketplace_id,
         user_id: userId,
+        company_id: companyId,
         name,
         country,
         api_key,
@@ -221,9 +274,10 @@ const MarketplaceCredentialController = {
    // 5. Flujo OAuth (MercadoLibre): Guardar + Iniciar flujo de autorización
     if (isOAuth) {
       // ✅ Guardar credenciales base y CAPTURAR el registro creado
-      const newCredential = await MarketplaceCredentialRepository.createOrUpdate({
+      newCredential = await MarketplaceCredentialRepository.createOrUpdate({
         marketplace_id,
         user_id: userId,
+        company_id: companyId,
         name,
         country,
         // Tokens se obtendrán después de la autorización
@@ -242,7 +296,7 @@ const MarketplaceCredentialController = {
       // ✅ EJECUTAR LÓGICA DE OAUTH con la credencial recién creada
       const adapter = PublishingAdapterFactory.getAdapter(
         marketplace, 
-        null, // companyId
+        companyId, // companyId
         null, // branchId
         userId,
         newCredential.id  // ← CLAVE: Pasar ID de la NUEVA credencial
@@ -331,6 +385,13 @@ const MarketplaceCredentialController = {
       });
     }
 
+    if (!req.user?.role_id && Number(req.user?.company_id) !== Number(credential.company_id)) {
+      return res.status(403).json({
+        success: false,
+        message: "No autorizado para esta credencial"
+      });
+    }
+
     // 2. Obtener datos del marketplace asociado
     const marketplace = await MarketplaceRepository.findById(credential.marketplace_id);
     if (!marketplace) {
@@ -343,7 +404,7 @@ const MarketplaceCredentialController = {
     // 4. Crear adapter pasando la credencial específica
     const adapter = PublishingAdapterFactory.getAdapter(
       marketplace, 
-      null, // companyId
+      credential.company_id, // companyId
       null, // branchId
       userId,
       credential// ← NUEVO: Pasar credencial específica
@@ -391,7 +452,7 @@ const MarketplaceCredentialController = {
   }
 },
 
-   async update(req, res) {
+  async update(req, res) {
     logger.info(`${req.user?.name || 'Unknown'} - Actualiza credenciales de marketplace`);
     logger.info(JSON.stringify(req.body));
 
@@ -406,7 +467,7 @@ const MarketplaceCredentialController = {
       }
 
       // 2. Verificar propiedad
-      if (existing.user_id !== req.user.id) {
+      if (!req.user?.role_id && Number(existing.company_id) !== Number(req.user?.company_id)) {
         return res.status(403).json({ msg: "No autorizado" });
       }
 
@@ -414,7 +475,7 @@ const MarketplaceCredentialController = {
       if (name && name !== existing.name) {
         const nameExists = await MarketplaceCredentialRepository.existsByName(
           existing.marketplace_id,
-          req.user.id,
+          existing.company_id,
           name,
           id
         );
@@ -434,7 +495,7 @@ const MarketplaceCredentialController = {
       if (credentialsChanged) {
         const credentialsExist = await MarketplaceCredentialRepository.existsByCredentials(
           existing.marketplace_id,
-          req.user.id,
+          existing.company_id,
           { seller_email, seller_id, api_key },
           id
         );
@@ -471,7 +532,7 @@ const MarketplaceCredentialController = {
         // ✅ Para OAuth, verificar/renovar token usando el adapter
         const adapter = PublishingAdapterFactory.getAdapter(
           marketplace,
-          null, // companyId
+          existing.company_id, // companyId
           null, // branchId
           req.user.id,
           credential.id  // ← Pasar credencial actualizada
@@ -549,7 +610,7 @@ const MarketplaceCredentialController = {
       }
 
       // Verificar propiedad
-      if (credential.user_id !== req.user.id) {
+      if (!req.user?.role_id && Number(credential.company_id) !== Number(req.user?.company_id)) {
         return res.status(403).json({ msg: "No autorizado" });
       }
 
@@ -574,7 +635,7 @@ const MarketplaceCredentialController = {
       }
 
       // Verificar propiedad
-      if (credential.user_id !== req.user.id) {
+      if (!req.user?.role_id && Number(credential.company_id) !== Number(req.user?.company_id)) {
         return res.status(403).json({ msg: "No autorizado" });
       }
 

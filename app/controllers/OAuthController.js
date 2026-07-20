@@ -2111,26 +2111,33 @@ async mercadoLibreCallback(req, res) {
   }
 
   try {
-    // ✅ Parsear credential_id del state (formato: marketplaceId_userId_credentialId)
+    // ✅ Parsear state legado y nuevo (formato nuevo: marketplaceId_companyId_userId_credentialId)
     const stateParts = state.split("_");
     const marketplaceId = stateParts[0];
-    const userId = stateParts[1];
-    const credentialId = stateParts[2];
+    const companyId = stateParts.length >= 4 ? Number(stateParts[1]) : null;
+    const userId = stateParts.length >= 4 ? stateParts[2] : stateParts[1];
+    const credentialId = stateParts.length >= 4 ? stateParts[3] : stateParts[2];
 
     credentialIdForCleanup = credentialId; 
     
     // ✅ Buscar credencial específica por ID
     const credential = credentialId 
       ? await MarketplaceCredentialRepository.findById(credentialId)
-      : await MarketplaceCredentialRepository.findByMarketplaceAndUser(marketplaceId, userId);
+      : companyId
+        ? await MarketplaceCredentialRepository.findByMarketplaceAndCompany(marketplaceId, companyId)
+        : await MarketplaceCredentialRepository.findByMarketplaceAndUser(marketplaceId, userId);
 
     logger.info("Credenciales básicas obtenidas para OAuth Mercado Libre");
     logger.info(JSON.stringify(credential));
 
-    const marketplace = credential?.marketplace || {};
+    const marketplace = credential?.marketplace || credential || {};
 
     if (!credential || !marketplace.client_id || !marketplace.client_secret) {
       throw new Error("Credenciales OAuth incompletas en la base de datos");
+    }
+
+    if (companyId && Number(credential.company_id) !== Number(companyId)) {
+      throw new Error("La credencial no corresponde a la empresa indicada");
     }
 
     // ✅ URL oficial de tokens (sin espacios)
@@ -2177,7 +2184,9 @@ async mercadoLibreCallback(req, res) {
 
     logger.info(`[OAuth] ML User ID obtenido: ${mlUserId}`);
 
-    const allCredentials = await MarketplaceCredentialRepository.findByUser(userId);
+    const allCredentials = companyId
+      ? await MarketplaceCredentialRepository.findByCompany(companyId)
+      : await MarketplaceCredentialRepository.findByUser(userId);
 
     function getMLUserIdFromCredential(cred) {
   if (!cred.additional_data) return null;

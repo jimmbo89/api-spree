@@ -11,7 +11,6 @@ const ProductMarketplaceLinkRepository = {
     if (linkData.company_id != null) where.company_id = linkData.company_id;
     if (linkData.branch_id != null) where.branch_id = linkData.branch_id;
     if (linkData.credential_id != null) where.credential_id = linkData.credential_id;
-    if (linkData.user_id != null) where.user_id = linkData.user_id;
 
     return where;
   },
@@ -38,7 +37,6 @@ const ProductMarketplaceLinkRepository = {
     if (companyId) where.company_id = companyId;
     if (branchId) where.branch_id = branchId;
     if (credentialId) where.credential_id = credentialId;
-    if (userId) where.user_id = userId;
     if (externalId) where.external_id = externalId;
 
     return await ProductMarketplaceLink.findOne({ where });
@@ -70,7 +68,11 @@ const ProductMarketplaceLinkRepository = {
       });
 
       if (existing) {
-        await existing.update(linkData, options);
+        const updateData = { ...linkData };
+        if (updateData.user_id == null && existing.user_id != null) {
+          updateData.user_id = existing.user_id;
+        }
+        await existing.update(updateData, options);
         logger.info(`[REPO] Link actualizado id=${existing.id} product=${linkData.product_id} marketplace=${linkData.marketplace_id}`);
         return existing;
       }
@@ -97,7 +99,6 @@ const ProductMarketplaceLinkRepository = {
     if (companyId) where.company_id = companyId;
     if (branchId) where.branch_id = branchId;
     if (credentialId) where.credential_id = credentialId;
-    if (userId) where.user_id = userId;
 
     return await ProductMarketplaceLink.findAll({ where });
   },
@@ -116,7 +117,6 @@ const ProductMarketplaceLinkRepository = {
     if (companyId) where.company_id = companyId;
     if (branchId) where.branch_id = branchId;
     if (credentialId) where.credential_id = credentialId;
-    if (userId) where.user_id = userId;
     return await ProductMarketplaceLink.findOne({ where });
   },
 
@@ -156,10 +156,6 @@ const ProductMarketplaceLinkRepository = {
       external_id: externalId,
       credential_id: credentialId
     };
-
-    if (userId) {
-      where.user_id = userId;
-    }
 
     return await ProductMarketplaceLink.findOne({
       where,

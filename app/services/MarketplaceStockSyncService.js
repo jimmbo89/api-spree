@@ -69,7 +69,8 @@ class MarketplaceStockSyncService {
       const latestTask = await ProductPublishingTaskRepository.findLatestPublishedByProductMarketplaceAndCredential(
         productId,
         link.marketplace_id,
-        link.credential_id
+        link.credential_id,
+        link.company_id || finalCompanyId
       );
 
       const credentialId = link.credential_id || latestTask?.credential_id || null;
