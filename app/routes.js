@@ -285,7 +285,7 @@ router.post("/branch-destroy", requireRoles([ 'Backoffice', 'Admin', 'Seller Man
 router.post("/branch-status", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), BranchController.updateStatus);
 
 //Rutas de Almacénes
-router.post("/warehouse-branch-company", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(listWarehouseSchema), WarehouseController.list);
+router.post("/warehouse-branch-company", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager', 'Publicador', 'Viewer', 'User']), validateSchema(listWarehouseSchema), WarehouseController.list);
 router.post("/warehouse", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), checkPlanLimit('warehouse'), multerImage("image", "warehouses"), validateSchema(storeWarehouseSchema), WarehouseController.store);
 router.post("/warehouse-update", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), multerImage("image", "warehouses"), validateSchema(updateWarehouseSchema), WarehouseController.update);
 router.post("/warehouse-destroy", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(idWarehouseSchema), WarehouseController.destroy);
@@ -389,7 +389,7 @@ router.post("/product-field-mapping-show", requireRoles([ 'Backoffice', 'Admin',
 router.post("/product-field-mapping-list", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(listProductFieldMappingSchema), ProductFieldMappingController.list);
 
 //rutas de pools
-router.post("/pool-list", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(listPoolsSchema), PoolController.list);
+router.post("/pool-list", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager', 'Publicador', 'Viewer', 'User']), validateSchema(listPoolsSchema), PoolController.list);
 router.post("/pool", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), checkPlanLimit('pools'), validateSchema(storePoolSchema), PoolController.store);
 router.post("/pool-update", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(updatePoolSchema), PoolController.update);
 router.post("/pool-destroy", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(idPoolSchema), PoolController.destroy);

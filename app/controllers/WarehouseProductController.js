@@ -444,7 +444,7 @@ const WarehouseProductController = {
             });
           }
 
-          if (!existingWithSamePrice) {
+          if (!existingWithSamePrice && !hasPurchasePrice) {
             const candidates = existingVariants.filter(v => {
               const vNormalizedVariantId = v.variant_id != null ? String(v.variant_id) : null;
               return `global-${vNormalizedVariantId}` === key;

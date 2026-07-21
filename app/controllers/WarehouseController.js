@@ -1,5 +1,5 @@
 const logger = require('../../config/logger');
-const { WarehouseRepository, CompanyRepository, UserRepository, BranchRepository, LogRepository } = require('../repositories');
+const { WarehouseRepository, CompanyRepository, UserRepository, BranchRepository, LogRepository, UserAclScopeRepository } = require('../repositories');
 const { detectChanges } = require('../util/auditUtils');
 const { getRequestMetadata } = require('../util/requestUtil');
 
@@ -15,16 +15,23 @@ const WarehouseController = {
     logger.info(`${req.user?.name || 'Unknown'} - Lista almacenes`);
 
     const { company_id, branch_id, user_id, status, type, include_products = true } = req.body;
+    const roleName = (req.membership?.role?.name || req.user?.role?.name || req.user?.role_name || '').trim();
+    const normalizedRole = roleName.toLowerCase();
+    const privilegedRoles = new Set(['admin', 'backoffice', 'seller manager']);
 
     // Parsear IDs
-    const companyId = company_id ? Number(company_id) : undefined;
+    const companyId = company_id ? Number(company_id) : (req.companyId ? Number(req.companyId) : (req.user?.company_id ? Number(req.user.company_id) : undefined));
     const branchId = branch_id ? Number(branch_id) : undefined;
     const userId = user_id ? Number(user_id) : undefined;
 
-    if (company_id) {
-      const company = await CompanyRepository.findById(company_id);
+    if (!companyId) {
+      return res.status(400).json({ msg: "company_id es obligatorio" });
+    }
+
+    if (companyId) {
+      const company = await CompanyRepository.findById(companyId);
       if (!company) {
-        logger.info(`WarehouseController->list: Compañía no encontrada con ID ${company_id}`);
+        logger.info(`WarehouseController->list: Compañía no encontrada con ID ${companyId}`);
         return res.status(400).json({ msg: "companyNotFound" });
       }
     }
@@ -46,20 +53,37 @@ const WarehouseController = {
     }
 
     try {
+      const totalCompanyWarehouses = await WarehouseRepository.countByCompanyId(companyId);
+      const isPrivileged = privilegedRoles.has(normalizedRole);
+      const warehouseIds = isPrivileged
+        ? null
+        : (await UserAclScopeRepository.findByUserAndCompany(req.user.id, companyId))
+            .filter((scope) => scope.warehouse_id)
+            .map((scope) => Number(scope.warehouse_id))
+            .filter((warehouseId) => Number.isFinite(warehouseId));
+
       const mappedWarehouses = await WarehouseRepository.findFiltered({
         companyId,
         branchId,
         userId,
+        warehouseIds,
         status,
         type,
         include_products
       });
 
       if (mappedWarehouses.length === 0) {
-        return res.status(200).json({ warehouses: [], msg: 'NoWarehousesFound' });
+        return res.status(200).json({
+          warehouses: [],
+          total_company_warehouses: totalCompanyWarehouses,
+          msg: 'NoWarehousesFound'
+        });
       }
 
-      res.status(200).json({ warehouses: mappedWarehouses });
+      res.status(200).json({
+        warehouses: mappedWarehouses,
+        total_company_warehouses: totalCompanyWarehouses
+      });
     } catch (error) {
       logger.error('WarehouseController->list: ' + error.message);
       res.status(500).json({ error: 'ServerError', details: error.message });

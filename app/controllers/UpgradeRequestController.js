@@ -5,7 +5,7 @@ const { sendEmailsToUsers, sendEmail } = require("../services/EmailService");
 const { getUserId } = require("../../config/context");
 
 /**
- * Notifica a los admins de una solicitud de upgrade (notificación in-app + correo).
+ * Notifica a los admins de una solicitud de actualización de plan (notificación in-app + correo).
  * Esta función NO debe ser await-eada si se quiere respuesta inmediata.
  */
 async function _notifyAdminsAboutUpgradeRequest({
@@ -29,7 +29,7 @@ async function _notifyAdminsAboutUpgradeRequest({
     await NotificationRepository.createForMultipleUsers({
       company_id: company.id,
       user_ids: adminUserIds,
-      title: "Solicitud de upgrade",
+      title: "Solicitud de actualización de plan",
       description: `El usuario ${user.name} ha solicitado cambiar del plan ${currentPlan.name} al plan ${targetPlan.name} (${billing_cycle}).`,
       type: "upgraderequest",
       data: {
@@ -43,7 +43,7 @@ async function _notifyAdminsAboutUpgradeRequest({
     });
 
     // 2. Correos electrónicos (asíncronos, no críticos)
-    const emailSubject = `[Klint] Nueva solicitud de upgrade - ${company.name}`;
+    const emailSubject = `[Klint] Nueva solicitud de actualización de plan - ${company.name}`;
     const emailText = `
     Hola,
 
@@ -97,8 +97,8 @@ async function _notifyUserAboutUpgradeRequestResolution({
       user_id: user.id,
       company_id: company.id,
       title: status === 'approved' 
-        ? "Solicitud de upgrade aprobada" 
-        : "Solicitud de upgrade rechazada",
+        ? "Solicitud de actualización de plan aprobada" 
+        : "Solicitud de actualización de plan rechazada",
       description: status === 'approved'
         ? `Tu solicitud de cambio al plan ${targetPlan.name} ha sido aprobada. ¡Bienvenido!`
         : `Tu solicitud de cambio al plan ${targetPlan.name} ha sido rechazada.`,
@@ -115,8 +115,8 @@ async function _notifyUserAboutUpgradeRequestResolution({
     // 2. Correo electrónico (a un solo destinatario)
     if (user.email) {
       const emailSubject = status === 'approved'
-        ? `[Spree] ¡Tu solicitud de upgrade fue aprobada!`
-        : `[Spree] Tu solicitud de upgrade fue rechazada`;
+        ? `[Spree] ¡Tu solicitud de actualización de plan fue aprobada!`
+        : `[Spree] Tu solicitud de actualización de plan fue rechazada`;
 
       const emailText = status === 'approved'
         ? `Hola ${user.name},\n\nTu solicitud de cambio al plan ${targetPlan.name} en la empresa "${company.name}" ha sido aprobada.\n\n¡Disfruta de tu nuevo plan!`
@@ -158,7 +158,7 @@ const UpgradeRequestController = {
   async show(req, res) {
     try {
       const request = await UpgradeRequestRepository.findById(req.body.id);
-      if (!request) return res.status(404).json({ success: false, message: "Solicitud de upgrade no encontrada" });
+      if (!request) return res.status(404).json({ success: false, message: "Solicitud de actualización de plan no encontrada" });
       return res.status(200).json({ success: true, upgradeRequest: request });
     } catch (err) {
       logger.error("UpgradeRequestController->show: " + err.message);
@@ -167,7 +167,7 @@ const UpgradeRequestController = {
   },
 
   async store(req, res) {
-  logger.info(`${req.user?.name || 'Anonymous'} - Crea solicitud de upgrade`);
+  logger.info(`${req.user?.name || 'Anonymous'} - Crea solicitud de actualización de plan`);
   logger.info(`"Datos recibidos:", ${JSON.stringify(req.body)}`);
 
   const { company_id, current_plan_id, target_plan_id, billing_cycle, message, user_id: bodyUserId } = req.body;
@@ -217,18 +217,18 @@ const UpgradeRequestController = {
   return res.status(201).json({
     success: true,
     upgradeRequest: request,
-    message: "Solicitud de upgrade creada correctamente"
+    message: "Solicitud de actualización de plan creada correctamente"
   });
   },
 
   /*async update(req, res) {
-    logger.info(`${req.user?.user || 'Anonymous'} - Actualiza solicitud de upgrade con ID ${req.body.id}`);
+    logger.info(`${req.user?.user || 'Anonymous'} - Actualiza solicitud de actualización de plan con ID ${req.body.id}`);
     logger.info(`"Datos recibidos:" ${JSON.stringify(req.body)}`);
 
     const { id, status } = req.body;
 
     const request = await UpgradeRequestRepository.findById(id);
-    if (!request) return res.status(404).json({ success: false, message: "Solicitud de upgrade no encontrada" });
+    if (!request) return res.status(404).json({ success: false, message: "Solicitud de actualización de plan no encontrada" });
 
     const t = await sequelize.transaction();
     try {
@@ -238,23 +238,23 @@ const UpgradeRequestController = {
       return res.status(200).json({
         success: true,
         upgradeRequest: updatedRequest,
-        message: "Solicitud de upgrade actualizada correctamente"
+        message: "Solicitud de actualización de plan actualizada correctamente"
       });
     } catch (err) {
       if (t && !t.finished) await t.rollback();
       logger.error("UpgradeRequestController->update: " + err.message);
-      return res.status(500).json({ success: false, message: "Error al actualizar solicitud de upgrade", details: err.message });
+      return res.status(500).json({ success: false, message: "Error al actualizar solicitud de actualización de plan", details: err.message });
     }
   },*/
 
 async update(req, res) {
-  logger.info(`${req.user?.user || 'Anonymous'} - Actualiza solicitud de upgrade con ID ${req.body.id}`);
+  logger.info(`${req.user?.user || 'Anonymous'} - Actualiza solicitud de actualización de plan con ID ${req.body.id}`);
   logger.info(`"Datos recibidos:" ${JSON.stringify(req.body)}`);
 
   const { id, status } = req.body;
 
   const request = await UpgradeRequestRepository.findById(id);
-  if (!request) return res.status(404).json({ success: false, message: "Solicitud de upgrade no encontrada" });
+  if (!request) return res.status(404).json({ success: false, message: "Solicitud de actualización de plan no encontrada" });
 
   // Cargar datos relacionados necesarios para la notificación
   const company = await CompanyRepository.findById(request.company_id);
@@ -284,27 +284,27 @@ async update(req, res) {
     return res.status(200).json({
       success: true,
       upgradeRequest: updatedRequest,
-      message: "Solicitud de upgrade actualizada correctamente"
+      message: "Solicitud de actualización de plan actualizada correctamente"
     });
   } catch (err) {
     if (t && !t.finished) await t.rollback();
     logger.error("UpgradeRequestController->update: " + err.message);
-    return res.status(500).json({ success: false, message: "Error al actualizar solicitud de upgrade", details: err.message });
+    return res.status(500).json({ success: false, message: "Error al actualizar solicitud de actualización de plan", details: err.message });
   }
 },
   async destroy(req, res) {
-    logger.info(`${req.user?.user || 'Anonymous'} - Elimina solicitud de upgrade con ID ${req.body.id}`);
+    logger.info(`${req.user?.user || 'Anonymous'} - Elimina solicitud de actualización de plan con ID ${req.body.id}`);
     logger.info("Datos recibidos:");
     logger.info(JSON.stringify(req.body));
 
     try {
       const request = await UpgradeRequestRepository.findById(req.body.id);
-      if (!request) return res.status(404).json({ success: false, message: "Solicitud de upgrade no encontrada" });
+      if (!request) return res.status(404).json({ success: false, message: "Solicitud de actualización de plan no encontrada" });
       await UpgradeRequestRepository.delete(request);
-      return res.status(200).json({ success: true, message: "Solicitud de upgrade eliminada correctamente" });
+      return res.status(200).json({ success: true, message: "Solicitud de actualización de plan eliminada correctamente" });
     } catch (err) {
       logger.error("UpgradeRequestController->destroy: " + err.message);
-      return res.status(500).json({ success: false, message: "Error al eliminar solicitud de upgrade", details: err.message });
+      return res.status(500).json({ success: false, message: "Error al eliminar solicitud de actualización de plan", details: err.message });
     }
   }
 };

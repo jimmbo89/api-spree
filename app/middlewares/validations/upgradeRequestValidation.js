@@ -22,7 +22,7 @@ const idUpgradeRequestSchema = Joi.object({
 });
 
 const listUpgradeRequestsSchema = Joi.object({
-  company_id: Joi.number().integer().positive().optional(),
+  company_id: Joi.number().integer().positive().optional().empty('').allow(null),
   status: Joi.string().valid('open', 'approved', 'rejected').optional(),
   page: Joi.number().integer().min(1).optional().default(1),
   limit: Joi.number().integer().min(1).max(100).optional().default(20)

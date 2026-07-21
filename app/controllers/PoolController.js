@@ -4,6 +4,7 @@ const {
   PoolRepository,
   PoolWarehouseRepository,
   CompanyRepository,
+  UserAclScopeRepository,
   UserRepository,
   WarehouseRepository,
   LogRepository
@@ -23,23 +24,58 @@ const POOL_AUDIT_FIELDS = [
 const PoolController = {
   async list(req, res) {
     logger.info(`${req.user?.name || "Unknown"} - Lista pools`);
-    const { company_id, user_id: bodyUserId, is_active } = req.body;
-     const user_id = bodyUserId || req.user.id;
-    // Validaciones
-    if (company_id) {
-      const company = await CompanyRepository.findById(company_id);
-      if (!company) return res.status(400).json({ success: false, msg: "companyNotFound" });
+    const { company_id, is_active } = req.body;
+    const roleName = (req.membership?.role?.name || req.user?.role?.name || req.user?.role_name || "").trim();
+    const normalizedRole = roleName.toLowerCase();
+    const privilegedRoles = new Set(["admin", "backoffice", "seller manager"]);
+    const companyId = company_id || req.companyId || req.user?.company_id || null;
+
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        msg: "company_id es obligatorio"
+      });
     }
+
+    // Validaciones
+    const company = await CompanyRepository.findById(companyId);
+    if (!company) return res.status(400).json({ success: false, msg: "companyNotFound" });
     try {
-      const pools = await PoolRepository.findFiltered({
-        companyId: company_id,
-        userId: user_id,
+      const totalCompanyPools = await PoolRepository.countByCompanyId(companyId);
+      const isPrivileged = privilegedRoles.has(normalizedRole);
+      const filters = {
+        companyId,
         isActive: is_active
+      };
+
+      if (isPrivileged) {
+        const pools = await PoolRepository.findFiltered(filters);
+
+        return res.status(200).json({
+          success: true,
+          pools: pools.length ? pools : [],
+          total_company_pools: totalCompanyPools,
+          message: pools.length ? "Pools encontrados" : "NoPoolsFound"
+        });
+      }
+
+      const aclScopes = await UserAclScopeRepository.findByUserAndCompany(req.user.id, companyId);
+      const allowedPoolIds = [...new Set(
+        aclScopes
+          .filter((scope) => scope.pool_id)
+          .map((scope) => Number(scope.pool_id))
+          .filter((poolId) => Number.isFinite(poolId))
+      )];
+
+      const pools = await PoolRepository.findFiltered({
+        ...filters,
+        poolIds: allowedPoolIds
       });
 
       return res.status(200).json({
         success: true,
         pools: pools.length ? pools : [],
+        total_company_pools: totalCompanyPools,
         message: pools.length ? "Pools encontrados" : "NoPoolsFound"
       });
     } catch (error) {

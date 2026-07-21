@@ -4,11 +4,14 @@ const { Op } = require('sequelize');
 const logger = require('../../config/logger');
 
 const PoolRepository = {
-  async findFiltered({ companyId, userId, isActive } = {}) {
+  async findFiltered({ companyId, userId, isActive, poolIds } = {}) {
     const where = {};
     if (companyId) where.company_id = companyId;
     if (userId) where.user_id = userId;
     if (isActive !== undefined) where.is_active = isActive;
+    if (Array.isArray(poolIds)) {
+      where.id = poolIds.length > 0 ? { [Op.in]: poolIds } : { [Op.in]: [] };
+    }
 
     const pools = await Pool.findAll({
       where,

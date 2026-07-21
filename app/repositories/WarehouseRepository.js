@@ -9,6 +9,7 @@ const WarehouseRepository = {
   companyId,
   branchId,
   userId,
+  warehouseIds,
   status,
   type,
   includeProducts = true
@@ -133,19 +134,27 @@ const WarehouseRepository = {
   });
 
   // Obtener IDs de almacenes válidos
-  const warehouseIds = filteredWarehouses.map(wh => wh.id);
+  const allowedWarehouseIds = Array.isArray(warehouseIds)
+    ? new Set(warehouseIds.map((id) => Number(id)).filter((id) => Number.isFinite(id)))
+    : null;
+
+  const scopedWarehouses = allowedWarehouseIds
+    ? filteredWarehouses.filter((wh) => allowedWarehouseIds.has(Number(wh.id)))
+    : filteredWarehouses;
+
+  const filteredWarehouseIds = scopedWarehouses.map(wh => wh.id);
   
   // Obtener conteos de productos
   let productCounts = {};
-  if (warehouseIds.length > 0 && includeProducts === true) {
-    productCounts = await WarehouseProductRepository.getCountsByWarehouse(warehouseIds);
+  if (filteredWarehouseIds.length > 0 && includeProducts === true) {
+    productCounts = await WarehouseProductRepository.getCountsByWarehouse(filteredWarehouseIds);
   }
   // Obtener productos detallados (solo si se solicita)
   let warehouseProductsMap = {};
-  if (includeProducts && warehouseIds.length > 0) {
+  if (includeProducts && filteredWarehouseIds.length > 0) {
     try {
       const allWarehouseProducts = await WarehouseProductRepository.findFiltered({
-        warehouseId: warehouseIds
+        warehouseId: filteredWarehouseIds
       });
       
       allWarehouseProducts.forEach(wp => {
@@ -161,7 +170,7 @@ const WarehouseRepository = {
   }
 
   // Transformar los resultados (usando filteredWarehouses, no warehouses)
-  return filteredWarehouses.map(wh => {
+  return scopedWarehouses.map(wh => {
     // Determinar la compañía correcta
     let companyName = null;
     let companyImage = null;

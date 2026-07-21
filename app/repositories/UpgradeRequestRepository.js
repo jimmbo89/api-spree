@@ -6,7 +6,9 @@ const UpgradeRequestRepository = {
   async findFiltered({ company_id, status, page = 1, limit = 20 }) {
   const offset = (page - 1) * limit;
   const where = {};
-  if (company_id !== undefined) where.company_id = company_id;
+  if (company_id !== undefined && company_id !== null && company_id !== '') {
+    where.company_id = company_id;
+  }
   if (status !== undefined) where.status = status;
 
   const { count, rows } = await UpgradeRequest.findAndCountAll({
@@ -68,11 +70,11 @@ const UpgradeRequestRepository = {
   async create(body, options = {}) {
     try {
       const request = await UpgradeRequest.create(body, options);
-      logger.info(`Solicitud de upgrade creada (ID: ${request.id})`);
+      logger.info(`Solicitud de actualización de plan creada (ID: ${request.id})`);
       return request;
     } catch (error) {
       logger.error("Error en UpgradeRequestRepository->create:", error);
-      throw new Error(`Error al crear solicitud de upgrade: ${error.message}`);
+      throw new Error(`Error al crear solicitud de actualización de plan: ${error.message}`);
     }
   },
 
@@ -80,17 +82,17 @@ const UpgradeRequestRepository = {
     try {
       const { status } = body;
       await upgradeRequest.update({ status }, options);
-      logger.info(`Solicitud de upgrade actualizada (ID: ${upgradeRequest.id})`);
+      logger.info(`Solicitud de actualización de plan actualizada (ID: ${upgradeRequest.id})`);
       return upgradeRequest;
     } catch (error) {
       logger.error(`Error en UpgradeRequestRepository->update (ID: ${upgradeRequest.id}):`, error);
-      throw new Error(`Error al actualizar solicitud de upgrade: ${error.message}`);
+      throw new Error(`Error al actualizar solicitud de actualización de plan: ${error.message}`);
     }
   },
 
   async delete(upgradeRequest, options = {}) {
     await upgradeRequest.destroy(options);
-    logger.info(`Solicitud de upgrade eliminada (ID: ${upgradeRequest.id})`);
+    logger.info(`Solicitud de actualización de plan eliminada (ID: ${upgradeRequest.id})`);
     return true;
   }
 };
