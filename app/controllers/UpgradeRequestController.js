@@ -268,6 +268,16 @@ async update(req, res) {
   const t = await sequelize.transaction();
   try {
     const updatedRequest = await UpgradeRequestRepository.update(request, { status }, t);
+
+    // Si la solicitud fue aprobada, aplicar el cambio de plan a la compañía
+    if (status === 'approved') {
+      await company.update(
+        { plan_id: targetPlan.id },
+        { transaction: t }
+      );
+      logger.info(`Plan de compañía actualizado a ID ${targetPlan.id} por aprobación de solicitud ${updatedRequest.id}`);
+    }
+
     await t.commit();
 
     // ✅ Notificar al usuario solicitante en segundo plano (sin await)
