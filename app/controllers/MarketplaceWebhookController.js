@@ -41,6 +41,7 @@ const FB_FETCH_RETRY_MAX = 3;
 const FB_FETCH_RETRY_BASE_DELAY_MS = 1500;
 const FB_FETCH_RETRY_MAX_DELAY_MS = 8000;
 const FB_WEBHOOK_RECOVERY_GRACE_MS = Number(process.env.FB_WEBHOOK_RECOVERY_GRACE_MS || 3000);
+const FB_ENABLE_PRODUCT_EVENT_RECONCILIATION = false;
 const FB_ORDER_TOPICS = new Set(["onordercreated", "ordercreated", "onorderitemsstatuschanged"]);
 const FB_FEED_TOPICS = new Set(["onfeedcompleted", "onfeedcreated"]);
 const FB_PRODUCT_TOPICS = new Set([
@@ -2353,7 +2354,20 @@ async function processFalabellaProductWebhook(payload, options = {}) {
 }
 
 async function processFalabellaEvent({ event, payload, orderId }) {
-  const credential = await resolveFalabellaCredential(payload);
+  const existingOrderRecord = await MarketplaceOrderRepository.findByMarketplaceOrderId(
+    FB_MARKETPLACE_KEY,
+    String(orderId)
+  );
+
+  let credential = null;
+  if (existingOrderRecord?.marketplace_credential_id) {
+    credential = await MarketplaceCredentialRepository.findById(existingOrderRecord.marketplace_credential_id);
+  }
+
+  if (!credential || !credential.seller_email || !credential.api_key) {
+    credential = await resolveFalabellaCredential(payload);
+  }
+
   if (!credential || !credential.seller_email || !credential.api_key) {
     await MarketplaceWebhookEventRepository.updateById(event.id, {
       status: "error",
@@ -5031,6 +5045,10 @@ function buildFalabellaEventId(payload, resource, topic = null) {
     null;
   if (timestamp) {
     return topicPart ? `ts:${topicPart}:${resource}:${timestamp}` : `ts:${resource}:${timestamp}`;
+  }
+
+  if (!FB_ENABLE_PRODUCT_EVENT_RECONCILIATION && /^products\//i.test(String(resource || ''))) {
+    return null;
   }
 
   // Falabella no dio identificador confiable ni timestamp: no convertir esto en
