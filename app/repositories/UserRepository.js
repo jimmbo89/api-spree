@@ -366,39 +366,6 @@ const UserRepository = {
     }
   },
 
-  async findActiveBackOfficeUsers() {
-    try {
-      const users = await User.findAll({
-        where: {
-          status: true,
-          email: { [Op.not]: null },
-          role_id: { [Op.ne]: null }
-        },
-        include: [
-          {
-            model: Role,
-            as: 'role',
-            where: {
-              name: 'BackOffice'
-            },
-            attributes: ['id', 'name']
-          }
-        ],
-        attributes: ['id', 'name', 'email', 'status', 'role_id'],
-        order: [['name', 'ASC']]
-      });
-
-      return users.map(user => ({
-        id: user.id,
-        name: user.name,
-        email: user.email
-      }));
-    } catch (error) {
-      logger.error('Error al obtener usuarios BackOffice activos:', error);
-      throw new Error(`Error al obtener usuarios BackOffice activos: ${error.message}`);
-    }
-  },
-
 // app/repositories/UserRepository.js
 async findByEmailWithCompanyContext(identifier, companyId = null) {
   try {

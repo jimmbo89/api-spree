@@ -66,6 +66,7 @@ const storeBillingOrderSchema = Joi.object({ ...billingOrderBaseSchema });
 const updateBillingOrderSchema = Joi.object({
   id: Joi.number().integer().positive().required(),
   status: Joi.string().valid('paid', 'rejected', 'canceled').optional(),
+  action: Joi.string().valid('accept', 'reject').optional(),
   paid_at: Joi.date().iso().optional(),
   payment_link_url: Joi.string().uri().allow(null, '').optional(),
   proof_file: Joi.any()
@@ -122,7 +123,7 @@ const idBillingOrderSchema = Joi.object({
 });
 
 const listBillingOrdersSchema = Joi.object({
-  company_id: Joi.number().integer().positive().optional(),
+  company_id: Joi.number().integer().positive().allow(null, '').optional(),
   status: Joi.string().valid('pending_payment', 'paid', 'rejected', 'canceled').optional(),
   type: Joi.string().valid('upgrade', 'downgrade', 'renewal', 'reactivation', 'past_due_payment').optional(),
   page: Joi.number().integer().min(1).optional().default(1),

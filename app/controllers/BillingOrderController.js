@@ -6,7 +6,10 @@ const BillingOrderController = {
   async index(req, res) {
     try {
       const { company_id, status, type, page, limit } = req.body;
-      const result = await BillingOrderRepository.findFiltered({ company_id, status, type, page, limit });
+      const normalizedCompanyId = company_id === '' || company_id === null || company_id === undefined
+        ? undefined
+        : company_id;
+      const result = await BillingOrderRepository.findFiltered({ company_id: normalizedCompanyId, status, type, page, limit });
       return res.status(200).json({ success: true, ...result });
     } catch (err) {
       logger.error("BillingOrderController->index: " + err.message);

@@ -190,10 +190,6 @@ const UpgradeRequestController = {
 
     const { company_id, current_plan_id, target_plan_id, billing_cycle, message, user_id: bodyUserId } = req.body;
     const user_id = bodyUserId || getUserId();
-    const requester = req.user || {};
-    const requesterMembershipRole = String(requester?.membership?.role_name || requester?.role?.name || '').trim().toLowerCase();
-    const isCompanyAdmin = requesterMembershipRole === 'admin';
-    const shouldPersistRequest = isCompanyAdmin;
 
     const company = await CompanyRepository.findById(company_id);
     if (!company) return res.status(404).json({ success: false, message: "Compania no encontrada" });
@@ -207,32 +203,27 @@ const UpgradeRequestController = {
     const targetPlan = await PlanRepository.findById(target_plan_id);
     if (!targetPlan) return res.status(404).json({ success: false, message: "Plan solicitado no encontrado" });
 
-    let request = null;
+    const requestPayload = {
+      company_id,
+      user_id,
+      current_plan_id,
+      target_plan_id,
+      billing_cycle,
+      message
+    };
 
-    if (shouldPersistRequest) {
-      const t = await sequelize.transaction();
-      try {
-        const requestPayload = {
-          company_id,
-          user_id,
-          current_plan_id,
-          target_plan_id,
-          billing_cycle,
-          message
-        };
-
-        request = await UpgradeRequestRepository.create(requestPayload, t);
-        await t.commit();
-      } catch (err) {
-        if (t && !t.finished) await t.rollback();
-        logger.error("UpgradeRequestController->store:", + JSON.stringify(err.message));
-        return res.status(500).json({ success: false, message: "Error al crear solicitud", details: JSON.stringify(err.message) });
-      }
+    const t = await sequelize.transaction();
+    let request;
+    try {
+      request = await UpgradeRequestRepository.create(requestPayload, t);
+      await t.commit();
+    } catch (err) {
+      if (t && !t.finished) await t.rollback();
+      logger.error("UpgradeRequestController->store:", + JSON.stringify(err.message));
+      return res.status(500).json({ success: false, message: "Error al crear solicitud", details: JSON.stringify(err.message) });
     }
 
-    const recipients = isCompanyAdmin
-      ? await UserRepository.findActiveBackOfficeUsers()
-      : await UserCompanyRepository.findActiveAdminsByCompanyId(company.id);
+    const recipients = await UserCompanyRepository.findActiveAdminsByCompanyId(company.id);
 
     _notifyUpgradeRequestRecipients({
       recipients,
@@ -243,7 +234,7 @@ const UpgradeRequestController = {
       targetPlan,
       billing_cycle,
       message,
-      recipientLabel: isCompanyAdmin ? 'usuarios BackOffice' : 'admins'
+      recipientLabel: 'admins'
     }).catch(err => {
       logger.error("Error inesperado en notificacion background:", err.message);
     });
@@ -251,9 +242,7 @@ const UpgradeRequestController = {
     return res.status(201).json({
       success: true,
       upgradeRequest: request,
-      message: shouldPersistRequest
-        ? "Solicitud de actualizacion de plan creada correctamente"
-        : "Solicitud enviada a los administradores de la compania correctamente"
+      message: "Solicitud de actualizacion de plan creada correctamente"
     });
   },
 
@@ -277,14 +266,6 @@ const UpgradeRequestController = {
     const t = await sequelize.transaction();
     try {
       const updatedRequest = await UpgradeRequestRepository.update(request, { status }, t);
-
-      if (status === 'approved') {
-        await company.update(
-          { plan_id: targetPlan.id },
-          { transaction: t }
-        );
-        logger.info(`Plan de compania actualizado a ID ${targetPlan.id} por aprobacion de solicitud ${updatedRequest.id}`);
-      }
 
       await t.commit();
 
