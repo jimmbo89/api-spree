@@ -1632,10 +1632,11 @@ async getCategoryAttributes(categoryId) {
           };
         }
 
-        // ✅ 🔑 CORRECCIÓN CLAVE: NO hacer poll, retornar inmediatamente con el feed_id
-        // El webhook onFeedCompleted se encargará de actualizar el estado
-        logger.info(`[FalabellaAdapter] ✅ Feed enviado exitosamente. FeedID: ${requestId}`);
-        const marketplaceMessage = `Falabella respondió FeedID: ${requestId}`;
+        // Falabella confirma la aceptación inicial con RequestId.
+        // La confirmación final del estado se obtiene por FeedStatus; el webhook onFeedCompleted
+        // queda como mecanismo de reconciliación asíncrona.
+        logger.info(`[FalabellaAdapter] ✅ Feed aceptado por Falabella. FeedID: ${requestId}`);
+        const marketplaceMessage = `Falabella emitió FeedID: ${requestId}; confirmar luego con FeedStatus`;
 
         return {
           success: true,
@@ -1841,6 +1842,8 @@ async getCategoryAttributes(categoryId) {
           };
         }
 
+        // Confirmación síncrona del resultado del feed según el estado oficial de Falabella.
+        // Si el webhook llega después, solo reconcilia el estado local.
         const { feed, timedOut } = await this.pollFeedStatus(requestId);
         return this.buildFeedDrivenResult({
           transformedProduct: {

@@ -1653,7 +1653,12 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
     return;
   }
 
-  if (feedStatusLower !== 'finished' || processedRecords <= 0) {
+  if (
+    (feedStatusLower !== 'finished' || processedRecords <= 0)
+    && feedStatusLower !== 'error'
+    && feedStatusLower !== 'canceled'
+    && failedRecords <= 0
+  ) {
     logger.info(`[FB Webhook] Feed ${feedId}: estado ${feedStatusLower} con ${processedRecords}/${totalRecords} procesados; se evalúa subida temprana de imágenes para ${sellerSku}`);
 
     const taskImages = extractFalabellaTaskImages(
@@ -3262,6 +3267,10 @@ function determineFalabellaTaskLifecycle(productStatus, { realErrors = [], hasIm
   }
 
   if (['active', 'live'].includes(status)) {
+    if (hasImage === false) {
+      return { status: 'processing', isFinal: false, errorMessage: null };
+    }
+
     return { status: 'published', isFinal: true, errorMessage: null };
   }
 
@@ -5024,18 +5033,10 @@ function buildFalabellaEventId(payload, resource, topic = null) {
     return topicPart ? `ts:${topicPart}:${resource}:${timestamp}` : `ts:${resource}:${timestamp}`;
   }
 
-  const fingerprintSource = {
-    topic: topicPart || null,
-    resource: resource || null,
-    payload: payload || null
-  };
-  const fingerprint = crypto
-    .createHash('sha256')
-    .update(JSON.stringify(fingerprintSource))
-    .digest('hex')
-    .slice(0, 24);
-
-  return topicPart ? `hash:${topicPart}:${resource}:${fingerprint}` : `hash:${resource}:${fingerprint}`;
+  // Falabella no dio identificador confiable ni timestamp: no convertir esto en
+  // una identidad permanente. Se usa un receipt efimero para registrar y reconciliar.
+  const receiptId = crypto.randomUUID();
+  return topicPart ? `receipt:${topicPart}:${resource}:${receiptId}` : `receipt:${resource}:${receiptId}`;
 }
 
 function rfc3986Encode(str) {
