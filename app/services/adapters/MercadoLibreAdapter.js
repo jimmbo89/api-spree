@@ -785,8 +785,10 @@ class MercadoLibreAdapter extends BaseAdapter {
   buildValidMercadoLibreVariations(variants, categoryAttributes, basePrice = null, fallbackPictures = []) {
     if (!Array.isArray(variants) || variants.length === 0) return null;
 
-    const variationAttrs = (Array.isArray(categoryAttributes) ? categoryAttributes : []).filter(
-      a => a.tags?.allow_variations === true || a.tags?.variation_attribute === true
+    const categoryAttrs = Array.isArray(categoryAttributes) ? categoryAttributes : [];
+    const variationAttrs = categoryAttrs.filter((a) => a.tags?.allow_variations === true);
+    const variationValueAttrs = categoryAttrs.filter(
+      (a) => a.tags?.variation_attribute === true && a.tags?.allow_variations !== true
     );
 
     if (variationAttrs.length === 0) return null;
@@ -850,6 +852,34 @@ class MercadoLibreAdapter extends BaseAdapter {
       }
 
       if (combinations.length === variationAttrs.length) {
+        const variationAttributes = [];
+        for (const mlAttr of variationValueAttrs) {
+          const match = variantSources.find(
+            ({ key, value }) =>
+              this.matchesFlexibleText(key, mlAttr.name) ||
+              this.matchesFlexibleText(key, mlAttr.id) ||
+              this.matchesFlexibleText(value, mlAttr.name) ||
+              this.matchesFlexibleText(value, mlAttr.id)
+          );
+
+          if (!match) continue;
+
+          const attrValue = String(match.value || '').trim();
+          if (!attrValue) continue;
+
+          variationAttributes.push({
+            id: mlAttr.id,
+            value_name: attrValue
+          });
+        }
+
+        if (variant?.sku) {
+          variationAttributes.push({
+            id: 'SELLER_SKU',
+            value_name: String(variant.sku).trim()
+          });
+        }
+
         const combinationKey = combinations
           .slice()
           .sort((a, b) => String(a.id).localeCompare(String(b.id)))
@@ -873,14 +903,7 @@ class MercadoLibreAdapter extends BaseAdapter {
           available_quantity: Math.max(0, Math.round(Number(variant.publishStock ?? variant.totalStock ?? variant.stock ?? variant.quantity ?? 0) || 0)),
           attribute_combinations: combinations,
           picture_ids: pictureIds.length > 0 ? pictureIds : undefined,
-          attributes: variant?.sku
-            ? [
-                {
-                  id: 'SELLER_SKU',
-                  value_name: String(variant.sku).trim()
-                }
-              ]
-            : undefined
+          attributes: variationAttributes.length > 0 ? variationAttributes : undefined
         });
       }
     }

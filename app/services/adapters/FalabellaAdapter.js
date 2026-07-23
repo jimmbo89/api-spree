@@ -833,12 +833,9 @@ _transformImages(images = []) {
       && categoryAttributes.some((attr) => this.isVariationAttribute(attr));
     const hasVariationFeedName = Array.isArray(categoryAttributes)
       && categoryAttributes.some((attr) => this.normalizeFalabellaText(attr?.feed_name || attr?.FeedName || attr?.id) === 'variation');
+    const supportsMultiVariant = hasVariationAttributes && !hasVariationFeedName;
 
-    if (hasMultipleVariants && hasVariationFeedName) {
-      throw new Error(`La categoría ${category.id} no admite multivariantes porque GetCategoryAttributes devuelve FeedName=Variation.`);
-    }
-
-    if (hasMultipleVariants && hasVariationAttributes) {
+    if (hasMultipleVariants && supportsMultiVariant) {
       const variantStockTotal = publishableVariants.reduce((sum, variant) => {
         const quantity = Number(variant?.publishStock ?? variant?.totalStock ?? variant?.stock ?? 0);
         return sum + (Number.isFinite(quantity) && quantity > 0 ? quantity : 0);
@@ -859,8 +856,8 @@ _transformImages(images = []) {
       } else {
         throw new Error('No se pudieron construir variantes válidas para Falabella');
       }
-    } else if (hasMultipleVariants && !hasVariationAttributes) {
-      throw new Error(`La categoría ${category.id} no admite multivariantes con la metadata actual`);
+    } else if (hasMultipleVariants && !supportsMultiVariant) {
+      logger.info(`[FalabellaAdapter] La categoría ${category.id} no admite multivariantes; se publicará como producto simple`);
     }
 
     // ✅ Ajuste de precio por configuración económica (si aplica)
@@ -1459,8 +1456,9 @@ _transformImages(images = []) {
       if (!normalizedSku || seenSkus.has(normalizedSku)) return;
 
       const variantAttributes = variant ? this.getFalabellaVariantAttributes(variant, categoryAttributes) : [];
+      const fallbackImages = this.normalizeFalabellaVariantImages(prepared.images || []);
       const images = this.normalizeFalabellaVariantImages(
-        variant?.images || variant?.image || variant?.pictures || baseImages
+        variant?.images || variant?.image || variant?.pictures || fallbackImages
       );
 
       products.push({
@@ -1474,9 +1472,7 @@ _transformImages(images = []) {
         price: Number(variant?.price ?? prepared.price) || prepared.price,
         stock: Math.max(0, Math.round(Number(variant?.publishStock ?? variant?.totalStock ?? variant?.stock ?? 0) || 0)),
         attributes: this.mergeFalabellaAttributes(prepared.attributes, variantAttributes),
-        images: this.normalizeFalabellaVariantImages(
-          variant?.images || variant?.image || variant?.pictures || []
-        )
+        images
       });
 
       seenSkus.add(normalizedSku);
@@ -1738,7 +1734,7 @@ async getCategoryAttributes(categoryId) {
       for (const attr of effectiveAttributes) {
         const feedName = attr.feed_name || attr.FeedName || attr.id;
         if (!feedName) continue;
-        if (['SellerSku', 'ParentSku', 'Name', 'Brand', 'Description', 'PrimaryCategory', 'Variation', 'ProductId', 'images', 'productId', 'categoryName', 'category_attributes', 'falabella_products'].includes(feedName)) {
+        if (['SellerSku', 'ParentSku', 'Name', 'Brand', 'Description', 'PrimaryCategory', 'ProductId', 'images', 'productId', 'categoryName', 'category_attributes', 'falabella_products'].includes(feedName)) {
           continue;
         }
         if (this.isVariationAttribute(attr)) {
