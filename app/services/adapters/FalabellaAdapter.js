@@ -2,7 +2,7 @@
 const BaseAdapter = require('./BaseAdapter');
 const axios = require('axios');
 const crypto = require('crypto');
-const { parseStringPromise } = require('xml2js');
+const { parseStringPromise, Builder } = require('xml2js');
 const logger = require('../../../config/logger');
 const { MarketplaceCredentialRepository } = require('../../repositories');
 const MarketplaceTransformerFalabella = require('../MarketplaceTransformerFalabella');
@@ -802,7 +802,13 @@ _transformImages(images = []) {
       productName: resolvedName,
       brand: resolvedBrand,  // ✅ AHORA USA EL ATRIBUTO DEL USUARIO
       price: validVariant.price > 0 ? validVariant.price : (productData.price || 0),
-      stock: Math.max(0, Math.round(validVariant.publishStock || productData.totalPublishingStock || productData.stock || 0)),
+      stock: Math.max(0, Math.round(
+        productData.totalPublishingStock ??
+        productData.stock ??
+        productData.totalStock ??
+        validVariant.publishStock ??
+        0
+      )),
       PrimaryCategory: category.id,
       description: resolvedDescription,  // ✅ AHORA USA EL ATRIBUTO DEL USUARIO
       package_height: packageMeasurements.package_height,
@@ -818,6 +824,44 @@ _transformImages(images = []) {
 
     prepared.attributes = this.buildFalabellaAttributes(prepared);
     prepared.images = this.normalizeFalabellaImages(prepared.images);
+
+    const publishableVariants = Array.isArray(productData.variants)
+      ? productData.variants.filter((variant) => variant && variant.publish && Number(variant.price) > 0)
+      : [];
+    const hasMultipleVariants = publishableVariants.length > 1;
+    const hasVariationAttributes = Array.isArray(categoryAttributes)
+      && categoryAttributes.some((attr) => this.isVariationAttribute(attr));
+    const hasVariationFeedName = Array.isArray(categoryAttributes)
+      && categoryAttributes.some((attr) => this.normalizeFalabellaText(attr?.feed_name || attr?.FeedName || attr?.id) === 'variation');
+
+    if (hasMultipleVariants && hasVariationFeedName) {
+      throw new Error(`La categoría ${category.id} no admite multivariantes porque GetCategoryAttributes devuelve FeedName=Variation.`);
+    }
+
+    if (hasMultipleVariants && hasVariationAttributes) {
+      const variantStockTotal = publishableVariants.reduce((sum, variant) => {
+        const quantity = Number(variant?.publishStock ?? variant?.totalStock ?? variant?.stock ?? 0);
+        return sum + (Number.isFinite(quantity) && quantity > 0 ? quantity : 0);
+      }, 0);
+
+      const falabellaProducts = this.buildFalabellaVariantProducts(
+        prepared,
+        publishableVariants,
+        categoryAttributes
+      );
+
+      if (falabellaProducts.length >= 2) {
+        prepared.falabella_products = falabellaProducts;
+        prepared.sku = falabellaProducts[0].sku;
+        prepared.ParentSku = falabellaProducts[0].sku;
+        prepared.stock = variantStockTotal > 0 ? variantStockTotal : prepared.stock;
+        logger.info(`[FalabellaAdapter] Variantes listas para publicación: ${falabellaProducts.length} productos`);
+      } else {
+        throw new Error('No se pudieron construir variantes válidas para Falabella');
+      }
+    } else if (hasMultipleVariants && !hasVariationAttributes) {
+      throw new Error(`La categoría ${category.id} no admite multivariantes con la metadata actual`);
+    }
 
     // ✅ Ajuste de precio por configuración económica (si aplica)
     if (productData.economic_config) {
@@ -1128,7 +1172,7 @@ _transformImages(images = []) {
     return null;
   }
 
-    buildFalabellaAttributes(product) {
+  buildFalabellaAttributes(product) {
     const baseAttributes = Array.isArray(product?.attributes)
       ? product.attributes
           .filter((attr) => attr && attr.id)
@@ -1224,8 +1268,236 @@ _transformImages(images = []) {
     return Array.from(byId.values());
   }
 
+  extractFalabellaVariantSources(variant) {
+    const sources = [];
+
+    const pushSource = (key, value) => {
+      if (key === undefined || key === null) return;
+      const normalizedKey = String(key).trim();
+      if (!normalizedKey) return;
+
+      let normalizedValue = value;
+      if (normalizedValue === undefined || normalizedValue === null) return;
+
+      if (typeof normalizedValue === 'object') {
+        if (normalizedValue.value_name !== undefined && normalizedValue.value_name !== null) {
+          normalizedValue = normalizedValue.value_name;
+        } else if (normalizedValue.value !== undefined && normalizedValue.value !== null) {
+          normalizedValue = normalizedValue.value;
+        } else if (normalizedValue.name !== undefined && normalizedValue.name !== null) {
+          normalizedValue = normalizedValue.name;
+        } else if (normalizedValue.code !== undefined && normalizedValue.code !== null) {
+          normalizedValue = normalizedValue.code;
+        } else {
+          return;
+        }
+      }
+
+      const finalValue = String(normalizedValue).trim();
+      if (!finalValue) return;
+      sources.push({ key: normalizedKey, value: finalValue });
+    };
+
+    if (variant && typeof variant.attributes === 'object') {
+      if (Array.isArray(variant.attributes)) {
+        for (const attr of variant.attributes) {
+          if (!attr) continue;
+          pushSource(attr.id || attr.name, attr.value_name ?? attr.value ?? attr.value_id);
+        }
+      } else {
+        for (const [key, value] of Object.entries(variant.attributes)) {
+          pushSource(key, value);
+        }
+      }
+    }
+
+    const variantValues = Array.isArray(variant?.variant_values)
+      ? variant.variant_values
+      : Array.isArray(variant?.variantValues)
+        ? variant.variantValues
+        : [];
+
+    for (const variantValue of variantValues) {
+      const definitionName = variantValue?.definition?.name || variantValue?.definition?.label || variantValue?.definition?.feed_name;
+      const definitionId = variantValue?.definition?.id;
+      const value = variantValue?.name ?? variantValue?.value_name ?? variantValue?.code;
+      pushSource(definitionName, value);
+      pushSource(definitionId, value);
+      pushSource(variantValue?.name, value);
+      pushSource(variantValue?.code, value);
+    }
+
+    if (typeof variant?.variant_label === 'string' && variant.variant_label.trim()) {
+      sources.push({ key: '__variant_label__', value: variant.variant_label.trim() });
+    }
+
+    return sources;
+  }
+
+  normalizeFalabellaVariantImages(value) {
+    const entries = Array.isArray(value) ? value : (value ? [value] : []);
+    const normalized = [];
+    const seen = new Set();
+
+    for (const entry of entries) {
+      let image = null;
+
+      if (typeof entry === 'string') {
+        const trimmed = entry.trim();
+        if (!trimmed) continue;
+        image = { source: trimmed };
+      } else if (entry && typeof entry === 'object') {
+        const source = entry.source || entry.url || entry.link || entry.href || null;
+        if (source !== null && source !== undefined) {
+          const trimmedSource = String(source).trim();
+          if (trimmedSource) image = { source: trimmedSource };
+        }
+      }
+
+      if (!image) continue;
+      const dedupeKey = image.source;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      normalized.push(image);
+    }
+
+    return normalized;
+  }
+
+  getFalabellaVariantAttributes(variant, categoryAttributes = []) {
+    const variationAttrs = (Array.isArray(categoryAttributes) ? categoryAttributes : [])
+      .filter((attr) => this.isVariationAttribute(attr));
+
+    if (variationAttrs.length === 0) {
+      return [];
+    }
+
+    const sources = this.extractFalabellaVariantSources(variant);
+    const variantAttributes = [];
+
+    for (const categoryAttr of variationAttrs) {
+      const attrId = categoryAttr?.id || categoryAttr?.FeedName || categoryAttr?.Name;
+      if (!attrId) continue;
+
+      const normalizedAttrId = this.normalizeFalabellaText(attrId);
+      const match = sources.find(({ key }) => {
+        const normalizedKey = this.normalizeFalabellaText(key);
+        return normalizedKey === normalizedAttrId;
+      });
+
+      if (!match) continue;
+
+      const matchedValue = String(match.value || '').trim();
+      if (!matchedValue) continue;
+
+      const optionMatch = Array.isArray(categoryAttr.values)
+        ? categoryAttr.values.find((option) => {
+            const optionName = this.normalizeFalabellaText(option?.name || option?.value_name || '');
+            const optionId = this.normalizeFalabellaText(option?.id || '');
+            return optionName === this.normalizeFalabellaText(matchedValue) || optionId === this.normalizeFalabellaText(matchedValue);
+          })
+        : null;
+
+      variantAttributes.push({
+        id: attrId,
+        name: categoryAttr.name || categoryAttr.Label || categoryAttr.Name || attrId,
+        value_id: optionMatch?.id ?? categoryAttr.value_id ?? undefined,
+        value_name: optionMatch?.name ?? matchedValue,
+        value: optionMatch?.name ?? matchedValue,
+        attribute_type: categoryAttr.attribute_type ?? categoryAttr.AttributeType ?? undefined,
+        input_type: categoryAttr.input_type ?? categoryAttr.InputType ?? undefined,
+        group_name: categoryAttr.group_name ?? categoryAttr.GroupName ?? undefined,
+        is_global_attribute: categoryAttr.is_global_attribute ?? categoryAttr.IsGlobalAttribute ?? undefined,
+        example_value: categoryAttr.example_value ?? categoryAttr.ExampleValue ?? undefined,
+        values: Array.isArray(categoryAttr.values) ? categoryAttr.values : []
+      });
+    }
+
+    return variantAttributes;
+  }
+
+  mergeFalabellaAttributes(baseAttributes = [], overrideAttributes = []) {
+    const byId = new Map();
+    const pushAttr = (attr) => {
+      if (!attr || !attr.id) return;
+      byId.set(this.normalizeFalabellaText(attr.id), attr);
+    };
+
+    for (const attr of Array.isArray(baseAttributes) ? baseAttributes : []) {
+      pushAttr(attr);
+    }
+
+    for (const attr of Array.isArray(overrideAttributes) ? overrideAttributes : []) {
+      pushAttr(attr);
+    }
+
+    return Array.from(byId.values());
+  }
+
+  buildFalabellaVariantProducts(prepared, variants = [], categoryAttributes = []) {
+    const publishableVariants = Array.isArray(variants)
+      ? variants.filter((variant) => variant && variant.publish && Number(variant.price) > 0)
+      : [];
+
+    if (publishableVariants.length === 0) {
+      return [];
+    }
+
+    const resolvedParentVariant = publishableVariants.find((variant) => {
+      const variantSku = String(variant?.sku || variant?.SellerSku || '').trim();
+      return variantSku && variantSku === String(prepared?.sku || '').trim();
+    }) || publishableVariants[0];
+
+    const parentSku = String(resolvedParentVariant?.sku || resolvedParentVariant?.SellerSku || '').trim();
+    if (!parentSku) return [];
+
+    const products = [];
+    const seenSkus = new Set();
+
+    const addProduct = (sku, variant) => {
+      const normalizedSku = String(sku || '').trim();
+      if (!normalizedSku || seenSkus.has(normalizedSku)) return;
+
+      const variantAttributes = variant ? this.getFalabellaVariantAttributes(variant, categoryAttributes) : [];
+      const images = this.normalizeFalabellaVariantImages(
+        variant?.images || variant?.image || variant?.pictures || baseImages
+      );
+
+      products.push({
+        ...prepared,
+        sku: normalizedSku,
+        ParentSku: normalizedSku === parentSku ? parentSku : parentSku,
+        productName: prepared.productName,
+        brand: prepared.brand,
+        description: prepared.description,
+        PrimaryCategory: prepared.PrimaryCategory,
+        price: Number(variant?.price ?? prepared.price) || prepared.price,
+        stock: Math.max(0, Math.round(Number(variant?.publishStock ?? variant?.totalStock ?? variant?.stock ?? 0) || 0)),
+        attributes: this.mergeFalabellaAttributes(prepared.attributes, variantAttributes),
+        images: this.normalizeFalabellaVariantImages(
+          variant?.images || variant?.image || variant?.pictures || []
+        )
+      });
+
+      seenSkus.add(normalizedSku);
+    };
+
+    addProduct(resolvedParentVariant.sku || resolvedParentVariant.SellerSku || '', resolvedParentVariant);
+
+    for (const variant of publishableVariants) {
+      const sku = String(variant.sku || variant.SellerSku || '').trim();
+      if (!sku || sku === parentSku) continue;
+      addProduct(sku, variant);
+    }
+
+    return products;
+  }
+
   isVariationAttribute(attr) {
-    return attr?.group_name === 'Variation' && attr?.is_global_attribute === false;
+    const groupName = String(attr?.group_name ?? attr?.GroupName ?? '').trim();
+    const globalValue = attr?.is_global_attribute ?? attr?.IsGlobalAttribute;
+    const isGlobalFalse = globalValue === false || globalValue === 0 || String(globalValue) === '0';
+    return groupName === 'Variation' && isGlobalFalse;
   }
 
 async hydrateAttributesForPublish(product) {
@@ -1298,14 +1570,16 @@ async getCategoryAttributes(categoryId) {
         success: true,
         attributes: items.map(attr => ({
           id: attr.FeedName || attr.Name,
+          feed_name: attr.FeedName || attr.Name,
           name: attr.Label,
+          group_name: attr.GroupName || '',
+          is_global_attribute: attr.IsGlobalAttribute === "1" || attr.IsGlobalAttribute === 1 || attr.IsGlobalAttribute === true,
           is_mandatory: attr.isMandatory === "1" || attr.isMandatory === true,
           value_type: ['option', 'multi_option'].includes(attr.AttributeType) ? 'list' : 'string',
           attribute_type: attr.AttributeType || 'string',
           input_type: attr.InputType || '',
-          group_name: attr.GroupName || '',
-          is_global_attribute: attr.IsGlobalAttribute === "1" || attr.IsGlobalAttribute === 1 || attr.IsGlobalAttribute === true,
           example_value: attr.ExampleValue || '',
+          options: attr.Options || null,
           values: attr.Options?.Option 
             ? (Array.isArray(attr.Options.Option) 
                 ? attr.Options.Option.map(opt => ({ id: opt.id, name: opt.Name }))
@@ -1342,43 +1616,83 @@ async getCategoryAttributes(categoryId) {
     if (product.price <= 0) errors.push('El precio debe ser mayor a 0');
     if (product.stock < 0) errors.push('El stock no puede ser negativo');
 
+    if (Array.isArray(product?.falabella_products) && product.falabella_products.length > 0) {
+      const skus = product.falabella_products.map((item) => String(item?.sku || '').trim()).filter(Boolean);
+      const uniqueSkus = new Set(skus);
+      if (skus.length !== uniqueSkus.size) {
+        errors.push('Las variantes de Falabella contienen SKUs duplicados');
+      }
+
+      const parentSku = String(product.ParentSku || '').trim();
+      if (!parentSku) {
+        errors.push('ParentSku es requerido cuando existen variantes');
+      } else if (!skus.includes(parentSku)) {
+        errors.push(`ParentSku debe coincidir con el SellerSku de uno de los productos enviados. Recibido: ${parentSku}`);
+      }
+
+      for (const item of product.falabella_products) {
+        const itemSku = String(item?.sku || '').trim();
+        if (!itemSku) {
+          errors.push('Cada variante debe tener un SellerSku válido');
+          continue;
+        }
+        const itemParentSku = String(item?.ParentSku || '').trim();
+        if (itemParentSku !== parentSku) {
+          errors.push(`ParentSku inconsistente para SKU ${itemSku}. Recibido: ${itemParentSku}, esperado: ${parentSku}`);
+        }
+      }
+    }
+
     return {
       valid: errors.length === 0,
       errors
     };
   }
-// ✅ Publicar producto con firma correcta (igual que GetCategorySuggestion que funcionó
-    buildProductXml(product) {
-      logger.info(
-  `[DEBUG IMAGES] ${JSON.stringify({
-    images: product.images,
-    MainImage: product.MainImage
-  })}`
-);
-    const escape = (str) => {
-      if (typeof str !== 'string') return String(str || '');
-      return str
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&apos;');
+  buildProductXml(product) {
+    const products = Array.isArray(product?.falabella_products) && product.falabella_products.length > 0
+      ? product.falabella_products
+      : [product];
+
+    const builder = new Builder({
+      headless: true,
+      renderOpts: { pretty: true, indent: '  ', newline: '\n' }
+    });
+
+    const xmlObject = {
+      Request: {
+        Product: products.map((item) => this.buildFalabellaProductNodeXml(item))
+      }
     };
 
-    const sku = escape((product.sku || '').substring(0, 50));
-    const name = escape((product.productName || 'Producto sin nombre').substring(0, 255));
-    
-    // ✅ 🔑 CORRECCIÓN: Usar el atributo Brand si existe, sino usar product.brand
-    const brandAttr = product.attributes?.find(a => a.id === 'Brand');
-    const brand = escape((brandAttr?.value_name || brandAttr?.value || product.brand || 'Genérica').substring(0, 50));
-    
-    const description = escape((product.description || 'Producto sin descripción').substring(0, 25000));
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>\n${builder.buildObject(xmlObject)}`;
+
+    logger.info(`[FalabellaAdapter] 📦 XML Payload (${product?.__falabella_action || 'ProductCreate'}):`);
+    logger.info(xml);
+
+    return xml;
+  }
+
+  buildFalabellaProductNodeXml(product) {
+    logger.info(
+      `[DEBUG IMAGES] ${JSON.stringify({
+        images: product.images,
+        MainImage: product.MainImage
+      })}`
+    );
+
+    const sku = String(product.sku || '').substring(0, 50);
+    const name = String(product.productName || 'Producto sin nombre').substring(0, 255);
+    const brandAttr = Array.isArray(product.attributes)
+      ? product.attributes.find((a) => a.id === 'Brand')
+      : null;
+    const brand = String(brandAttr?.value_name || brandAttr?.value || product.brand || 'Genérica').substring(0, 50);
+    const description = String(product.description || 'Producto sin descripción').substring(0, 25000);
     const categoryId = Number(product.PrimaryCategory);
     const price = Number(product.price).toFixed(2);
     const stock = Math.max(0, Math.round(Number(product.stock)));
     const marketplaceProductId = this.resolveMarketplaceProductId(product);
+    const operatorCode = this.getFalabellaOperatorCode();
 
-    // ✅ 🔑 CORRECCIÓN: Validar y ajustar dimensiones según rangos de Falabella
     const validateDimension = (value, fieldName) => {
       const numValue = Number(value);
       if (!Number.isFinite(numValue) || numValue < 2) {
@@ -1392,46 +1706,27 @@ async getCategoryAttributes(categoryId) {
       return numValue;
     };
 
-    // ✅ Buscar valores en atributos primero, luego en product
-    const getHeight = () => {
-      const attr = product.attributes?.find(a => a.id === 'PackageHeight');
-      const value = attr?.value_name || attr?.value || product.package_height || 10;
-      return validateDimension(value, 'PackageHeight');
+    const getAttributeValue = (attrId, fallback) => {
+      const attr = Array.isArray(product.attributes)
+        ? product.attributes.find((a) => a.id === attrId)
+        : null;
+      return attr?.value_name || attr?.value || fallback;
     };
 
-    const getWidth = () => {
-      const attr = product.attributes?.find(a => a.id === 'PackageWidth');
-      const value = attr?.value_name || attr?.value || product.package_width || 10;
-      return validateDimension(value, 'PackageWidth');
-    };
-
-    const getLength = () => {
-      const attr = product.attributes?.find(a => a.id === 'PackageLength');
-      const value = attr?.value_name || attr?.value || product.package_length || 10;
-      return validateDimension(value, 'PackageLength');
-    };
-
-    const getWeight = () => {
-      const attr = product.attributes?.find(a => a.id === 'PackageWeight');
-      const value = attr?.value_name || attr?.value || product.package_weight || 0.5;
-      const numValue = Number(value);
-      if (!Number.isFinite(numValue) || numValue < 0.001) {
-        logger.warn(`[FalabellaAdapter] ⚠️ PackageWeight valor ${value} inválido, ajustando a 0.5`);
-        return 0.5;
-      }
-      return numValue;
-    };
-
-    const height = getHeight();
-    const width = getWidth();
-    const length = getLength();
-    const weight = getWeight();
+    const height = validateDimension(getAttributeValue('PackageHeight', product.package_height || 10), 'PackageHeight');
+    const width = validateDimension(getAttributeValue('PackageWidth', product.package_width || 10), 'PackageWidth');
+    const length = validateDimension(getAttributeValue('PackageLength', product.package_length || 10), 'PackageLength');
+    const weightValue = Number(getAttributeValue('PackageWeight', product.package_weight || 0.5));
+    const weight = Number.isFinite(weightValue) && weightValue >= 0.001 ? weightValue : 0.5;
 
     const effectiveAttributes = this.buildFalabellaAttributes(product);
+    const variationAttributes = Array.isArray(effectiveAttributes)
+      ? effectiveAttributes.filter((attr) => this.isVariationAttribute(attr))
+      : [];
 
     const productDataAttrs = {
       ConditionType: this.normalizeFalabellaAttributeValue(
-        effectiveAttributes?.find(a => ['condition_type', 'ConditionType'].includes(a.id))
+        effectiveAttributes?.find((a) => String(a.id).toLowerCase() === 'conditiontype')
       ) || 'Nuevo',
       PackageHeight: height,
       PackageWidth: width,
@@ -1441,15 +1736,15 @@ async getCategoryAttributes(categoryId) {
 
     if (Array.isArray(effectiveAttributes)) {
       for (const attr of effectiveAttributes) {
-        if (['SellerSku', 'Name', 'Brand', 'Description', 'PrimaryCategory', 'Variation', 'ProductId', 'images', 'productId', 'categoryName', 'category_attributes'].includes(attr.id)) {
+        const feedName = attr.feed_name || attr.FeedName || attr.id;
+        if (!feedName) continue;
+        if (['SellerSku', 'ParentSku', 'Name', 'Brand', 'Description', 'PrimaryCategory', 'Variation', 'ProductId', 'images', 'productId', 'categoryName', 'category_attributes', 'falabella_products'].includes(feedName)) {
           continue;
         }
         if (this.isVariationAttribute(attr)) {
           continue;
         }
-        
-        // ✅ 🔑 CORRECCIÓN: Saltar atributos de dimensiones ya procesados
-        if (['PackageHeight', 'PackageWidth', 'PackageLength', 'PackageWeight'].includes(attr.id)) {
+        if (['PackageHeight', 'PackageWidth', 'PackageLength', 'PackageWeight'].includes(feedName)) {
           continue;
         }
 
@@ -1460,47 +1755,50 @@ async getCategoryAttributes(categoryId) {
           'PlazoDeDisponibilidadDeServicioTecnico',
           'WarrantyTime',
           'WarrantyMonths'
-        ].includes(attr.id) && typeof value === 'string') {
+        ].includes(feedName) && typeof value === 'string') {
           const match = value.match(/^\d+/);
           if (match) value = match[0];
         }
+
         if (value !== '' && value !== null && value !== undefined) {
-          productDataAttrs[attr.id] = value;
+          productDataAttrs[feedName] = value;
         }
       }
     }
 
-    let productDataXml = '';
-    for (const [key, value] of Object.entries(productDataAttrs)) {
-      if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key)) {
-        productDataXml += `
-<${key}>${escape(String(value))}</${key}>`;
+    const node = {
+      SellerSku: sku,
+      Name: name,
+      PrimaryCategory: String(categoryId),
+      Description: description,
+      Brand: brand,
+      BusinessUnits: {
+        BusinessUnit: {
+          OperatorCode: operatorCode,
+          Price: price,
+          Stock: String(stock),
+          Status: 'active'
+        }
+      },
+      ProductData: productDataAttrs
+    };
+
+    if (product.ParentSku) {
+      node.ParentSku = String(product.ParentSku).substring(0, 50);
+    }
+
+    if (marketplaceProductId) {
+      node.ProductId = String(marketplaceProductId);
+    }
+
+    for (const attr of variationAttributes) {
+      const feedName = attr.feed_name || attr.FeedName || attr.id;
+      const value = this.normalizeFalabellaAttributeValue(attr);
+      if (feedName && value !== '' && value !== null && value !== undefined) {
+        node[feedName] = value;
       }
     }
 
-    let variationXml = '';
-    const variationProductAttrs = Array.isArray(effectiveAttributes)
-      ? effectiveAttributes
-        .filter(attr => this.isVariationAttribute(attr))
-        .map(attr => ({ key: attr.id, value: this.normalizeFalabellaAttributeValue(attr) }))
-        .filter(attr => attr.value)
-      : [];
-
-    if (variationProductAttrs.length > 0) {
-      variationXml = variationProductAttrs
-        .filter(attr => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(attr.key))
-        .map(attr => `
-<${attr.key}>${escape(String(attr.value))}</${attr.key}>`)
-        .join('');
-    } else {
-      const variationAttr = effectiveAttributes?.find(a => a.id === 'Variation');
-      const variationValue = variationAttr
-        ? (this.normalizeFalabellaAttributeValue(variationAttr) || '...')
-        : '...';
-      variationXml = `
-<Variation>${escape(String(variationValue))}</Variation>`;
-    }
-    
     const normalizedImages = this.normalizeFalabellaImages(product.images);
     if (normalizedImages.length > 0) {
       logger.info(`[FalabellaAdapter] ✅ Imágenes preparadas para asociación post-creación: ${normalizedImages.length}`);
@@ -1508,30 +1806,7 @@ async getCategoryAttributes(categoryId) {
       logger.info(`[FalabellaAdapter] ℹ️ Sin imágenes en payload para SKU ${sku}`);
     }
 
-    logger.info(`[FalabellaAdapter] 📦 XML Payload (${product?.__falabella_action || 'ProductCreate'}):`);
-    logger.info(`\n${`<?xml version="1.0" encoding="UTF-8"?>\n<Request>\n  <Product>\n    <SellerSku>${sku}</SellerSku>\n    <Name>${name}</Name>\n    <PrimaryCategory>${categoryId}</PrimaryCategory>\n    <Description>${description}</Description>\n    <Brand>${brand}</Brand>${variationXml}${marketplaceProductId ? `\n    <ProductId>${escape(marketplaceProductId)}</ProductId>` : ''}\n    <BusinessUnits>\n      <BusinessUnit>\n        <OperatorCode>facl</OperatorCode>\n        <Price>${price}</Price>\n        <Stock>${stock}</Stock>\n        <Status>active</Status>\n      </BusinessUnit>\n    </BusinessUnits>\n    <ProductData>${productDataXml}\n    </ProductData>\n  </Product>\n</Request>`}`);
-
-    return `<?xml version="1.0" encoding="UTF-8"?>
-<Request>
-  <Product>
-    <SellerSku>${sku}</SellerSku>
-    <Name>${name}</Name>
-    <PrimaryCategory>${categoryId}</PrimaryCategory>
-    <Description>${description}</Description>
-    <Brand>${brand}</Brand>${variationXml}${marketplaceProductId ? `
-    <ProductId>${escape(marketplaceProductId)}</ProductId>` : ''}
-    <BusinessUnits>
-      <BusinessUnit>
-        <OperatorCode>facl</OperatorCode>
-        <Price>${price}</Price>
-        <Stock>${stock}</Stock>
-        <Status>active</Status>
-      </BusinessUnit>
-    </BusinessUnits>
-    <ProductData>${productDataXml}
-    </ProductData>
-  </Product>
-</Request>`;
+    return node;
   }
 
     async publish(transformedProduct) {
@@ -1646,6 +1921,11 @@ async getCategoryAttributes(categoryId) {
             action: action,
             status: 'processing',
             sku: transformedProduct.sku,
+            published_skus: Array.isArray(transformedProduct.falabella_products)
+              ? transformedProduct.falabella_products.map((item) => item?.sku).filter(Boolean)
+              : [transformedProduct.sku].filter(Boolean),
+            has_variants: Array.isArray(transformedProduct.falabella_products)
+              && transformedProduct.falabella_products.length > 1,
             category_id: transformedProduct.PrimaryCategory,
             category_name: transformedProduct.categoryName,
             image_upload: { success: true, skipped: true }
@@ -1718,41 +1998,37 @@ async getCategoryAttributes(categoryId) {
   }
 
   const operatorCode = this.getFalabellaOperatorCode();
-  
-  let businessUnitXml = `
-<BusinessUnit>
-<OperatorCode>${this.escapeXml(operatorCode)}</OperatorCode>`;
+  const businessUnit = {
+    OperatorCode: operatorCode
+  };
 
   if (status !== undefined && status !== null && String(status).trim() !== '') {
-    const normalizedStatus = String(status).trim().toLowerCase();
-    businessUnitXml += `
-<Status>${this.escapeXml(normalizedStatus)}</Status>`;
+    businessUnit.Status = String(status).trim().toLowerCase();
   }
 
   if (price !== undefined && price !== null && String(price).trim() !== '') {
-    businessUnitXml += `
-<Price>${Number(price).toFixed(2)}</Price>`;
+    businessUnit.Price = Number(price).toFixed(2);
   }
 
   if (available_quantity !== undefined && available_quantity !== null && String(available_quantity).trim() !== '') {
-    const quantity = Math.max(0, Math.round(Number(available_quantity)));
-    businessUnitXml += `
-<Stock>${quantity}</Stock>`;
+    businessUnit.Stock = String(Math.max(0, Math.round(Number(available_quantity))));
   }
 
-  businessUnitXml += `
-</BusinessUnit>`;
+  const builder = new Builder({
+    headless: true,
+    renderOpts: { pretty: true, indent: '  ', newline: '\n' }
+  });
 
-  // ✅ SIN <ProductData /> - Documentación oficial Falabella:
-  // "if you only need to update price or stock, you do not need to include additional information"
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<Request>
-<Product>
-<SellerSku>${this.escapeXml(sku)}</SellerSku>
-<BusinessUnits>${businessUnitXml}
-</BusinessUnits>
-</Product>
-</Request>`;
+  return `<?xml version="1.0" encoding="UTF-8"?>\n${builder.buildObject({
+    Request: {
+      Product: {
+        SellerSku: sku,
+        BusinessUnits: {
+          BusinessUnit: businessUnit
+        }
+      }
+    }
+  })}`;
 }
 
   getFalabellaOperatorCode() {
@@ -1903,18 +2179,7 @@ async getCategoryAttributes(categoryId) {
         return credentialStatus;
       }
 
-      // Construir XML según la documentación oficial de Falabella para Action=Image
-      const escape = (str) => {
-        if (typeof str !== 'string') return String(str || '');
-        return str
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;')
-          .replace(/"/g, '&quot;')
-          .replace(/'/g, '&apos;');
-      };
-
-      const sku = escape(String(sellerSku || '').substring(0, 50));
+      const sku = String(sellerSku || '').substring(0, 50);
       
       const normalizedImages = images
         .filter((imageUrl) => typeof imageUrl === 'string' && imageUrl.trim())
@@ -1925,23 +2190,26 @@ async getCategoryAttributes(categoryId) {
         logger.info(`[FalabellaAdapter] 📸 Preparando ${normalizedImages.length} imagen(es) para SKU ${sellerSku} (máximo 8 según doc)`);
       }
 
-      const imagesXml = normalizedImages
-        .map((imageUrl) => `        <Image>${escape(imageUrl)}</Image>`)
-        .join('\n');
-
-      if (!imagesXml) {
+      if (normalizedImages.length === 0) {
         logger.info(`[FalabellaAdapter] No hay URLs de imagen válidas para SKU ${sellerSku}`);
         return { success: true, skipped: true };
       }
 
-      const xmlPayload = `<?xml version="1.0" encoding="UTF-8"?>
-<Request>
-  <ProductImage>
-    <SellerSku>${sku}</SellerSku>
-    <Images>${imagesXml}
-    </Images>
-  </ProductImage>
-</Request>`;
+      const builder = new Builder({
+        headless: true,
+        renderOpts: { pretty: true, indent: '  ', newline: '\n' }
+      });
+
+      const xmlPayload = `<?xml version="1.0" encoding="UTF-8"?>\n${builder.buildObject({
+        Request: {
+          ProductImage: {
+            SellerSku: sku,
+            Images: {
+              Image: normalizedImages
+            }
+          }
+        }
+      })}`;
 
       const timestamp = this.timestampMinus03();
       const params = {

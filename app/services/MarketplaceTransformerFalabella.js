@@ -124,6 +124,14 @@ class MarketplaceTransformerFalabella {
       // 🔑 Campos adicionales (opcionales pero útiles)
       if (product.categoryName) transformed.categoryName = product.categoryName;
       if (product.productId) transformed.productId = product.productId;
+      if (product.ParentSku) transformed.ParentSku = product.ParentSku;
+      if (Array.isArray(product.falabella_products) && product.falabella_products.length > 0) {
+        transformed.falabella_products = product.falabella_products.map((item) => ({
+          ...item,
+          attributes: Array.isArray(item.attributes) ? item.attributes : [],
+          images: Array.isArray(item.images) ? item.images : []
+        }));
+      }
 
       // 🔑 Aplicar mapeos adicionales del repositorio (solo si no existen ya)
       for (const mapping of exportMappings) {
