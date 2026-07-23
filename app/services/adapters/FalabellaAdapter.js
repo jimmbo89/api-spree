@@ -1719,6 +1719,10 @@ async getCategoryAttributes(categoryId) {
     const variationAttributes = Array.isArray(effectiveAttributes)
       ? effectiveAttributes.filter((attr) => this.isVariationAttribute(attr))
       : [];
+    const variationField = Array.isArray(effectiveAttributes)
+      ? effectiveAttributes.find((attr) => this.normalizeFalabellaText(attr?.id) === 'variation')
+      : null;
+    const variationValue = this.normalizeFalabellaAttributeValue(variationField);
 
     const productDataAttrs = {
       ConditionType: this.normalizeFalabellaAttributeValue(
@@ -1735,6 +1739,9 @@ async getCategoryAttributes(categoryId) {
         const feedName = attr.feed_name || attr.FeedName || attr.id;
         if (!feedName) continue;
         if (['SellerSku', 'ParentSku', 'Name', 'Brand', 'Description', 'PrimaryCategory', 'ProductId', 'images', 'productId', 'categoryName', 'category_attributes', 'falabella_products'].includes(feedName)) {
+          continue;
+        }
+        if (feedName === 'Variation') {
           continue;
         }
         if (this.isVariationAttribute(attr)) {
@@ -1768,6 +1775,7 @@ async getCategoryAttributes(categoryId) {
       PrimaryCategory: String(categoryId),
       Description: description,
       Brand: brand,
+      Variation: variationValue || undefined,
       BusinessUnits: {
         BusinessUnit: {
           OperatorCode: operatorCode,
