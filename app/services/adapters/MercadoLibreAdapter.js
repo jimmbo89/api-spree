@@ -248,6 +248,25 @@ class MercadoLibreAdapter extends BaseAdapter {
     return processed;
   }
 
+  logPublishPayloadMarker({ label, model, sku = null, itemId = null, payload }) {
+    const marker = [
+      '========== [MELI][PAYLOAD_TO_SEND] ==========' ,
+      `label=${label}`,
+      `model=${model}`,
+      `sku=${sku || 'n/a'}`,
+      `item_id=${itemId || 'n/a'}`,
+      '============================================='
+    ].join(' | ');
+
+    logger.info(`[MercadoLibreAdapter] ${marker}`);
+
+    try {
+      logger.info(JSON.stringify(payload, null, 2));
+    } catch (error) {
+      logger.info(String(payload));
+    }
+  }
+
   buildMercadoLibreAttributes(attributes, categoryAttributes = []) {
     if (!Array.isArray(attributes) || attributes.length === 0) return [];
 
@@ -1830,6 +1849,13 @@ class MercadoLibreAdapter extends BaseAdapter {
             if (currentStatus === 'closed') {
               const relistPayload = buildRelistPayload();
               logger.info(`[MercadoLibreAdapter] REPUBLICAR item cerrado ${mlExistingItemId}`);
+              this.logPublishPayloadMarker({
+                label: 'relist',
+                model: useUserProductsModel ? 'user_products' : 'classic',
+                sku: transformedProduct.sku || transformedProduct.external_id || null,
+                itemId: mlExistingItemId,
+                payload: relistPayload
+              });
 
               const relistResponse = await axios.post(
                 `https://api.mercadolibre.com/items/${mlExistingItemId}/relist`,
@@ -1854,6 +1880,13 @@ class MercadoLibreAdapter extends BaseAdapter {
             const updatePayload = buildUpdatePayload();
             if (Object.keys(updatePayload).length > 0) {
               logger.info(`[MercadoLibreAdapter] ACTUALIZAR item existente ${mlExistingItemId}`);
+              this.logPublishPayloadMarker({
+                label: 'update',
+                model: useUserProductsModel ? 'user_products' : 'classic',
+                sku: transformedProduct.sku || transformedProduct.external_id || null,
+                itemId: mlExistingItemId,
+                payload: updatePayload
+              });
 
               const updateResponse = await axios.put(
                 `https://api.mercadolibre.com/items/${mlExistingItemId}`,
@@ -2020,8 +2053,13 @@ class MercadoLibreAdapter extends BaseAdapter {
             };
           }
 
-          logger.info("[MercadoLibreAdapter] === PAYLOAD USER PRODUCTS ===");
-          logger.info(JSON.stringify(userProductPayload, null, 2));
+          this.logPublishPayloadMarker({
+            label: 'create',
+            model: 'user_products',
+            sku: variant?.sku || transformedProduct.sku || null,
+            itemId: null,
+            payload: userProductPayload
+          });
 
           const response = await axios.post(
             "https://api.mercadolibre.com/items",
@@ -2074,8 +2112,13 @@ class MercadoLibreAdapter extends BaseAdapter {
       delete productToPublish.family_name;
       logger.info(`[DEBUG] 📦 Modelo clásico → title: "${titleValue}"`);
 
-      logger.info("[MercadoLibreAdapter] === PAYLOAD FINAL QUE SE ENVIARÁ A MERCADO LIBRE ===");
-      logger.info(JSON.stringify(productToPublish, null, 2));
+      this.logPublishPayloadMarker({
+        label: 'create',
+        model: 'classic',
+        sku: transformedProduct.sku || transformedProduct.external_id || null,
+        itemId: null,
+        payload: productToPublish
+      });
 
       const validationResult = await this.validateMercadoLibrePayload(productToPublish);
       if (!validationResult.valid) {

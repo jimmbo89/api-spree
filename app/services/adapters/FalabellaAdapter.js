@@ -70,6 +70,18 @@ class FalabellaAdapter extends BaseAdapter {
       .replace(/'/g, '&apos;');
   }
 
+  logPublishPayloadMarker({ label, action, sku, payload }) {
+    logger.info(
+      `[FalabellaAdapter] ========= [FALABELLA][PAYLOAD_TO_SEND] ========= label=${label} action=${action} sku=${sku || 'n/a'} =========`
+    );
+
+    try {
+      logger.info(payload);
+    } catch (error) {
+      logger.info(String(payload));
+    }
+  }
+
   coerceNumber(value) {
     if (value === null || value === undefined) return null;
     if (typeof value === 'number') return Number.isFinite(value) ? value : null;
@@ -1549,6 +1561,39 @@ _transformImages(images = []) {
     return '';
   }
 
+  adjustFalabellaTextForVariation(text, variationValue) {
+    const sourceText = String(text || '').trim();
+    const variationText = String(variationValue || '').trim();
+
+    if (!sourceText || !variationText) {
+      return sourceText;
+    }
+
+    const sourceNormalized = this.normalizeFalabellaText(sourceText);
+    const variationNormalized = this.normalizeFalabellaText(variationText);
+    if (sourceNormalized.includes(variationNormalized)) {
+      return sourceText;
+    }
+
+    const commonColorTokens = [
+      'negro', 'azul', 'rojo', 'blanco', 'gris', 'verde', 'amarillo',
+      'morado', 'violeta', 'naranja', 'rosa', 'cian', 'magenta'
+    ];
+
+    for (const token of commonColorTokens) {
+      if (token === variationNormalized) continue;
+      if (!sourceNormalized.includes(token)) continue;
+
+      const tokenRegex = new RegExp(`\\b${token}\\b`, 'i');
+      const replaced = sourceText.replace(tokenRegex, variationText);
+      if (replaced !== sourceText) {
+        return replaced;
+      }
+    }
+
+    return sourceText;
+  }
+
   buildFalabellaSimpleVariantProduct(prepared, variant, categoryAttributes = []) {
     const variantSku = String(variant?.sku || variant?.SellerSku || '').trim();
     if (!variantSku) return null;
@@ -1576,6 +1621,19 @@ _transformImages(images = []) {
       prepared.attributes || [],
       [
         ...variantAttributes,
+        ...(variationValue
+          ? [{
+              id: 'Color',
+              name: 'Color',
+              value_name: variationValue,
+              value: variationValue,
+              attribute_type: 'value',
+              input_type: 'text',
+              group_name: '',
+              is_global_attribute: false,
+              values: []
+            }]
+          : []),
         ...(variationAttr ? [variationAttr] : [])
       ]
     );
@@ -1590,6 +1648,7 @@ _transformImages(images = []) {
       variant?.title ||
       variant?.variant_name ||
       variant?.variantLabel ||
+      variant?.variant_label ||
       prepared.productName ||
       'Producto sin nombre'
     ).trim();
@@ -1597,6 +1656,7 @@ _transformImages(images = []) {
     const productDescription = String(
       variant?.description ||
       variant?.Description ||
+      variant?.variant_description ||
       prepared.description ||
       'Producto sin descripción'
     ).trim();
@@ -1604,15 +1664,15 @@ _transformImages(images = []) {
     return {
       ...prepared,
       sku: variantSku,
-      productName,
-      description: productDescription,
+      productName: this.adjustFalabellaTextForVariation(productName, variationValue || variantSku),
+      description: this.adjustFalabellaTextForVariation(productDescription, variationValue || variantSku),
       price: Number(variant?.price ?? variant?.publishPrice ?? prepared.price) || prepared.price,
       stock: Math.max(0, Math.round(Number(variant?.publishStock ?? variant?.totalStock ?? variant?.stock ?? prepared.stock ?? 0) || 0)),
       attributes: this.buildFalabellaAttributes({
         ...prepared,
         sku: variantSku,
-        productName,
-        description: productDescription,
+        productName: this.adjustFalabellaTextForVariation(productName, variationValue || variantSku),
+        description: this.adjustFalabellaTextForVariation(productDescription, variationValue || variantSku),
         attributes: mergedAttributes,
         images: variantImages
       }),
@@ -1847,8 +1907,12 @@ async getCategoryAttributes(categoryId) {
 
     const xml = `<?xml version="1.0" encoding="UTF-8"?>\n${builder.buildObject(xmlObject)}`;
 
-    logger.info(`[FalabellaAdapter] 📦 XML Payload (${product?.__falabella_action || 'ProductCreate'}):`);
-    logger.info(xml);
+    this.logPublishPayloadMarker({
+      label: 'product_create_or_update',
+      action: product?.__falabella_action || 'ProductCreate',
+      sku: product?.sku || null,
+      payload: xml
+    });
 
     return xml;
   }
@@ -2069,8 +2133,12 @@ async getCategoryAttributes(categoryId) {
 
       logger.info(`[FalabellaAdapter] 👤 Headers:`);
       logger.info(JSON.stringify(headers, null, 2));
-      logger.info(`[FalabellaAdapter] 📦 XML Payload (${action}):`);
-      logger.info(xmlPayload);
+      this.logPublishPayloadMarker({
+        label: 'publish',
+        action,
+        sku: transformedProduct.sku,
+        payload: xmlPayload
+      });
 
       // ✅ Enviar solicitud POST
       const response = await axios.post(apiUrl, xmlPayload, {
@@ -2282,7 +2350,12 @@ async getCategoryAttributes(categoryId) {
       logger.info(`[FalabellaAdapter] 🔍 String to sign (ENCODEADO):`);
       logger.info(canonicalQuery);
       logger.info(`[FalabellaAdapter] ✅ Firma generada (HEX): ${signatureHex}`);
-      logger.info(`[FalabellaAdapter] 📦 XML Payload (ProductUpdate): \n ${JSON.stringify(xmlPayload)}`);
+      this.logPublishPayloadMarker({
+        label: 'update',
+        action: 'ProductUpdate',
+        sku: normalizedSku,
+        payload: xmlPayload
+      });
 
       const headers = {
         'Content-Type': 'application/xml; charset=UTF-8',
@@ -2437,8 +2510,12 @@ async getCategoryAttributes(categoryId) {
       };
 
       logger.info(`[FalabellaAdapter] 📸 Subiendo ${images.length} imágenes para SKU ${sellerSku}`);
-      logger.info(`[FalabellaAdapter] 📸 XML Payload (ProductImageCreate):`);
-      logger.info(xmlPayload);
+      this.logPublishPayloadMarker({
+        label: 'image',
+        action: 'Image',
+        sku,
+        payload: xmlPayload
+      });
 
       const response = await axios.post(apiUrl, xmlPayload, {
         headers,
