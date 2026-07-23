@@ -216,6 +216,229 @@ class PublishingService {
     return null;
   }
 
+  static async publishFalabellaIndependentItems({
+    adapter,
+    transformed,
+    productData,
+    marketplace,
+    warehouse,
+    userId,
+    credentialId,
+    batch_id = null
+  }) {
+    const publicationItems = Array.isArray(transformed?.falabella_publication_items)
+      ? transformed.falabella_publication_items.filter((item) => item && String(item?.sku || '').trim())
+      : [];
+
+    if (publicationItems.length === 0) {
+      return null;
+    }
+
+    const linkScope = buildProductMarketplaceLinkScope(warehouse);
+    const successfulItems = [];
+    const failedItems = [];
+
+    for (const publicationItem of publicationItems) {
+      const itemSku = String(publicationItem?.sku || '').trim();
+      if (!itemSku) continue;
+
+      const payload = {
+        ...publicationItem,
+        sku: itemSku
+      };
+
+      const falabellaTask = await ProductPublishingTaskRepository.create({
+        product_id: productData.id,
+        marketplace_id: marketplace.marketplace_id,
+        credential_id: credentialId,
+        warehouse_id: warehouse.id,
+        company_id: warehouse.company_id || null,
+        branch_id: warehouse.branch_id || null,
+        user_id: userId,
+        date: new Date(),
+        status: 'processing',
+        payload,
+        external_id: itemSku,
+        external_url: null,
+        error_message: 'Producto enviado a Falabella, esperando confirmación del webhook...',
+        error_details: {
+          feed_id: null,
+          action: 'ProductCreate',
+          status: 'pending',
+          sku: itemSku,
+          category_id: payload.PrimaryCategory,
+          category_name: payload.categoryName,
+          sent_at: new Date().toISOString(),
+          pending_webhook: true
+        },
+        api_response: {
+          status: 'queued'
+        },
+        batch_id: batch_id || null,
+        attempt_count: 1
+      });
+
+      await ProductMarketplaceLinkRepository.upsert({
+        product_id: productData.id,
+        marketplace_id: marketplace.marketplace_id,
+        credential_id: credentialId,
+        user_id: userId,
+        ...linkScope,
+        status: 'processing',
+        external_id: itemSku,
+        external_url: null,
+        published_stock: normalizePublishedStock(payload),
+        published_payload: payload,
+        last_synced_at: new Date()
+      });
+
+      logger.info(`[PublishingService] ✅ Tarea Falabella creada para SKU independiente ${itemSku}. task_id=${falabellaTask.id}`);
+
+      const result = await adapter.publish(payload);
+
+      if (result.auth_required) {
+        await ProductPublishingTaskRepository.updateTask(falabellaTask, {
+          status: 'pending',
+          error_message: 'Autenticación requerida',
+          error_details: {
+            error_code: 'auth_required',
+            auth_url: result.auth_url,
+            message: result.message || 'Autenticación requerida'
+          },
+          api_response: result.data || null
+        });
+
+        return {
+          auth_required: true,
+          auth_url: result.auth_url,
+          message: result.message || 'Autenticación requerida',
+          product_id: productData.id,
+          credential_id: credentialId,
+          task_id: falabellaTask.id
+        };
+      }
+
+      const publishedExternalId = resolveExternalId(result, itemSku);
+      const falabellaFeedId = result.data?.feed_id || result.data?.feed?.FeedID || result.request_id || null;
+      const falabellaWarnings = Array.isArray(result.warnings) ? result.warnings : [];
+      const hasWarnings = result.has_warnings === true || falabellaWarnings.length > 0;
+      const errorDetails = {
+        feed_id: falabellaFeedId,
+        action: result.data?.action || payload.__falabella_action || 'ProductCreate',
+        status: 'processing',
+        sku: itemSku,
+        category_id: payload.PrimaryCategory,
+        category_name: payload.categoryName,
+        sent_at: new Date().toISOString()
+      };
+
+      if (hasWarnings) {
+        errorDetails.warnings = falabellaWarnings;
+        errorDetails.warning_message = result.warning_message || null;
+      }
+
+      if (result.success) {
+        await ProductPublishingTaskRepository.updateTask(falabellaTask, {
+          status: 'pending',
+          external_id: publishedExternalId || itemSku,
+          external_url: result.data?.permalink || null,
+          error_message: result.warning_message || 'Producto enviado a Falabella, esperando confirmación del webhook...',
+          error_details: errorDetails,
+          api_response: result.data || null
+        });
+
+        await ProductMarketplaceLinkRepository.upsert({
+          product_id: productData.id,
+          marketplace_id: marketplace.marketplace_id,
+          credential_id: credentialId,
+          user_id: userId,
+          ...linkScope,
+          status: 'processing',
+          external_id: publishedExternalId || itemSku,
+          external_url: result.data?.permalink || null,
+          published_stock: normalizePublishedStock(payload),
+          published_payload: payload,
+          last_synced_at: new Date()
+        });
+
+        successfulItems.push({
+          sku: itemSku,
+          external_id: publishedExternalId || itemSku,
+          task_id: falabellaTask.id,
+          feed_id: falabellaFeedId,
+          warnings: falabellaWarnings,
+          has_warnings: hasWarnings
+        });
+      } else {
+        await ProductPublishingTaskRepository.updateTask(falabellaTask, {
+          status: 'failed',
+          error_message: result.error || 'Error desconocido en Falabella',
+          error_details: {
+            error_code: result.error_code || 'falabella_publish_failed',
+            sku: itemSku,
+            category_id: payload.PrimaryCategory,
+            category_name: payload.categoryName,
+            ...(result.details || {})
+          },
+          api_response: result.data || null
+        });
+
+        await ProductMarketplaceLinkRepository.upsert({
+          product_id: productData.id,
+          marketplace_id: marketplace.marketplace_id,
+          credential_id: credentialId,
+          user_id: userId,
+          ...linkScope,
+          status: 'failed',
+          external_id: itemSku,
+          external_url: null,
+          published_stock: normalizePublishedStock(payload),
+          published_payload: payload,
+          last_synced_at: new Date()
+        });
+
+        failedItems.push({
+          sku: itemSku,
+          task_id: falabellaTask.id,
+          error: result.error || 'Error desconocido en Falabella',
+          details: result.details || null
+        });
+      }
+    }
+
+    const hasSuccess = successfulItems.length > 0;
+    const hasFailures = failedItems.length > 0;
+
+    return {
+      success: hasSuccess,
+      partial_success: hasSuccess && hasFailures,
+      external_id: successfulItems[0]?.external_id || failedItems[0]?.sku || publicationItems[0]?.sku || transformed?.sku || null,
+      product_id: productData.id,
+      credential_id: credentialId,
+      task_id: successfulItems[0]?.task_id || failedItems[0]?.task_id || null,
+      has_warnings: successfulItems.some((item) => item.has_warnings) || false,
+      warnings: successfulItems.flatMap((item) => Array.isArray(item.warnings) ? item.warnings : []),
+      warning_message: hasSuccess
+        ? 'Producto enviado a Falabella en items independientes; la confirmación final llegará por webhook'
+        : 'Ninguna variante independiente pudo publicarse en Falabella',
+      status: hasSuccess ? (hasFailures ? 'published_with_warnings' : 'pending') : 'failed',
+      error: hasSuccess ? null : 'falabella_publication_failed',
+      data: {
+        action: 'ProductCreate',
+        status: hasSuccess ? 'pending' : 'failed',
+        sku: successfulItems[0]?.external_id || failedItems[0]?.sku || null,
+        published_skus: successfulItems.map((item) => item.external_id),
+        failed_skus: failedItems.map((item) => item.sku),
+        feed_ids: successfulItems.map((item) => item.feed_id).filter(Boolean),
+        has_variants: successfulItems.length + failedItems.length > 1
+      },
+      items: {
+        successful: successfulItems,
+        failed: failedItems
+      }
+    };
+  }
+
   static async publishProducts(products, marketplace, warehouse, userId, companyId, mode, config, credentialId = null) {
     // ← NUEVO: credentialId opcional
     const success = [];
@@ -368,6 +591,23 @@ class PublishingService {
         logger.warn(`[PublishingService] ⚠️ Sin family_name ni title → usando título fallback: "${transformed.title}"`);
       }
 
+      const isFalabellaMarketplace = Boolean(
+        String(marketplace?.domain || '').toLowerCase().includes('falabella')
+      );
+
+      if (isFalabellaMarketplace && Array.isArray(transformed.falabella_publication_items) && transformed.falabella_publication_items.length > 0) {
+        return await PublishingService.publishFalabellaIndependentItems({
+          adapter,
+          transformed,
+          productData,
+          marketplace,
+          warehouse,
+          userId,
+          credentialId,
+          batch_id
+        });
+      }
+
       // === 3. Validar ===
       const validation = adapter.validateProduct(transformed);
       if (!validation.valid) {
@@ -397,7 +637,6 @@ class PublishingService {
         };
       }
 
-      const isFalabellaMarketplace = String(marketplace?.domain || '').toLowerCase().includes('falabella');
       let falabellaTask = null;
 
       if (isFalabellaMarketplace) {

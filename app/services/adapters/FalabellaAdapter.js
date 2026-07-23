@@ -826,7 +826,7 @@ _transformImages(images = []) {
     prepared.images = this.normalizeFalabellaImages(prepared.images);
 
     const publishableVariants = Array.isArray(productData.variants)
-      ? productData.variants.filter((variant) => variant && variant.publish && Number(variant.price) > 0)
+      ? productData.variants.filter((variant) => variant && variant.publish !== false)
       : [];
     const hasMultipleVariants = publishableVariants.length > 1;
     const hasVariationAttributes = Array.isArray(categoryAttributes)
@@ -858,6 +858,18 @@ _transformImages(images = []) {
       }
     } else if (hasMultipleVariants && !supportsMultiVariant) {
       logger.info(`[FalabellaAdapter] La categoría ${category.id} no admite multivariantes; se publicará como producto simple`);
+      const publicationItems = this.buildFalabellaIndependentVariantProducts(
+        prepared,
+        publishableVariants,
+        categoryAttributes
+      );
+
+      if (publicationItems.length >= 1) {
+        prepared.falabella_publication_items = publicationItems;
+        logger.info(`[FalabellaAdapter] Variantes separadas listas para publicación: ${publicationItems.length} productos simples independientes`);
+      } else {
+        throw new Error('No se pudieron construir variantes válidas para Falabella');
+      }
     }
 
     // ✅ Ajuste de precio por configuración económica (si aplica)
@@ -1433,7 +1445,7 @@ _transformImages(images = []) {
 
   buildFalabellaVariantProducts(prepared, variants = [], categoryAttributes = []) {
     const publishableVariants = Array.isArray(variants)
-      ? variants.filter((variant) => variant && variant.publish && Number(variant.price) > 0)
+      ? variants.filter((variant) => variant && variant.publish !== false)
       : [];
 
     if (publishableVariants.length === 0) {
@@ -1470,7 +1482,7 @@ _transformImages(images = []) {
         description: prepared.description,
         PrimaryCategory: prepared.PrimaryCategory,
         price: Number(variant?.price ?? prepared.price) || prepared.price,
-        stock: Math.max(0, Math.round(Number(variant?.publishStock ?? variant?.totalStock ?? variant?.stock ?? 0) || 0)),
+        stock: Math.max(0, Math.round(Number(variant?.publishStock ?? variant?.totalStock ?? variant?.stock ?? prepared.stock ?? 0) || 0)),
         attributes: this.mergeFalabellaAttributes(prepared.attributes, variantAttributes),
         images
       });
@@ -1484,6 +1496,153 @@ _transformImages(images = []) {
       const sku = String(variant.sku || variant.SellerSku || '').trim();
       if (!sku || sku === parentSku) continue;
       addProduct(sku, variant);
+    }
+
+    return products;
+  }
+
+  resolveFalabellaVariantLabel(variant, categoryAttributes = [], fallbackProduct = null) {
+    const sources = this.extractFalabellaVariantSources(variant);
+    const candidateKeys = [
+      'Variation',
+      'variation',
+      'Color',
+      'color',
+      'variant_label',
+      'variantLabel',
+      'variant',
+      'label',
+      'name',
+      'title'
+    ];
+
+    for (const candidateKey of candidateKeys) {
+      const sourceMatch = sources.find(({ key }) => this.normalizeFalabellaText(key) === this.normalizeFalabellaText(candidateKey));
+      if (sourceMatch?.value) {
+        const value = String(sourceMatch.value).trim();
+        if (value) return value;
+      }
+
+      const directValue = variant?.[candidateKey] ?? variant?.[candidateKey.toLowerCase()];
+      if (directValue !== undefined && directValue !== null) {
+        const value = String(directValue).trim();
+        if (value) return value;
+      }
+    }
+
+    if (fallbackProduct) {
+      const fallbackVariationAttr = Array.isArray(fallbackProduct.attributes)
+        ? fallbackProduct.attributes.find((attr) => this.normalizeFalabellaText(attr?.id || attr?.feed_name || attr?.FeedName || '') === 'variation')
+        : null;
+      const fallbackValue = this.normalizeFalabellaAttributeValue(fallbackVariationAttr) || String(fallbackProduct.Variation || '').trim();
+      if (fallbackValue) return fallbackValue;
+    }
+
+    const categoryVariationAttr = Array.isArray(categoryAttributes)
+      ? categoryAttributes.find((attr) => this.normalizeFalabellaText(attr?.feed_name || attr?.FeedName || attr?.id || '') === 'variation')
+      : null;
+    if (categoryVariationAttr) {
+      const categoryValue = this.normalizeFalabellaAttributeValue(categoryVariationAttr);
+      if (categoryValue) return categoryValue;
+    }
+
+    return '';
+  }
+
+  buildFalabellaSimpleVariantProduct(prepared, variant, categoryAttributes = []) {
+    const variantSku = String(variant?.sku || variant?.SellerSku || '').trim();
+    if (!variantSku) return null;
+
+    const variationValue = this.resolveFalabellaVariantLabel(variant, categoryAttributes, prepared);
+    const variantAttributes = Array.isArray(categoryAttributes)
+      ? this.getFalabellaVariantAttributes(variant, categoryAttributes)
+      : [];
+    const variationAttr = variationValue
+      ? {
+          id: 'Variation',
+          feed_name: 'Variation',
+          name: 'Variante',
+          value_name: variationValue,
+          value: variationValue,
+          attribute_type: 'value',
+          input_type: 'text',
+          group_name: '',
+          is_global_attribute: false,
+          values: []
+        }
+      : null;
+
+    const mergedAttributes = this.mergeFalabellaAttributes(
+      prepared.attributes || [],
+      [
+        ...variantAttributes,
+        ...(variationAttr ? [variationAttr] : [])
+      ]
+    );
+
+    const variantImages = this.normalizeFalabellaVariantImages(
+      variant?.images || variant?.image || variant?.pictures || prepared.images || []
+    );
+
+    const productName = String(
+      variant?.productName ||
+      variant?.name ||
+      variant?.title ||
+      variant?.variant_name ||
+      variant?.variantLabel ||
+      prepared.productName ||
+      'Producto sin nombre'
+    ).trim();
+
+    const productDescription = String(
+      variant?.description ||
+      variant?.Description ||
+      prepared.description ||
+      'Producto sin descripción'
+    ).trim();
+
+    return {
+      ...prepared,
+      sku: variantSku,
+      productName,
+      description: productDescription,
+      price: Number(variant?.price ?? variant?.publishPrice ?? prepared.price) || prepared.price,
+      stock: Math.max(0, Math.round(Number(variant?.publishStock ?? variant?.totalStock ?? variant?.stock ?? prepared.stock ?? 0) || 0)),
+      attributes: this.buildFalabellaAttributes({
+        ...prepared,
+        sku: variantSku,
+        productName,
+        description: productDescription,
+        attributes: mergedAttributes,
+        images: variantImages
+      }),
+      images: variantImages,
+      ParentSku: undefined,
+      category_attributes: prepared.category_attributes || categoryAttributes
+    };
+  }
+
+  buildFalabellaIndependentVariantProducts(prepared, variants = [], categoryAttributes = []) {
+    const publishableVariants = Array.isArray(variants)
+      ? variants.filter((variant) => variant && variant.publish !== false)
+      : [];
+
+    if (publishableVariants.length === 0) {
+      return [];
+    }
+
+    const products = [];
+    const seenSkus = new Set();
+
+    for (const variant of publishableVariants) {
+      const product = this.buildFalabellaSimpleVariantProduct(prepared, variant, categoryAttributes);
+      if (!product) continue;
+
+      const normalizedSku = String(product.sku || '').trim();
+      if (!normalizedSku || seenSkus.has(normalizedSku)) continue;
+
+      seenSkus.add(normalizedSku);
+      products.push(product);
     }
 
     return products;
@@ -1635,6 +1794,32 @@ async getCategoryAttributes(categoryId) {
         const itemParentSku = String(item?.ParentSku || '').trim();
         if (itemParentSku !== parentSku) {
           errors.push(`ParentSku inconsistente para SKU ${itemSku}. Recibido: ${itemParentSku}, esperado: ${parentSku}`);
+        }
+      }
+    }
+
+    if (Array.isArray(product?.falabella_publication_items) && product.falabella_publication_items.length > 0) {
+      const skus = product.falabella_publication_items
+        .map((item) => String(item?.sku || '').trim())
+        .filter(Boolean);
+      const uniqueSkus = new Set(skus);
+      if (skus.length !== uniqueSkus.size) {
+        errors.push('Las publicaciones independientes de Falabella contienen SKUs duplicados');
+      }
+
+      for (const item of product.falabella_publication_items) {
+        const itemSku = String(item?.sku || '').trim();
+        if (!itemSku) {
+          errors.push('Cada publicación independiente de Falabella debe tener un SellerSku válido');
+          continue;
+        }
+
+        const itemVariation = Array.isArray(item?.attributes)
+          ? item.attributes.find((attr) => this.normalizeFalabellaText(attr?.id || attr?.feed_name || attr?.FeedName || '') === 'variation')
+          : null;
+        const itemVariationValue = this.normalizeFalabellaAttributeValue(itemVariation);
+        if (!itemVariationValue) {
+          errors.push(`La publicación independiente SKU ${itemSku} requiere el atributo Variation con un valor real`);
         }
       }
     }

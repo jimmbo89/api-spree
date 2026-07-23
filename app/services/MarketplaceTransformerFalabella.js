@@ -133,6 +133,14 @@ class MarketplaceTransformerFalabella {
         }));
       }
 
+      if (Array.isArray(product.falabella_publication_items) && product.falabella_publication_items.length > 0) {
+        transformed.falabella_publication_items = product.falabella_publication_items.map((item) => ({
+          ...item,
+          attributes: Array.isArray(item.attributes) ? item.attributes : [],
+          images: Array.isArray(item.images) ? item.images : []
+        }));
+      }
+
       // 🔑 Aplicar mapeos adicionales del repositorio (solo si no existen ya)
       for (const mapping of exportMappings) {
         if (transformed[mapping.external_field] !== undefined) continue;

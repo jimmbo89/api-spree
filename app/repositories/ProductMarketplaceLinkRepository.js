@@ -11,6 +11,7 @@ const ProductMarketplaceLinkRepository = {
     if (linkData.company_id != null) where.company_id = linkData.company_id;
     if (linkData.branch_id != null) where.branch_id = linkData.branch_id;
     if (linkData.credential_id != null) where.credential_id = linkData.credential_id;
+    if (linkData.external_id != null) where.external_id = linkData.external_id;
 
     return where;
   },
