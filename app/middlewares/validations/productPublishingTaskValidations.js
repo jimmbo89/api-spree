@@ -3,40 +3,16 @@
 const storeSchema = Joi.object({
   mode: Joi.string().valid('quick', 'advanced', 'manual', 'draft', 'publish').required(), // ✅ Agregado 'draft', 'publish' y 'manual'
   pool: Joi.object({
-    id: Joi.number().integer().positive().required(),
-    name: Joi.string().allow(null, '').optional(),
-    company_id: Joi.number().integer().positive().required(), // ✅ Nuevo
+    id: Joi.number().integer().positive().optional(),
+    name: Joi.any().optional(),
+    company_id: Joi.number().integer().positive().optional(), // Se valida dinámicamente en el controller si hace falta
     user_id: Joi.number().integer().positive().optional(), // ✅ Nuevo
-    warehouses: Joi.array().items(Joi.object({
-      warehouse_id: Joi.number().integer().positive().required(),
-      id: Joi.number().integer().positive().optional()
-    }).unknown(true)).min(1).required(),
-    primary_warehouse: Joi.object({
-      warehouse_id: Joi.number().integer().positive().required(),
-      id: Joi.number().integer().positive().optional()
-    }).unknown(true).required()
-  }).unknown(true).required(),
-  products: Joi.array().items(Joi.object({
-    id: Joi.number().integer().positive().required(),
-    name: Joi.string().optional(),
-    variants: Joi.array().items(Joi.object({
-      id: Joi.number().integer().positive().required(),
-      publish: Joi.boolean().required(),
-      publishStock: Joi.number().integer().min(0).required()
-    }).unknown(true)).optional()
-  }).unknown(true)).min(1).required(),
+    warehouses: Joi.array().items(Joi.object().unknown(true)).min(1).optional(),
+    primary_warehouse: Joi.object().unknown(true).optional()
+  }).unknown(true).optional(),
+  products: Joi.array().items(Joi.object().unknown(true)).min(1).required(),
   // ✅ marketplaces es opcional cuando mode === 'draft' (se guarda solo el producto)
-  marketplaces: Joi.array().items(Joi.object({
-    id: Joi.number().integer().positive().required(), // ✅ Cambiado a number
-    name: Joi.string().optional(),
-    publishing_config: Joi.object({
-      priceMode: Joi.string().valid('auto', 'fixed').required(),
-      fixedPrice: Joi.number().min(0).allow(null),
-      stockMode: Joi.string().valid('pool', 'limit').required(),
-      stockLimit: Joi.number().min(0).allow(null),
-      allowPromotions: Joi.boolean().required()
-    }).unknown(true).optional()
-  }).unknown(true)).min(1).optional(),
+  marketplaces: Joi.array().items(Joi.object().unknown(true)).min(1).optional(),
   // ✅ Nuevos campos para drafts
   draft_name: Joi.string().max(255).optional(), // Nombre del borrador
   batch_id: Joi.string().guid({ version: ['uuidv4'] }).optional(), // UUID para agrupar
@@ -164,14 +140,9 @@ const publishDraftJobSchema = Joi.object({
   action: Joi.string().valid('update', 'publish').required(),
   mode: Joi.string().valid('quick', 'advanced', 'manual', 'draft', 'publish').optional(),
   pool: Joi.object().optional(),
-  products: Joi.array().items(Joi.object({
-    id: Joi.number().integer().positive().required()
-  }).unknown(true)).min(1).required(),
+  products: Joi.array().items(Joi.object().unknown(true)).min(1).required(),
   // ✅ marketplaces es opcional cuando action === 'update', requerido cuando action === 'publish'
-  marketplaces: Joi.array().items(Joi.object({
-    id: Joi.number().integer().positive().required(),
-    marketplace_id: Joi.number().integer().positive().optional()
-  }).unknown(true)).min(1).optional(),
+  marketplaces: Joi.array().items(Joi.object().unknown(true)).min(1).optional(),
   draft_name: Joi.string().max(255).optional(),
   publication_step: Joi.number().integer().min(0).max(5).optional(),
   economic_config: Joi.object().optional(),
