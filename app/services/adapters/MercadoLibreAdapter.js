@@ -1459,10 +1459,16 @@ class MercadoLibreAdapter extends BaseAdapter {
         prepared.variations = variations;
         logger.info(`[ML Adapter] ✅ Variaciones construidas: ${variations.length}`);
       } else {
-        throw new Error('No se pudieron construir variaciones válidas para Mercado Libre');
+        logger.warn('[ML Adapter] ⚠️ No se pudieron construir variaciones válidas; se marcará para resolver según el modelo final del seller');
+        prepared.variations = undefined;
+        prepared.__ml_variation_build_failed = true;
+        prepared.__ml_variation_build_reason = 'category_variation_build_failed';
       }
     } else if (hasMultipleVariants && !hasVariationAttributes) {
-      throw new Error('La categoría de Mercado Libre no soporta variantes válidas para el producto recibido');
+      logger.warn('[ML Adapter] ⚠️ La categoría no expone atributos de variación compatibles; se marcará para resolver según el modelo final del seller');
+      prepared.variations = undefined;
+      prepared.__ml_variation_build_failed = true;
+      prepared.__ml_variation_build_reason = 'category_without_variation_attributes';
     } else if (hasSingleVariant) {
       logger.info('[ML Adapter] Producto con 1 variante. Permitiendo atributos de variación en nivel base.');
       prepared.attributes = this.buildMercadoLibreAttributes(rawAttributes, categoryInfo.attributes);
@@ -1730,6 +1736,23 @@ class MercadoLibreAdapter extends BaseAdapter {
       const sellerProfile = await this.getMercadoLibreSellerProfile();
       const useUserProductsModel = !!sellerProfile?.user_product_seller;
       logger.info(`[MercadoLibreAdapter] Modelo detectado: ${useUserProductsModel ? 'User Products' : 'Legacy classic'}`);
+
+      if (!useUserProductsModel && transformedProduct.__ml_variation_build_failed === true) {
+        const buildReason = transformedProduct.__ml_variation_build_reason || 'unknown';
+        logger.error(
+          `[MercadoLibreAdapter] ❌ No se puede publicar en modelo clásico porque no se pudieron construir variaciones válidas. reason=${buildReason}`
+        );
+        return {
+          success: false,
+          error: 'mercadolibre_variation_build_failed',
+          error_code: 'MELI_VARIATION_BUILD_FAILED',
+          message: 'No se pudieron construir variaciones válidas para Mercado Libre en modelo clásico',
+          details: {
+            reason: buildReason,
+            model: 'classic'
+          }
+        };
+      }
 
       const mlExistingItemId = String(
         transformedProduct.__ml_existing_item_id ||

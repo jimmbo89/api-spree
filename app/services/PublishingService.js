@@ -301,6 +301,14 @@ class PublishingService {
       } catch (error) {
         logger.info(String(payload));
       }
+      logger.info(
+        `[PublishingService] ========= [FALABELLA][PAYLOAD_TO_SEND] ========= sku=${itemSku} task_id=${falabellaTask.id} product_id=${productData.id} =========`
+      );
+      try {
+        logger.info(JSON.stringify(payload, null, 2));
+      } catch (error) {
+        logger.info(String(payload));
+      }
 
       const result = await adapter.publish(payload);
 
@@ -713,6 +721,12 @@ class PublishingService {
 
         logger.info(`[PublishingService] 📦 Falabella payload preview antes de adapter.publish:`);
         logger.info(JSON.stringify(falabellaPayloadPreview, null, 2));
+        logger.info(`[PublishingService] ========= [FALABELLA][PAYLOAD_TO_SEND] ========= product_id=${productData.id} marketplace_id=${marketplace.marketplace_id} credential_id=${credentialId || 'n/a'} =========`);
+        try {
+          logger.info(JSON.stringify(transformed, null, 2));
+        } catch (error) {
+          logger.info(String(transformed));
+        }
       }
 
       if (String(marketplace?.domain || '').toLowerCase().includes('mercadolibre')) {
@@ -729,6 +743,12 @@ class PublishingService {
           }, null, 2));
         } catch (error) {
           logger.info(String(transformed?.sku || 'n/a'));
+        }
+        logger.info(`[PublishingService] ========= [MELI][PAYLOAD_TO_SEND] ========= product_id=${productData.id} marketplace_id=${marketplace.marketplace_id} credential_id=${credentialId || 'n/a'} =========`);
+        try {
+          logger.info(JSON.stringify(transformed, null, 2));
+        } catch (error) {
+          logger.info(String(transformed));
         }
       }
 
