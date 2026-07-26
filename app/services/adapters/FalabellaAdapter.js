@@ -143,11 +143,62 @@ class FalabellaAdapter extends BaseAdapter {
       : null;
 
     return {
-      package_height: heightFromMeasurements ?? legacyHeight ?? 10,
-      package_width: widthFromMeasurements ?? legacyWidth ?? 10,
-      package_length: lengthFromMeasurements ?? legacyLength ?? 10,
-      package_weight: weightFromMeasurements ?? legacyWeightKg ?? 0.5
+      package_height: heightFromMeasurements ?? legacyHeight ?? null,
+      package_width: widthFromMeasurements ?? legacyWidth ?? null,
+      package_length: lengthFromMeasurements ?? legacyLength ?? null,
+      package_weight: weightFromMeasurements ?? legacyWeightKg ?? null
     };
+  }
+
+  normalizeFalabellaBoolean(value) {
+    if (value === true || value === 1) return true;
+    const normalized = String(value ?? '').trim().toLowerCase();
+    return normalized === 'true' || normalized === '1' || normalized === 'yes';
+  }
+
+  normalizeFalabellaInteger(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
+  }
+
+  normalizeFalabellaFloat(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const parsed = Number(String(value).trim().replace(',', '.'));
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  normalizeFalabellaConditionType(value) {
+    const normalized = this.normalizeFalabellaText(value);
+    if (!normalized) return null;
+    if (['nuevo', 'new'].includes(normalized)) return 'Nuevo';
+    if (['reacondicionado', 'refurbished', 'used', 'reconditioned'].includes(normalized)) return 'Reacondicionado';
+    return String(value).trim();
+  }
+
+  resolveFalabellaOperatorCode(product = null) {
+    const additional = this.credential?.additional_data;
+    const nestedAdditional = additional && typeof additional === 'object'
+      ? additional.falabella || additional
+      : null;
+
+    const candidates = [
+      product?.OperatorCode,
+      product?.operator_code,
+      nestedAdditional?.operator_code,
+      nestedAdditional?.OperatorCode,
+      this.credential?.operator_code,
+      this.credential?.OperatorCode,
+      this.credential?.business_unit_code,
+      this.credential?.businessUnitCode
+    ];
+
+    for (const candidate of candidates) {
+      const normalized = String(candidate ?? '').trim().toLowerCase();
+      if (normalized) return normalized;
+    }
+
+    return null;
   }
 
   buildSignedQuery(params) {
@@ -251,7 +302,6 @@ class FalabellaAdapter extends BaseAdapter {
       categoryAttributeProductId?.value_name,
       categoryAttributeProductId?.value,
       categoryAttributeProductId?.value_id,
-      product?.ProductId,
       product?.productIdentifier,
       product?.gtin,
       product?.ean,
@@ -263,7 +313,6 @@ class FalabellaAdapter extends BaseAdapter {
       if (candidate === null || candidate === undefined) continue;
       const normalized = String(candidate).trim();
       if (!normalized) continue;
-      if (normalized === String(product?.productId || '').trim()) continue;
       if (/^[0-9A-Za-z\-]{8,32}$/.test(normalized)) {
         return normalized;
       }
@@ -438,17 +487,22 @@ class FalabellaAdapter extends BaseAdapter {
     const products = Array.isArray(rawProducts) ? rawProducts : [rawProducts];
     return products
       .filter((product) => String(product?.SellerSku || product?.SKU || '').trim() === normalizedSku)
-      .map((product) => ({
-        sku: String(product?.SellerSku || product?.SKU || normalizedSku).trim(),
-        name: product?.Name || null,
-        brand: product?.Brand || null,
-        primaryCategory: product?.PrimaryCategory || null,
-        productId: product?.ProductId || null,
-        status: Array.isArray(product?.BusinessUnits?.BusinessUnit)
-          ? product.BusinessUnits.BusinessUnit[0]?.Status || null
-          : product?.BusinessUnits?.BusinessUnit?.Status || null,
-        raw: product
-      }));
+      .map((product) => {
+        const raw = product || {};
+        const resolved = this.resolveExistingItemModel(raw);
+        return {
+          sku: String(product?.SellerSku || product?.SKU || normalizedSku).trim(),
+          name: product?.Name || null,
+          brand: product?.Brand || null,
+          primaryCategory: product?.PrimaryCategory || null,
+          productId: product?.ProductId || null,
+          status: Array.isArray(product?.BusinessUnits?.BusinessUnit)
+            ? product.BusinessUnits.BusinessUnit[0]?.Status || null
+            : product?.BusinessUnits?.BusinessUnit?.Status || null,
+          raw,
+          ...resolved
+        };
+      });
   }
 
   async findExistingProductBySellerSku(sellerSku) {
@@ -461,6 +515,36 @@ class FalabellaAdapter extends BaseAdapter {
       );
       return null;
     }
+  }
+
+  resolveExistingItemModel(item = null) {
+    const raw = item?.raw || item || {};
+    const familyName = String(raw?.family_name || raw?.FamilyName || raw?.Family || '').trim();
+    const userProductId = String(raw?.user_product_id || raw?.UserProductId || raw?.userProductId || '').trim();
+    const userProductListing = String(raw?.user_product_listing || raw?.UserProductListing || raw?.userProductListing || '').trim();
+    const parentSku = String(raw?.ParentSku || raw?.parent_sku || '').trim();
+    const variations = Array.isArray(raw?.variations)
+      ? raw.variations
+      : Array.isArray(raw?.Variations?.Variation)
+        ? raw.Variations.Variation
+        : [];
+    const variationCount = variations.length;
+    const hasClassicVariations = variationCount > 0 || parentSku.length > 0;
+    const hasUserProductEvidence = Boolean(familyName || userProductId || userProductListing || raw?.ProductFamilyId || raw?.FamilySku);
+
+    return {
+      model: hasUserProductEvidence ? 'user_product' : 'classic',
+      hasClassicVariations,
+      evidence: {
+        family_name: familyName || null,
+        user_product_id: userProductId || null,
+        user_product_listing: userProductListing || null,
+        parent_sku: parentSku || null,
+        variations_count: variationCount,
+        product_id: raw?.ProductId || null,
+        sku: raw?.SellerSku || raw?.SKU || null
+      }
+    };
   }
 
   normalizeFeedMessages(items) {
@@ -725,7 +809,7 @@ _transformImages(images = []) {
     // Obtener primer variante con precio válido para cálculos
     const validVariant = productData.variants?.find(v => v.price > 0 && v.publish) ||
                          productData.variants?.[0] ||
-                         { price: productData.price || 0, publishStock: productData.stock || 0 };
+                         { price: productData.price ?? null, publishStock: productData.stock ?? null };
 
     // 🔑🔑 EXTRAER ATRIBUTOS: Priorizar falabella[credentialId].attributes
     let attributes = [];
@@ -752,86 +836,98 @@ _transformImages(images = []) {
       }));
     }
 
-    const categoryAttributesResponse = await this.getCategoryAttributes(category.id);
-    const categoryAttributes = Array.isArray(categoryAttributesResponse?.attributes)
-      ? categoryAttributesResponse.attributes
+    const categoryMetadata = await this.loadCategoryMetadata(category.id);
+    const categoryAttributes = Array.isArray(categoryMetadata?.attributes)
+      ? categoryMetadata.attributes
       : [];
+    if (!categoryMetadata?.success || !categoryMetadata?.category) {
+      throw new Error(`No se pudo validar la categoría Falabella ${category.id} con GetCategoryTree/GetCategoryAttributes`);
+    }
     const categoryAttributeMap = new Map(categoryAttributes.map(attr => [attr.id, attr]));
 
     attributes = attributes.map(attr => {
       const metadata = categoryAttributeMap.get(attr.id);
-      return metadata ? { ...metadata, ...attr } : attr;
+      return metadata ? { ...metadata.raw, ...metadata, ...attr } : attr;
     });
 
+    const resolvedConditionType = this.normalizeFalabellaConditionType(
+      productData.condition ??
+      productData.condition_type ??
+      productData.ConditionType ??
+      ''
+    );
+    if (resolvedConditionType) {
+      const conditionTypeAttrId = 'ConditionType';
+      if (!attributes.some((attr) => this.normalizeFalabellaText(attr.id) === 'conditiontype')) {
+        attributes.push({
+          id: conditionTypeAttrId,
+          name: 'ConditionType',
+          value_name: resolvedConditionType,
+          value: resolvedConditionType,
+          attribute_type: 'string',
+          input_type: 'text',
+          group_name: '',
+          is_global_attribute: false,
+          values: []
+        });
+      }
+    }
+
     const packageMeasurements = this.resolvePackageMeasurements(productData);
+    const resolvedBrand = String(
+      productData.brand ??
+      productData.Brand ??
+      attributes.find((a) => this.normalizeFalabellaText(a.id) === 'brand')?.value_name ??
+      attributes.find((a) => this.normalizeFalabellaText(a.id) === 'brand')?.value ??
+      ''
+    ).trim() || null;
 
-    // 🔑 🔑 🔑 CORRECCIÓN: Buscar Brand en atributos ANTES de setear el campo brand
-    const brandAttr = attributes.find(a => 
-      a.id === 'Brand' || 
-      this.normalizeFalabellaText(a.id) === 'brand' ||
-      this.normalizeFalabellaText(a.name || '') === 'marca'
-    );
-    
-    // Prioridad: 1) Atributo Brand del usuario, 2) productData.brand, 3) Genérica
-    const resolvedBrand = (
-      brandAttr?.value_name || 
-      brandAttr?.value || 
-      brandAttr?.value_id ||
-      productData.brand || 
-      'Genérica'
-    ).trim();
+    const resolvedName = String(
+      productData.productName ??
+      productData.name ??
+      productData.title ??
+      attributes.find((a) => this.normalizeFalabellaText(a.id) === 'name')?.value_name ??
+      attributes.find((a) => this.normalizeFalabellaText(a.id) === 'name')?.value ??
+      ''
+    ).trim() || null;
 
-    // 🔑 🔑 🔑 CORRECCIÓN: Buscar Name en atributos
-    const nameAttr = attributes.find(a => 
-      a.id === 'Name' || 
-      this.normalizeFalabellaText(a.id) === 'name' ||
-      this.normalizeFalabellaText(a.name || '') === 'nombre'
-    );
-    
-    const resolvedName = (
-      nameAttr?.value_name || 
-      nameAttr?.value || 
-      productData.name?.trim() || 
-      'Producto sin nombre'
-    );
+    const resolvedDescription = String(
+      productData.description ??
+      productData.Description ??
+      attributes.find((a) => this.normalizeFalabellaText(a.id) === 'description')?.value_name ??
+      attributes.find((a) => this.normalizeFalabellaText(a.id) === 'description')?.value ??
+      ''
+    ).trim() || null;
 
-    // 🔑 🔑 🔑 CORRECCIÓN: Buscar Description en atributos
-    const descAttr = attributes.find(a => 
-      a.id === 'Description' || 
-      this.normalizeFalabellaText(a.id) === 'description' ||
-      this.normalizeFalabellaText(a.name || '').includes('información del producto')
+    const resolvedSku = String(productData.sku || productData.SellerSku || '').trim() || null;
+    const resolvedPrice = this.normalizeFalabellaFloat(validVariant?.price ?? productData.price ?? productData.Price);
+    const resolvedStock = this.normalizeFalabellaInteger(
+      productData.totalPublishingStock ??
+      productData.stock ??
+      productData.totalStock ??
+      validVariant?.publishStock ??
+      validVariant?.stock ??
+      validVariant?.totalStock
     );
-    
-    const resolvedDescription = (
-      descAttr?.value_name || 
-      descAttr?.value || 
-      productData.description || 
-      'Producto sin descripción'
-    ).trim();
 
     const prepared = {
-      sku: productData.sku || `PROD-${productData.id}`,
+      sku: resolvedSku,
       productName: resolvedName,
-      brand: resolvedBrand,  // ✅ AHORA USA EL ATRIBUTO DEL USUARIO
-      price: validVariant.price > 0 ? validVariant.price : (productData.price || 0),
-      stock: Math.max(0, Math.round(
-        productData.totalPublishingStock ??
-        productData.stock ??
-        productData.totalStock ??
-        validVariant.publishStock ??
-        0
-      )),
+      brand: resolvedBrand,
+      price: resolvedPrice,
+      stock: resolvedStock,
       PrimaryCategory: category.id,
-      description: resolvedDescription,  // ✅ AHORA USA EL ATRIBUTO DEL USUARIO
+      description: resolvedDescription,
       package_height: packageMeasurements.package_height,
       package_width: packageMeasurements.package_width,
       package_length: packageMeasurements.package_length,
       package_weight: packageMeasurements.package_weight,
       attributes: attributes,
-      images: this._transformImages(productData.images || []),
-      productId: productData.id,
+      images: this._transformImages(productData.images || productData.pictures || []),
+      productId: productData.ProductId || productData.productIdentifier || productData.ean || productData.upc || productData.isbn || null,
       categoryName: category.name,
-      category_attributes: categoryAttributes
+      category_attributes: categoryAttributes,
+      category_metadata: categoryMetadata
     };
 
     prepared.attributes = this.buildFalabellaAttributes(prepared);
@@ -841,11 +937,8 @@ _transformImages(images = []) {
       ? productData.variants.filter((variant) => variant && variant.publish !== false)
       : [];
     const hasMultipleVariants = publishableVariants.length > 1;
-    const hasVariationAttributes = Array.isArray(categoryAttributes)
-      && categoryAttributes.some((attr) => this.isVariationAttribute(attr));
-    const hasVariationFeedName = Array.isArray(categoryAttributes)
-      && categoryAttributes.some((attr) => this.normalizeFalabellaText(attr?.feed_name || attr?.FeedName || attr?.id) === 'variation');
-    const supportsMultiVariant = hasVariationAttributes && !hasVariationFeedName;
+    const variationCapability = this.resolveFalabellaVariationCapability(categoryAttributes);
+    const supportsMultiVariant = variationCapability.supportsMultiVariation;
 
     if (hasMultipleVariants && supportsMultiVariant) {
       const variantStockTotal = publishableVariants.reduce((sum, variant) => {
@@ -869,7 +962,7 @@ _transformImages(images = []) {
         throw new Error('No se pudieron construir variantes válidas para Falabella');
       }
     } else if (hasMultipleVariants && !supportsMultiVariant) {
-      logger.info(`[FalabellaAdapter] La categoría ${category.id} no admite multivariantes; se publicará como producto simple`);
+      logger.info(`[FalabellaAdapter] La categoría ${category.id} no admite multivariantes; se publicará como productos simples independientes`);
       const publicationItems = this.buildFalabellaIndependentVariantProducts(
         prepared,
         publishableVariants,
@@ -1194,9 +1287,31 @@ _transformImages(images = []) {
   }
 
   buildFalabellaAttributes(product) {
+    const reservedAttributeIds = new Set([
+      'sellersku',
+      'parentsku',
+      'productid',
+      'name',
+      'brand',
+      'description',
+      'primarycategory',
+      'categories',
+      'sku',
+      'product_id',
+      'productname',
+      'categoryname',
+      'category_attributes',
+      'falabella_products',
+      'images',
+      'productimage',
+      'productimages',
+      'productdata'
+    ]);
+
     const baseAttributes = Array.isArray(product?.attributes)
       ? product.attributes
           .filter((attr) => attr && attr.id)
+          .filter((attr) => !reservedAttributeIds.has(this.normalizeFalabellaText(attr.id)))
           .map((attr) => ({
             id: attr.id,
             name: attr.name || attr.Label || attr.Name || attr.id,
@@ -1208,85 +1323,18 @@ _transformImages(images = []) {
             group_name: attr.group_name ?? attr.GroupName ?? undefined,
             is_global_attribute: attr.is_global_attribute ?? attr.IsGlobalAttribute ?? undefined,
             example_value: attr.example_value ?? undefined,
-            values: Array.isArray(attr.values) ? attr.values : []
+            values: Array.isArray(attr.values) ? attr.values : [],
+            feed_name: attr.feed_name ?? attr.FeedName ?? attr.id,
+            raw: attr.raw ?? attr
           }))
       : [];
 
-    const categoryAttributes = Array.isArray(product?.category_attributes)
-      ? product.category_attributes
-      : [];
-
     const byId = new Map();
-    
-    // 🔑 CORRECCIÓN: autoMappedIds solo se usa cuando el atributo NO tiene valor del usuario
-    const autoMappedIds = new Set([
-      'brand',
-      'model',
-      'conditiontype',
-      'unidaddemedida',
-      'medidavolumen',
-      'tipodeconsumible',
-      'compatiblecon',
-      'gtin',
-      'ean',
-      'upc',
-      'isbn',
-      'peso',
-      'weight',
-      'alto',
-      'height',
-      'ancho',
-      'width',
-      'largo',
-      'longitud',
-      'length'
-    ]);
-
-    // ✅ PRIMERO: Registrar todos los atributos del usuario (tienen prioridad)
     for (const attr of baseAttributes) {
       byId.set(this.normalizeFalabellaText(attr.id), attr);
     }
 
-    // ✅ SEGUNDO: Solo inferir para atributos que NO tienen valor del usuario
-    for (const categoryAttr of categoryAttributes) {
-      const attrId = categoryAttr?.id || categoryAttr?.FeedName || categoryAttr?.Name;
-      if (!attrId) continue;
-
-      const normalizedId = this.normalizeFalabellaText(attrId);
-      const existing = byId.get(normalizedId);
-      
-      // 🔑 🔑 🔑 CORRECCIÓN CLAVE: Si el usuario ya definió un valor, NUNCA sobrescribir
-      const existingHasValue = existing && (
-        existing.value_name || 
-        existing.value_id || 
-        existing.value !== undefined
-      );
-      
-      if (existingHasValue) {
-        // ✅ El usuario ya configuró este atributo, respetar su valor
-        continue;
-      }
-
-      // Solo inferir si el atributo NO tiene valor del usuario
-      const inferred = this.inferFalabellaAttributeValue(categoryAttr, product);
-      if (!inferred) continue;
-
-      byId.set(normalizedId, {
-        id: attrId,
-        name: categoryAttr.name || categoryAttr.Label || categoryAttr.Name || attrId,
-        value_id: inferred.value_id ?? categoryAttr.value_id ?? undefined,
-        value_name: inferred.value_name ?? inferred.value ?? undefined,
-        value: inferred.value_name ?? inferred.value ?? inferred.value_id ?? undefined,
-        attribute_type: categoryAttr.attribute_type ?? categoryAttr.AttributeType ?? undefined,
-        input_type: categoryAttr.input_type ?? categoryAttr.InputType ?? undefined,
-        group_name: categoryAttr.group_name ?? categoryAttr.GroupName ?? undefined,
-        is_global_attribute: categoryAttr.is_global_attribute ?? categoryAttr.IsGlobalAttribute ?? undefined,
-        example_value: categoryAttr.example_value ?? categoryAttr.ExampleValue ?? undefined,
-        values: Array.isArray(categoryAttr.values) ? categoryAttr.values : []
-      });
-    }
-
-    return Array.from(byId.values());
+    return Array.from(byId.values()).filter((attr) => attr && !reservedAttributeIds.has(this.normalizeFalabellaText(attr.id)));
   }
 
   extractFalabellaVariantSources(variant) {
@@ -1441,7 +1489,9 @@ _transformImages(images = []) {
     const byId = new Map();
     const pushAttr = (attr) => {
       if (!attr || !attr.id) return;
-      byId.set(this.normalizeFalabellaText(attr.id), attr);
+      const normalizedId = this.normalizeFalabellaText(attr.id);
+      if (['sellersku', 'parentsku', 'productid', 'productdata'].includes(normalizedId)) return;
+      byId.set(normalizedId, attr);
     };
 
     for (const attr of Array.isArray(baseAttributes) ? baseAttributes : []) {
@@ -1452,7 +1502,10 @@ _transformImages(images = []) {
       pushAttr(attr);
     }
 
-    return Array.from(byId.values());
+    return Array.from(byId.values()).filter((attr) => {
+      const normalizedId = this.normalizeFalabellaText(attr?.id);
+      return !['sellersku', 'parentsku', 'productid', 'productdata'].includes(normalizedId);
+    });
   }
 
   buildFalabellaVariantProducts(prepared, variants = [], categoryAttributes = []) {
@@ -1488,7 +1541,7 @@ _transformImages(images = []) {
       products.push({
         ...prepared,
         sku: normalizedSku,
-        ParentSku: normalizedSku === parentSku ? parentSku : parentSku,
+        ParentSku: parentSku,
         productName: prepared.productName,
         brand: prepared.brand,
         description: prepared.description,
@@ -1621,19 +1674,6 @@ _transformImages(images = []) {
       prepared.attributes || [],
       [
         ...variantAttributes,
-        ...(variationValue
-          ? [{
-              id: 'Color',
-              name: 'Color',
-              value_name: variationValue,
-              value: variationValue,
-              attribute_type: 'value',
-              input_type: 'text',
-              group_name: '',
-              is_global_attribute: false,
-              values: []
-            }]
-          : []),
         ...(variationAttr ? [variationAttr] : [])
       ]
     );
@@ -1650,7 +1690,7 @@ _transformImages(images = []) {
       variant?.variantLabel ||
       variant?.variant_label ||
       prepared.productName ||
-      'Producto sin nombre'
+      ''
     ).trim();
 
     const productDescription = String(
@@ -1658,7 +1698,7 @@ _transformImages(images = []) {
       variant?.Description ||
       variant?.variant_description ||
       prepared.description ||
-      'Producto sin descripción'
+      ''
     ).trim();
 
     return {
@@ -1666,8 +1706,8 @@ _transformImages(images = []) {
       sku: variantSku,
       productName: this.adjustFalabellaTextForVariation(productName, variationValue || variantSku),
       description: this.adjustFalabellaTextForVariation(productDescription, variationValue || variantSku),
-      price: Number(variant?.price ?? variant?.publishPrice ?? prepared.price) || prepared.price,
-      stock: Math.max(0, Math.round(Number(variant?.publishStock ?? variant?.totalStock ?? variant?.stock ?? prepared.stock ?? 0) || 0)),
+      price: this.normalizeFalabellaFloat(variant?.price ?? variant?.publishPrice ?? prepared.price),
+      stock: this.normalizeFalabellaInteger(variant?.publishStock ?? variant?.totalStock ?? variant?.stock ?? prepared.stock),
       attributes: this.buildFalabellaAttributes({
         ...prepared,
         sku: variantSku,
@@ -1715,101 +1755,231 @@ _transformImages(images = []) {
     return groupName === 'Variation' && isGlobalFalse;
   }
 
-async hydrateAttributesForPublish(product) {
-  if (!product || !product.PrimaryCategory || !Array.isArray(product.attributes) || product.attributes.length === 0) {
-    return product;
-  }
-
-  const categoryAttributesResponse = await this.getCategoryAttributes(product.PrimaryCategory);
-  const categoryAttributes = Array.isArray(categoryAttributesResponse?.attributes)
-    ? categoryAttributesResponse.attributes
-    : [];
-
-  if (categoryAttributes.length === 0) {
-    return product;
-  }
-
-  const categoryAttributeMap = new Map(categoryAttributes.map(attr => [attr.id, attr]));
-  const mergedAttributes = product.attributes.map(attr => {
-    const metadata = categoryAttributeMap.get(attr.id);
-    return metadata ? { ...metadata, ...attr } : attr;
-  });
-
-  return {
-    ...product,
-    attributes: mergedAttributes,
-    category_attributes: product.category_attributes || categoryAttributes
-  };
-}
-// 🔑 NUEVO MÉTODO: Obtener atributos de categoría
-async getCategoryAttributes(categoryId) {
-  try {
-    const credentialStatus = await this.ensureValidCredentials();
-    if (!credentialStatus.valid) {
-      throw new Error('Credenciales inválidas');
+  async hydrateAttributesForPublish(product) {
+    if (!product || !product.PrimaryCategory) {
+      return product;
     }
 
-    const timestamp = this.timestampMinus03();
-    const params = {
-      Action: 'GetCategoryAttributes',
-      Format: 'JSON',
-      PrimaryCategory: categoryId.toString(),
-      Timestamp: timestamp,
-      UserID: this.credential.seller_email.trim(),
-      Version: '1.0'
-    };
+    const categoryMetadata = await this.loadCategoryMetadata(product.PrimaryCategory);
+    if (!categoryMetadata?.success) {
+      return product;
+    }
 
-    const sortedKeys = Object.keys(params).sort();
-    const stringToSign = sortedKeys.map(k => `${k}=${params[k]}`).join('&');
-    
-    const signatureHex = crypto
-      .createHmac('sha256', this.credential.api_key.trim())
-      .update(stringToSign, 'utf8')
-      .digest('hex');
+    const categoryAttributes = Array.isArray(categoryMetadata.attributes)
+      ? categoryMetadata.attributes
+      : [];
 
-    const urlParams = { ...params, Signature: signatureHex };
-    const urlSortedKeys = ['Action', 'Format', 'PrimaryCategory', 'Signature', 'Timestamp', 'UserID', 'Version'];
-    const urlQueryString = urlSortedKeys
-      .map(k => `${this.rfc3986Encode(k)}=${this.rfc3986Encode(String(urlParams[k]))}`)
-      .join('&');
-
-    const apiUrl = `https://sellercenter-api.falabella.com?${urlQueryString}`;
-
-    const response = await axios.get(apiUrl, { timeout: 10000 });
-    
-    if (response.data.SuccessResponse?.Body?.Attribute) {
-      const attrs = response.data.SuccessResponse.Body.Attribute;
-      const items = Array.isArray(attrs) ? attrs : [attrs];
-      
+    if (!Array.isArray(product.attributes) || product.attributes.length === 0 || categoryAttributes.length === 0) {
       return {
-        success: true,
-        attributes: items.map(attr => ({
-          id: attr.FeedName || attr.Name,
-          feed_name: attr.FeedName || attr.Name,
-          name: attr.Label,
-          group_name: attr.GroupName || '',
-          is_global_attribute: attr.IsGlobalAttribute === "1" || attr.IsGlobalAttribute === 1 || attr.IsGlobalAttribute === true,
-          is_mandatory: attr.isMandatory === "1" || attr.isMandatory === true,
-          value_type: ['option', 'multi_option'].includes(attr.AttributeType) ? 'list' : 'string',
-          attribute_type: attr.AttributeType || 'string',
-          input_type: attr.InputType || '',
-          example_value: attr.ExampleValue || '',
-          options: attr.Options || null,
-          values: attr.Options?.Option 
-            ? (Array.isArray(attr.Options.Option) 
-                ? attr.Options.Option.map(opt => ({ id: opt.id, name: opt.Name }))
-                : [{ id: attr.Options.Option.id, name: attr.Options.Option.Name }])
-            : []
-        }))
+        ...product,
+        category_attributes: product.category_attributes || categoryAttributes,
+        category_metadata: categoryMetadata
       };
     }
-    
-    return { success: false, attributes: [] };
-  } catch (error) {
-    logger.error(`[FalabellaAdapter] Error obteniendo atributos: ${error.message}`);
-    return { success: false, attributes: [] };
+
+    const categoryAttributeMap = new Map(categoryAttributes.map((attr) => [this.normalizeFalabellaText(attr.feed_name || attr.id), attr]));
+    const mergedAttributes = product.attributes.map((attr) => {
+      const metadata = categoryAttributeMap.get(this.normalizeFalabellaText(attr.id));
+      return metadata ? { ...metadata.raw, ...metadata, ...attr } : attr;
+    });
+
+    return {
+      ...product,
+      attributes: mergedAttributes,
+      category_attributes: product.category_attributes || categoryAttributes,
+      category_metadata: categoryMetadata
+    };
   }
-}
+
+  async loadCategoryMetadata(categoryId) {
+    const [attributesResponse, treeResponse] = await Promise.all([
+      this.getCategoryAttributes(categoryId),
+      this.getCategoryTree()
+    ]);
+
+    const categoryTree = Array.isArray(treeResponse?.categories)
+      ? treeResponse.categories
+      : [];
+    const treeMatch = this.findCategoryInTree(categoryTree, String(categoryId));
+
+    return {
+      success: attributesResponse?.success === true,
+      category_id: String(categoryId),
+      category: treeMatch || null,
+      tree: categoryTree,
+      attributes: Array.isArray(attributesResponse?.attributes) ? attributesResponse.attributes : [],
+      raw_attributes: attributesResponse?.raw || null,
+      raw_tree: treeResponse?.raw || null,
+      retrieved_at: new Date().toISOString(),
+      source: {
+        category_tree: treeResponse?.source || 'GetCategoryTree',
+        category_attributes: attributesResponse?.source || 'GetCategoryAttributes'
+      }
+    };
+  }
+
+  async getCategoryTree() {
+    try {
+      const credentialStatus = await this.ensureValidCredentials();
+      if (!credentialStatus.valid) {
+        throw new Error('Credenciales inválidas');
+      }
+
+      const params = {
+        Action: 'GetCategoryTree',
+        Format: 'JSON',
+        Timestamp: this.timestampMinus03(),
+        UserID: this.credential.seller_email.trim(),
+        Version: '1.0'
+      };
+
+      const { canonicalQuery, signatureEncoded } = this.buildSignedQuery(params);
+      const apiUrl = `https://sellercenter-api.falabella.com?${canonicalQuery}&Signature=${signatureEncoded}`;
+      const response = await axios.get(apiUrl, { timeout: 10000 });
+      const tree = response.data?.SuccessResponse?.Body?.Categories?.Category || [];
+      return {
+        success: true,
+        categories: Array.isArray(tree) ? tree : [tree],
+        raw: response.data,
+        source: 'GetCategoryTree'
+      };
+    } catch (error) {
+      logger.error(`[FalabellaAdapter] Error obteniendo árbol de categorías: ${error.message}`);
+      return { success: false, categories: [], raw: error.response?.data || null, source: 'GetCategoryTree' };
+    }
+  }
+
+  // 🔑 Obtener atributos oficiales de categoría
+  async getCategoryAttributes(categoryId) {
+    try {
+      const credentialStatus = await this.ensureValidCredentials();
+      if (!credentialStatus.valid) {
+        throw new Error('Credenciales inválidas');
+      }
+
+      const params = {
+        Action: 'GetCategoryAttributes',
+        Format: 'JSON',
+        PrimaryCategory: String(categoryId),
+        Timestamp: this.timestampMinus03(),
+        UserID: this.credential.seller_email.trim(),
+        Version: '1.0'
+      };
+
+      const { canonicalQuery, signatureEncoded } = this.buildSignedQuery(params);
+      const apiUrl = `https://sellercenter-api.falabella.com?${canonicalQuery}&Signature=${signatureEncoded}`;
+      const response = await axios.get(apiUrl, { timeout: 10000 });
+
+      const rawAttributes = response.data?.SuccessResponse?.Body?.Attribute;
+      const items = Array.isArray(rawAttributes) ? rawAttributes : rawAttributes ? [rawAttributes] : [];
+
+      return {
+        success: true,
+        source: 'GetCategoryAttributes',
+        attributes: items
+          .filter((attr) => attr && (attr.Name || attr.Label || attr.FeedName))
+          .map((attr) => {
+            const feedName = attr.FeedName || attr.Name || null;
+            const name = attr.Name || attr.Label || feedName || null;
+            const label = attr.Label || attr.Name || feedName || null;
+            const inputType = attr.InputType || attr.input_type || null;
+            const attributeType = attr.AttributeType || attr.attribute_type || null;
+            const maxLength = this.normalizeFalabellaInteger(
+              attr.MaxLength || attr.maxLength || attr.MaximumLength || attr.maximum_length
+            );
+            const mandatory = this.normalizeFalabellaBoolean(attr.isMandatory || attr.IsMandatory || attr.Mandatory);
+            const isGlobalAttribute = this.normalizeFalabellaBoolean(attr.IsGlobalAttribute ?? attr.is_global_attribute);
+            const options = attr.Options || null;
+            const optionList = Array.isArray(attr.Options?.Option)
+              ? attr.Options.Option
+              : attr.Options?.Option
+                ? [attr.Options.Option]
+                : [];
+
+            return {
+              id: feedName,
+              feed_name: feedName,
+              name,
+              label,
+              mandatory,
+              is_mandatory: mandatory,
+              attributeType,
+              attribute_type: attributeType,
+              options,
+              values: optionList.map((option) => ({
+                id: option?.id ?? option?.Id ?? null,
+                name: option?.Name ?? option?.name ?? null,
+                value_name: option?.Name ?? option?.name ?? null,
+                raw: option
+              })).filter((option) => option.id !== null || option.name !== null),
+              groupName: attr.GroupName || null,
+              group_name: attr.GroupName || null,
+              isGlobalAttribute,
+              is_global_attribute: isGlobalAttribute,
+              inputType,
+              input_type: inputType,
+              maxLength,
+              max_length: maxLength,
+              raw: attr
+            };
+          }),
+        raw: response.data
+      };
+    } catch (error) {
+      logger.error(`[FalabellaAdapter] Error obteniendo atributos: ${error.message}`);
+      return { success: false, source: 'GetCategoryAttributes', attributes: [], raw: error.response?.data || null };
+    }
+  }
+
+  resolveFalabellaVariationCapability(categoryAttributes = []) {
+    const normalized = Array.isArray(categoryAttributes) ? categoryAttributes : [];
+    const variationNode = normalized.find((attr) => this.normalizeFalabellaText(attr?.feed_name || attr?.FeedName || attr?.id) === 'variation');
+    const multiVariationAttributes = normalized.filter((attr) => this.isVariationAttribute(attr));
+    const supportsMultiVariation = !variationNode && multiVariationAttributes.length > 0;
+    const reason = variationNode
+      ? 'La categoría expone FeedName=Variation, por lo que solo admite publicación simple por variante'
+      : (multiVariationAttributes.length > 0
+        ? 'La categoría expone atributos generadores de multivariante con GroupName=Variation e IsGlobalAttribute=0'
+        : 'No se encontraron atributos oficiales suficientes para multivariante');
+
+    return {
+      supportsMultiVariation,
+      simpleVariationAttribute: variationNode || null,
+      multiVariationAttributes,
+      reason,
+      evidence: {
+        variation_node: variationNode || null,
+        multi_variation_attributes: multiVariationAttributes,
+        category_attributes_count: normalized.length
+      }
+    };
+  }
+
+  findCategoryInTree(nodes, targetCategoryId, path = []) {
+    const nodeList = Array.isArray(nodes) ? nodes : (nodes ? [nodes] : []);
+    for (const node of nodeList) {
+      const currentName = String(node?.Name || '').trim();
+      const currentPath = currentName ? [...path, currentName] : [...path];
+      if (String(node?.CategoryId || '').trim() === String(targetCategoryId || '').trim()) {
+        return {
+          level1: currentPath[0] || null,
+          level2: currentPath[1] || null,
+          level3: currentPath[2] || null,
+          level4: currentPath[3] || null,
+          api_name: currentName || null,
+          category_id: String(node?.CategoryId || '').trim() || null,
+          raw: node
+        };
+      }
+
+      if (node?.Children?.Category) {
+        const result = this.findCategoryInTree(node.Children.Category, targetCategoryId, currentPath);
+        if (result) return result;
+      }
+    }
+
+    return null;
+  }
 
   // ✅ Validación específica para Falabella
   validateProduct(product) {
@@ -1830,6 +2000,36 @@ async getCategoryAttributes(categoryId) {
     // Validar precio y stock
     if (product.price <= 0) errors.push('El precio debe ser mayor a 0');
     if (product.stock < 0) errors.push('El stock no puede ser negativo');
+
+    const packageMeasurements = {
+      package_height: this.normalizeFalabellaFloat(product.package_height),
+      package_width: this.normalizeFalabellaFloat(product.package_width),
+      package_length: this.normalizeFalabellaFloat(product.package_length),
+      package_weight: this.normalizeFalabellaFloat(product.package_weight)
+    };
+
+    for (const [field, value] of Object.entries(packageMeasurements)) {
+      if (value === null) {
+        errors.push(`Campo requerido ausente: ${field}`);
+      }
+    }
+
+    const operatorCode = this.resolveFalabellaOperatorCode(product);
+    if (!operatorCode) {
+      errors.push('Campo requerido ausente: OperatorCode');
+    }
+
+    const hasConditionType = Array.isArray(product?.attributes)
+      ? product.attributes.some((attr) => this.normalizeFalabellaText(attr?.id || attr?.feed_name || attr?.FeedName || '') === 'conditiontype')
+      : false;
+    if (!hasConditionType) {
+      errors.push('Campo requerido ausente: ConditionType');
+    }
+
+    const normalizedImages = this.normalizeFalabellaImages(product?.images || []);
+    if (normalizedImages.length === 0) {
+      errors.push('Se requiere al menos una imagen válida para Falabella');
+    }
 
     if (Array.isArray(product?.falabella_products) && product.falabella_products.length > 0) {
       const skus = product.falabella_products.map((item) => String(item?.sku || '').trim()).filter(Boolean);
@@ -1926,27 +2126,29 @@ async getCategoryAttributes(categoryId) {
     );
 
     const sku = String(product.sku || '').substring(0, 50);
-    const name = String(product.productName || 'Producto sin nombre').substring(0, 255);
+    const name = String(product.productName || '').substring(0, 255);
     const brandAttr = Array.isArray(product.attributes)
-      ? product.attributes.find((a) => a.id === 'Brand')
+      ? product.attributes.find((a) => this.normalizeFalabellaText(a.id) === 'brand')
       : null;
-    const brand = String(brandAttr?.value_name || brandAttr?.value || product.brand || 'Genérica').substring(0, 50);
-    const description = String(product.description || 'Producto sin descripción').substring(0, 25000);
+    const brand = String(brandAttr?.value_name || brandAttr?.value || product.brand || '').substring(0, 50);
+    const description = String(product.description || '').substring(0, 25000);
     const categoryId = Number(product.PrimaryCategory);
-    const price = Number(product.price).toFixed(2);
-    const stock = Math.max(0, Math.round(Number(product.stock)));
+    const priceValue = this.normalizeFalabellaFloat(product.price);
+    const stockValue = this.normalizeFalabellaInteger(product.stock);
+    const price = priceValue !== null ? priceValue.toFixed(2) : undefined;
+    const stock = stockValue !== null ? Math.max(0, stockValue) : undefined;
     const marketplaceProductId = this.resolveMarketplaceProductId(product);
     const operatorCode = this.getFalabellaOperatorCode();
 
     const validateDimension = (value, fieldName) => {
       const numValue = Number(value);
       if (!Number.isFinite(numValue) || numValue < 2) {
-        logger.warn(`[FalabellaAdapter] ⚠️ ${fieldName} valor ${value} fuera de rango (mínimo 2), ajustando a 2`);
-        return 2;
+        logger.warn(`[FalabellaAdapter] ⚠️ ${fieldName} valor ${value} fuera de rango o ausente`);
+        return null;
       }
       if (numValue > 303) {
-        logger.warn(`[FalabellaAdapter] ⚠️ ${fieldName} valor ${value} fuera de rango (máximo 303), ajustando a 303`);
-        return 303;
+        logger.warn(`[FalabellaAdapter] ⚠️ ${fieldName} valor ${value} fuera de rango`);
+        return null;
       }
       return numValue;
     };
@@ -1958,11 +2160,11 @@ async getCategoryAttributes(categoryId) {
       return attr?.value_name || attr?.value || fallback;
     };
 
-    const height = validateDimension(getAttributeValue('PackageHeight', product.package_height || 10), 'PackageHeight');
-    const width = validateDimension(getAttributeValue('PackageWidth', product.package_width || 10), 'PackageWidth');
-    const length = validateDimension(getAttributeValue('PackageLength', product.package_length || 10), 'PackageLength');
-    const weightValue = Number(getAttributeValue('PackageWeight', product.package_weight || 0.5));
-    const weight = Number.isFinite(weightValue) && weightValue >= 0.001 ? weightValue : 0.5;
+    const height = validateDimension(getAttributeValue('PackageHeight', product.package_height), 'PackageHeight');
+    const width = validateDimension(getAttributeValue('PackageWidth', product.package_width), 'PackageWidth');
+    const length = validateDimension(getAttributeValue('PackageLength', product.package_length), 'PackageLength');
+    const weightValue = Number(getAttributeValue('PackageWeight', product.package_weight));
+    const weight = Number.isFinite(weightValue) && weightValue >= 0.001 ? weightValue : null;
 
     const effectiveAttributes = this.buildFalabellaAttributes(product);
     const variationAttributes = Array.isArray(effectiveAttributes)
@@ -1972,15 +2174,17 @@ async getCategoryAttributes(categoryId) {
       ? effectiveAttributes.find((attr) => this.normalizeFalabellaText(attr?.id) === 'variation')
       : null;
     const variationValue = this.normalizeFalabellaAttributeValue(variationField);
+    const conditionTypeAttr = Array.isArray(effectiveAttributes)
+      ? effectiveAttributes.find((a) => this.normalizeFalabellaText(a.id) === 'conditiontype')
+      : null;
+    const conditionType = this.normalizeFalabellaAttributeValue(conditionTypeAttr);
 
     const productDataAttrs = {
-      ConditionType: this.normalizeFalabellaAttributeValue(
-        effectiveAttributes?.find((a) => String(a.id).toLowerCase() === 'conditiontype')
-      ) || 'Nuevo',
-      PackageHeight: height,
-      PackageWidth: width,
-      PackageLength: length,
-      PackageWeight: weight.toFixed(3)
+      ...(conditionType ? { ConditionType: conditionType } : {}),
+      ...(height !== null ? { PackageHeight: height } : {}),
+      ...(width !== null ? { PackageWidth: width } : {}),
+      ...(length !== null ? { PackageLength: length } : {}),
+      ...(weight !== null ? { PackageWeight: weight.toFixed(3) } : {})
     };
 
     if (Array.isArray(effectiveAttributes)) {
@@ -2019,17 +2223,17 @@ async getCategoryAttributes(categoryId) {
     }
 
     const node = {
-      SellerSku: sku,
-      Name: name,
-      PrimaryCategory: String(categoryId),
-      Description: description,
-      Brand: brand,
+      SellerSku: sku || undefined,
+      Name: name || undefined,
+      PrimaryCategory: Number.isFinite(categoryId) ? String(categoryId) : undefined,
+      Description: description || undefined,
+      Brand: brand || undefined,
       Variation: variationValue || undefined,
       BusinessUnits: {
         BusinessUnit: {
-          OperatorCode: operatorCode,
+          OperatorCode: operatorCode || undefined,
           Price: price,
-          Stock: String(stock),
+          Stock: stock !== undefined ? String(stock) : undefined,
           Status: 'active'
         }
       },
@@ -2089,10 +2293,6 @@ async getCategoryAttributes(categoryId) {
         logger.info(
           `[FalabellaAdapter] SKU existente detectado (${existingProduct.sku}) -> se usará ${action}`
         );
-        // Si Falabella ya conoce el SKU, reforzamos la actualización enviando también el ProductId
-        // que devuelve GetProducts. No cambia el flujo de creación cuando no existe.
-        transformedProduct.ProductId = transformedProduct.ProductId || existingProduct.productId || null;
-        transformedProduct.productId = transformedProduct.productId || existingProduct.productId || null;
       }
 
       // ✅ Construir XML payload
@@ -2164,6 +2364,12 @@ async getCategoryAttributes(categoryId) {
           };
         }
 
+        const normalizedImages = this.normalizeFalabellaImages(transformedProduct.images || []);
+        let imageUploadResult = { success: true, skipped: true };
+        if (normalizedImages.length > 0) {
+          imageUploadResult = await this.uploadProductImages(transformedProduct.sku, normalizedImages);
+        }
+
         // Falabella confirma la aceptación inicial con RequestId.
         // La confirmación final del estado se obtiene por FeedStatus; el webhook onFeedCompleted
         // queda como mecanismo de reconciliación asíncrona.
@@ -2185,11 +2391,13 @@ async getCategoryAttributes(categoryId) {
               && transformedProduct.falabella_products.length > 1,
             category_id: transformedProduct.PrimaryCategory,
             category_name: transformedProduct.categoryName,
-            image_upload: { success: true, skipped: true }
+            image_upload: imageUploadResult
           },
           has_warnings: false,
           warnings: [],
-          warning_message: marketplaceMessage,
+          warning_message: normalizedImages.length > 0 && imageUploadResult?.success === false
+            ? `${marketplaceMessage}. La subida de imágenes falló y debe reintentarse.`
+            : marketplaceMessage,
           message: marketplaceMessage
         };
 
@@ -2255,6 +2463,9 @@ async getCategoryAttributes(categoryId) {
   }
 
   const operatorCode = this.getFalabellaOperatorCode();
+  if (!operatorCode) {
+    return null;
+  }
   const businessUnit = {
     OperatorCode: operatorCode
   };
@@ -2264,11 +2475,19 @@ async getCategoryAttributes(categoryId) {
   }
 
   if (price !== undefined && price !== null && String(price).trim() !== '') {
-    businessUnit.Price = Number(price).toFixed(2);
+    const parsedPrice = this.normalizeFalabellaFloat(price);
+    if (parsedPrice === null) {
+      return null;
+    }
+    businessUnit.Price = parsedPrice.toFixed(2);
   }
 
   if (available_quantity !== undefined && available_quantity !== null && String(available_quantity).trim() !== '') {
-    businessUnit.Stock = String(Math.max(0, Math.round(Number(available_quantity))));
+    const parsedQuantity = this.normalizeFalabellaInteger(available_quantity);
+    if (parsedQuantity === null) {
+      return null;
+    }
+    businessUnit.Stock = String(Math.max(0, parsedQuantity));
   }
 
   const builder = new Builder({
@@ -2289,13 +2508,7 @@ async getCategoryAttributes(categoryId) {
 }
 
   getFalabellaOperatorCode() {
-    const code = String(this.credential?.country || '').trim().toLowerCase();
-    if (code === 'pe') return 'fape';
-    if (code === 'co') return 'faco';
-    if (code === 'mx') return 'fame';
-    if (String(this.marketplace?.domain || '').includes('falabella.com.pe')) return 'fape';
-    if (String(this.marketplace?.domain || '').includes('falabella.com.co')) return 'faco';
-    return 'facl';
+    return this.resolveFalabellaOperatorCode();
   }
 
   async updateItem({ sellerSku, status = undefined, price = undefined, available_quantity = undefined }) {
@@ -2333,6 +2546,17 @@ async getCategoryAttributes(categoryId) {
         price: hasPrice ? Number(price) : undefined,
         available_quantity: hasQuantity ? Number(available_quantity) : undefined
       });
+
+      if (!xmlPayload) {
+        return {
+          success: false,
+          error: 'missing_required_metadata',
+          details: {
+            field: 'OperatorCode',
+            message: 'No se pudo construir el XML de actualización por falta de metadata obligatoria'
+          }
+        };
+      }
 
       const timestamp = this.timestampMinus03();
       const params = {

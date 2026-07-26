@@ -118,6 +118,26 @@ function buildMercadoLibreItemSnapshot(item) {
   };
 }
 
+function resolveExistingItemModel(item) {
+  const evidence = {
+    user_product_id: item?.user_product_id || null,
+    family_name: item?.family_name || null,
+    tags: Array.isArray(item?.tags) ? item.tags : [],
+    has_variations: Array.isArray(item?.variations) && item.variations.length > 0,
+    variations_count: Array.isArray(item?.variations) ? item.variations.length : 0
+  };
+
+  const hasUserProductTag = evidence.tags.includes('user_product_listing');
+  const hasUserProductIdentity = Boolean(evidence.user_product_id || evidence.family_name);
+  const model = hasUserProductTag || hasUserProductIdentity ? 'user_product' : 'classic';
+
+  return {
+    model,
+    hasClassicVariations: evidence.has_variations && model === 'classic',
+    evidence
+  };
+}
+
 async function fetchMercadoLibreItem(itemId, accessToken, timeoutMs = 10000) {
   const response = await axios.get(`https://api.mercadolibre.com/items/${itemId}`, {
     headers: {
@@ -220,5 +240,6 @@ async function verifyMercadoLibreItem({
 
 module.exports = {
   isMercadoLibreMarketplace,
-  verifyMercadoLibreItem
+  verifyMercadoLibreItem,
+  resolveExistingItemModel
 };

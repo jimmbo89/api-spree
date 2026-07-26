@@ -277,6 +277,10 @@ class MarketplaceStockSyncService {
       marketplace?.domain
     );
 
+    if (!operatorCode) {
+      throw new Error('falabella_missing_operator_code');
+    }
+
     const timestamp = this._timestampMinus03();
     const params = {
       Action: 'ProductUpdate',
@@ -320,13 +324,13 @@ class MarketplaceStockSyncService {
   }
 
   static _resolveFalabellaOperatorCode(country, domain) {
-    const code = (country || '').toLowerCase();
-    if (code === 'pe') return 'fape';
-    if (code === 'co') return 'faco';
-    if (code === 'mx') return 'fame';
-    if (domain && domain.includes('falabella.com.pe')) return 'fape';
-    if (domain && domain.includes('falabella.com.co')) return 'faco';
-    return 'facl';
+    const normalized = String(country || '').trim().toLowerCase();
+    if (normalized === 'pe') return 'fape';
+    if (normalized === 'co') return 'faco';
+    if (normalized === 'mx') return 'fame';
+    if (domain && String(domain).includes('falabella.com.pe')) return 'fape';
+    if (domain && String(domain).includes('falabella.com.co')) return 'faco';
+    return null;
   }
 
   static _timestampMinus03(date = new Date()) {

@@ -55,21 +55,21 @@ class MarketplaceTransformerFalabella {
       this.coerceNumber(product.package_height) ??
       this.coerceNumber(product.height_cm) ??
       this.coerceNumber(product.height) ??
-      10;
+      null;
     const width = this.toCentimeters(dimensions.width) ??
       this.coerceNumber(product.package_width) ??
       this.coerceNumber(product.width_cm) ??
       this.coerceNumber(product.width) ??
-      10;
+      null;
     const length = this.toCentimeters(dimensions.length ?? dimensions.depth) ??
       this.coerceNumber(product.package_length) ??
       this.coerceNumber(product.length_cm) ??
       this.coerceNumber(product.length) ??
-      10;
+      null;
     const weight = this.toKilograms(productMeasurements?.weight) ??
       this.coerceNumber(product.package_weight) ??
       (product.weight_grams != null ? this.coerceNumber(product.weight_grams) / 1000 : null) ??
-      0.5;
+      null;
 
     return { height, width, length, weight };
   }
@@ -83,13 +83,13 @@ class MarketplaceTransformerFalabella {
       const packageMeasurements = this.resolvePackageMeasurements(product);
 
       // 🔑 PRESERVAR CAMPOS OBLIGATORIOS DE FALABELLA (SIEMPRE)
-      transformed.sku = product.sku || product.SellerSku || `PROD-${product.productId || product.id}`;
-      transformed.productName = product.productName || product.name || product.title || 'Producto sin nombre';
-      transformed.brand = product.brand || 'Genérica';
-      transformed.price = product.price || product.Price || 0;
-      transformed.stock = product.stock || product.Stock || product.available_quantity || 0;
+      transformed.sku = product.sku || product.SellerSku || null;
+      transformed.productName = product.productName || product.name || product.title || null;
+      transformed.brand = product.brand || null;
+      transformed.price = product.price ?? product.Price ?? null;
+      transformed.stock = product.stock ?? product.Stock ?? product.available_quantity ?? null;
       transformed.PrimaryCategory = product.PrimaryCategory || product.category_id || product.category?.category_id || product.category?.id;
-      transformed.description = product.description || product.Description || 'Producto sin descripción';
+      transformed.description = product.description || product.Description || null;
       
       // 🔑 Package dimensions (obligatorios para Falabella)
       transformed.package_height = packageMeasurements.height;
