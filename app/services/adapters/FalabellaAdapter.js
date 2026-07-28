@@ -198,7 +198,13 @@ class FalabellaAdapter extends BaseAdapter {
       if (normalized) return normalized;
     }
 
-    return null;
+    const country = String(this.credential?.country || '').trim().toLowerCase();
+    if (country === 'pe' || String(this.marketplace?.domain || '').includes('falabella.com.pe')) return 'fape';
+    if (country === 'co' || String(this.marketplace?.domain || '').includes('falabella.com.co')) return 'faco';
+    if (country === 'mx' || String(this.marketplace?.domain || '').includes('falabella.com.mx')) return 'fame';
+    if (country === 'cl' || String(this.marketplace?.domain || '').includes('falabella.com.cl')) return 'facl';
+
+    return 'facl';
   }
 
   buildSignedQuery(params) {

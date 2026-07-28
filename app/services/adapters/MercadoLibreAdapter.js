@@ -470,7 +470,6 @@ class MercadoLibreAdapter extends BaseAdapter {
       || mlData?.logistic_type
       || null;
     let strategy = normalizeStrategyForPublish(mlData?.strategy, mlData?.listing_type_id || null);
-
     if (!mlData?.category?.category_id) {
       throw new Error('Falta category_id para MercadoLibre');
     }
@@ -1854,7 +1853,6 @@ class MercadoLibreAdapter extends BaseAdapter {
       || mlData?.logistic_type
       || null;
     let strategy = normalizeStrategyForPublish(mlData?.strategy, mlData?.listing_type_id || null);
-
     if (!mlData?.category?.category_id) {
       throw new Error('Falta category_id para MercadoLibre');
     }

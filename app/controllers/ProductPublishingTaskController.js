@@ -430,6 +430,7 @@ function buildPublishedStatusOptions() {
     { id: 'closed', name: 'Cerrada', marketplaces: ['mercadolibre'], shared: false },
     { id: 'inactive', name: 'Inactiva', marketplaces: ['falabella'], shared: false },
     { id: 'pending', name: 'Pendiente', marketplaces: ['falabella'], shared: false },
+    { id: 'failed', name: 'Fallida', marketplaces: ['falabella'], shared: false },
     { id: 'rejected', name: 'Rechazada', marketplaces: ['falabella'], shared: false },
     { id: 'not_published', name: 'No publicada', marketplaces: ['falabella'], shared: false }, // ✅ NUEVO
     { id: 'sold_out', name: 'Sin stock', marketplaces: ['falabella'], shared: false },
@@ -506,6 +507,10 @@ function classifyMarketplaceState(status) {
     return 'not_published';
   }
 
+  if (normalized === 'failed' || normalized === 'error') {
+    return 'failed';
+  }
+
   if (normalized === 'processing') {
     return 'processing';
   }
@@ -514,11 +519,22 @@ function classifyMarketplaceState(status) {
 }
 
 function resolveFalabellaMarketplaceDisplayStatus(productStatus, { taskStatus = null, hasImage = true } = {}) {
+  const normalizedTaskStatus = String(taskStatus || '').trim().toLowerCase();
+
   if (!productStatus || typeof productStatus !== 'object') {
+    if (normalizedTaskStatus === 'failed' || normalizedTaskStatus === 'error') {
+      return 'failed';
+    }
+    if (normalizedTaskStatus === 'pending') {
+      return 'pending';
+    }
     return 'processing';
   }
 
   if (productStatus.found === false) {
+    if (normalizedTaskStatus === 'failed' || normalizedTaskStatus === 'error') {
+      return 'failed';
+    }
     return 'pending';
   }
 
@@ -567,7 +583,32 @@ function resolveFalabellaMarketplaceDisplayStatus(productStatus, { taskStatus = 
     return 'processing';
   }
 
-  return status || 'processing';
+  if (normalizedTaskStatus === 'failed' || normalizedTaskStatus === 'error') {
+    return 'failed';
+  }
+
+  if (normalizedTaskStatus === 'pending') {
+    return 'pending';
+  }
+
+  if (normalizedTaskStatus === 'processing') {
+    return 'processing';
+  }
+
+  if (!status || status === 'unknown') {
+    if (normalizedTaskStatus === 'failed' || normalizedTaskStatus === 'error') {
+      return 'failed';
+    }
+    if (normalizedTaskStatus === 'pending') {
+      return 'pending';
+    }
+    if (normalizedTaskStatus === 'processing') {
+      return 'processing';
+    }
+    return 'failed';
+  }
+
+  return status || 'failed';
 }
 
 function buildMercadoLibreItemStateSnapshotFromItem(item, source = 'manual_update') {
@@ -2948,6 +2989,7 @@ async publishedProducts(req, res) {
     pending: 0,
     rejected: 0,
     not_published: 0,
+    failed: 0,
     inactive: 0,
     deleted: 0,
     unknown: 0,
@@ -3099,7 +3141,7 @@ async publishedProducts(req, res) {
         marketplace_key: marketplaceKey,
         marketplace_name: credential.name || marketplace.name || 'N/A',
         marketplace_domain: marketplace.domain || null,
-        marketplace_status: marketplaceStatus || 'unknown',
+        marketplace_status: marketplaceStatus || (task.status === 'failed' ? 'failed' : 'processing'),
         publication_status: task.status,
         published_stock: extractPublishedStock(payloadForMetrics),
         published_price: extractPublishedPrice(payloadForMetrics),
@@ -3473,7 +3515,7 @@ async publishedProducts(req, res) {
         marketplace_id: marketplaceId,
         marketplace_name: credential.name || marketplace.name || 'N/A',
         marketplace_domain: marketplace.domain || null,
-        marketplace_status: marketplaceStateSnapshot.status || 'unknown',
+        marketplace_status: marketplaceStateSnapshot.status || taskUpdate.status || task.status || 'failed',
         publication_status: taskUpdate.status || task.status,
         item: {
           id: updatedItem.id || externalId,
@@ -3938,7 +3980,7 @@ async publishedProducts(req, res) {
         marketplace_name: credential.name || marketplace.name || 'N/A',
         marketplace_domain: marketplace.domain || null,
         marketplace_key: 'falabella',
-        marketplace_status: currentProductState.raw_status || currentProductState.status || 'unknown',
+        marketplace_status: currentProductState.raw_status || currentProductState.status || taskUpdate.status || task.status || 'failed',
         publication_status: taskUpdate.status || task.status,
         feed_confirmed: feedFinishedSuccessfully,
         item: {
@@ -4106,4 +4148,3 @@ async updatePayload(req, res) {
 };
 
 module.exports = ProductPublishingTaskController;
-
