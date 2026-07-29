@@ -1913,12 +1913,12 @@ class MercadoLibreAdapter extends BaseAdapter {
     return true;
   }
 
-  async getMercadoLibreUserProductStock(itemId) {
-    const normalizedItemId = String(itemId || '').trim();
-    if (!normalizedItemId) return null;
+  async getMercadoLibreUserProductStock(userProductId) {
+    const normalizedUserProductId = String(userProductId || '').trim();
+    if (!normalizedUserProductId) return null;
 
     const response = await axios.get(
-      `https://api.mercadolibre.com/user-products/${normalizedItemId}/stock`,
+      `https://api.mercadolibre.com/user-products/${normalizedUserProductId}/stock`,
       {
         headers: {
           Authorization: `Bearer ${this.credential.access_token}`,
@@ -1928,23 +1928,45 @@ class MercadoLibreAdapter extends BaseAdapter {
       }
     );
 
-    return response.data || null;
+    return {
+      ...(response.data || {}),
+      version: response.headers?.['x-version'] ?? response.headers?.['X-Version'] ?? response.data?.version ?? null
+    };
   }
 
-  async updateMercadoLibreUserProductStock(itemId, availableQuantity, stockInfo = null) {
-    const normalizedItemId = String(itemId || '').trim();
+  resolveMercadoLibreUserProductStockType(stockInfo = null) {
+    const directType = String(stockInfo?.type || stockInfo?.stock_type || '').trim();
+    if (directType) return directType;
+
+    const locations = Array.isArray(stockInfo?.locations) ? stockInfo.locations : [];
+    const locationTypes = [...new Set(locations
+      .map((location) => String(location?.type || '').trim())
+      .filter(Boolean))];
+
+    return locationTypes.length === 1 ? locationTypes[0] : '';
+  }
+
+  resolveMercadoLibreUserProductId(item = null, explicitUserProductId = null) {
+    const explicit = String(explicitUserProductId || '').trim();
+    if (explicit) return explicit;
+    return String(item?.user_product_id || '').trim();
+  }
+
+  async updateMercadoLibreUserProductStock(userProductId, availableQuantity, stockInfo = null, itemId = null) {
+    const normalizedUserProductId = String(userProductId || '').trim();
     const quantity = Number(availableQuantity);
-    if (!normalizedItemId || !Number.isFinite(quantity) || quantity < 0) {
+    if (!normalizedUserProductId || !Number.isFinite(quantity) || quantity < 0) {
       return null;
     }
 
-    const stockType = String(stockInfo?.type || stockInfo?.stock_type || '').trim();
+    const stockType = this.resolveMercadoLibreUserProductStockType(stockInfo);
     if (!stockType) {
       return {
         __blocked_error: createMercadoLibreError({
           operation: 'update',
           itemModel: 'user_product',
-          itemId: normalizedItemId,
+          itemId,
+          userProductId: normalizedUserProductId,
           field: 'available_quantity',
           receivedValue: quantity,
           code: 'user_product_stock_type_unknown',
@@ -1959,7 +1981,8 @@ class MercadoLibreAdapter extends BaseAdapter {
         __blocked_error: createMercadoLibreError({
           operation: 'update',
           itemModel: 'user_product',
-          itemId: normalizedItemId,
+          itemId,
+          userProductId: normalizedUserProductId,
           field: 'available_quantity',
           receivedValue: quantity,
           code: 'user_product_multi_origin_stock_unsupported',
@@ -1970,14 +1993,14 @@ class MercadoLibreAdapter extends BaseAdapter {
     }
 
     const response = await axios.put(
-      `https://api.mercadolibre.com/user-products/${normalizedItemId}/stock/type/${encodeURIComponent(stockType)}`,
-      { available_quantity: Math.round(quantity) },
+      `https://api.mercadolibre.com/user-products/${normalizedUserProductId}/stock/type/${encodeURIComponent(stockType)}`,
+      { quantity: Math.round(quantity) },
       {
         headers: {
           Authorization: `Bearer ${this.credential.access_token}`,
           'Content-Type': 'application/json',
           Accept: 'application/json',
-          ...(stockInfo?.version !== undefined ? { 'X-Version': String(stockInfo.version) } : {})
+          ...(stockInfo?.version !== undefined && stockInfo.version !== null ? { 'x-version': String(stockInfo.version) } : {})
         },
         timeout: 30000
       }
@@ -3517,8 +3540,11 @@ class MercadoLibreAdapter extends BaseAdapter {
       const parsedQuantity = available_quantity !== undefined && available_quantity !== null && available_quantity !== ''
         ? Number(available_quantity)
         : null;
+      let userProductStockUpdate = null;
 
       if (isUserProduct) {
+        delete payload.available_quantity;
+
         if (title !== undefined && String(title).trim() !== '') {
           return {
             success: false,
@@ -3558,11 +3584,39 @@ class MercadoLibreAdapter extends BaseAdapter {
         }
 
         if (parsedQuantity !== null) {
-          const stockInfo = await this.getMercadoLibreUserProductStock(normalizedItemId);
-          const stockUpdate = await this.updateMercadoLibreUserProductStock(normalizedItemId, parsedQuantity, stockInfo);
+          const resolvedUserProductId = this.resolveMercadoLibreUserProductId(verification.item, user_product_id);
+          if (!resolvedUserProductId) {
+            return {
+              success: false,
+              error: 'user_product_id_missing_for_stock_update',
+              details: createMercadoLibreError({
+                operation: 'update',
+                itemModel: 'user_product',
+                itemId: normalizedItemId,
+                field: 'available_quantity',
+                receivedValue: parsedQuantity,
+                code: 'user_product_id_missing',
+                message: 'No se pudo actualizar stock User Products porque GET /items/{item_id} no retornó user_product_id',
+                metadataSource: 'GET /items/{item_id}'
+              })
+            };
+          }
+
+          const stockInfo = await this.getMercadoLibreUserProductStock(resolvedUserProductId);
+          const stockUpdate = await this.updateMercadoLibreUserProductStock(
+            resolvedUserProductId,
+            parsedQuantity,
+            stockInfo,
+            normalizedItemId
+          );
           if (stockUpdate?.__blocked_error) {
             return { success: false, error: stockUpdate.__blocked_error.code, details: stockUpdate.__blocked_error };
           }
+          userProductStockUpdate = {
+            user_product_id: resolvedUserProductId,
+            requested_quantity: Math.round(parsedQuantity),
+            response: stockUpdate || null
+          };
         }
 
         if (family_name !== undefined && String(family_name).trim() !== '') {
@@ -3599,8 +3653,13 @@ class MercadoLibreAdapter extends BaseAdapter {
           return {
             success: true,
             external_id: response.data?.id || normalizedItemId,
-            data: response.data,
-            requested_changes: payload,
+            data: userProductStockUpdate
+              ? { ...(response.data || {}), available_quantity: userProductStockUpdate.requested_quantity }
+              : response.data,
+            requested_changes: userProductStockUpdate
+              ? { ...payload, available_quantity: userProductStockUpdate.requested_quantity }
+              : payload,
+            stock_update: userProductStockUpdate,
             current_status: currentStatus,
             item_model: resolvedModel
           };
@@ -3621,8 +3680,13 @@ class MercadoLibreAdapter extends BaseAdapter {
         return {
           success: true,
           external_id: normalizedItemId,
-          data: verification.item,
-          requested_changes: {},
+          data: userProductStockUpdate
+            ? { ...(verification.item || {}), available_quantity: userProductStockUpdate.requested_quantity }
+            : verification.item,
+          requested_changes: userProductStockUpdate
+            ? { available_quantity: userProductStockUpdate.requested_quantity }
+            : {},
+          stock_update: userProductStockUpdate,
           current_status: currentStatus,
           item_model: resolvedModel
         };
@@ -3735,7 +3799,14 @@ class MercadoLibreAdapter extends BaseAdapter {
         item_model: resolvedModel
       };
     } catch (error) {
-      logger.error('[MercadoLibreAdapter] Error actualizando item:', error.message);
+      logger.error(`[MercadoLibreAdapter] Error actualizando item: ${error.message}`);
+      logger.error(`[MercadoLibreAdapter] Update request fallido: ${JSON.stringify({
+        method: error.config?.method || null,
+        url: error.config?.url || null,
+        payload: error.config?.data ? parseJsonObject(error.config.data) : null,
+        status: error.response?.status || null,
+        response: error.response?.data || null
+      })}`);
       if (error.response) {
         if (error.response.status === 401) {
           return {
