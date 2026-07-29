@@ -118,6 +118,19 @@ function buildVerificationDetails(verification) {
   };
 }
 
+function normalizeDetailsObject(details) {
+  if (!details) return {};
+  if (typeof details === 'object' && !Array.isArray(details)) return details;
+  if (typeof details !== 'string') return {};
+
+  try {
+    const parsed = JSON.parse(details);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (error) {
+    return {};
+  }
+}
+
 function normalizeWarningEntry(warning) {
   if (typeof warning === 'string') {
     const message = warning.trim();
@@ -636,6 +649,7 @@ class PublishingService {
       const isFalabellaMarketplace = Boolean(
         String(marketplace?.domain || '').toLowerCase().includes('falabella')
       );
+      const isMercadoLibre = isMercadoLibreMarketplace(marketplace);
 
       if (isFalabellaMarketplace && Array.isArray(transformed.falabella_publication_items) && transformed.falabella_publication_items.length > 0) {
         return await PublishingService.publishFalabellaIndependentItems({
@@ -731,6 +745,131 @@ class PublishingService {
         logger.info(`[PublishingService] ✅ Tarea Falabella creada antes del POST. task_id=${falabellaTask.id}, sku=${transformed.sku}`);
       }
 
+      let mercadoLibreInitialTask = null;
+      const mercadoLibreCreatedItems = [];
+      const mercadoLibreLinkScope = buildProductMarketplaceLinkScope(warehouse);
+
+      const persistMercadoLibreCreatedItem = async (createdItem = {}) => {
+        const itemId = createdItem.itemId || createdItem.response?.id || null;
+        if (!itemId) {
+          throw new Error('mercadolibre_created_item_without_id');
+        }
+
+        const itemPayload = createdItem.payload || transformed;
+        const itemSku = createdItem.sku || itemPayload?.sku || transformed.sku || null;
+        const itemDetails = {
+          marketplace: 'mercado_libre',
+          operation: createdItem.operation || 'create',
+          item_model: createdItem.model || null,
+          status: 'processing',
+          item_id: itemId,
+          seller_sku: itemSku,
+          credential_id: credentialId || null,
+          category_id: itemPayload?.category_id || transformed.category_id || null,
+          validation: createdItem.validation || null,
+          persisted_after_marketplace_response: true,
+          persisted_at: new Date().toISOString()
+        };
+
+        let taskForItem = null;
+        if (mercadoLibreInitialTask && !mercadoLibreInitialTask.external_id && mercadoLibreCreatedItems.length === 0) {
+          const mergedDetails = {
+            ...normalizeDetailsObject(mercadoLibreInitialTask.error_details),
+            ...itemDetails
+          };
+          await ProductPublishingTaskRepository.updateTask(mercadoLibreInitialTask, {
+            status: 'processing',
+            payload: itemPayload,
+            external_id: itemId,
+            external_url: createdItem.response?.permalink || null,
+            error_message: 'Producto creado en Mercado Libre, pendiente de confirmacion final...',
+            error_details: mergedDetails,
+            api_response: createdItem.response || null
+          });
+          mercadoLibreInitialTask.external_id = itemId;
+          mercadoLibreInitialTask.error_details = mergedDetails;
+          taskForItem = mercadoLibreInitialTask;
+        } else {
+          taskForItem = await ProductPublishingTaskRepository.create({
+            product_id: productData.id,
+            marketplace_id: marketplace.marketplace_id,
+            credential_id: credentialId,
+            warehouse_id: warehouse.id,
+            company_id: warehouse.company_id || null,
+            branch_id: warehouse.branch_id || null,
+            user_id: userId,
+            date: new Date(),
+            status: 'processing',
+            payload: itemPayload,
+            external_id: itemId,
+            external_url: createdItem.response?.permalink || null,
+            error_message: 'Producto creado en Mercado Libre, pendiente de confirmacion final...',
+            error_details: itemDetails,
+            api_response: createdItem.response || null,
+            batch_id: batch_id || null,
+            attempt_count: 1
+          });
+        }
+
+        await ProductMarketplaceLinkRepository.upsert({
+          product_id: productData.id,
+          marketplace_id: marketplace.marketplace_id,
+          credential_id: credentialId,
+          user_id: userId,
+          ...mercadoLibreLinkScope,
+          status: 'processing',
+          external_id: itemId,
+          external_url: createdItem.response?.permalink || null,
+          published_stock: normalizePublishedStock(itemPayload),
+          published_payload: itemPayload,
+          last_synced_at: new Date()
+        });
+
+        mercadoLibreCreatedItems.push({
+          task: taskForItem,
+          item_id: itemId,
+          sku: itemSku,
+          payload: itemPayload,
+          response: createdItem.response || null
+        });
+
+        logger.info(
+          `[PublishingService] ML item persistido inmediatamente item_id=${itemId} sku=${itemSku || 'n/a'} task_id=${taskForItem.id}`
+        );
+      };
+
+      if (isMercadoLibre) {
+        mercadoLibreInitialTask = await ProductPublishingTaskRepository.create({
+          product_id: productData.id,
+          marketplace_id: marketplace.marketplace_id,
+          credential_id: credentialId,
+          warehouse_id: warehouse.id,
+          company_id: warehouse.company_id || null,
+          branch_id: warehouse.branch_id || null,
+          user_id: userId,
+          date: new Date(),
+          status: 'processing',
+          payload: transformed,
+          external_id: null,
+          external_url: null,
+          error_message: 'Publicacion enviada a Mercado Libre, esperando respuesta...',
+          error_details: {
+            marketplace: 'mercado_libre',
+            operation: transformed.__ml_existing_item_id ? 'update_or_relist' : 'create',
+            status: 'processing',
+            credential_id: credentialId || null,
+            category_id: transformed.category_id || null,
+            created_before_marketplace_response: true,
+            created_at: new Date().toISOString()
+          },
+          api_response: { status: 'processing' },
+          batch_id: batch_id || null,
+          attempt_count: 1
+        });
+
+        logger.info(`[PublishingService] Tarea ML creada antes del POST. task_id=${mercadoLibreInitialTask.id}`);
+      }
+
       // === 4. Publicar ===
       if (isFalabellaMarketplace) {
         const falabellaPayloadPreview = {
@@ -778,12 +917,15 @@ class PublishingService {
         }
       }
 
-      const result = await adapter.publish(transformed);
+      const result = await adapter.publish(
+        transformed,
+        isMercadoLibre ? { onItemCreated: persistMercadoLibreCreatedItem } : undefined
+      );
       const externalId = resolveExternalId(result);
       const shouldVerifyMlPublication = Boolean(
         result.success &&
         externalId &&
-        isMercadoLibreMarketplace(marketplace)
+        isMercadoLibre
       );
       const verification = shouldVerifyMlPublication
         ? await verifyMercadoLibreItem({
@@ -815,6 +957,30 @@ class PublishingService {
             product_id: productData.id,
             credential_id: credentialId,
             task_id: falabellaTask?.id || null
+          };
+        }
+
+        if (isMercadoLibre && mercadoLibreInitialTask) {
+          await ProductPublishingTaskRepository.updateTask(mercadoLibreInitialTask, {
+            status: 'pending',
+            error_message: 'Autenticacion requerida',
+            error_details: {
+              ...normalizeDetailsObject(mercadoLibreInitialTask.error_details),
+              error_code: 'auth_required',
+              auth_url: result.auth_url,
+              message: result.message || 'Autenticacion requerida'
+            },
+            api_response: result.data || null
+          });
+
+          return {
+            success: false,
+            auth_required: true,
+            auth_url: result.auth_url,
+            message: result.message || 'Autenticacion requerida',
+            product_id: productData.id,
+            credential_id: credentialId,
+            task_id: mercadoLibreInitialTask.id
           };
         }
 
@@ -918,29 +1084,84 @@ class PublishingService {
 
         const verificationDetails = buildVerificationDetails(verification);
 
-        const task = await ProductPublishingTaskRepository.create({
-          product_id: productData.id,
-          marketplace_id: marketplace.marketplace_id,
-          credential_id: credentialId,
-          warehouse_id: warehouse.id,
-          company_id: warehouse.company_id || null,
-          branch_id: warehouse.branch_id || null,
-          user_id: userId,
-          date: new Date(),
-          status: status,
-          payload: transformed,
-          external_id: externalId,
-          external_url: result.data?.permalink,
-          error_message: warningMessage,
-          error_details: {
-            ...(verificationDetails || {}),
-            ...(warningsData || {})
-          },
-          api_response: result.data,
-          batch_id: batch_id || null,
-        });
+        let task = null;
+        if (isMercadoLibre && mercadoLibreInitialTask) {
+          const tasksToUpdate = mercadoLibreCreatedItems.length > 0
+            ? mercadoLibreCreatedItems
+            : [{
+                task: mercadoLibreInitialTask,
+                item_id: externalId,
+                sku: transformed.sku || null,
+                payload: transformed,
+                response: result.data || null
+              }];
 
-        if (finalSuccess) {
+          for (const createdItem of tasksToUpdate) {
+            const currentTask = createdItem.task || mercadoLibreInitialTask;
+            await ProductPublishingTaskRepository.updateTask(currentTask, {
+              status,
+              payload: createdItem.payload || transformed,
+              external_id: createdItem.item_id || externalId,
+              external_url: createdItem.response?.permalink || result.data?.permalink || null,
+              error_message: warningMessage,
+              error_details: {
+                ...normalizeDetailsObject(currentTask.error_details),
+                ...(verificationDetails || {}),
+                ...(warningsData || {}),
+                created_items: mercadoLibreCreatedItems.map((item) => ({
+                  item_id: item.item_id,
+                  sku: item.sku
+                }))
+              },
+              api_response: createdItem.response || result.data,
+              published_at: finalSuccess ? new Date() : null
+            });
+          }
+
+          task = tasksToUpdate[0].task || mercadoLibreInitialTask;
+        } else {
+          task = await ProductPublishingTaskRepository.create({
+            product_id: productData.id,
+            marketplace_id: marketplace.marketplace_id,
+            credential_id: credentialId,
+            warehouse_id: warehouse.id,
+            company_id: warehouse.company_id || null,
+            branch_id: warehouse.branch_id || null,
+            user_id: userId,
+            date: new Date(),
+            status: status,
+            payload: transformed,
+            external_id: externalId,
+            external_url: result.data?.permalink,
+            error_message: warningMessage,
+            error_details: {
+              ...(verificationDetails || {}),
+              ...(warningsData || {})
+            },
+            api_response: result.data,
+            batch_id: batch_id || null,
+          });
+        }
+
+        if (finalSuccess && isMercadoLibre && mercadoLibreCreatedItems.length > 0) {
+          for (const createdItem of mercadoLibreCreatedItems) {
+            await ProductMarketplaceLinkRepository.upsert({
+              product_id: productData.id,
+              marketplace_id: marketplace.marketplace_id,
+              credential_id: credentialId,
+              user_id: userId,
+              ...mercadoLibreLinkScope,
+              status,
+              external_id: createdItem.item_id,
+              external_url: createdItem.response?.permalink || null,
+              published_stock: normalizePublishedStock(createdItem.payload),
+              published_payload: createdItem.payload,
+              last_synced_at: new Date()
+            });
+          }
+        }
+
+        if (finalSuccess && !(isMercadoLibre && mercadoLibreCreatedItems.length > 0)) {
           await ProductMarketplaceLinkRepository.upsert({
             product_id: productData.id,
             marketplace_id: marketplace.marketplace_id,
@@ -973,6 +1194,78 @@ class PublishingService {
           verification: verificationDetails,
           status: status,
           error: verificationFailed ? verificationWarningMessage : null
+        };
+      }
+
+      if (isMercadoLibre && mercadoLibreInitialTask) {
+        if (mercadoLibreCreatedItems.length > 0) {
+          for (const createdItem of mercadoLibreCreatedItems) {
+            await ProductPublishingTaskRepository.updateTask(createdItem.task, {
+              status: 'published_with_warnings',
+              error_message: result.error || 'Publicacion parcial en Mercado Libre; requiere revision',
+              error_details: {
+                ...normalizeDetailsObject(createdItem.task.error_details),
+                partial_publication: true,
+                adapter_error: result.error || 'unknown_error',
+                details: result.details || null
+              },
+              api_response: createdItem.response || result.data || null,
+              published_at: new Date()
+            });
+
+            await ProductMarketplaceLinkRepository.upsert({
+              product_id: productData.id,
+              marketplace_id: marketplace.marketplace_id,
+              credential_id: credentialId,
+              user_id: userId,
+              ...mercadoLibreLinkScope,
+              status: 'published_with_warnings',
+              external_id: createdItem.item_id,
+              external_url: createdItem.response?.permalink || null,
+              published_stock: normalizePublishedStock(createdItem.payload),
+              published_payload: createdItem.payload,
+              last_synced_at: new Date()
+            });
+          }
+
+          return {
+            success: true,
+            partial_success: true,
+            external_id: mercadoLibreCreatedItems[0]?.item_id || null,
+            product_id: productData.id,
+            credential_id: credentialId,
+            task_id: mercadoLibreCreatedItems[0]?.task?.id || mercadoLibreInitialTask.id,
+            has_warnings: true,
+            warnings: [{
+              field: 'partial_publication',
+              message: result.error || 'Publicacion parcial en Mercado Libre',
+              value: mercadoLibreCreatedItems.map((item) => item.item_id)
+            }],
+            warning_message: result.error || 'Publicacion parcial en Mercado Libre; requiere revision',
+            status: 'published_with_warnings',
+            error: null
+          };
+        }
+
+        await ProductPublishingTaskRepository.updateTask(mercadoLibreInitialTask, {
+          status: 'failed',
+          error_message: result.error || 'Error desconocido en el adapter',
+          error_details: result.details || null,
+          api_response: result.status_code ? {
+            status_code: result.status_code,
+            payload: result.payload
+          } : null
+        });
+
+        return {
+          success: false,
+          error: result.error || 'unknown_error',
+          details: result.details,
+          status_code: result.status_code,
+          payload: transformed,
+          product_id: productData.id,
+          credential_id: credentialId,
+          task_id: mercadoLibreInitialTask.id
         };
       }
 

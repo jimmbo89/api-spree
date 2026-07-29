@@ -1088,7 +1088,10 @@ async function processMercadoLibreItemWebhook(payload, options = {}) {
       : ML_WEBHOOK_TIMEOUT_MS;
 
   try {
-    const credential = await MarketplaceCredentialRepository.findByMLUserIdGlobal(user_id);
+    const credential = await resolveMercadoLibreItemWebhookCredential({
+      itemId,
+      userId: user_id
+    });
     if (!credential || !credential.access_token) {
       await MarketplaceWebhookEventRepository.updateById(event.id, {
         status: "error",
@@ -1171,6 +1174,48 @@ async function processMercadoLibreItemWebhook(payload, options = {}) {
       `[ML Webhook] ${isTimeout ? "Timeout" : "Error"} procesando item ${itemId}: ${error.message}`
     );
   }
+}
+
+async function resolveMercadoLibreItemWebhookCredential({ itemId, userId }) {
+  if (itemId) {
+    const link = await ProductMarketplaceLinkRepository.findLatestByExternalIdAndMarketplaceDomain(
+      String(itemId),
+      ML_MARKETPLACE_KEY
+    );
+
+    if (link?.credential_id) {
+      const credential = await MarketplaceCredentialRepository.findById(link.credential_id);
+      if (credential?.access_token) {
+        logger.info(
+          `[ML Webhook] Credencial resuelta por link external_id=${itemId} credential_id=${credential.id}`
+        );
+        return credential;
+      }
+    }
+
+    const task = await ProductPublishingTaskRepository.findLatestByExternalIdAndMarketplaceDomain(
+      String(itemId),
+      ML_MARKETPLACE_KEY
+    );
+
+    if (task?.credential_id) {
+      const credential = await MarketplaceCredentialRepository.findById(task.credential_id);
+      if (credential?.access_token) {
+        logger.info(
+          `[ML Webhook] Credencial resuelta por task external_id=${itemId} credential_id=${credential.id}`
+        );
+        return credential;
+      }
+    }
+  }
+
+  const fallbackCredential = await MarketplaceCredentialRepository.findByMLUserIdGlobal(userId);
+  if (fallbackCredential?.access_token) {
+    logger.warn(
+      `[ML Webhook] Credencial resuelta por fallback ml_user_id=${userId}; no habia task/link para item=${itemId}`
+    );
+  }
+  return fallbackCredential;
 }
 
 async function processFalabellaWebhook(payload, options = {}) {

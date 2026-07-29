@@ -1660,9 +1660,7 @@ class MercadoLibreAdapter extends BaseAdapter {
         })
       };
     }
-    const pictures = this.normalizeMercadoLibreVariationPictures(
-      variant?.pictures || variant?.images || variant?.picture_ids || transformedProduct.pictures || []
-    );
+    const pictures = this.getVariantPictures(variant, transformedProduct.pictures || []);
     const availableQuantity = Math.max(0, Math.round(
       Number(
         variant?.publishStock ??
@@ -2446,7 +2444,7 @@ class MercadoLibreAdapter extends BaseAdapter {
     }
   }
 
-  async publish(transformedProduct) {
+  async publish(transformedProduct, options = {}) {
     try {
       logger.info("[MercadoLibreAdapter] === INICIANDO PUBLICACIÓN ===");
       logger.info(`[DEBUG] Título recibido: "${transformedProduct.title}" (${transformedProduct.title?.length || 0} caracteres)`);
@@ -3098,6 +3096,19 @@ class MercadoLibreAdapter extends BaseAdapter {
             }
           );
 
+          if (typeof options.onItemCreated === 'function') {
+            await options.onItemCreated({
+              marketplace: 'mercado_libre',
+              model: 'user_products',
+              operation: 'create',
+              itemId: response.data?.id || null,
+              sku: validatedPayload.sku,
+              payload: validatedPayload.payload,
+              response: response.data,
+              validation: validatedPayload.validation
+            });
+          }
+
           if (itemDescription) {
             await this.publishMercadoLibreDescription(response.data.id, itemDescription);
           }
@@ -3246,6 +3257,19 @@ class MercadoLibreAdapter extends BaseAdapter {
           timeout: 30000
         }
       );
+
+      if (typeof options.onItemCreated === 'function') {
+        await options.onItemCreated({
+          marketplace: 'mercado_libre',
+          model: hasVariations ? 'classic_variations' : 'classic',
+          operation: 'create',
+          itemId: response.data?.id || null,
+          sku: transformedProduct.sku || transformedProduct.external_id || null,
+          payload: productToPublish,
+          response: response.data,
+          validation: validationResult.validation
+        });
+      }
 
       if (itemDescription) {
         await this.publishMercadoLibreDescription(response.data.id, itemDescription);

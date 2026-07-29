@@ -1,6 +1,7 @@
 // src/repositories/ProductMarketplaceLinkRepository.js
-const { ProductMarketplaceLink, MarketplaceCredential } = require('../models');
+const { ProductMarketplaceLink, MarketplaceCredential, Marketplace } = require('../models');
 const logger = require('../../config/logger');
+const { Op } = require('sequelize');
 
 const ProductMarketplaceLinkRepository = {
   buildScopeWhere(linkData = {}) {
@@ -119,6 +120,28 @@ const ProductMarketplaceLinkRepository = {
     if (branchId) where.branch_id = branchId;
     if (credentialId) where.credential_id = credentialId;
     return await ProductMarketplaceLink.findOne({ where });
+  },
+
+  async findLatestByExternalIdAndMarketplaceDomain(externalId, marketplaceDomain) {
+    if (!externalId || !marketplaceDomain) return null;
+
+    return await ProductMarketplaceLink.findOne({
+      where: { external_id: externalId },
+      include: [
+        {
+          model: Marketplace,
+          as: 'marketplace',
+          where: { domain: { [Op.like]: `%${marketplaceDomain}%` } },
+          required: true
+        },
+        {
+          model: MarketplaceCredential,
+          as: 'credential',
+          attributes: ['id', 'name', 'seller_email', 'seller_id', 'active']
+        }
+      ],
+      order: [['updatedAt', 'DESC'], ['id', 'DESC']]
+    });
   },
 
   /**

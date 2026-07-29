@@ -247,6 +247,39 @@ const ProductPublishingTaskRepository = {
     });
   },
 
+  async findLatestByExternalIdAndMarketplaceDomain(externalId, marketplaceDomain) {
+    if (!externalId || !marketplaceDomain) return null;
+
+    return await ProductPublishingTask.findOne({
+      where: {
+        external_id: externalId
+      },
+      include: [
+        {
+          model: Marketplace,
+          as: 'marketplace',
+          where: { domain: { [Op.like]: `%${marketplaceDomain}%` } },
+          required: true
+        },
+        {
+          model: Product,
+          as: 'product'
+        },
+        {
+          model: MarketplaceCredential,
+          as: 'credential',
+          attributes: ['id', 'name', 'seller_email', 'seller_id', 'active']
+        },
+        {
+          model: Job,
+          as: 'job',
+          attributes: ['id', 'batch_id', 'config', 'company_id', 'user_id']
+        }
+      ],
+      order: [['updatedAt', 'DESC'], ['id', 'DESC']]
+    });
+  },
+
   async findLatestByExternalIdAndContext({
     marketplaceId = null,
     externalId,
