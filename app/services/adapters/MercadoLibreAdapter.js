@@ -270,19 +270,83 @@ function extractWarrantyMonths(productData) {
     : Number(warrantyMonths.toFixed(2));
 }
 
+function normalizeMercadoLibreTermValue(source = {}) {
+  if (!source || typeof source !== 'object') return null;
+
+  const term = {};
+  if (source.value_id !== undefined && source.value_id !== null && String(source.value_id).trim()) {
+    term.value_id = String(source.value_id).trim();
+  }
+  if (source.value_name !== undefined && source.value_name !== null && String(source.value_name).trim()) {
+    term.value_name = String(source.value_name).trim();
+  }
+  return Object.keys(term).length > 0 ? term : null;
+}
+
+function findMercadoLibreTermSource(productData, termId) {
+  const id = String(termId || '').trim();
+  if (!productData || typeof productData !== 'object' || !id) return null;
+
+  const sourceGroups = [
+    productData.sale_terms,
+    productData.attributes,
+    productData.__ml_marketplace_attributes
+  ];
+
+  for (const group of sourceGroups) {
+    if (!Array.isArray(group)) continue;
+    const found = group.find((entry) => String(entry?.id || '').trim() === id);
+    const normalized = normalizeMercadoLibreTermValue(found);
+    if (normalized) return normalized;
+  }
+
+  if (id === 'WARRANTY_TYPE') {
+    return normalizeMercadoLibreTermValue({
+      value_id: productData.warranty_type_id,
+      value_name: productData.warranty_type || productData.warranty_type_name
+    });
+  }
+
+  if (id === 'WARRANTY_TIME') {
+    return normalizeMercadoLibreTermValue({
+      value_name: productData.warranty_time || productData.warranty_time_name
+    });
+  }
+
+  return null;
+}
+
 function buildWarrantySaleTerms(productData) {
+  const termsById = new Map();
+  for (const term of normalizeMercadoLibreSaleTerms(productData?.sale_terms || [])) {
+    termsById.set(term.id, term);
+  }
+
+  const warrantyType = findMercadoLibreTermSource(productData, 'WARRANTY_TYPE');
+  if (warrantyType) {
+    termsById.set('WARRANTY_TYPE', { id: 'WARRANTY_TYPE', ...warrantyType });
+  }
+
+  const explicitWarrantyTime = findMercadoLibreTermSource(productData, 'WARRANTY_TIME');
+  if (explicitWarrantyTime) {
+    termsById.set('WARRANTY_TIME', { id: 'WARRANTY_TIME', ...explicitWarrantyTime });
+    return Array.from(termsById.values());
+  }
+
   const warrantyMonths = extractWarrantyMonths(productData);
 
   if (warrantyMonths === null) {
-    return [];
+    return Array.from(termsById.values());
   }
 
   const warrantyUnit = warrantyMonths === 1 ? 'mes' : 'meses';
 
-  return [{
+  termsById.set('WARRANTY_TIME', {
     id: 'WARRANTY_TIME',
     value_name: `${warrantyMonths} ${warrantyUnit}`
-  }];
+  });
+
+  return Array.from(termsById.values());
 }
 
 class MercadoLibreAdapter extends BaseAdapter {
@@ -422,6 +486,44 @@ class MercadoLibreAdapter extends BaseAdapter {
     }
 
     return processed;
+  }
+
+  enrichMercadoLibreParentAttributes(rawAttributes = [], productData = {}, categoryAttributes = []) {
+    const attributes = Array.isArray(rawAttributes)
+      ? rawAttributes.filter(Boolean).map((attr) => ({ ...attr }))
+      : [];
+    const byId = new Set(attributes.map((attr) => String(attr?.id || '').trim()).filter(Boolean));
+    const categoryIds = new Set(
+      (Array.isArray(categoryAttributes) ? categoryAttributes : [])
+        .map((attr) => String(attr?.id || '').trim())
+        .filter(Boolean)
+    );
+
+    const addIfMissing = (id, value, extra = {}) => {
+      const normalizedId = String(id || '').trim();
+      if (!normalizedId || byId.has(normalizedId)) return;
+      if (categoryIds.size > 0 && !categoryIds.has(normalizedId)) return;
+      if (value === undefined || value === null || String(value).trim() === '') return;
+      attributes.push({
+        id: normalizedId,
+        value_name: String(value).trim(),
+        ...extra
+      });
+      byId.add(normalizedId);
+    };
+
+    addIfMissing('BRAND', productData.brand);
+    addIfMissing('MODEL', productData.model);
+    addIfMissing('GTIN', productData.gtin || productData.ean || productData.upc);
+    addIfMissing('SELLER_SKU', productData.sku);
+
+    addIfMissing('PACKAGE_HEIGHT', productData.height_cm, { unit: 'cm' });
+    addIfMissing('PACKAGE_WIDTH', productData.width_cm, { unit: 'cm' });
+    addIfMissing('PACKAGE_LENGTH', productData.length_cm, { unit: 'cm' });
+    addIfMissing('PACKAGE_WEIGHT', productData.weight_grams, { unit: 'g' });
+    addIfMissing('SELLER_PACKAGE_WEIGHT', productData.weight_grams, { unit: 'g' });
+
+    return attributes;
   }
 
   logPublishPayloadMarker({ label, model, sku = null, itemId = null, payload }) {
@@ -1731,6 +1833,8 @@ class MercadoLibreAdapter extends BaseAdapter {
       return { __blocked_error: commercialFields.__blocked_error };
     }
 
+    const saleTerms = buildWarrantySaleTerms(transformedProduct);
+
     return {
       site_id: this.getSiteId(),
       category_id: transformedProduct.category_id,
@@ -1742,7 +1846,7 @@ class MercadoLibreAdapter extends BaseAdapter {
       listing_type_id: listingTypeId,
       condition: commercialFields.condition,
       shipping: transformedProduct.shipping ? { ...transformedProduct.shipping } : undefined,
-      sale_terms: Array.isArray(transformedProduct.sale_terms) ? [...transformedProduct.sale_terms] : undefined,
+      sale_terms: saleTerms.length > 0 ? saleTerms : undefined,
       pictures,
       attributes,
       catalog_product_id: transformedProduct.catalog_product_id || undefined
@@ -2149,7 +2253,11 @@ class MercadoLibreAdapter extends BaseAdapter {
       logger.info(`[ML Adapter] 📦 Producto simple → title: "${prepared.title}"`);
     }
 
-    const rawAttributes = Array.isArray(mlData.attributes) ? [...mlData.attributes] : [];
+    const rawAttributes = this.enrichMercadoLibreParentAttributes(
+      Array.isArray(mlData.attributes) ? mlData.attributes : [],
+      productData,
+      categoryInfo.attributes
+    );
     prepared.attributes = this.buildMercadoLibreAttributes(rawAttributes, categoryInfo.attributes);
     prepared.__ml_marketplace_attributes = rawAttributes;
 
@@ -2936,16 +3044,9 @@ class MercadoLibreAdapter extends BaseAdapter {
         productToPublish.attributes = transformedProduct.attributes;
       }
 
-      if (Array.isArray(transformedProduct.sale_terms) && transformedProduct.sale_terms.length > 0) {
+      const saleTermsToSend = buildWarrantySaleTerms(transformedProduct);
+      if (saleTermsToSend.length > 0) {
         const allowedSaleTermIds = new Set(Array.isArray(categoryInfo?.sale_term_ids) ? categoryInfo.sale_term_ids : []);
-
-        const warrantySaleTerms = buildWarrantySaleTerms(transformedProduct);
-        const saleTermsToSend = warrantySaleTerms.length > 0
-          ? [
-              ...transformedProduct.sale_terms.filter(st => st?.id !== 'WARRANTY_TIME'),
-              ...warrantySaleTerms
-            ]
-          : transformedProduct.sale_terms;
 
         const filteredSaleTerms = allowedSaleTermIds.size > 0
           ? saleTermsToSend.filter(st => st?.id && allowedSaleTermIds.has(st.id))
