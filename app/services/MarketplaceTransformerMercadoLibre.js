@@ -67,6 +67,10 @@ class MarketplaceTransformerMercadoLibre {
       if (product.shipping_mode) transformed.shipping_mode = product.shipping_mode;
       if (product.logistic_type) transformed.logistic_type = product.logistic_type;
       if (product.seller_custom_field) transformed.seller_custom_field = product.seller_custom_field;
+      if (Array.isArray(product.__ml_source_variants)) transformed.__ml_source_variants = product.__ml_source_variants;
+      if (Array.isArray(product.__ml_marketplace_attributes)) transformed.__ml_marketplace_attributes = product.__ml_marketplace_attributes;
+      if (product.__ml_variation_build_failed !== undefined) transformed.__ml_variation_build_failed = product.__ml_variation_build_failed;
+      if (product.__ml_variation_build_reason !== undefined) transformed.__ml_variation_build_reason = product.__ml_variation_build_reason;
 
       // Mappings adicionales
       for (const mapping of exportMappings) {

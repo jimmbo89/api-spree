@@ -62,6 +62,18 @@ function createMercadoLibreError({
   };
 }
 
+function parseJsonObject(value) {
+  if (!value) return {};
+  if (typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value !== 'string') return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (error) {
+    return {};
+  }
+}
+
 function normalizeMercadoLibreSaleTerms(saleTerms) {
   if (!Array.isArray(saleTerms)) return [];
   return saleTerms
@@ -363,16 +375,17 @@ class MercadoLibreAdapter extends BaseAdapter {
             this.normalizeForComparison(rawValueName)
           )
         : null;
+      const idLooksLikeText = rawValueId && /[a-zA-Z]/.test(rawValueId);
 
       const processedBrand = { id: attr.id };
-      const resolvedValueId = matchById?.id || matchByName?.id || rawValueId || null;
-      const resolvedValueName = matchById?.name || matchByName?.name || rawValueName || null;
+      const resolvedValueId = matchById?.id || matchByName?.id || (!idLooksLikeText ? rawValueId : null) || null;
+      const resolvedValueName = matchById?.name || matchByName?.name || rawValueName || (idLooksLikeText ? rawValueId : null);
 
       if (resolvedValueId) {
         processedBrand.value_id = String(resolvedValueId).trim();
       }
 
-      if (resolvedValueName && (allowCustomValue || processedBrand.value_id)) {
+      if (resolvedValueName && (allowCustomValue || processedBrand.value_id || idLooksLikeText)) {
         processedBrand.value_name = String(resolvedValueName).trim();
       }
 
@@ -511,12 +524,13 @@ class MercadoLibreAdapter extends BaseAdapter {
     const catalogDomain = categoryInfo.category?.settings?.catalog_domain || categoryInfo.settings?.catalog_domain;
     const isCatalogProduct = !!catalogDomain && catalogDomain !== "MLC-UNCLASSIFIED_PRODUCTS";
     const hasVariationAttributes = categoryInfo.hasVariationAttributes;
+    const currencyId = this.resolveCurrencyIdForPublish(productData, categoryInfo);
 
     // ✅ PASO 3: Construir producto base
     const prepared = {
       category_id: mlData.category.category_id,
       price: Number(productData.price) || 0,
-      currency_id: productData.currency_id || productData.currency || null,
+      currency_id: currencyId,
       available_quantity: Number(productData.totalStock) || 0,
       buying_mode: null,
       // Tipo por defecto soportado oficialmente.
@@ -526,6 +540,9 @@ class MercadoLibreAdapter extends BaseAdapter {
       sale_terms: [],
       attributes: [],
       pictures: productData.images || [],
+      description: {
+        plain_text: productData.description?.trim() || ''
+      },
       category_settings: categoryInfo.category || categoryInfo.settings || {},
       __ml_has_variation_attributes: hasVariationAttributes,
       __ml_is_catalog_product: isCatalogProduct
@@ -778,6 +795,32 @@ class MercadoLibreAdapter extends BaseAdapter {
     return null;
   }
 
+  getMarketplaceConfig() {
+    return parseJsonObject(this.credential?.marketplace?.config || this.marketplace?.config);
+  }
+
+  resolveCurrencyIdForPublish(productData, categoryInfo = null) {
+    const candidates = [
+      productData?.currency_id,
+      productData?.currency,
+      this.getMarketplaceConfig().currency_id,
+      this.credential?.marketplace?.currency_id,
+      this.credential?.currency_id
+    ]
+      .map((value) => String(value || '').trim().toUpperCase())
+      .filter(Boolean);
+
+    const allowedCurrencies = Array.isArray(categoryInfo?.category?.settings?.currencies)
+      ? categoryInfo.category.settings.currencies.map((value) => String(value || '').trim().toUpperCase()).filter(Boolean)
+      : [];
+
+    const resolved = candidates.find((candidate) =>
+      allowedCurrencies.length === 0 || allowedCurrencies.includes(candidate)
+    );
+
+    return resolved || null;
+  }
+
   resolveListingTypeForPublish({ strategy, requestedListingTypeId, availableTypeIds }) {
     const requested = normalizeListingTypeId(requestedListingTypeId);
     const available = Array.isArray(availableTypeIds) ? availableTypeIds : [];
@@ -1023,13 +1066,19 @@ class MercadoLibreAdapter extends BaseAdapter {
   }
 
   // 🔑 MÉTODO AUXILIAR: Construir variaciones
-  buildValidMercadoLibreVariations(variants, categoryAttributes, basePrice = null, fallbackPictures = []) {
+  buildValidMercadoLibreVariations(variants, categoryAttributes, basePrice = null, fallbackPictures = [], marketplaceAttributes = []) {
     if (!Array.isArray(variants) || variants.length === 0) return null;
 
     const categoryAttrs = Array.isArray(categoryAttributes) ? categoryAttributes : [];
+    const categoryAttrsById = new Map(categoryAttrs.map((attr) => [attr.id, attr]));
     const variationAttrs = categoryAttrs.filter((a) => a.tags?.allow_variations === true);
     const variationValueAttrs = categoryAttrs.filter(
       (a) => a.tags?.variation_attribute === true && a.tags?.allow_variations !== true
+    );
+    const marketplaceCombinationSources = this.extractMarketplaceAttributeSources(
+      marketplaceAttributes,
+      categoryAttrsById,
+      variationAttrs
     );
 
     if (variationAttrs.length === 0) return null;
@@ -1040,6 +1089,7 @@ class MercadoLibreAdapter extends BaseAdapter {
     for (const variant of variants.filter(v => v.publish)) {
       const combinations = [];
       const variantSources = this.extractVariantAttributeSources(variant);
+      const combinationSources = [...variantSources, ...marketplaceCombinationSources];
       const variationPictures = this.normalizeMercadoLibreVariationPictures(
         this.getVariantPictures(variant, fallbackPictures)
       );
@@ -1052,14 +1102,14 @@ class MercadoLibreAdapter extends BaseAdapter {
           : Number(variant.price));
 
       for (const mlAttr of variationAttrs) {
-        let match = variantSources.find(
+        let match = combinationSources.find(
           ({ key }) =>
             this.matchesFlexibleText(key, mlAttr.name) ||
             this.matchesFlexibleText(key, mlAttr.id)
         );
 
-        if (!match && variationAttrs.length === 1 && variantSources.length > 0) {
-          const fallbackMatch = variantSources.find(({ value }) =>
+        if (!match && variationAttrs.length === 1 && combinationSources.length > 0) {
+          const fallbackMatch = combinationSources.find(({ value }) =>
             this.matchesFlexibleText(value, mlAttr.name) || this.matchesFlexibleText(value, mlAttr.id)
           );
           if (fallbackMatch) {
@@ -1211,6 +1261,35 @@ class MercadoLibreAdapter extends BaseAdapter {
 
     if (typeof variant?.variant_label === 'string' && variant.variant_label.trim()) {
       sources.push({ key: '__variant_label__', value: variant.variant_label.trim() });
+    }
+
+    return sources;
+  }
+
+  extractMarketplaceAttributeSources(attributes, categoryAttrsById, allowedAttributes = []) {
+    if (!Array.isArray(attributes) || attributes.length === 0) return [];
+
+    const allowedIds = new Set((Array.isArray(allowedAttributes) ? allowedAttributes : []).map((attr) => attr.id));
+    const sources = [];
+
+    for (const attr of attributes) {
+      if (!attr?.id || (allowedIds.size > 0 && !allowedIds.has(attr.id))) continue;
+
+      const attrMeta = categoryAttrsById instanceof Map ? categoryAttrsById.get(attr.id) : null;
+      const valueId = attr.value_id !== undefined && attr.value_id !== null ? String(attr.value_id).trim() : '';
+      const valueName = attr.value_name !== undefined && attr.value_name !== null ? String(attr.value_name).trim() : '';
+      const value = attr.value !== undefined && attr.value !== null ? String(attr.value).trim() : '';
+      const matchedValue = valueId && Array.isArray(attrMeta?.values)
+        ? attrMeta.values.find((option) => String(option?.id || '').trim() === valueId)
+        : null;
+      const resolvedValue = String(matchedValue?.name || valueName || value || valueId || '').trim();
+
+      if (!resolvedValue) continue;
+
+      sources.push({ key: attr.id, value: resolvedValue });
+      if (attrMeta?.name) {
+        sources.push({ key: attrMeta.name, value: resolvedValue });
+      }
     }
 
     return sources;
@@ -1875,11 +1954,12 @@ class MercadoLibreAdapter extends BaseAdapter {
     const catalogDomain = categoryInfo.category?.settings?.catalog_domain || categoryInfo.settings?.catalog_domain;
     const isCatalogProduct = !!catalogDomain && catalogDomain !== 'MLC-UNCLASSIFIED_PRODUCTS';
     const hasVariationAttributes = categoryInfo.hasVariationAttributes;
+    const currencyId = this.resolveCurrencyIdForPublish(productData, categoryInfo);
 
     const prepared = {
       category_id: mlData.category.category_id,
       price: Number(productData.price) || 0,
-      currency_id: productData.currency_id || productData.currency || null,
+      currency_id: currencyId,
       available_quantity: Number(
         productData.totalPublishingStock ??
         productData.stock ??
@@ -1893,6 +1973,9 @@ class MercadoLibreAdapter extends BaseAdapter {
       sale_terms: [],
       attributes: [],
       pictures: productData.images || [],
+      description: {
+        plain_text: productData.description?.trim() || ''
+      },
       category_settings: categoryInfo.category || categoryInfo.settings || {},
       __ml_has_variation_attributes: hasVariationAttributes,
       __ml_is_catalog_product: isCatalogProduct
@@ -1907,7 +1990,7 @@ class MercadoLibreAdapter extends BaseAdapter {
           itemModel: 'classic',
           categoryId: mlData.category.category_id,
           field: 'currency_id',
-          receivedValue: productData.currency_id || productData.currency || null,
+          receivedValue: productData.currency_id || productData.currency || this.getMarketplaceConfig().currency_id || null,
           code: 'missing_currency_id',
           message: 'No se pudo determinar currency_id para preparar la publicación',
           metadataSource: 'product payload + category metadata'
@@ -1976,6 +2059,7 @@ class MercadoLibreAdapter extends BaseAdapter {
 
     const rawAttributes = Array.isArray(mlData.attributes) ? [...mlData.attributes] : [];
     prepared.attributes = this.buildMercadoLibreAttributes(rawAttributes, categoryInfo.attributes);
+    prepared.__ml_marketplace_attributes = rawAttributes;
 
     const warrantySaleTerms = buildWarrantySaleTerms(productData);
     if (warrantySaleTerms.length > 0) {
@@ -1984,6 +2068,7 @@ class MercadoLibreAdapter extends BaseAdapter {
     }
 
     const publishableVariants = (productData.variants || []).filter(v => v.publish && v.price > 0);
+    prepared.__ml_source_variants = publishableVariants;
     const hasMultipleVariants = publishableVariants.length > 1;
     const hasSingleVariant = publishableVariants.length === 1;
 
@@ -1997,7 +2082,8 @@ class MercadoLibreAdapter extends BaseAdapter {
         publishableVariants,
         categoryInfo.attributes,
         prepared.price,
-        prepared.pictures
+        prepared.pictures,
+        rawAttributes
       );
 
       if (variations && variations.length >= 2) {
@@ -2795,9 +2881,17 @@ class MercadoLibreAdapter extends BaseAdapter {
         : typeof transformedProduct.description === 'string'
           ? transformedProduct.description.trim()
           : '';
+      const sourcePublishableVariants = Array.isArray(transformedProduct.__ml_source_variants)
+        ? transformedProduct.__ml_source_variants.filter((variant) => variant && variant.publish && Number(variant.price) > 0)
+        : [];
+      const marketplaceAttributesForVariations = Array.isArray(transformedProduct.__ml_marketplace_attributes)
+        ? transformedProduct.__ml_marketplace_attributes
+        : transformedProduct.attributes;
 
       if (useUserProductsModel) {
-        const publishableVariants = hasVariations
+        const publishableVariants = sourcePublishableVariants.length > 0
+          ? sourcePublishableVariants
+          : hasVariations
           ? transformedProduct.variations.filter((variant) => variant && variant.publish && Number(variant.price) > 0)
           : [null];
 
@@ -2913,16 +3007,19 @@ class MercadoLibreAdapter extends BaseAdapter {
       }
 
       if (hasVariations) {
-        const publishableVariants = transformedProduct.variations.filter(
-          (variant) => variant && variant.publish && Number(variant.price) > 0
-        );
+        const publishableVariants = sourcePublishableVariants.length > 0
+          ? sourcePublishableVariants
+          : transformedProduct.variations.filter(
+            (variant) => variant && variant.publish && Number(variant.price) > 0
+          );
 
         if (publishableVariants.length > 1) {
           const builtVariations = this.buildValidMercadoLibreVariations(
             publishableVariants,
             categoryInfo.attributes,
             productToPublish.price,
-            productToPublish.pictures
+            productToPublish.pictures,
+            marketplaceAttributesForVariations
           );
 
           if (!builtVariations || builtVariations.length < 2) {
@@ -3495,6 +3592,9 @@ class MercadoLibreAdapter extends BaseAdapter {
 }
 
   getSiteId() {
+    const configuredSiteId = String(this.getMarketplaceConfig().site_id || '').trim().toUpperCase();
+    if (configuredSiteId) return configuredSiteId;
+
     const siteMap = {
       "mercadolibre.cl": "MLC",
       "mercadolibre.com.ar": "MLA",
@@ -3505,6 +3605,11 @@ class MercadoLibreAdapter extends BaseAdapter {
     if (this.marketplace?.domain) {
       for (const [domain, siteId] of Object.entries(siteMap)) {
         if (this.marketplace.domain.includes(domain)) return siteId;
+      }
+    }
+    if (this.credential?.marketplace?.domain) {
+      for (const [domain, siteId] of Object.entries(siteMap)) {
+        if (this.credential.marketplace.domain.includes(domain)) return siteId;
       }
     }
     return null;

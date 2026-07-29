@@ -548,6 +548,32 @@ class PublishingService {
     try {
       // === 1. Preparar producto ===
       const preparedProduct = await adapter.prepareProduct(productData);
+      if (preparedProduct && preparedProduct.success === false) {
+        logger.error(`[PublishingService] Preparación fallida: ${preparedProduct.error || 'prepare_failed'}`);
+        const failedTask = await ProductPublishingTaskRepository.create({
+          product_id: productData.id,
+          marketplace_id: marketplace.marketplace_id,
+          credential_id: credentialId,
+          warehouse_id: warehouse.id,
+          company_id: warehouse.company_id || null,
+          branch_id: warehouse.branch_id || null,
+          user_id: userId,
+          date: new Date(),
+          status: 'failed',
+          payload: productData ? JSON.parse(JSON.stringify(productData)) : null,
+          error_message: preparedProduct.details?.message || preparedProduct.message || preparedProduct.error || 'Preparación fallida',
+          error_details: preparedProduct.details || { error_code: preparedProduct.error || 'prepare_failed' },
+          batch_id: batch_id || null,
+          attempt_count: 1
+        });
+        return {
+          success: false,
+          error: preparedProduct.error || 'prepare_failed',
+          details: preparedProduct.details || null,
+          product_id: productData.id,
+          task_id: failedTask.id
+        };
+      }
 
       // === 2. Transformar ===
       let transformer = MarketplaceTransformer;
