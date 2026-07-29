@@ -453,13 +453,8 @@ class MercadoLibreAdapter extends BaseAdapter {
     return attributes
       .filter(attr => attr && attr.id && (attr.value_name || attr.value_id || attr.value !== undefined || attr.unit || attr.value_struct))
       .filter(attr => {
-        const attrMeta = categoryAttributesMap.get(attr.id);
-        const isReadOnly = attrMeta?.tags?.read_only === true;
-        const isHidden = attrMeta?.tags?.hidden === true;
-        const isItemCondition = attr.id === 'ITEM_CONDITION';
-
-        if (isReadOnly || isHidden || isItemCondition) {
-          logger.warn(`[ML Adapter] ⚠️ Atributo ${attr.id} filtrado (read_only/hidden/ITEM_CONDITION)`);
+        if (attr.id === 'ITEM_CONDITION') {
+          logger.warn(`[ML Adapter] ⚠️ Atributo ${attr.id} filtrado (ITEM_CONDITION viaja como condition)`);
           return false;
         }
         return true;
@@ -1308,9 +1303,9 @@ class MercadoLibreAdapter extends BaseAdapter {
 
       if (!resolvedValue) continue;
 
-      sources.push({ key: attr.id, value: resolvedValue });
+      sources.push({ key: attr.id, value: resolvedValue, source: 'marketplace', attributeId: attr.id });
       if (attrMeta?.name) {
-        sources.push({ key: attrMeta.name, value: resolvedValue });
+        sources.push({ key: attrMeta.name, value: resolvedValue, source: 'marketplace', attributeId: attr.id });
       }
     }
 
@@ -1456,28 +1451,60 @@ class MercadoLibreAdapter extends BaseAdapter {
     }
 
     const variationAttrs = (Array.isArray(categoryAttributes) ? categoryAttributes : []).filter(
-      (attr) =>
-        !isMercadoLibreHiddenOrReadOnlyAttribute(attr) &&
-        (attr?.tags?.allow_variations === true || attr?.tags?.variation_attribute === true)
+      (attr) => attr?.tags?.allow_variations === true || attr?.tags?.variation_attribute === true
     );
 
-    const variantSources = this.extractVariantAttributeSources(variant);
+    const variantSources = this.extractVariantAttributeSources(variant)
+      .map((source) => ({ ...source, source: 'variant' }));
     const marketplaceSources = this.extractMarketplaceAttributeSources(
       marketplaceAttributes,
       new Map((Array.isArray(categoryAttributes) ? categoryAttributes : []).map((attr) => [attr.id, attr])),
       variationAttrs
     );
     const variationSources = [...variantSources, ...marketplaceSources];
+    const hasExplicitMarketplaceAttribute = (attributeId) =>
+      Array.isArray(marketplaceAttributes) &&
+      marketplaceAttributes.some((attr) => String(attr?.id || '').trim() === String(attributeId || '').trim());
+    const hasExplicitVariantAttribute = (attributeId) => {
+      if (!variant || !variant.attributes) return false;
+      if (Array.isArray(variant.attributes)) {
+        return variant.attributes.some((attr) => String(attr?.id || '').trim() === String(attributeId || '').trim());
+      }
+      if (typeof variant.attributes === 'object') {
+        return Object.prototype.hasOwnProperty.call(variant.attributes, attributeId);
+      }
+      return false;
+    };
 
     for (const mlAttr of variationAttrs) {
-      const match = variationSources.find(({ key, value }) =>
-        this.matchesFlexibleText(key, mlAttr.name) ||
-        this.matchesFlexibleText(key, mlAttr.id) ||
-        this.matchesFlexibleText(value, mlAttr.name) ||
-        this.matchesFlexibleText(value, mlAttr.id)
-      );
+      if (
+        mlAttr?.id === 'EMPTY_GTIN_REASON' &&
+        !hasExplicitMarketplaceAttribute(mlAttr.id) &&
+        !hasExplicitVariantAttribute(mlAttr.id)
+      ) {
+        continue;
+      }
+
+      const match = variationSources.find(({ key, value, source, attributeId }) => {
+        const directMatch =
+          String(attributeId || '').trim() === String(mlAttr.id || '').trim() ||
+          this.matchesFlexibleText(key, mlAttr.name) ||
+          this.matchesFlexibleText(key, mlAttr.id);
+
+        if (directMatch) return true;
+
+        // Marketplace attributes from the front are category-approved facts.
+        // Do not use their values to infer unrelated ML attributes.
+        if (source === 'marketplace') return false;
+
+        return (
+          this.matchesFlexibleText(value, mlAttr.name) ||
+          this.matchesFlexibleText(value, mlAttr.id)
+        );
+      });
 
       if (!match) continue;
+      if (match.source === 'marketplace' && byId.has(String(mlAttr.id))) continue;
 
       const valueMatch = Array.isArray(mlAttr.values)
         ? mlAttr.values.find((option) =>
@@ -1498,13 +1525,6 @@ class MercadoLibreAdapter extends BaseAdapter {
       }
 
       byId.set(String(normalizedAttr.id), normalizedAttr);
-    }
-
-    for (const attr of Array.from(byId.values())) {
-      const attrMeta = (Array.isArray(categoryAttributes) ? categoryAttributes : []).find((meta) => meta?.id === attr?.id);
-      if (attrMeta && isMercadoLibreHiddenOrReadOnlyAttribute(attrMeta) && attr?.id !== 'SELLER_SKU') {
-        byId.delete(String(attr.id));
-      }
     }
 
     if (variant?.sku) {
@@ -1554,10 +1574,9 @@ class MercadoLibreAdapter extends BaseAdapter {
 
   validateMercadoLibreUserProductVariant(transformedProduct, variant, categoryInfo, resolvedAttributes = []) {
     const categoryAttributes = Array.isArray(categoryInfo?.attributes) ? categoryInfo.attributes : [];
-    const writableCategoryAttributes = categoryAttributes.filter((attr) => !isMercadoLibreHiddenOrReadOnlyAttribute(attr));
-    const requiredAttributes = writableCategoryAttributes.filter((attr) => attr?.required === true);
-    const childPkAttributes = writableCategoryAttributes.filter((attr) => isMercadoLibreChildPkAttribute(attr));
-    const parentPkAttributes = writableCategoryAttributes.filter((attr) => isMercadoLibreParentPkAttribute(attr));
+    const requiredAttributes = categoryAttributes.filter((attr) => attr?.required === true);
+    const childPkAttributes = categoryAttributes.filter((attr) => isMercadoLibreChildPkAttribute(attr));
+    const parentPkAttributes = categoryAttributes.filter((attr) => isMercadoLibreParentPkAttribute(attr));
     const resolveValue = (attr) =>
       this.resolveMercadoLibreAttributeValueFromVariant(variant, attr) ||
       this.resolveMercadoLibreAttributeValueFromAttributes(resolvedAttributes, attr);
@@ -1929,10 +1948,15 @@ class MercadoLibreAdapter extends BaseAdapter {
         }
       );
 
+      const causes = Array.isArray(response.data?.cause) ? response.data.cause : [];
+      const blockingCauses = causes.filter((cause) => String(cause?.type || '').toLowerCase() === 'error');
+      const warningCauses = causes.filter((cause) => String(cause?.type || '').toLowerCase() === 'warning');
       const validation = {
         status: response.status,
         data: response.data || null,
-        valid: response.status >= 200 && response.status < 300
+        valid: (response.status >= 200 && response.status < 300) || (causes.length > 0 && blockingCauses.length === 0),
+        warnings: warningCauses,
+        errors: blockingCauses
       };
 
       logger.info('[MercadoLibreAdapter] Resultado de validación ML:', validation);
@@ -2970,7 +2994,7 @@ class MercadoLibreAdapter extends BaseAdapter {
           .trim();
         const createdItems = [];
         const parentPkAttributes = Array.isArray(categoryInfo?.attributes)
-          ? categoryInfo.attributes.filter((attr) => !isMercadoLibreHiddenOrReadOnlyAttribute(attr) && isMercadoLibreParentPkAttribute(attr))
+          ? categoryInfo.attributes.filter((attr) => isMercadoLibreParentPkAttribute(attr))
           : [];
 
         if (publishableVariants.length > 1 && parentPkAttributes.length > 0) {
@@ -3011,6 +3035,8 @@ class MercadoLibreAdapter extends BaseAdapter {
           }
         }
 
+        const validatedUserProductPayloads = [];
+
         for (const variant of publishableVariants) {
           const userProductPayload = this.buildMercadoLibreUserProductItemPayload(
             {
@@ -3042,17 +3068,26 @@ class MercadoLibreAdapter extends BaseAdapter {
             };
           }
 
+          validatedUserProductPayloads.push({
+            variant,
+            sku: variant?.sku || transformedProduct.sku || null,
+            payload: userProductPayload,
+            validation: validationResult.validation
+          });
+        }
+
+        for (const validatedPayload of validatedUserProductPayloads) {
           this.logPublishPayloadMarker({
             label: 'create',
             model: 'user_products',
-            sku: variant?.sku || transformedProduct.sku || null,
+            sku: validatedPayload.sku,
             itemId: null,
-            payload: userProductPayload
+            payload: validatedPayload.payload
           });
 
           const response = await axios.post(
             "https://api.mercadolibre.com/items",
-            userProductPayload,
+            validatedPayload.payload,
             {
               headers: {
                 Authorization: `Bearer ${this.credential.access_token}`,
@@ -3070,8 +3105,8 @@ class MercadoLibreAdapter extends BaseAdapter {
           createdItems.push({
             id: response.data.id,
             data: response.data,
-            sku: variant?.sku || transformedProduct.sku || null,
-            validation: validationResult.validation
+            sku: validatedPayload.sku,
+            validation: validatedPayload.validation
           });
         }
 
