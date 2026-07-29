@@ -74,6 +74,20 @@ function parseJsonObject(value) {
   }
 }
 
+function isMercadoLibreParentPkAttribute(attr) {
+  const hierarchy = String(attr?.hierarchy || '').trim().toUpperCase();
+  return attr?.tags?.parent_pk === true || attr?.tags?.family === true || hierarchy === 'PARENT_PK' || hierarchy === 'FAMILY';
+}
+
+function isMercadoLibreChildPkAttribute(attr) {
+  const hierarchy = String(attr?.hierarchy || '').trim().toUpperCase();
+  return attr?.tags?.child_pk === true || hierarchy === 'CHILD_PK';
+}
+
+function isMercadoLibreHiddenOrReadOnlyAttribute(attr) {
+  return attr?.tags?.hidden === true || attr?.tags?.read_only === true || attr?.id === 'ITEM_CONDITION';
+}
+
 function normalizeMercadoLibreSaleTerms(saleTerms) {
   if (!Array.isArray(saleTerms)) return [];
   return saleTerms
@@ -476,10 +490,18 @@ class MercadoLibreAdapter extends BaseAdapter {
     const listingTypeOverride = normalizeListingTypeId(mlData?.listing_type_id || null);
     const shippingModeOverride = shippingEffective.shipping_mode
       || shippingRequested.shipping_mode
+      || mlData?.selection?.shipping_mode
+      || mlData?.category?.selection?.shipping_mode
+      || mlData?.quote?.selection?.shipping_mode
+      || mlData?.calculation_result?.selection?.shipping_mode
       || mlData?.shipping_mode
       || null;
     const logisticTypeOverride = shippingEffective.logistic_type
       || shippingRequested.logistic_type
+      || mlData?.selection?.logistic_type
+      || mlData?.category?.selection?.logistic_type
+      || mlData?.quote?.selection?.logistic_type
+      || mlData?.calculation_result?.selection?.logistic_type
       || mlData?.logistic_type
       || null;
     let strategy = normalizeStrategyForPublish(mlData?.strategy, mlData?.listing_type_id || null);
@@ -991,10 +1013,10 @@ class MercadoLibreAdapter extends BaseAdapter {
         (attr) => attr.tags?.allow_variations === true || attr.tags?.variation_attribute === true
       );
       const parentAttributes = attributes.filter(
-        (attr) => attr.tags?.family === true || attr.tags?.parent_pk === true
+        (attr) => isMercadoLibreParentPkAttribute(attr)
       );
       const childAttributes = attributes.filter(
-        (attr) => attr.tags?.child_pk === true
+        (attr) => isMercadoLibreChildPkAttribute(attr)
       );
 
       return {
@@ -1421,7 +1443,7 @@ class MercadoLibreAdapter extends BaseAdapter {
     }
   }
 
-  buildMercadoLibreUserProductAttributes(baseAttributes = [], variant = null, categoryAttributes = []) {
+  buildMercadoLibreUserProductAttributes(baseAttributes = [], variant = null, categoryAttributes = [], marketplaceAttributes = []) {
     const attributes = Array.isArray(baseAttributes)
       ? baseAttributes.map((attr) => ({ ...attr }))
       : [];
@@ -1434,13 +1456,21 @@ class MercadoLibreAdapter extends BaseAdapter {
     }
 
     const variationAttrs = (Array.isArray(categoryAttributes) ? categoryAttributes : []).filter(
-      (attr) => attr?.tags?.allow_variations === true || attr?.tags?.variation_attribute === true
+      (attr) =>
+        !isMercadoLibreHiddenOrReadOnlyAttribute(attr) &&
+        (attr?.tags?.allow_variations === true || attr?.tags?.variation_attribute === true)
     );
 
     const variantSources = this.extractVariantAttributeSources(variant);
+    const marketplaceSources = this.extractMarketplaceAttributeSources(
+      marketplaceAttributes,
+      new Map((Array.isArray(categoryAttributes) ? categoryAttributes : []).map((attr) => [attr.id, attr])),
+      variationAttrs
+    );
+    const variationSources = [...variantSources, ...marketplaceSources];
 
     for (const mlAttr of variationAttrs) {
-      const match = variantSources.find(({ key, value }) =>
+      const match = variationSources.find(({ key, value }) =>
         this.matchesFlexibleText(key, mlAttr.name) ||
         this.matchesFlexibleText(key, mlAttr.id) ||
         this.matchesFlexibleText(value, mlAttr.name) ||
@@ -1470,6 +1500,13 @@ class MercadoLibreAdapter extends BaseAdapter {
       byId.set(String(normalizedAttr.id), normalizedAttr);
     }
 
+    for (const attr of Array.from(byId.values())) {
+      const attrMeta = (Array.isArray(categoryAttributes) ? categoryAttributes : []).find((meta) => meta?.id === attr?.id);
+      if (attrMeta && isMercadoLibreHiddenOrReadOnlyAttribute(attrMeta) && attr?.id !== 'SELLER_SKU') {
+        byId.delete(String(attr.id));
+      }
+    }
+
     if (variant?.sku) {
       byId.set('SELLER_SKU', {
         id: 'SELLER_SKU',
@@ -1497,14 +1534,36 @@ class MercadoLibreAdapter extends BaseAdapter {
     return null;
   }
 
-  validateMercadoLibreUserProductVariant(transformedProduct, variant, categoryInfo) {
+  resolveMercadoLibreAttributeValueFromAttributes(attributes, mlAttr) {
+    const sourceAttributes = Array.isArray(attributes) ? attributes : [];
+    const match = sourceAttributes.find((attr) =>
+      attr?.id &&
+      (
+        String(attr.id).trim() === String(mlAttr?.id || '').trim() ||
+        this.matchesFlexibleText(attr.id, mlAttr?.id) ||
+        this.matchesFlexibleText(attr.id, mlAttr?.name)
+      )
+    );
+
+    if (!match) return null;
+    const value = match.value_name ?? match.value ?? match.value_id;
+    return value !== undefined && value !== null && String(value).trim()
+      ? String(value).trim()
+      : null;
+  }
+
+  validateMercadoLibreUserProductVariant(transformedProduct, variant, categoryInfo, resolvedAttributes = []) {
     const categoryAttributes = Array.isArray(categoryInfo?.attributes) ? categoryInfo.attributes : [];
-    const requiredAttributes = categoryAttributes.filter((attr) => attr?.required === true);
-    const childPkAttributes = categoryAttributes.filter((attr) => attr?.tags?.child_pk === true);
-    const parentPkAttributes = categoryAttributes.filter((attr) => attr?.tags?.parent_pk === true || attr?.tags?.family === true);
+    const writableCategoryAttributes = categoryAttributes.filter((attr) => !isMercadoLibreHiddenOrReadOnlyAttribute(attr));
+    const requiredAttributes = writableCategoryAttributes.filter((attr) => attr?.required === true);
+    const childPkAttributes = writableCategoryAttributes.filter((attr) => isMercadoLibreChildPkAttribute(attr));
+    const parentPkAttributes = writableCategoryAttributes.filter((attr) => isMercadoLibreParentPkAttribute(attr));
+    const resolveValue = (attr) =>
+      this.resolveMercadoLibreAttributeValueFromVariant(variant, attr) ||
+      this.resolveMercadoLibreAttributeValueFromAttributes(resolvedAttributes, attr);
 
     const missingChildPk = childPkAttributes
-      .filter((attr) => !this.resolveMercadoLibreAttributeValueFromVariant(variant, attr))
+      .filter((attr) => !resolveValue(attr))
       .map((attr) => attr.id);
     if (missingChildPk.length > 0) {
       return createMercadoLibreError({
@@ -1521,7 +1580,7 @@ class MercadoLibreAdapter extends BaseAdapter {
     }
 
     const missingRequired = requiredAttributes
-      .filter((attr) => !this.resolveMercadoLibreAttributeValueFromVariant(variant, attr))
+      .filter((attr) => !resolveValue(attr))
       .map((attr) => attr.id);
 
     if (missingRequired.length > 0) {
@@ -1540,7 +1599,7 @@ class MercadoLibreAdapter extends BaseAdapter {
 
     if (parentPkAttributes.length > 0) {
       const parentSignature = parentPkAttributes
-        .map((attr) => this.resolveMercadoLibreAttributeValueFromVariant(variant, attr) || '')
+        .map((attr) => resolveValue(attr) || '')
         .join('|');
 
       if (!parentSignature.replace(/\|/g, '').trim()) {
@@ -1582,7 +1641,9 @@ class MercadoLibreAdapter extends BaseAdapter {
         })
       };
     }
-    const pictures = this.normalizeMercadoLibreVariationPictures(variant?.pictures || variant?.images || variant?.picture_ids || []);
+    const pictures = this.normalizeMercadoLibreVariationPictures(
+      variant?.pictures || variant?.images || variant?.picture_ids || transformedProduct.pictures || []
+    );
     const availableQuantity = Math.max(0, Math.round(
       Number(
         variant?.publishStock ??
@@ -1598,10 +1659,11 @@ class MercadoLibreAdapter extends BaseAdapter {
     const attributes = this.buildMercadoLibreUserProductAttributes(
       transformedProduct.attributes,
       variant,
-      categoryInfo?.attributes || []
+      categoryInfo?.attributes || [],
+      transformedProduct.__ml_marketplace_attributes || []
     );
 
-    const validationError = this.validateMercadoLibreUserProductVariant(transformedProduct, variant, categoryInfo);
+    const validationError = this.validateMercadoLibreUserProductVariant(transformedProduct, variant, categoryInfo, attributes);
     if (validationError) {
       return { __blocked_error: validationError };
     }
@@ -1925,10 +1987,18 @@ class MercadoLibreAdapter extends BaseAdapter {
     const listingTypeOverride = normalizeListingTypeId(mlData?.listing_type_id || null);
     const shippingModeOverride = shippingEffective.shipping_mode
       || shippingRequested.shipping_mode
+      || mlData?.selection?.shipping_mode
+      || mlData?.category?.selection?.shipping_mode
+      || mlData?.quote?.selection?.shipping_mode
+      || mlData?.calculation_result?.selection?.shipping_mode
       || mlData?.shipping_mode
       || null;
     const logisticTypeOverride = shippingEffective.logistic_type
       || shippingRequested.logistic_type
+      || mlData?.selection?.logistic_type
+      || mlData?.category?.selection?.logistic_type
+      || mlData?.quote?.selection?.logistic_type
+      || mlData?.calculation_result?.selection?.logistic_type
       || mlData?.logistic_type
       || null;
     let strategy = normalizeStrategyForPublish(mlData?.strategy, mlData?.listing_type_id || null);
@@ -2900,15 +2970,25 @@ class MercadoLibreAdapter extends BaseAdapter {
           .trim();
         const createdItems = [];
         const parentPkAttributes = Array.isArray(categoryInfo?.attributes)
-          ? categoryInfo.attributes.filter((attr) => attr?.tags?.parent_pk === true || attr?.tags?.family === true)
+          ? categoryInfo.attributes.filter((attr) => !isMercadoLibreHiddenOrReadOnlyAttribute(attr) && isMercadoLibreParentPkAttribute(attr))
           : [];
 
         if (publishableVariants.length > 1 && parentPkAttributes.length > 0) {
-          const parentSignatures = publishableVariants.map((variant) =>
-            parentPkAttributes
-              .map((attr) => this.resolveMercadoLibreAttributeValueFromVariant(variant, attr) || '')
-              .join('|')
-          );
+          const parentSignatures = publishableVariants.map((variant) => {
+            const resolvedAttributes = this.buildMercadoLibreUserProductAttributes(
+              transformedProduct.attributes,
+              variant,
+              categoryInfo?.attributes || [],
+              transformedProduct.__ml_marketplace_attributes || []
+            );
+            return parentPkAttributes
+              .map((attr) =>
+                this.resolveMercadoLibreAttributeValueFromVariant(variant, attr) ||
+                this.resolveMercadoLibreAttributeValueFromAttributes(resolvedAttributes, attr) ||
+                ''
+              )
+              .join('|');
+          });
 
           const uniqueSignatures = new Set(parentSignatures.map((value) => value.trim()));
           uniqueSignatures.delete('');
