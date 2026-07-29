@@ -64,6 +64,7 @@ class MarketplaceTransformerMercadoLibre {
       if (product.currency_id) transformed.currency_id = product.currency_id;
       if (product.buying_mode) transformed.buying_mode = product.buying_mode;
       if (product.listing_type_id) transformed.listing_type_id = product.listing_type_id;
+      if (product.shipping && typeof product.shipping === 'object') transformed.shipping = { ...product.shipping };
       if (product.shipping_mode) transformed.shipping_mode = product.shipping_mode;
       if (product.logistic_type) transformed.logistic_type = product.logistic_type;
       if (product.seller_custom_field) transformed.seller_custom_field = product.seller_custom_field;
