@@ -71,6 +71,93 @@ function normalizeTaskDetails(details) {
   return parsed || {};
 }
 
+function normalizePublishedPayload(payload) {
+  if (!payload) return {};
+  if (typeof payload === 'object') return payload;
+  const parsed = parseMaybeJSON(payload);
+  return parsed || {};
+}
+
+function firstNonEmptyPublishedPayload(...payloads) {
+  for (const payload of payloads) {
+    const normalized = normalizePublishedPayload(payload);
+    if (normalized && typeof normalized === 'object' && Object.keys(normalized).length > 0) {
+      return normalized;
+    }
+  }
+  return null;
+}
+
+function extractFalabellaNumericState(payload) {
+  const normalized = normalizePublishedPayload(payload);
+  const businessUnit = Array.isArray(normalized?.BusinessUnits?.BusinessUnit)
+    ? normalized.BusinessUnits.BusinessUnit[0]
+    : normalized?.BusinessUnits?.BusinessUnit || {};
+
+  const parseNumber = (...values) => {
+    for (const value of values) {
+      if (value === undefined || value === null || value === '') continue;
+      const parsed = Number(value);
+      if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+    }
+    return null;
+  };
+
+  return {
+    stock: parseNumber(businessUnit.Stock, businessUnit.stock, normalized.Stock, normalized.stock),
+    price: parseNumber(businessUnit.Price, businessUnit.price, normalized.Price, normalized.price)
+  };
+}
+
+function buildFalabellaPersistedPayload(basePayload, incomingPayload, productStatus = {}, existingStock = null) {
+  const base = normalizePublishedPayload(basePayload);
+  const incoming = normalizePublishedPayload(incomingPayload);
+  const merged = {
+    ...base,
+    ...incoming
+  };
+  const numeric = extractFalabellaNumericState({ ...base, ...merged });
+  const pickNumber = (incomingValue, fallbackValue) => {
+    const parsedIncoming = Number(incomingValue);
+    const parsedFallback = Number(fallbackValue);
+    const hasIncoming = Number.isFinite(parsedIncoming) && parsedIncoming >= 0;
+    const hasFallback = Number.isFinite(parsedFallback) && parsedFallback >= 0;
+    if (!hasIncoming) return hasFallback ? parsedFallback : null;
+    if (parsedIncoming === 0 && hasFallback && parsedFallback > 0) return parsedFallback;
+    return parsedIncoming;
+  };
+
+  const stock = pickNumber(productStatus.stock, existingStock ?? numeric.stock);
+  const price = pickNumber(productStatus.price, numeric.price);
+  const businessUnits = merged.BusinessUnits && typeof merged.BusinessUnits === 'object'
+    ? { ...merged.BusinessUnits }
+    : {};
+  const businessUnit = Array.isArray(businessUnits.BusinessUnit)
+    ? { ...(businessUnits.BusinessUnit[0] || {}) }
+    : { ...(businessUnits.BusinessUnit || {}) };
+
+  if (stock !== null) {
+    businessUnit.Stock = stock;
+    merged.Stock = stock;
+    merged.stock = stock;
+  }
+  if (price !== null) {
+    businessUnit.Price = price;
+    merged.Price = price;
+    merged.price = price;
+  }
+  if (Object.keys(businessUnit).length > 0) {
+    businessUnits.BusinessUnit = Array.isArray(businessUnits.BusinessUnit) ? [businessUnit] : businessUnit;
+    merged.BusinessUnits = businessUnits;
+  }
+
+  return {
+    payload: merged,
+    stock,
+    price
+  };
+}
+
 function getTaskAgeMinutes(task, now = new Date()) {
   const referenceDate = new Date(task?.createdAt || task?.published_at || task?.updatedAt || now);
   if (Number.isNaN(referenceDate.getTime())) {
@@ -587,12 +674,19 @@ const FalabellaOrderReconciliationService = {
       external_url: productStatus.url || latestTask.external_url || null
     });
 
+    const persistedState = buildFalabellaPersistedPayload(
+      firstNonEmptyPublishedPayload(link?.published_payload, latestTask.payload, latestTask.api_response),
+      productStatus.raw || null,
+      productStatus,
+      link?.published_stock ?? null
+    );
+
     if (link) {
       await link.update({
         status: nextTaskStatus === 'published' ? 'active' : nextTaskStatus,
         external_url: productStatus.url || link.external_url,
-        published_stock: productStatus.stock ?? link.published_stock,
-        published_payload: productStatus.raw || link.published_payload,
+        published_stock: persistedState.stock,
+        published_payload: persistedState.payload,
         last_synced_at: now
       });
     } else if ((latestTask.company_id != null || latestTask.branch_id != null) && sellerSku) {
@@ -607,8 +701,8 @@ const FalabellaOrderReconciliationService = {
           status: nextTaskStatus === 'published' ? 'active' : nextTaskStatus,
           external_id: sellerSku,
           external_url: productStatus.url || null,
-          published_stock: productStatus.stock ?? null,
-          published_payload: productStatus.raw || null,
+          published_stock: persistedState.stock,
+          published_payload: persistedState.payload,
           last_synced_at: now
         });
         logger.info(

@@ -1705,67 +1705,7 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
     && feedStatusLower !== 'canceled'
     && failedRecords <= 0
   ) {
-    logger.info(`[FB Webhook] Feed ${feedId}: estado ${feedStatusLower} con ${processedRecords}/${totalRecords} procesados; se evalúa subida temprana de imágenes para ${sellerSku}`);
-
-    const taskImages = extractFalabellaTaskImages(
-      task,
-      { images: taskPayload?.images, images_with_version: taskPayload?.images_with_version },
-      sellerSku,
-      adapter
-    );
-    logger.info(`[FB Webhook] Feed ${feedId}: imágenes recuperadas para ${sellerSku}: ${taskImages.length}`);
-
-    let currentStatus = await fetchFalabellaProductStatusWithRetry(adapter, sellerSku, { attempts: 2, delayMs: 1500 });
-    let imageUploadResult = null;
-    const taskDetails = normalizeFalabellaDetailObject(task?.error_details);
-    const imageSyncAlreadySucceeded = Boolean(
-      taskDetails?.image_upload?.success === true ||
-      taskDetails?.image_sync?.success === true
-    );
-    const imageSyncInProgress = Boolean(taskDetails?.image_sync?.in_progress === true);
-
-    logger.info(`[FB Webhook] Feed ${feedId}: pre-check imágenes para ${sellerSku}: ${JSON.stringify({
-      task_status: task.status,
-      product_found: currentStatus?.found,
-      has_image: currentStatus?.has_image,
-      images_found: taskImages.length,
-      image_sync_already_succeeded: imageSyncAlreadySucceeded
-    })}`);
-
-    if (shouldAttemptFalabellaImageSync({
-      productStatus: currentStatus,
-      taskImages,
-      imageSyncAlreadySucceeded,
-      imageSyncInProgress
-    })) {
-      const imageSyncLock = await acquireFalabellaImageSyncLock(task, topic || 'feed_webhook');
-
-      if (imageSyncLock.acquired) {
-        logger.info(`[FB Webhook] Feed ${feedId}: SKU ${sellerSku} sin imagen, asociando ${taskImages.length} imagen(es) via Action=Image`);
-        const imageUploadResult = await adapter.uploadProductImages(sellerSku, taskImages);
-        logger.info(`[FB Webhook] Feed ${feedId}: Resultado Action=Image para ${sellerSku}: ${JSON.stringify(imageUploadResult)}`);
-
-        await finalizeFalabellaImageSyncState(
-          imageSyncLock.task,
-          imageSyncLock.taskDetails,
-          imageUploadResult,
-          topic || 'feed_webhook'
-        );
-      } else if (imageSyncLock.alreadySucceeded) {
-        logger.info(`[FB Webhook] Feed ${feedId}: SKU ${sellerSku} ya tenía sincronización de imágenes confirmada; se omite Action=Image`);
-      } else {
-        logger.info(`[FB Webhook] Feed ${feedId}: SKU ${sellerSku} ya tiene sincronización de imágenes en progreso; se omite Action=Image`);
-      }
-    } else {
-      logger.info(`[FB Webhook] Feed ${feedId}: SKU ${sellerSku}: no se ejecuta Action=Image porque ${JSON.stringify({
-        found: currentStatus?.found ?? null,
-        has_image: currentStatus?.has_image ?? null,
-        images_found: taskImages.length,
-        image_sync_already_succeeded: imageSyncAlreadySucceeded,
-        image_sync_in_progress: imageSyncInProgress,
-        terminal_status: currentStatus?.status || null
-      })}`);
-    }
+    logger.info(`[FB Webhook] Feed ${feedId}: estado ${feedStatusLower} con ${processedRecords}/${totalRecords} procesados; se espera FeedStatus Finished antes de ejecutar Action=Image para ${sellerSku}`);
 
     await persistFalabellaFeedReconciliationState({
       task,
@@ -1817,6 +1757,32 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
         task.branch_id,
         task.credential_id || credential?.id || null,
         task.user_id || null
+      );
+
+      const existingPublishedPayloadForLink = firstNonEmptyFalabellaPayload(
+        link?.published_payload,
+        task.payload
+      );
+      const mergedPublishedPayload = mergeFalabellaPublishedPayload(
+        existingPublishedPayloadForLink,
+        productStatus.raw || null
+      );
+      const mergedNumericState = extractFalabellaPublishedNumericState(mergedPublishedPayload);
+      const confirmedPublishedStock = resolveFalabellaPersistedNumericValue(
+        productStatus.stock,
+        link?.published_stock ?? mergedNumericState.stock
+      );
+      const confirmedPublishedPrice = resolveFalabellaPersistedNumericValue(
+        productStatus.price,
+        mergedNumericState.price,
+        { allowZero: false }
+      );
+      const persistedPublishedPayload = applyFalabellaNumericState(
+        mergedPublishedPayload || existingPublishedPayloadForLink || productStatus.raw || null,
+        {
+          stock: confirmedPublishedStock,
+          price: confirmedPublishedPrice
+        }
       );
 
       if (!link && (task.company_id != null || task.branch_id != null)) {
@@ -1980,8 +1946,8 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
             status: finalStatus === 'published' ? 'active' : finalStatus,
             external_id: task.external_id,
             external_url: productStatus.url || null,
-            published_stock: productStatus.stock ?? null,
-            published_payload: productStatus.raw || null,
+            published_stock: confirmedPublishedStock,
+            published_payload: persistedPublishedPayload,
             last_synced_at: new Date()
           });
         } catch (linkError) {
@@ -1993,8 +1959,8 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
         await link.update({
           status: finalStatus === 'published' ? 'active' : finalStatus,
           external_url: productStatus.url || link.external_url,
-          published_stock: productStatus.stock ?? link.published_stock,
-          published_payload: productStatus.raw || link.published_payload,
+          published_stock: confirmedPublishedStock,
+          published_payload: persistedPublishedPayload,
           last_synced_at: new Date()
         });
       }
@@ -3028,6 +2994,22 @@ function mergeFalabellaPublishedPayload(basePayload, incomingPayload) {
   return merged;
 }
 
+function resolveFalabellaPersistedNumericValue(incomingValue, fallbackValue, { allowZero = true } = {}) {
+  const parseValue = (value) => {
+    if (value === undefined || value === null || value === '') return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+  };
+
+  const incoming = parseValue(incomingValue);
+  const fallback = parseValue(fallbackValue);
+
+  if (incoming === null) return fallback;
+  if (!allowZero && incoming === 0 && fallback !== null && fallback > 0) return fallback;
+  if (allowZero && incoming === 0 && fallback !== null && fallback > 0) return fallback;
+  return incoming;
+}
+
 function normalizeTaskPayload(payload) {
   if (!payload) return {};
   if (typeof payload === 'object') return payload;
@@ -3040,6 +3022,16 @@ function normalizeTaskPayload(payload) {
     }
   }
   return {};
+}
+
+function firstNonEmptyFalabellaPayload(...payloads) {
+  for (const payload of payloads) {
+    const normalized = normalizeTaskPayload(payload);
+    if (normalized && typeof normalized === 'object' && Object.keys(normalized).length > 0) {
+      return normalized;
+    }
+  }
+  return null;
 }
 
 function normalizeFalabellaDetailObject(details) {
@@ -3525,25 +3517,31 @@ async function persistFalabellaProductState({ credential, sellerSku, product, pa
     );
   }
 
-  const existingPublishedPayloadForLink = normalizeTaskPayload(link?.published_payload)
-    || existingPublishedPayload
-    || null;
+  const existingPublishedPayloadForLink = firstNonEmptyFalabellaPayload(
+    link?.published_payload,
+    existingPublishedPayload
+  );
   const mergedPublishedPayload = mergeFalabellaPublishedPayload(
     existingPublishedPayloadForLink,
     snapshot.raw || product || null
   );
+  const mergedNumericState = extractFalabellaPublishedNumericState(mergedPublishedPayload);
+  const confirmedPublishedStock = resolveFalabellaPersistedNumericValue(
+    snapshot.stock,
+    link?.published_stock ?? mergedNumericState.stock
+  );
+  const confirmedPublishedPrice = resolveFalabellaPersistedNumericValue(
+    snapshot.price,
+    mergedNumericState.price,
+    { allowZero: false }
+  );
   const persistedPublishedPayload = applyFalabellaNumericState(
     mergedPublishedPayload || snapshot.raw || product || null,
     {
-      stock: snapshot.stock,
-      price: snapshot.price
+      stock: confirmedPublishedStock,
+      price: confirmedPublishedPrice
     }
   );
-  const confirmedPublishedStock = snapshot.stock !== null && snapshot.stock !== undefined
-    ? snapshot.stock
-    : (link?.published_stock !== undefined && link?.published_stock !== null
-      ? link.published_stock
-      : null);
   const linkStatus = marketplaceDisplayStatus === 'active'
     ? 'active'
     : marketplaceDisplayStatus;

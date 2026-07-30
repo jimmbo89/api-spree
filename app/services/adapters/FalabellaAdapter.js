@@ -2443,11 +2443,17 @@ _transformImages(images = []) {
           };
         }
 
-        const normalizedImages = this.normalizeFalabellaImages(transformedProduct.images || []);
-        let imageUploadResult = { success: true, skipped: true };
-        if (normalizedImages.length > 0) {
-          imageUploadResult = await this.uploadProductImages(transformedProduct.sku, normalizedImages);
-        }
+        const imagesPendingCount = this.normalizeFalabellaImages(transformedProduct.images || []).length;
+        const normalizedImages = [];
+        const imageUploadResult = imagesPendingCount > 0
+          ? {
+              success: false,
+              skipped: true,
+              pending: true,
+              reason: 'awaiting_product_create_feed',
+              images_count: imagesPendingCount
+            }
+          : { success: true, skipped: true, pending: false, images_count: 0 };
 
         // Falabella confirma la aceptación inicial con RequestId.
         // La confirmación final del estado se obtiene por FeedStatus; el webhook onFeedCompleted

@@ -6,7 +6,9 @@
     "dev": "nodemon app/server.js",
     "simulate:mercadolibre-publish": "node scripts/simulateMercadoLibrePublishingFlow.js",
     "simulate:mercadolibre-webhook-purchase": "node scripts/simulateMercadoLibreWebhookPurchase.js",
-    "simulate:mercadolibre-flow": "node scripts/simulateMercadoLibreFullFlow.js"
+    "simulate:mercadolibre-flow": "node scripts/simulateMercadoLibreFullFlow.js",
+    "test:mercadolibre": "node scripts/runMercadoLibreSuite.js",
+    "test:falabella": "node --test test/falabella-adapter.test.js"
   },
   "keywords": [],
   "author": "",

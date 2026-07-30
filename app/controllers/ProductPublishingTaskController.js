@@ -155,6 +155,16 @@ function normalizePublishedPayload(rawPayload) {
   return parsed && typeof parsed === 'object' ? parsed : null;
 }
 
+function firstNonEmptyPublishedPayload(...payloads) {
+  for (const payload of payloads) {
+    const normalized = normalizePublishedPayload(payload);
+    if (normalized && typeof normalized === 'object' && Object.keys(normalized).length > 0) {
+      return normalized;
+    }
+  }
+  return null;
+}
+
 function resolveFalabellaFeedId(task, marketplaceLink = null) {
   const sources = [
     normalizeErrorDetails(task?.error_details),
@@ -3107,12 +3117,11 @@ async publishedProducts(req, res) {
       // ✅ Seleccionar payload correcto según marketplace
       let payloadForMetrics;
       if (marketplaceKey === 'falabella') {
-        const linkPayload = marketplaceLink?.published_payload;
-        const normalizedLinkPayload = normalizePublishedPayload(linkPayload);
-        payloadForMetrics = normalizedLinkPayload
-          || normalizePublishedPayload(task.api_response)
-          || normalizePublishedPayload(task.payload)
-          || {};
+        payloadForMetrics = firstNonEmptyPublishedPayload(
+          marketplaceLink?.published_payload,
+          task.api_response,
+          task.payload
+        ) || {};
       } else {
         const apiResponsePayload = normalizePublishedPayload(task.api_response);
         const taskPayload = normalizePublishedPayload(task.payload);
