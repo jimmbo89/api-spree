@@ -126,14 +126,69 @@ class FalabellaAdapter extends BaseAdapter {
     }
   }
 
+  parseFalabellaJsonObject(value) {
+    if (!value) return {};
+    if (typeof value === 'object' && !Array.isArray(value)) return value;
+    if (typeof value !== 'string') return {};
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch (error) {
+      return {};
+    }
+  }
+
+  findFalabellaAttribute(product, feedName) {
+    const normalizedFeedName = this.normalizeFalabellaText(feedName);
+    if (!normalizedFeedName || !Array.isArray(product?.attributes)) return null;
+    return product.attributes.find((attr) => {
+      const candidates = [attr?.id, attr?.feed_name, attr?.FeedName, attr?.name, attr?.Name];
+      return candidates.some((candidate) => this.normalizeFalabellaText(candidate) === normalizedFeedName);
+    }) || null;
+  }
+
+  getFalabellaAttributeValue(product, feedName) {
+    return this.normalizeFalabellaAttributeValue(this.findFalabellaAttribute(product, feedName));
+  }
+
+  resolvePackageMeasurementsFromAttributes(product) {
+    const readNumber = (feedName) => {
+      const value = this.getFalabellaAttributeValue(product, feedName);
+      const parsed = this.normalizeFalabellaFloat(value);
+      return parsed !== null ? parsed : null;
+    };
+
+    return {
+      package_height: readNumber('PackageHeight'),
+      package_width: readNumber('PackageWidth'),
+      package_length: readNumber('PackageLength'),
+      package_weight: readNumber('PackageWeight')
+    };
+  }
+
   resolvePackageMeasurements(productData) {
-    const productMeasurements = productData?.product_measurements || {};
+    const productMeasurements = this.parseFalabellaJsonObject(productData?.product_measurements);
+    const packagingMeasurements = this.parseFalabellaJsonObject(productData?.packaging_measurements);
+    const packageData = this.parseFalabellaJsonObject(productData?.package) || {};
     const dimensions = productMeasurements?.dimensions || {};
+    const packagingDimensions = packagingMeasurements?.dimensions || {};
 
     const heightFromMeasurements = this.toCentimeters(dimensions.height);
     const widthFromMeasurements = this.toCentimeters(dimensions.width);
     const lengthFromMeasurements = this.toCentimeters(dimensions.length ?? dimensions.depth);
     const weightFromMeasurements = this.toKilograms(productMeasurements?.weight);
+
+    const heightFromPackaging = this.toCentimeters(packagingDimensions.height);
+    const widthFromPackaging = this.toCentimeters(packagingDimensions.width);
+    const lengthFromPackaging = this.toCentimeters(packagingDimensions.length ?? packagingDimensions.depth);
+    const weightFromPackaging = this.toKilograms(packagingMeasurements?.weight);
+
+    const heightFromPackage = this.toCentimeters(packageData.height ?? packageData.height_cm);
+    const widthFromPackage = this.toCentimeters(packageData.width ?? packageData.width_cm);
+    const lengthFromPackage = this.toCentimeters(packageData.length ?? packageData.length_cm ?? packageData.depth ?? packageData.depth_cm);
+    const weightFromPackage = packageData.weight_grams != null
+      ? this.coerceNumber(packageData.weight_grams) / 1000
+      : this.toKilograms(packageData.weight);
 
     const legacyHeight = this.coerceNumber(productData?.height_cm);
     const legacyWidth = this.coerceNumber(productData?.width_cm);
@@ -143,10 +198,10 @@ class FalabellaAdapter extends BaseAdapter {
       : null;
 
     return {
-      package_height: heightFromMeasurements ?? legacyHeight ?? null,
-      package_width: widthFromMeasurements ?? legacyWidth ?? null,
-      package_length: lengthFromMeasurements ?? legacyLength ?? null,
-      package_weight: weightFromMeasurements ?? legacyWeightKg ?? null
+      package_height: heightFromPackaging ?? heightFromPackage ?? heightFromMeasurements ?? legacyHeight ?? null,
+      package_width: widthFromPackaging ?? widthFromPackage ?? widthFromMeasurements ?? legacyWidth ?? null,
+      package_length: lengthFromPackaging ?? lengthFromPackage ?? lengthFromMeasurements ?? legacyLength ?? null,
+      package_weight: weightFromPackaging ?? weightFromPackage ?? weightFromMeasurements ?? legacyWeightKg ?? null
     };
   }
 
@@ -879,7 +934,14 @@ _transformImages(images = []) {
       }
     }
 
-    const packageMeasurements = this.resolvePackageMeasurements(productData);
+    const packageMeasurementsFromPayload = this.resolvePackageMeasurements(productData);
+    const packageMeasurementsFromAttributes = this.resolvePackageMeasurementsFromAttributes({ attributes });
+    const packageMeasurements = {
+      package_height: packageMeasurementsFromAttributes.package_height ?? packageMeasurementsFromPayload.package_height,
+      package_width: packageMeasurementsFromAttributes.package_width ?? packageMeasurementsFromPayload.package_width,
+      package_length: packageMeasurementsFromAttributes.package_length ?? packageMeasurementsFromPayload.package_length,
+      package_weight: packageMeasurementsFromAttributes.package_weight ?? packageMeasurementsFromPayload.package_weight
+    };
     const resolvedBrand = String(
       productData.brand ??
       productData.Brand ??
@@ -916,6 +978,8 @@ _transformImages(images = []) {
       validVariant?.totalStock
     );
 
+    const attributeProductId = this.getFalabellaAttributeValue({ attributes }, 'ProductId');
+
     const prepared = {
       sku: resolvedSku,
       productName: resolvedName,
@@ -930,7 +994,11 @@ _transformImages(images = []) {
       package_weight: packageMeasurements.package_weight,
       attributes: attributes,
       images: this._transformImages(productData.images || productData.pictures || []),
-      productId: productData.ProductId || productData.productIdentifier || productData.ean || productData.upc || productData.isbn || null,
+      productIdentifier: attributeProductId || productData.productIdentifier || productData.gtin || productData.ean || productData.upc || productData.isbn || null,
+      gtin: productData.gtin || null,
+      ean: productData.ean || null,
+      upc: productData.upc || null,
+      isbn: productData.isbn || null,
       categoryName: category.name,
       category_attributes: categoryAttributes,
       category_metadata: categoryMetadata
@@ -1308,9 +1376,13 @@ _transformImages(images = []) {
       'categoryname',
       'category_attributes',
       'falabella_products',
+      'falabella_publication_items',
       'images',
       'productimage',
       'productimages',
+      'pricefalabella',
+      'quantityfalabella',
+      'operatorcode',
       'productdata'
     ]);
 
@@ -2007,11 +2079,12 @@ _transformImages(images = []) {
     if (product.price <= 0) errors.push('El precio debe ser mayor a 0');
     if (product.stock < 0) errors.push('El stock no puede ser negativo');
 
+    const attributePackageMeasurements = this.resolvePackageMeasurementsFromAttributes(product);
     const packageMeasurements = {
-      package_height: this.normalizeFalabellaFloat(product.package_height),
-      package_width: this.normalizeFalabellaFloat(product.package_width),
-      package_length: this.normalizeFalabellaFloat(product.package_length),
-      package_weight: this.normalizeFalabellaFloat(product.package_weight)
+      package_height: attributePackageMeasurements.package_height ?? this.normalizeFalabellaFloat(product.package_height),
+      package_width: attributePackageMeasurements.package_width ?? this.normalizeFalabellaFloat(product.package_width),
+      package_length: attributePackageMeasurements.package_length ?? this.normalizeFalabellaFloat(product.package_length),
+      package_weight: attributePackageMeasurements.package_weight ?? this.normalizeFalabellaFloat(product.package_weight)
     };
 
     for (const [field, value] of Object.entries(packageMeasurements)) {

@@ -47,26 +47,50 @@ class MarketplaceTransformerFalabella {
     }
   }
 
-  static resolvePackageMeasurements(product) {
-    const productMeasurements = product?.product_measurements || {};
-    const dimensions = productMeasurements?.dimensions || {};
+  static parseJsonObject(value) {
+    if (!value) return {};
+    if (typeof value === 'object' && !Array.isArray(value)) return value;
+    if (typeof value !== 'string') return {};
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch (error) {
+      return {};
+    }
+  }
 
-    const height = this.toCentimeters(dimensions.height) ??
+  static resolvePackageMeasurements(product) {
+    const productMeasurements = this.parseJsonObject(product?.product_measurements);
+    const packagingMeasurements = this.parseJsonObject(product?.packaging_measurements);
+    const packageData = this.parseJsonObject(product?.package);
+    const dimensions = productMeasurements?.dimensions || {};
+    const packagingDimensions = packagingMeasurements?.dimensions || {};
+
+    const height = this.toCentimeters(packagingDimensions.height) ??
+      this.toCentimeters(packageData.height ?? packageData.height_cm) ??
+      this.toCentimeters(dimensions.height) ??
       this.coerceNumber(product.package_height) ??
       this.coerceNumber(product.height_cm) ??
       this.coerceNumber(product.height) ??
       null;
-    const width = this.toCentimeters(dimensions.width) ??
+    const width = this.toCentimeters(packagingDimensions.width) ??
+      this.toCentimeters(packageData.width ?? packageData.width_cm) ??
+      this.toCentimeters(dimensions.width) ??
       this.coerceNumber(product.package_width) ??
       this.coerceNumber(product.width_cm) ??
       this.coerceNumber(product.width) ??
       null;
-    const length = this.toCentimeters(dimensions.length ?? dimensions.depth) ??
+    const length = this.toCentimeters(packagingDimensions.length ?? packagingDimensions.depth) ??
+      this.toCentimeters(packageData.length ?? packageData.length_cm ?? packageData.depth ?? packageData.depth_cm) ??
+      this.toCentimeters(dimensions.length ?? dimensions.depth) ??
       this.coerceNumber(product.package_length) ??
       this.coerceNumber(product.length_cm) ??
       this.coerceNumber(product.length) ??
       null;
-    const weight = this.toKilograms(productMeasurements?.weight) ??
+    const weight = this.toKilograms(packagingMeasurements?.weight) ??
+      (packageData.weight_grams != null ? this.coerceNumber(packageData.weight_grams) / 1000 : null) ??
+      this.toKilograms(packageData.weight) ??
+      this.toKilograms(productMeasurements?.weight) ??
       this.coerceNumber(product.package_weight) ??
       (product.weight_grams != null ? this.coerceNumber(product.weight_grams) / 1000 : null) ??
       null;

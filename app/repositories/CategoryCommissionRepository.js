@@ -27,6 +27,33 @@ const normalizeDelimiter = (value, options = {}) => {
   return result.join(to);
 };
 
+const normalizeCategoryText = (value) => {
+  if (value === null || value === undefined) return '';
+  return String(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[|>\\]+/g, '/')
+    .replace(/[/\-_]+/g, ' ')
+    .replace(/[^\w\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+};
+
+const buildCategoryNameCandidates = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return [];
+  const candidates = new Set([
+    raw,
+    normalizeDelimiter(raw),
+    raw.replace(/\|/g, '/'),
+    raw.replace(/\|/g, ' '),
+    raw.replace(/\//g, '|'),
+    raw.replace(/\//g, ' ')
+  ]);
+  return Array.from(candidates).filter(Boolean);
+};
+
 const CategoryCommissionRepository = {
   /**
    * Obtiene todas las comisiones con filtros opcionales
@@ -62,6 +89,84 @@ const CategoryCommissionRepository = {
     } catch (error) {
       logger.error("Error en CategoryCommissionRepository->findAll:", error);
       throw new Error(`Error al obtener comisiones: ${error.message}`);
+    }
+  },
+
+  /**
+   * Busca una comisión local usando la sugerencia oficial de Falabella.
+   * Útil cuando category_id aún no está persistido y debe mapearse por nombre/ruta.
+   */
+  async findByFalabellaSuggestion(marketplaceId, identifiers = {}, credentialId = null) {
+    try {
+      const { categoryId, categoryName, globalIdentifier } = identifiers;
+      const baseWhere = {
+        marketplace_id: marketplaceId,
+        is_active: 1,
+        credential_id: credentialId || { [Op.eq]: null }
+      };
+
+      const direct = await this.findByCategory(
+        marketplaceId,
+        { categoryId, categoryName, globalIdentifier },
+        credentialId
+      );
+      if (direct) return direct;
+
+      const nameCandidates = buildCategoryNameCandidates(categoryName);
+      if (nameCandidates.length > 0) {
+        const byName = await CategoryCommission.findOne({
+          where: {
+            ...baseWhere,
+            [Op.or]: [
+              ...nameCandidates.map((candidate) => ({ category_level_4: candidate })),
+              ...nameCandidates.map((candidate) => ({ category_name_api: candidate })),
+              ...nameCandidates.map((candidate) => ({ category_level_4: { [Op.like]: `%${candidate}%` } })),
+              ...nameCandidates.map((candidate) => ({ category_name_api: { [Op.like]: `%${candidate}%` } }))
+            ]
+          },
+          attributes: [
+            'id', 'category_id', 'global_identifier', 'category_name_api',
+            'category_level_1', 'category_level_2', 'category_level_3',
+            'category_level_4', 'commission_percentage', 'currency', 'source'
+          ],
+          order: [['updatedAt', 'DESC']]
+        });
+        if (byName) return byName;
+      }
+
+      const normalizedCategoryName = normalizeCategoryText(categoryName);
+      if (!normalizedCategoryName) return null;
+
+      const allCandidates = await CategoryCommission.findAll({
+        where: baseWhere,
+        attributes: [
+          'id', 'category_id', 'global_identifier', 'category_name_api',
+          'category_level_1', 'category_level_2', 'category_level_3',
+          'category_level_4', 'commission_percentage', 'currency', 'source'
+        ]
+      });
+
+      const scored = allCandidates
+        .map((commission) => {
+          const fields = [
+            commission.category_name_api,
+            commission.category_level_4,
+            commission.category_level_3,
+            commission.category_level_2
+          ].map(normalizeCategoryText).filter(Boolean);
+          const exact = fields.some((field) => field === normalizedCategoryName);
+          const contains = fields.some((field) => (
+            field.includes(normalizedCategoryName) || normalizedCategoryName.includes(field)
+          ));
+          return { commission, score: exact ? 2 : contains ? 1 : 0 };
+        })
+        .filter((entry) => entry.score > 0)
+        .sort((a, b) => b.score - a.score);
+
+      return scored[0]?.commission || null;
+    } catch (error) {
+      logger.error(`Error en CategoryCommissionRepository->findByFalabellaSuggestion:`, error);
+      throw new Error(`Error al buscar comisión por sugerencia Falabella: ${error.message}`);
     }
   },
 

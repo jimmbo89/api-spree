@@ -28,6 +28,46 @@ const timestampMinus03 = (date = new Date()) => {
   );
 };
 
+const normalizeFalabellaBoolean = (value) => {
+  if (value === true || value === 1 || value === "1") return true;
+  if (value === false || value === 0 || value === "0") return false;
+  return String(value || "").trim().toLowerCase() === "true";
+};
+
+const normalizeFalabellaOptions = (options) => {
+  const rawOptions = options?.Option;
+  if (!rawOptions) return [];
+  const list = Array.isArray(rawOptions) ? rawOptions : [rawOptions];
+  return list
+    .map((option) => ({
+      id: option?.id ?? option?.Name ?? option?.Value ?? null,
+      name: option?.Name ?? option?.Value ?? option?.id ?? null
+    }))
+    .filter((option) => option.id !== null || option.name !== null);
+};
+
+const mapFalabellaCategoryAttribute = (attr) => {
+  const feedName = attr?.FeedName || attr?.Name || attr?.Label;
+  if (!feedName) return null;
+  const label = attr?.Label || attr?.Name || feedName;
+  const mandatory = normalizeFalabellaBoolean(attr?.isMandatory);
+  const attributeType = attr?.AttributeType || attr?.Type || "string";
+
+  return {
+    id: feedName,
+    name: label,
+    label,
+    is_mandatory: mandatory,
+    description: attr?.Description || '',
+    attribute_type: attributeType,
+    example_value: attr?.ExampleValue || '',
+    value_type: ['option', 'multi_option'].includes(attributeType) ? 'list' :
+      attributeType === 'numberfield' ? 'number' : 'string',
+    values: normalizeFalabellaOptions(attr?.Options),
+    tags: { required: mandatory, catalog_required: mandatory, hidden: false }
+  };
+};
+
 const ML_SUPPORTED_LISTING_TYPES = ["gold_pro", "gold_special", "free"];
 const ML_STRATEGY = {
   CONVERSION: "CONVERSION",
@@ -5870,20 +5910,15 @@ async falabellaSuggestedCategoriesWithAttributes(req, res) {
           if (attrData.SuccessResponse?.Body?.Attribute) {
             const rawAttrs = attrData.SuccessResponse.Body.Attribute;
             const attrList = Array.isArray(rawAttrs) ? rawAttrs : [rawAttrs];
-            attributes = attrList.filter(attr => attr.Name && attr.Label).map(attr => ({
-              id: attr.FeedName || attr.Name, name: attr.Label, label: attr.Label,
-              is_mandatory: attr.isMandatory === "1" || attr.isMandatory === true,
-              description: attr.Description || '', attribute_type: attr.AttributeType || 'string',
-              example_value: attr.ExampleValue || '',
-              value_type: ['option', 'multi_option'].includes(attr.AttributeType) ? 'list' :
-                         attr.AttributeType === 'numberfield' ? 'number' : 'string',
-              values: attr.Options?.Option
-                ? (Array.isArray(attr.Options.Option)
-                    ? attr.Options.Option.map(opt => ({ id: opt.id, name: opt.Name }))
-                    : [{ id: attr.Options.Option.id, name: attr.Options.Option.Name }])
-                : [],
-              tags: { required: attr.isMandatory === "1", catalog_required: attr.isMandatory === "1", hidden: false }
-            })).sort((a, b) => (a.is_mandatory ? 0 : 1) - (b.is_mandatory ? 0 : 1));
+            attributes = attrList
+              .map(mapFalabellaCategoryAttribute)
+              .filter(Boolean)
+              .sort((a, b) => (a.is_mandatory ? 0 : 1) - (b.is_mandatory ? 0 : 1));
+            logger.info(`[FALABELLA][ATTRIBUTES] Categoría ${categoryId}: ${attributes.length} atributo(s) mapeado(s)`);
+          } else if (attrData.ErrorResponse) {
+            logger.warn(`[FALABELLA][ATTRIBUTES] Error GetCategoryAttributes para ${categoryId}: ${JSON.stringify(attrData.ErrorResponse)}`);
+          } else {
+            logger.warn(`[FALABELLA][ATTRIBUTES] Categoría ${categoryId} sin Attribute en respuesta`);
           }
         } catch (attrErr) {
           logger.warn(`Error GetCategoryAttributes para ${categoryId}: ${attrErr.message}`);
@@ -5906,9 +5941,34 @@ async falabellaSuggestedCategoriesWithAttributes(req, res) {
                 marketplace_id,
                 {
                   categoryId: categoryId,
+                  categoryName: item.CategoryName,
                   globalIdentifier: item.SuggestedCategory
                 }
               );
+
+              if (!commission) {
+                const commissionBySuggestion = await CategoryCommissionRepository.findByFalabellaSuggestion(
+                  marketplace_id,
+                  {
+                    categoryId,
+                    categoryName: item.CategoryName,
+                    globalIdentifier: item.SuggestedCategory
+                  }
+                );
+
+                if (commissionBySuggestion) {
+                  await CategoryCommissionRepository.updateCommissionIdentifiers(
+                    commissionBySuggestion.id,
+                    {
+                      category_id: categoryId,
+                      global_identifier: item.SuggestedCategory,
+                      category_name_api: item.CategoryName
+                    }
+                  );
+                  commission = commissionBySuggestion;
+                  logger.info(`[AUTO-MAP] ✅ Registro actualizado por sugerencia Falabella: ID=${commissionBySuggestion.id}`);
+                }
+              }
 
               // 🔹 Paso 2: Si NO existe, consultar GetCategoryTree para auto-mapear
               if (!commission) {
