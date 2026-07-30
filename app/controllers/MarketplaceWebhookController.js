@@ -379,7 +379,11 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
   // ✅ RESOLVER COMPAÑÍA DESDE EL PRIMER LISTING DE LA ORDEN
   // Las credenciales son globales, el company_id viene del producto/link
   const firstListingId = getListingId(items[0]);
-  const companyInfo = await resolveCompanyFromListing(ML_MARKETPLACE_KEY, firstListingId);
+  const companyInfo = await resolveCompanyFromListing({
+    marketplaceId: credential.marketplace_id,
+    listingId: firstListingId,
+    credentialId: credential.id
+  });
   const companyId = companyInfo?.company_id || null;
   const branchId = companyInfo?.branch_id || null;
   const publicationUserId = companyInfo?.user_id || credential.user_id || null;
@@ -507,6 +511,7 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
         const itemResult = await processOrderItem(orderItem, {
           orderId,
           marketplaceId: credential.marketplace_id,
+          credentialId: credential.id,
           companyId,
           branchId,
           orderIdLocal: savedOrder.id,
@@ -2010,6 +2015,7 @@ async function processFalabellaOrderWebhook(payload, options = {}) {
 
   const resource = payload?.resource || `orders/${orderId}`;
   const topic = payload?.event || payload?.event_type || payload?.topic || payload?.type || "onOrderCreated";
+  logger.info(`[FB Webhook][ORDER_RAW] topic=${topic} order_id=${orderId} payload=${JSON.stringify(payload).substring(0, 5000)}`);
 
   const eventId = buildFalabellaEventId(payload, resource, topic);
   const eventResult = await createFalabellaWebhookEvent(
@@ -2379,6 +2385,13 @@ async function processFalabellaEvent({ event, payload, orderId }) {
     credential = await resolveFalabellaCredential(payload);
   }
 
+  let orderData = null;
+  if (!credential || !credential.seller_email || !credential.api_key) {
+    const resolvedByOrder = await resolveFalabellaCredentialByOrderProbe(orderId);
+    credential = resolvedByOrder?.credential || credential;
+    orderData = resolvedByOrder?.orderData || null;
+  }
+
   if (!credential || !credential.seller_email || !credential.api_key) {
     await MarketplaceWebhookEventRepository.updateById(event.id, {
       status: "error",
@@ -2389,7 +2402,7 @@ async function processFalabellaEvent({ event, payload, orderId }) {
     return;
   }
 
-  const orderData = await fetchFalabellaOrderWithRetry(orderId, credential);
+  orderData = orderData || await fetchFalabellaOrderWithRetry(orderId, credential);
   if (!orderData) {
     await MarketplaceWebhookEventRepository.updateById(event.id, {
       status: "error",
@@ -2415,7 +2428,11 @@ async function processFalabellaEvent({ event, payload, orderId }) {
   // ✅ RESOLVER COMPAÑÍA DESDE EL PRIMER SKU DE LA ORDEN
   // Las credenciales son globales, el company_id viene del producto/link
   const firstSku = items[0]?.sku;
-  const companyInfo = await resolveCompanyFromListing(FB_MARKETPLACE_KEY, firstSku);
+  const companyInfo = await resolveCompanyFromListing({
+    marketplaceId: credential.marketplace_id,
+    listingId: firstSku,
+    credentialId: credential.id
+  });
   const companyId = companyInfo?.company_id || null;
   const branchId = companyInfo?.branch_id || null;
   const publicationUserId = companyInfo?.user_id || credential.user_id || null;
@@ -2525,6 +2542,7 @@ async function processFalabellaEvent({ event, payload, orderId }) {
         const itemResult = await processFalabellaOrderItem(item, {
           orderId,
           marketplaceId: credential.marketplace_id,
+          credentialId: credential.id,
           companyId,
           branchId,
           orderIdLocal: savedOrder.id,
@@ -2620,7 +2638,16 @@ async function resolveFalabellaCredential(payload) {
   });
   if (byIdOrEmail) return byIdOrEmail;
 
-  return await MarketplaceCredentialRepository.findSingleActiveFalabella();
+  const activeCredentials = await MarketplaceCredentialRepository.findAllActiveFalabella();
+  if (activeCredentials.length === 1) {
+    return activeCredentials[0];
+  }
+
+  if (activeCredentials.length > 1) {
+    logger.warn(`[FB Webhook] Credencial Falabella ambigua: ${activeCredentials.length} credenciales activas y el webhook no trajo seller_id/seller_email confiable`);
+  }
+
+  return null;
 }
 
 async function resolveFalabellaCredentialForTask(task, fallbackCredential = null) {
@@ -2635,6 +2662,27 @@ async function resolveFalabellaCredentialForTask(task, fallbackCredential = null
   }
 
   return fallbackCredential;
+}
+
+async function resolveFalabellaCredentialByOrderProbe(orderId) {
+  const credentials = await MarketplaceCredentialRepository.findAllActiveFalabella();
+  if (!credentials || credentials.length === 0) {
+    return null;
+  }
+
+  for (const candidate of credentials) {
+    if (!candidate?.seller_email || !candidate?.api_key) continue;
+
+    const orderData = await fetchFalabellaOrderWithRetry(orderId, candidate);
+    const items = parseFalabellaOrderItems(orderData);
+    if (items.length > 0) {
+      logger.info(`[FB Webhook] Credencial resuelta por GetOrder: credential_id=${candidate.id}, order_id=${orderId}`);
+      return { credential: candidate, orderData };
+    }
+  }
+
+  logger.warn(`[FB Webhook] No se pudo resolver credencial por GetOrder para order_id=${orderId}`);
+  return null;
 }
 
 async function fetchFalabellaOrderWithRetry(orderId, credential) {
@@ -4266,10 +4314,13 @@ async function processFalabellaOrderItem(item, ctx) {
   const discount = parseFloat(item?.discount || 0);
   const tax = parseFloat(item?.tax || 0);
 
-  let link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
-    ctx.marketplaceId,
-    sku
-  );
+  let link = await findOrderProductMarketplaceLink({
+    marketplaceId: ctx.marketplaceId,
+    externalId: sku,
+    credentialId: ctx.credentialId,
+    companyId: ctx.companyId,
+    branchId: ctx.branchId
+  });
 
   let productId = link?.product_id || null;
   if (!productId) {
@@ -4420,10 +4471,13 @@ async function processOrderItem(orderItem, ctx) {
     throw new Error("listing_id_not_found");
   }
 
-  const link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
-    ctx.marketplaceId,
-    listingId
-  );
+  const link = await findOrderProductMarketplaceLink({
+    marketplaceId: ctx.marketplaceId,
+    externalId: listingId,
+    credentialId: ctx.credentialId,
+    companyId: ctx.companyId,
+    branchId: ctx.branchId
+  });
   if (!link) {
     throw new Error(`product_link_not_found:${listingId}`);
   }
@@ -5163,21 +5217,71 @@ function mapFalabellaOrderStatus(fbStatus) {
  * @param {String} listingId - ID del listing en el marketplace
  * @returns {Promise<Object|null>} { company_id, branch_id, user_id }
  */
-async function resolveCompanyFromListing(marketplace, listingId) {
-  try {
-    if (!marketplace || !listingId) return null;
-    
-    // Buscar el link producto-marketplace por listing_id
+async function findOrderProductMarketplaceLink({
+  marketplaceId,
+  externalId,
+  credentialId = null,
+  companyId = null,
+  branchId = null
+}) {
+  if (!marketplaceId || !externalId) return null;
+
+  const attempts = [];
+
+  if (credentialId && (companyId || branchId)) {
+    attempts.push({ companyId, branchId, credentialId });
+  }
+
+  if (credentialId) {
+    attempts.push({ companyId: null, branchId: null, credentialId });
+  }
+
+  if (companyId || branchId) {
+    attempts.push({ companyId, branchId, credentialId: null });
+  }
+
+  attempts.push({ companyId: null, branchId: null, credentialId: null });
+
+  const seen = new Set();
+  for (const attempt of attempts) {
+    const key = JSON.stringify(attempt);
+    if (seen.has(key)) continue;
+    seen.add(key);
+
     const link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
-      marketplace === ML_MARKETPLACE_KEY ? 'mercadolibre' : 'falabella',
-      listingId
+      marketplaceId,
+      String(externalId),
+      attempt.companyId,
+      attempt.branchId,
+      attempt.credentialId
     );
+
+    if (link) {
+      logger.info(`[Webhook] Link resuelto marketplace=${marketplaceId} external_id=${externalId} credential_id=${link.credential_id || 'null'} company_id=${link.company_id || 'null'} branch_id=${link.branch_id || 'null'}`);
+      return link;
+    }
+  }
+
+  logger.warn(`[Webhook] Link no encontrado marketplace=${marketplaceId} external_id=${externalId} credential_id=${credentialId || 'null'} company_id=${companyId || 'null'} branch_id=${branchId || 'null'}`);
+  return null;
+}
+
+async function resolveCompanyFromListing({ marketplaceId, listingId, credentialId = null }) {
+  try {
+    if (!marketplaceId || !listingId) return null;
+    
+    const link = await findOrderProductMarketplaceLink({
+      marketplaceId,
+      externalId: listingId,
+      credentialId
+    });
     
     if (link) {
       return {
         company_id: link.company_id || null,
         user_id: link.user_id || null,
-        branch_id: link.branch_id || null
+        branch_id: link.branch_id || null,
+        credential_id: link.credential_id || null
       };
     }
     
