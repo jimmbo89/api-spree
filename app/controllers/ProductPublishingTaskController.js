@@ -16,6 +16,7 @@ const {
   UserMarketplaceCredentialRepository,
   ProductMarketplaceLinkRepository,
   PoolRepository,
+  UserAclScopeRepository,
   ProductCategoryRepository,
   JobRepository,
   JobProductRepository
@@ -943,10 +944,26 @@ async warehouseMarketplaces(req, res) {
   }
 
   try {
+    const aclScopes = await UserAclScopeRepository.findByUserAndCompany(userId, companyId);
+    const allowedPoolIds = [...new Set(
+      aclScopes
+        .filter((scope) => scope.pool_id)
+        .map((scope) => Number(scope.pool_id))
+        .filter((poolId) => Number.isFinite(poolId))
+    )];
+    const allowedWarehouseIds = [...new Set(
+      aclScopes
+        .filter((scope) => scope.warehouse_id)
+        .map((scope) => Number(scope.warehouse_id))
+        .filter((warehouseId) => Number.isFinite(warehouseId))
+    )];
+
     const pools = await PoolRepository.findFiltered({
       companyId,
       userId,
-      isActive: true
+      isActive: true,
+      poolIds: allowedPoolIds,
+      warehouseIds: allowedWarehouseIds
     });
 
     const credentials = await UserMarketplaceCredentialRepository.findActiveCredentialsByUserAndCompany(userId, companyId, null);

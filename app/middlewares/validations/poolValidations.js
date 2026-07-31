@@ -17,6 +17,7 @@ const poolWarehouseSchema = Joi.object({
 
 const storePoolSchema = Joi.object({
   ...poolBaseSchema,
+  source: Joi.string().valid('publication_flow').optional(),
   warehouses: Joi.array()
     .items(poolWarehouseSchema)
     .min(1)

@@ -93,8 +93,9 @@ const PoolController = {
     logger.info("Datos recibidos:");
     logger.info(JSON.stringify(req.body));
 
-    const { company_id, user_id: bodyUserId, warehouses } = req.body;
+    const { company_id, user_id: bodyUserId, warehouses, source } = req.body;
     const user_id = bodyUserId || req.user.id;
+    const shouldAssignAclScopes = source === "publication_flow";
     req.body.user_id = user_id;
 
     // Validar company_id
@@ -181,6 +182,38 @@ const PoolController = {
         );
       }
 
+      if (shouldAssignAclScopes) {
+        const aclScopes = await UserAclScopeRepository.findByUserAndCompany(user_id, company_id);
+        const existingPoolIds = new Set(
+          aclScopes
+            .filter((scope) => scope.pool_id)
+            .map((scope) => Number(scope.pool_id))
+            .filter((poolId) => Number.isFinite(poolId))
+        );
+        const existingWarehouseIds = new Set(
+          aclScopes
+            .filter((scope) => scope.warehouse_id)
+            .map((scope) => Number(scope.warehouse_id))
+            .filter((warehouseId) => Number.isFinite(warehouseId))
+        );
+        const aclScopesToCreate = [];
+
+        if (!existingPoolIds.has(Number(pool.id))) {
+          aclScopesToCreate.push({ user_id, company_id, pool_id: pool.id });
+        }
+
+        warehouses.forEach((warehouseData) => {
+          const warehouseId = Number(warehouseData.warehouse_id);
+          if (Number.isFinite(warehouseId) && !existingWarehouseIds.has(warehouseId)) {
+            aclScopesToCreate.push({ user_id, company_id, warehouse_id: warehouseId });
+          }
+        });
+
+        if (aclScopesToCreate.length > 0) {
+          await UserAclScopeRepository.bulkCreate(aclScopesToCreate, transaction);
+        }
+      }
+
       await transaction.commit();
 
       // 3. Obtener pool completo con almacenes
@@ -189,11 +222,36 @@ const PoolController = {
       logger.info(`Pool ${pool.name} creado exitosamente con ID: ${pool.id}`);
 
       // 4. Obtener pools actualizados
-     const pools = await PoolRepository.findFiltered({
-            companyId: company_id,
-            userId: user_id,
-            isActive: 1
+      let pools;
+      if (shouldAssignAclScopes) {
+        const aclScopes = await UserAclScopeRepository.findByUserAndCompany(user_id, company_id);
+        const allowedPoolIds = [...new Set(
+          aclScopes
+            .filter((scope) => scope.pool_id)
+            .map((scope) => Number(scope.pool_id))
+            .filter((poolId) => Number.isFinite(poolId))
+        )];
+        const allowedWarehouseIds = [...new Set(
+          aclScopes
+            .filter((scope) => scope.warehouse_id)
+            .map((scope) => Number(scope.warehouse_id))
+            .filter((warehouseId) => Number.isFinite(warehouseId))
+        )];
+
+        pools = await PoolRepository.findFiltered({
+          companyId: company_id,
+          userId: user_id,
+          isActive: 1,
+          poolIds: allowedPoolIds,
+          warehouseIds: allowedWarehouseIds
         });
+      } else {
+        pools = await PoolRepository.findFiltered({
+          companyId: company_id,
+          userId: user_id,
+          isActive: 1
+        });
+      }
 
       return res.status(201).json({
         success: true,

@@ -4,7 +4,7 @@ const { Op } = require('sequelize');
 const logger = require('../../config/logger');
 
 const PoolRepository = {
-  async findFiltered({ companyId, userId, isActive, poolIds } = {}) {
+  async findFiltered({ companyId, userId, isActive, poolIds, warehouseIds } = {}) {
     const where = {};
     if (companyId) where.company_id = companyId;
     if (userId) where.user_id = userId;
@@ -34,8 +34,16 @@ const PoolRepository = {
       order: [['name', 'ASC']]
     });
 
+    const allowedWarehouseIds = Array.isArray(warehouseIds)
+      ? new Set(warehouseIds.map(Number).filter((warehouseId) => Number.isFinite(warehouseId)))
+      : null;
+
     return pools.map(pool => {
-      const warehouses = pool.poolWarehouses.map(pw => ({
+      const poolWarehouses = allowedWarehouseIds
+        ? pool.poolWarehouses.filter((pw) => allowedWarehouseIds.has(Number(pw.warehouse_id)))
+        : pool.poolWarehouses;
+
+      const warehouses = poolWarehouses.map(pw => ({
         warehouse_id: pw.warehouse_id,
         name: pw.warehouse.name,
         code: pw.warehouse.code,
