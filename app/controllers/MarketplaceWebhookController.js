@@ -26,6 +26,7 @@ const {
 const MarketplaceStockSyncService = require("../services/MarketplaceStockSyncService");
 const { verifyMercadoLibreItem } = require("../services/MarketplaceItemVerificationService");
 const FalabellaAdapter = require('../services/adapters/FalabellaAdapter');
+const MercadoLibreAdapter = require('../services/adapters/MercadoLibreAdapter');
 const { trackPendingOperation } = require("../utils/pendingOperations");
 
 const ML_MARKETPLACE_KEY = "mercadolibre";
@@ -316,8 +317,48 @@ async function processMercadoLibreWebhook(payload, options = {}) {
   }
 }
 
+async function ensureMercadoLibreWebhookCredential(credential, mlUserId, event = null) {
+  try {
+    const isExpired = credential.expires_at
+      ? new Date(credential.expires_at) < new Date()
+      : true;
+
+    const adapter = new MercadoLibreAdapter(
+      credential.marketplace_id,
+      credential.company_id || null,
+      credential.branch_id || null,
+      credential.user_id || null,
+      credential
+    );
+    adapter.credential = credential;
+
+    if (isExpired && credential.refresh_token && typeof adapter.refreshAccessToken === 'function') {
+      logger.info(`[ML Webhook] Token expirado para credential ${credential.id}; renovando antes de procesar webhook`);
+      await adapter.refreshAccessToken();
+    } else if (typeof adapter.ensureValidCredentials === 'function') {
+      const status = await adapter.ensureValidCredentials();
+      if (!status?.valid) {
+        throw new Error(status?.auth_required ? 'auth_required' : (status?.error || 'invalid_credentials'));
+      }
+    }
+
+    const updated = await MarketplaceCredentialRepository.findById(credential.id);
+    return updated || adapter.credential || credential;
+  } catch (error) {
+    logger.error(`[ML Webhook] No se pudo validar/renovar credential ${credential?.id || 'n/a'} para ml_user_id=${mlUserId}: ${error.message}`);
+    if (event?.id) {
+      await MarketplaceWebhookEventRepository.updateById(event.id, {
+        status: "error",
+        error_message: `credential_refresh_failed:${error.message}`,
+        processed_at: new Date()
+      });
+    }
+    return null;
+  }
+}
+
 async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
-  const credential = await MarketplaceCredentialRepository.findByMLUserIdGlobal(userId);
+  let credential = await MarketplaceCredentialRepository.findByMLUserIdGlobal(userId);
   if (!credential || !credential.access_token) {
     await MarketplaceWebhookEventRepository.updateById(event.id, {
       status: "error",
@@ -325,6 +366,11 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
       processed_at: new Date()
     });
     logger.warn(`[ML Webhook] Credencial no encontrada para ml_user_id=${userId}`);
+    return;
+  }
+
+  credential = await ensureMercadoLibreWebhookCredential(credential, userId, event);
+  if (!credential?.access_token) {
     return;
   }
 
@@ -1093,7 +1139,7 @@ async function processMercadoLibreItemWebhook(payload, options = {}) {
       : ML_WEBHOOK_TIMEOUT_MS;
 
   try {
-    const credential = await resolveMercadoLibreItemWebhookCredential({
+    let credential = await resolveMercadoLibreItemWebhookCredential({
       itemId,
       userId: user_id
     });
@@ -1104,6 +1150,11 @@ async function processMercadoLibreItemWebhook(payload, options = {}) {
         processed_at: new Date()
       });
       logger.warn(`[ML Webhook] Credencial no encontrada para ml_user_id=${user_id}`);
+      return;
+    }
+
+    credential = await ensureMercadoLibreWebhookCredential(credential, user_id, event);
+    if (!credential?.access_token) {
       return;
     }
 
