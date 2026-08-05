@@ -932,11 +932,12 @@ const ProductPublishingTaskController = {
 async warehouseMarketplaces(req, res) {
   logger.info(`${req.user?.name || 'Unknown'} - Lista ruta combinada de almacenes y marketplaces`);
 
-  const { company_id, status } = req.body;
+  const { company_id, status, user_id } = req.body;
   const authUserId = Number(req.user?.id || 0) || null;
   const authCompanyId = Number(req.user?.company_id || 0) || null;
   const bodyCompanyId = company_id ? Number(company_id) : null;
-  const userId = authUserId;
+  const bodyUserId = user_id ? Number(user_id) : null;
+  const userId = bodyUserId || authUserId;
   const companyId = authCompanyId || bodyCompanyId;
 
   if (!userId) {
@@ -982,7 +983,6 @@ async warehouseMarketplaces(req, res) {
 
     const pools = await PoolRepository.findFiltered({
       companyId,
-      userId,
       isActive: true,
       poolIds: allowedPoolIds,
       warehouseIds: allowedWarehouseIds
@@ -1132,11 +1132,12 @@ async warehouseMarketplaces(req, res) {
 async warehouseMarketplacesWithProduct(req, res) {
   logger.info(`${req.user?.name || 'Unknown'} - Lista ruta combinada de almacenes, marketplaces y productos por product_id`);
 
-  const { company_id, product_id } = req.body;
+  const { company_id, product_id, user_id } = req.body;
   const authUserId = Number(req.user?.id || 0) || null;
   const authCompanyId = Number(req.user?.company_id || 0) || null;
   const bodyCompanyId = company_id ? Number(company_id) : null;
-  const userId = authUserId;
+  const bodyUserId = user_id ? Number(user_id) : null;
+  const userId = bodyUserId || authUserId;
   const companyId = authCompanyId || bodyCompanyId;
 
   if (!userId) {
@@ -1166,10 +1167,25 @@ async warehouseMarketplacesWithProduct(req, res) {
   }
 
   try {
+    const aclScopes = await UserAclScopeRepository.findByUserAndCompany(userId, companyId);
+    const allowedPoolIds = [...new Set(
+      aclScopes
+        .filter((scope) => scope.pool_id)
+        .map((scope) => Number(scope.pool_id))
+        .filter((poolId) => Number.isFinite(poolId))
+    )];
+    const allowedWarehouseIds = [...new Set(
+      aclScopes
+        .filter((scope) => scope.warehouse_id)
+        .map((scope) => Number(scope.warehouse_id))
+        .filter((warehouseId) => Number.isFinite(warehouseId))
+    )];
+
     let pools = await PoolRepository.findFiltered({
       companyId,
-      userId,
-      isActive: true
+      isActive: true,
+      poolIds: allowedPoolIds,
+      warehouseIds: allowedWarehouseIds
     });
 
     const credentials = await UserMarketplaceCredentialRepository.findActiveCredentialsByUserAndCompany(userId, companyId, null);
