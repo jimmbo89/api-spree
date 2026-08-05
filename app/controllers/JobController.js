@@ -92,6 +92,12 @@ function isTransientMarketplaceItem(details) {
   return legacyState?.status === 'paused';
 }
 
+function isMercadoLibrePictureProcessingState(snapshot) {
+  return snapshot?.status === 'paused'
+    && Array.isArray(snapshot.sub_status)
+    && snapshot.sub_status.some((value) => String(value).toLowerCase() === 'picture_download_pending');
+}
+
 function buildMarketplaceItemStateSnapshot(item, verification, source = 'jobs-finished-list') {
   const subStatus = Array.isArray(item?.sub_status)
     ? item.sub_status
@@ -237,10 +243,12 @@ async function refreshPausedMarketplaceItemStateForJob(job) {
         error_details: shouldKeepWarning ? mergedDetails : null,
         api_response: verification.item
       };
-      if (isActive && task.status === 'published_with_warnings') {
+      const isPictureProcessing = isMercadoLibrePictureProcessingState(snapshot);
+
+      if (isActive && ['published_with_warnings', 'processing'].includes(task.status)) {
         taskUpdateData.status = 'published';
       } else if (shouldKeepWarning && task.status === 'published') {
-        taskUpdateData.status = 'published_with_warnings';
+        taskUpdateData.status = isPictureProcessing ? 'processing' : 'published_with_warnings';
       }
 
       await ProductPublishingTaskRepository.updateTask(task, taskUpdateData);
@@ -265,7 +273,7 @@ async function refreshPausedMarketplaceItemStateForJob(job) {
 
       if (existingLink) {
         await existingLink.update({
-          status: snapshot.status || 'unpublished',
+          status: isPictureProcessing ? 'processing' : (snapshot.status || 'unpublished'),
           external_url: verification.item.permalink || task.external_url || null,
           published_stock: task.payload?.available_quantity || null,
           published_payload: task.payload || null,
@@ -282,7 +290,7 @@ async function refreshPausedMarketplaceItemStateForJob(job) {
           credential_id: task.credential_id,
           user_id: task.user_id || null,
           ...linkScope,
-          status: snapshot.status || 'unpublished',
+          status: isPictureProcessing ? 'processing' : (snapshot.status || 'unpublished'),
           external_id: linkExternalId,
           external_url: verification.item.permalink || task.external_url || null,
           published_stock: task.payload?.available_quantity || null,

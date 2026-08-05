@@ -385,14 +385,15 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
   }
 
   const shipmentId = order?.shipping?.id || null;
-  const [shipmentData, shipmentCostsData, billingInfoData] = await Promise.all([
+  const [shipmentData, shipmentCostsData, billingInfoData, discountsData] = await Promise.all([
     shipmentId
       ? fetchMercadoLibreShipmentWithRetry(shipmentId, credential.access_token)
       : Promise.resolve(null),
     shipmentId
       ? fetchMercadoLibreShipmentCostsWithRetry(shipmentId, credential.access_token)
       : Promise.resolve(null),
-    fetchMercadoLibreBillingInfoWithRetry(orderId, credential.access_token)
+    fetchMercadoLibreBillingInfoWithRetry(order, credential.access_token),
+    fetchMercadoLibreOrderDiscountsWithRetry(orderId, credential.access_token)
   ]);
   const messagesData = await fetchMercadoLibreMessagesWithRetry({
     orderId,
@@ -405,6 +406,7 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
     order,
     shipmentData
   );
+  const discountFinancials = normalizeMercadoLibreOrderDiscounts(discountsData);
 
   const customerSnapshot = buildMercadoLibreCustomerSnapshot({
     order,
@@ -446,11 +448,11 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
     user_id: publicationUserId,
     company_id: companyId,
     branch_id: branchId,
-    order_status: mapMercadoLibreOrderStatus(order.order_status),
-    payment_status: mapMercadoLibrePaymentStatus(order.payment_status),
+    order_status: mapMercadoLibreOrderStatus(resolveMercadoLibreOrderStatus(order)),
+    payment_status: mapMercadoLibrePaymentStatus(resolveMercadoLibrePaymentStatus(order)),
     subtotal: order.total_amount || 0,
     shipping_total: shippingFinancials.seller_cost,
-    discount_total: shippingFinancials.shipping_subsidy,
+    discount_total: discountFinancials.seller_amount + shippingFinancials.shipping_subsidy,
     tax_total: 0, // ML no devuelve impuestos separados
     total_amount: order.total_amount || 0,
     currency: order.currency_id || 'CLP',
@@ -474,8 +476,10 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
       shipment: shipmentData,
       shipment_costs: shipmentCostsData,
       billing_info: billingInfoData,
+      discounts: discountsData,
       messages: messagesData,
-      shipping_financials: shippingFinancials
+      shipping_financials: shippingFinancials,
+      discount_financials: discountFinancials
     }
   };
 
@@ -567,6 +571,7 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
           sellerShippingCost: shippingData.sellerShippingCost,
           buyerShippingCost: shippingData.buyerShippingCost,
           shippingSubsidy: shippingData.shippingSubsidy,
+          discountTotal: discountFinancials.seller_amount,
           logisticType: shippingData.logisticType,
           freeShipping: shippingData.freeShipping,
           shippingWhoPays: shippingData.whoPays,
@@ -681,11 +686,39 @@ async function fetchMercadoLibreShipmentCostsWithRetry(shipmentId, accessToken) 
   });
 }
 
-async function fetchMercadoLibreBillingInfoWithRetry(orderId, accessToken) {
+async function fetchMercadoLibreBillingInfoWithRetry(orderOrId, accessToken) {
+  const order = orderOrId && typeof orderOrId === "object" ? orderOrId : null;
+  const orderId = order?.id || orderOrId;
+  const billingInfoId = order?.buyer?.billing_info?.id || order?.billing_info?.id || null;
+  const siteId = order?.context?.site || order?.site_id || order?.site || null;
+
+  if (billingInfoId && siteId) {
+    const billingInfo = await fetchMercadoLibreResourceWithRetry({
+      resourcePath: `orders/billing-info/${siteId}/${billingInfoId}`,
+      accessToken,
+      resourceLabel: `billing_info ${orderId}`,
+      allowNotFound: true
+    });
+
+    if (billingInfo) return billingInfo;
+  }
+
   return await fetchMercadoLibreResourceWithRetry({
-    resourcePath: `marketplace/orders/${orderId}/billing_info`,
+    resourcePath: `orders/${orderId}/billing_info`,
     accessToken,
     resourceLabel: `billing_info ${orderId}`,
+    allowNotFound: true,
+    extraHeaders: {
+      "x-version": "2"
+    }
+  });
+}
+
+async function fetchMercadoLibreOrderDiscountsWithRetry(orderId, accessToken) {
+  return await fetchMercadoLibreResourceWithRetry({
+    resourcePath: `orders/${orderId}/discounts`,
+    accessToken,
+    resourceLabel: `discounts ${orderId}`,
     allowNotFound: true
   });
 }
@@ -737,7 +770,15 @@ async function fetchMercadoLibreResourceWithRetry({
       }
 
       if (status === 401 || status === 403) {
-        logger.error(`[ML Webhook] Error autenticacion ${status} para ${safeLabel}`);
+        logger.error(`[ML Webhook] Error autenticacion ${status} para ${safeLabel}`, {
+          resource_path: resourcePath,
+          response: error?.response?.data || null,
+          request_id:
+            error?.response?.headers?.["x-request-id"] ||
+            error?.response?.headers?.["x-correlation-id"] ||
+            error?.response?.headers?.["x-meli-request-id"] ||
+            null
+        });
         return null;
       }
 
@@ -902,6 +943,14 @@ function isMercadoLibreDeletedState(status, subStatus = []) {
   );
 }
 
+function isMercadoLibrePictureProcessingState(status, subStatus = []) {
+  const normalizedStatus = normalizeMercadoLibreItemStatusValue(status);
+  const normalizedSubStatus = normalizeMercadoLibreSubStatusValue(subStatus);
+
+  return normalizedStatus === 'paused'
+    && normalizedSubStatus.some((value) => String(value).toLowerCase() === 'picture_download_pending');
+}
+
 function buildMercadoLibreItemStateSnapshot({ item, verification, payload }) {
   const status = normalizeMercadoLibreItemStatusValue(item?.status);
   const subStatus = normalizeMercadoLibreSubStatusValue(item?.sub_status);
@@ -1013,7 +1062,9 @@ async function persistMercadoLibreItemState({
   const updatePayload = {
     status: isMercadoLibreDeletedState(snapshot.status, snapshot.sub_status)
       ? 'deleted'
-      : (snapshot.status || link?.status || 'unpublished'),
+      : (isMercadoLibrePictureProcessingState(snapshot.status, snapshot.sub_status)
+        ? 'processing'
+        : (snapshot.status || link?.status || 'unpublished')),
     external_url: item?.permalink || link?.external_url || null,
     last_synced_at: new Date()
   };
@@ -1042,10 +1093,12 @@ async function persistMercadoLibreItemState({
       error_details: isActive ? null : mergedDetails
     };
 
-    if (isActive && task.status === 'published_with_warnings') {
+    const isPictureProcessing = isMercadoLibrePictureProcessingState(snapshot.status, snapshot.sub_status);
+
+    if (isActive && ['published_with_warnings', 'processing'].includes(task.status)) {
       taskUpdate.status = 'published';
-    } else if (!isActive && !isDeleted && task.status === 'published') {
-      taskUpdate.status = 'published_with_warnings';
+    } else if (!isActive && !isDeleted && ['published', 'published_with_warnings'].includes(task.status)) {
+      taskUpdate.status = isPictureProcessing ? 'processing' : 'published_with_warnings';
     }
 
     await task.update(taskUpdate);
@@ -3174,6 +3227,33 @@ function extractFalabellaPublishedNumericState(payload) {
   };
 }
 
+function normalizeMercadoLibreOrderDiscounts(discountsData) {
+  const amounts = {
+    total_amount: 0,
+    seller_amount: 0,
+    marketplace_amount: 0,
+    raw: discountsData || null
+  };
+
+  const details = Array.isArray(discountsData?.details)
+    ? discountsData.details
+    : Array.isArray(discountsData)
+      ? discountsData
+      : [];
+
+  for (const detail of details) {
+    const items = Array.isArray(detail?.items) ? detail.items : [];
+    for (const item of items) {
+      const itemAmounts = item?.amounts || {};
+      amounts.total_amount += Number(itemAmounts.total || 0) || 0;
+      amounts.seller_amount += Number(itemAmounts.seller || 0) || 0;
+      amounts.marketplace_amount += Number(itemAmounts.meli || itemAmounts.marketplace || 0) || 0;
+    }
+  }
+
+  return amounts;
+}
+
 function extractFalabellaPublishedState(payload) {
   const normalized = normalizeTaskPayload(payload);
   if (!normalized || typeof normalized !== 'object') {
@@ -4566,6 +4646,8 @@ async function processOrderItem(orderItem, ctx) {
 
   let shippingCostForItem = 0;
   const orderSellerShippingCost = Number(ctx.sellerShippingCost || 0);
+  let discountForItem = 0;
+  const orderSellerDiscount = Number(ctx.discountTotal || 0);
   if (orderSellerShippingCost > 0) {
     const denominator = Number(ctx.totalQuantity || 0) > 0
       ? Number(ctx.totalQuantity)
@@ -4573,19 +4655,27 @@ async function processOrderItem(orderItem, ctx) {
     const weight = Number(ctx.totalQuantity || 0) > 0 ? quantity : 1;
     shippingCostForItem = (orderSellerShippingCost * weight) / denominator;
   }
+  if (orderSellerDiscount > 0) {
+    const denominator = Number(ctx.totalQuantity || 0) > 0
+      ? Number(ctx.totalQuantity)
+      : Number(ctx.totalItems || 1);
+    const weight = Number(ctx.totalQuantity || 0) > 0 ? quantity : 1;
+    discountForItem = (orderSellerDiscount * weight) / denominator;
+  }
 
   const totalCost = allocation.plan.reduce((sum, entry) => {
     return sum + (entry.deduct || 0) * (entry.costPrice || 0);
   }, 0);
 
   const costPrice = quantity > 0 ? totalCost / quantity : 0;
-  const grossProfit = totalPrice - saleFee - shippingCostForItem - totalCost;
+  const grossProfit = totalPrice - discountForItem - saleFee - shippingCostForItem - totalCost;
   const marginPercentage = totalPrice > 0 ? (grossProfit / totalPrice) * 100 : 0;
 
   logger.info(`[ML Webhook] Cálculo financiero - Order: ${ctx.orderId}, Item: ${listingId}`, {
     unit_price: unitPrice,
     quantity: quantity,
     total_price: totalPrice,
+    discount_amount: Math.round(discountForItem),
     sale_fee: saleFee,
     shipping_cost_item: Math.round(shippingCostForItem),
     shipping_cost_order_seller: Math.round(orderSellerShippingCost),
@@ -4610,6 +4700,7 @@ async function processOrderItem(orderItem, ctx) {
     financialData: {
       unit_price: unitPrice,
       total_price: totalPrice,
+      discount_amount: Math.round(discountForItem),
       sale_fee: saleFee,
       shipping_cost: Math.round(shippingCostForItem),
       cost_price: costPrice,
@@ -4647,7 +4738,7 @@ async function processOrderItem(orderItem, ctx) {
         quantity: quantity,
         unit_price: unitPrice,
         total_price: totalPrice,
-        discount_amount: 0,
+        discount_amount: Math.round(discountForItem),
         tax_amount: 0,
         cost_price: costPrice,
         total_cost: totalCost,
@@ -5387,6 +5478,21 @@ function mapMercadoLibreOrderStatus(mlStatus) {
   return statusMap[mlStatus.toLowerCase()] || 'pending';
 }
 
+function resolveMercadoLibreOrderStatus(order) {
+  return order?.status || order?.order_status || null;
+}
+
+function resolveMercadoLibrePaymentStatus(order) {
+  const payments = Array.isArray(order?.payments) ? order.payments : [];
+  const approved = payments.find((payment) => {
+    return ["approved", "paid", "authorized"].includes(
+      String(payment?.status || "").toLowerCase()
+    );
+  });
+
+  return approved?.status || order?.payment_status || payments[0]?.status || null;
+}
+
 /**
  * Mapea el estado de pago de Mercado Libre a estado interno
  */
@@ -5395,6 +5501,7 @@ function mapMercadoLibrePaymentStatus(mlStatus) {
   
   const statusMap = {
     'paid': 'paid',
+    'approved': 'paid',
     'pending': 'pending',
     'authorized': 'authorized',
     'in_process': 'processing',

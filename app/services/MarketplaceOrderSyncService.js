@@ -50,14 +50,15 @@ const MarketplaceOrderSyncService = {
       }
 
       const shipmentId = remoteOrder?.shipping?.id || null;
-      const [shipmentData, shipmentCostsData, billingInfoData, messagesData] = await Promise.all([
+      const [shipmentData, shipmentCostsData, billingInfoData, discountsData, messagesData] = await Promise.all([
         shipmentId
           ? fetchMercadoLibreShipmentWithRetry(shipmentId, credential.access_token)
           : Promise.resolve(null),
         shipmentId
           ? fetchMercadoLibreShipmentCostsWithRetry(shipmentId, credential.access_token)
           : Promise.resolve(null),
-        fetchMercadoLibreBillingInfoWithRetry(order.marketplace_order_id, credential.access_token),
+        fetchMercadoLibreBillingInfoWithRetry(remoteOrder, credential.access_token),
+        fetchMercadoLibreOrderDiscountsWithRetry(order.marketplace_order_id, credential.access_token),
         fetchMercadoLibreMessagesWithRetry({
           orderId: order.marketplace_order_id,
           order: remoteOrder,
@@ -71,6 +72,7 @@ const MarketplaceOrderSyncService = {
         remoteOrder,
         shipmentData
       );
+      const discountFinancials = normalizeMercadoLibreOrderDiscounts(discountsData);
 
       const customerSnapshot = buildMercadoLibreCustomerSnapshot({
         order: remoteOrder,
@@ -79,11 +81,11 @@ const MarketplaceOrderSyncService = {
       });
 
       const orderData = {
-        order_status: mapMercadoLibreOrderStatus(remoteOrder.order_status),
-        payment_status: mapMercadoLibrePaymentStatus(remoteOrder.payment_status),
+        order_status: mapMercadoLibreOrderStatus(resolveMercadoLibreOrderStatus(remoteOrder)),
+        payment_status: mapMercadoLibrePaymentStatus(resolveMercadoLibrePaymentStatus(remoteOrder)),
         subtotal: remoteOrder.total_amount || 0,
         shipping_total: shippingFinancials.seller_cost,
-        discount_total: shippingFinancials.shipping_subsidy,
+        discount_total: discountFinancials.seller_amount + shippingFinancials.shipping_subsidy,
         tax_total: 0,
         total_amount: remoteOrder.total_amount || 0,
         currency: remoteOrder.currency_id || 'CLP',
@@ -108,8 +110,10 @@ const MarketplaceOrderSyncService = {
           shipment: shipmentData,
           shipment_costs: shipmentCostsData,
           billing_info: billingInfoData,
+          discounts: discountsData,
           messages: messagesData,
-          shipping_financials: shippingFinancials
+          shipping_financials: shippingFinancials,
+          discount_financials: discountFinancials
         }
       };
 
@@ -160,11 +164,37 @@ async function fetchMercadoLibreShipmentCostsWithRetry(shipmentId, accessToken) 
   });
 }
 
-async function fetchMercadoLibreBillingInfoWithRetry(orderId, accessToken) {
+async function fetchMercadoLibreBillingInfoWithRetry(orderOrId, accessToken) {
+  const order = orderOrId && typeof orderOrId === 'object' ? orderOrId : null;
+  const orderId = order?.id || orderOrId;
+  const billingInfoId = order?.buyer?.billing_info?.id || order?.billing_info?.id || null;
+  const siteId = order?.context?.site || order?.site_id || order?.site || null;
+
+  if (billingInfoId && siteId) {
+    const billingInfo = await fetchMercadoLibreResourceWithRetry({
+      resourcePath: `orders/billing-info/${siteId}/${billingInfoId}`,
+      accessToken,
+      resourceLabel: `billing_info ${orderId}`,
+      allowNotFound: true
+    });
+
+    if (billingInfo) return billingInfo;
+  }
+
   return await fetchMercadoLibreResourceWithRetry({
-    resourcePath: `marketplace/orders/${orderId}/billing_info`,
+    resourcePath: `orders/${orderId}/billing_info`,
     accessToken,
     resourceLabel: `billing_info ${orderId}`,
+    allowNotFound: true,
+    extraHeaders: { 'x-version': '2' }
+  });
+}
+
+async function fetchMercadoLibreOrderDiscountsWithRetry(orderId, accessToken) {
+  return await fetchMercadoLibreResourceWithRetry({
+    resourcePath: `orders/${orderId}/discounts`,
+    accessToken,
+    resourceLabel: `discounts ${orderId}`,
     allowNotFound: true
   });
 }
@@ -205,7 +235,15 @@ async function fetchMercadoLibreResourceWithRetry({ resourcePath, accessToken, r
       }
 
       if (status === 401 || status === 403) {
-        logger.error(`[ML Refresh] Error autenticacion ${status} para ${safeLabel}`);
+        logger.error(`[ML Refresh] Error autenticacion ${status} para ${safeLabel}`, {
+          resource_path: resourcePath,
+          response: error?.response?.data || null,
+          request_id:
+            error?.response?.headers?.['x-request-id'] ||
+            error?.response?.headers?.['x-correlation-id'] ||
+            error?.response?.headers?.['x-meli-request-id'] ||
+            null
+        });
         return null;
       }
 
@@ -258,7 +296,7 @@ function normalizeMercadoLibreShipmentCosts(shipmentCosts, order, shipment) {
   return {
     shipment_id: shipment?.id || order?.shipping?.id || null,
     logistic_type: shipment?.logistic_type || order?.shipping?.logistic_type || null,
-    free_shipping,
+    free_shipping: freeShipping,
     gross_amount: grossAmount,
     buyer_cost: buyerCost,
     seller_cost: sellerCost,
@@ -269,6 +307,33 @@ function normalizeMercadoLibreShipmentCosts(shipmentCosts, order, shipment) {
     receiver,
     raw: shipmentCosts || null
   };
+}
+
+function normalizeMercadoLibreOrderDiscounts(discountsData) {
+  const amounts = {
+    total_amount: 0,
+    seller_amount: 0,
+    marketplace_amount: 0,
+    raw: discountsData || null
+  };
+
+  const details = Array.isArray(discountsData?.details)
+    ? discountsData.details
+    : Array.isArray(discountsData)
+      ? discountsData
+      : [];
+
+  for (const detail of details) {
+    const items = Array.isArray(detail?.items) ? detail.items : [];
+    for (const item of items) {
+      const itemAmounts = item?.amounts || {};
+      amounts.total_amount += Number(itemAmounts.total || 0) || 0;
+      amounts.seller_amount += Number(itemAmounts.seller || 0) || 0;
+      amounts.marketplace_amount += Number(itemAmounts.meli || itemAmounts.marketplace || 0) || 0;
+    }
+  }
+
+  return amounts;
 }
 
 function buildMercadoLibreMessagesSnapshot(messagesData) {
@@ -414,10 +479,26 @@ function mapMercadoLibreOrderStatus(mlStatus) {
   return statusMap[String(mlStatus).toLowerCase()] || 'pending';
 }
 
+function resolveMercadoLibreOrderStatus(order) {
+  return order?.status || order?.order_status || null;
+}
+
+function resolveMercadoLibrePaymentStatus(order) {
+  const payments = Array.isArray(order?.payments) ? order.payments : [];
+  const approved = payments.find((payment) => {
+    return ['approved', 'paid', 'authorized'].includes(
+      String(payment?.status || '').toLowerCase()
+    );
+  });
+
+  return approved?.status || order?.payment_status || payments[0]?.status || null;
+}
+
 function mapMercadoLibrePaymentStatus(mlStatus) {
   if (!mlStatus) return 'pending';
   const statusMap = {
     paid: 'paid',
+    approved: 'paid',
     pending: 'pending',
     authorized: 'authorized',
     in_process: 'processing',

@@ -28,7 +28,7 @@ const DEFAULT_CONTEXT = {
 
 function loadControllerInternals() {
   const controllerPath = path.resolve(__dirname, '../controllers/MarketplaceWebhookController.js');
-  const source = `${fs.readFileSync(controllerPath, 'utf8')}\nmodule.exports.__internals = {\n  processMercadoLibreWebhook,\n  processMercadoLibreEvent,\n  fetchMercadoLibreOrderWithRetry,\n  fetchMercadoLibreShipmentWithRetry,\n  fetchMercadoLibreShipmentCostsWithRetry,\n  fetchMercadoLibreBillingInfoWithRetry,\n  fetchMercadoLibreMessagesWithRetry,\n  resolveCompanyFromListing,\n  processOrderItem,\n  normalizeMercadoLibreShipmentCosts,\n  buildMercadoLibreCustomerSnapshot,\n  buildMercadoLibreMessagesSnapshot\n};\n`;
+  const source = `${fs.readFileSync(controllerPath, 'utf8')}\nmodule.exports.__internals = {\n  processMercadoLibreWebhook,\n  processMercadoLibreEvent,\n  fetchMercadoLibreOrderWithRetry,\n  fetchMercadoLibreShipmentWithRetry,\n  fetchMercadoLibreShipmentCostsWithRetry,\n  fetchMercadoLibreBillingInfoWithRetry,\n  fetchMercadoLibreOrderDiscountsWithRetry,\n  fetchMercadoLibreMessagesWithRetry,\n  resolveCompanyFromListing,\n  processOrderItem,\n  normalizeMercadoLibreShipmentCosts,\n  normalizeMercadoLibreOrderDiscounts,\n  buildMercadoLibreCustomerSnapshot,\n  buildMercadoLibreMessagesSnapshot\n};\n`;
 
   const controllerModule = new Module(controllerPath, module);
   controllerModule.filename = controllerPath;
@@ -51,12 +51,16 @@ function roundMoney(value) {
   return Math.max(0, Math.round(toNumber(value, 0)));
 }
 
-function buildMockAxiosGet({ orderData, shipmentData, shipmentCostsData, billingInfoData, messagesData }) {
+function buildMockAxiosGet({ orderData, shipmentData, shipmentCostsData, billingInfoData, discountsData, messagesData }) {
   return async function mockAxiosGet(url) {
     const normalizedUrl = String(url || '');
 
-    if (normalizedUrl.includes(`/marketplace/orders/${orderData.id}/billing_info`)) {
+    if (normalizedUrl.includes(`/orders/billing-info/`) || normalizedUrl.includes(`/orders/${orderData.id}/billing_info`)) {
       return { data: billingInfoData };
+    }
+
+    if (normalizedUrl.includes(`/orders/${orderData.id}/discounts`)) {
+      return { data: discountsData || { details: [] } };
     }
 
     if (normalizedUrl.includes(`/shipments/${shipmentData.id}/costs`)) {
@@ -292,7 +296,13 @@ function buildOrderPayload({ orderId, sellerId, orderItems }) {
       last_name: 'Simulado',
       nickname: `buyer-${orderId}`,
       email: `cliente-${orderId}@example.com`,
-      phone: { number: '+56911112222' }
+      phone: { number: '+56911112222' },
+      billing_info: {
+        id: `BILL-${orderId}`
+      }
+    },
+    context: {
+      site: 'MLC'
     },
     shipping: {
       id: `SHIP-${orderId}`,
@@ -312,11 +322,11 @@ function buildOrderPayload({ orderId, sellerId, orderItems }) {
       }
     },
     currency_id: 'CLP',
-    order_status: 'paid',
-    payment_status: 'paid',
+    status: 'paid',
     total_amount: itemsTotal + shippingGross,
     payments: [
       {
+        status: 'approved',
         payment_type: 'credit_card',
         date_created: now.toISOString()
       }
@@ -345,6 +355,12 @@ function buildShipmentCostsPayload({ shippingId }) {
     receiver: {
       cost: 250
     }
+  };
+}
+
+function buildDiscountsPayload() {
+  return {
+    details: []
   };
 }
 
@@ -532,6 +548,7 @@ async function runMercadoLibreWebhookPurchaseSimulation({
   };
   const shipmentCostsData = buildShipmentCostsPayload({ shippingId: shipmentData.id });
   const billingInfoData = buildBillingInfoPayload({ orderId, buyer: orderData.buyer });
+  const discountsData = buildDiscountsPayload();
   const messagesData = buildMessagesPayload({ orderId });
   const payload = {
     _id: `sim-${orderId}-${Date.now()}`,
@@ -555,6 +572,7 @@ async function runMercadoLibreWebhookPurchaseSimulation({
       shipmentData,
       shipmentCostsData,
       billingInfoData,
+      discountsData,
       messagesData
     })
   );

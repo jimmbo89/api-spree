@@ -118,6 +118,40 @@ function buildVerificationDetails(verification) {
   };
 }
 
+function normalizeMarketplaceStatus(status) {
+  return status ? String(status).trim().toLowerCase() : null;
+}
+
+function hasMercadoLibreSubStatus(verification, expectedSubStatus) {
+  const subStatus = Array.isArray(verification?.sub_status)
+    ? verification.sub_status
+    : Array.isArray(verification?.item?.sub_status)
+      ? verification.item.sub_status
+      : [];
+
+  return subStatus.some((value) => (
+    String(value).trim().toLowerCase() === expectedSubStatus
+  ));
+}
+
+function isMercadoLibrePictureProcessing(verification) {
+  return normalizeMarketplaceStatus(verification?.status) === 'paused'
+    && hasMercadoLibreSubStatus(verification, 'picture_download_pending');
+}
+
+function resolveMercadoLibreTaskStatus({ finalSuccess, hasWarnings, verification }) {
+  if (!finalSuccess) return 'failed';
+
+  if (isMercadoLibrePictureProcessing(verification)) return 'processing';
+
+  return hasWarnings ? 'published_with_warnings' : 'published';
+}
+
+function resolveMercadoLibreLinkStatus(taskStatus, verification) {
+  if (isMercadoLibrePictureProcessing(verification)) return 'processing';
+  return normalizeMarketplaceStatus(verification?.status) || taskStatus;
+}
+
 function normalizeDetailsObject(details) {
   if (!details) return {};
   if (typeof details === 'object' && !Array.isArray(details)) return details;
@@ -1074,11 +1108,15 @@ class PublishingService {
 
         const verificationFailed = shouldVerifyMlPublication && verification && !verification.item_found;
         const finalSuccess = result.success && !verificationFailed;
-        const status = finalSuccess
-          ? (warningsArtifacts.hasWarnings ? 'published_with_warnings' : 'published')
-          : 'failed';
-
         const hasWarnings = warningsArtifacts.hasWarnings;
+        const status = resolveMercadoLibreTaskStatus({
+          finalSuccess,
+          hasWarnings,
+          verification
+        });
+        const linkStatus = isMercadoLibre
+          ? resolveMercadoLibreLinkStatus(status, verification)
+          : status;
         const warningMessage = warningsArtifacts.warningMessage;
         const warningsData = warningsArtifacts.warningsData;
 
@@ -1151,7 +1189,7 @@ class PublishingService {
               credential_id: credentialId,
               user_id: userId,
               ...mercadoLibreLinkScope,
-              status,
+              status: linkStatus,
               external_id: createdItem.item_id,
               external_url: createdItem.response?.permalink || null,
               published_stock: normalizePublishedStock(createdItem.payload),
@@ -1169,7 +1207,7 @@ class PublishingService {
             user_id: userId,
             company_id: warehouse.company_id,
             branch_id: warehouse.branch_id,
-            status: status,
+            status: linkStatus,
             external_id: externalId,
             external_url: result.data?.permalink,
             published_stock: normalizePublishedStock(transformed),
@@ -1504,11 +1542,13 @@ static async republishProduct(task, marketplace, credential, userId) {
     // ✅ Determinar status según si hay warnings
     const verificationFailed = shouldVerifyMlPublication && verification && !verification.item_found;
     const finalSuccess = result.success && !verificationFailed;
-    const status = finalSuccess
-      ? (warningsArtifacts.hasWarnings ? 'published_with_warnings' : 'published')
-      : 'failed';
-
     const hasWarnings = warningsArtifacts.hasWarnings;
+    const status = resolveMercadoLibreTaskStatus({
+      finalSuccess,
+      hasWarnings,
+      verification
+    });
+    const linkStatus = resolveMercadoLibreLinkStatus(status, verification);
     const warningMessage = warningsArtifacts.warningMessage;
     const warningsData = warningsArtifacts.warningsData;
 
@@ -1551,7 +1591,7 @@ static async republishProduct(task, marketplace, credential, userId) {
         credential_id: task.credential_id,
         user_id: task.user_id,
         ...buildProductMarketplaceLinkScope(task),
-        status,
+        status: linkStatus,
         external_id: externalId,
         external_url: result.data?.permalink,
         published_stock: normalizePublishedStock(task.payload),

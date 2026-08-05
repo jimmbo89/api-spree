@@ -659,6 +659,12 @@ function buildMercadoLibreItemStateSnapshotFromItem(item, source = 'manual_updat
   };
 }
 
+function isMercadoLibrePictureProcessingSnapshot(snapshot) {
+  return snapshot?.status === 'paused'
+    && Array.isArray(snapshot.sub_status)
+    && snapshot.sub_status.some((value) => String(value).toLowerCase() === 'picture_download_pending');
+}
+
 function normalizeMlEditRequestValue(value) {
   if (value === undefined || value === null) return undefined;
   if (typeof value === 'string' && value.trim() === '') return undefined;
@@ -2650,7 +2656,8 @@ async store(req, res) {
               published_with_warnings: 0,  // ✅ Nuevo contador para warnings
               failed: 0,
               draft: 0,
-              pending: 0
+              pending: 0,
+              processing: 0
             }
           };
         }
@@ -2665,6 +2672,7 @@ async store(req, res) {
           case 'failed': grouped[task.batch_id].summary.failed++; break;
           case 'draft': grouped[task.batch_id].summary.draft++; break;
           case 'pending': grouped[task.batch_id].summary.pending++; break;
+          case 'processing': grouped[task.batch_id].summary.processing++; break;
         }
       });
 
@@ -3486,6 +3494,7 @@ async publishedProducts(req, res) {
       const marketplaceStateSnapshot = buildMercadoLibreItemStateSnapshotFromItem(updatedItem, 'manual_update');
       const isActive = marketplaceStateSnapshot.status === 'active';
       const shouldKeepWarning = marketplaceStateSnapshot.status && !isActive;
+      const isPictureProcessing = isMercadoLibrePictureProcessingSnapshot(marketplaceStateSnapshot);
       const currentDetails = normalizeErrorDetails(task.error_details);
       const mergedDetails = {
         ...currentDetails,
@@ -3504,10 +3513,10 @@ async publishedProducts(req, res) {
         error_details: shouldKeepWarning ? mergedDetails : null
       };
 
-      if (isActive && task.status === 'published_with_warnings') {
+      if (isActive && ['published_with_warnings', 'processing'].includes(task.status)) {
         taskUpdate.status = 'published';
       } else if (shouldKeepWarning && task.status === 'published') {
-        taskUpdate.status = 'published_with_warnings';
+        taskUpdate.status = isPictureProcessing ? 'processing' : 'published_with_warnings';
       }
 
       await ProductPublishingTaskRepository.updateTask(task, taskUpdate);
@@ -3522,7 +3531,7 @@ async publishedProducts(req, res) {
 
       if (link) {
         await link.update({
-          status: marketplaceStateSnapshot.status || link.status,
+          status: isPictureProcessing ? 'processing' : (marketplaceStateSnapshot.status || link.status),
           external_url: updatedItem.permalink || link.external_url || null,
           published_stock: extractPublishedStock(updatedItem),
           published_payload: updatedItem,

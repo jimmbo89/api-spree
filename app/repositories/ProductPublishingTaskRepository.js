@@ -363,7 +363,7 @@ const ProductPublishingTaskRepository = {
       status: {
         [Op.in]: includeProcessing
           ? ['published', 'published_with_warnings', 'processing', 'pending', 'failed']
-          : ['published', 'published_with_warnings']
+          : ['published', 'published_with_warnings', 'processing']
       }
     };
 
