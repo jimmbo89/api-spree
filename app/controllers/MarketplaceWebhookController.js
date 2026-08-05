@@ -18,6 +18,7 @@ const {
   MarketplaceOrderFeeRepository,
   MarketplaceOrderEventRepository,
   MarketplaceOrderCustomerRepository,
+  NotificationRepository,
   JobProductRepository,
   JobRepository,
   CompanyRepository,
@@ -588,30 +589,6 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
       }
     }
 
-    // ✅ GUARDAR FEES TOTALES DE LA ORDEN
-    if (savedOrder && items.length > 0) {
-      try {
-        const totalFees = items.reduce((sum, item) => {
-          return sum + (Number(item.sale_fee) || 0);
-        }, 0);
-
-        if (totalFees > 0) {
-          await MarketplaceOrderFeeRepository.create({
-            order_id: savedOrder.id,
-            company_id: companyId,
-            fee_type: 'commission',
-            amount: totalFees,
-            percentage: calculateAverageCommissionPercentage(totalFees, order.total_amount),
-            status: 'pending',
-            description: `Comisión Mercado Libre - Orden ${orderId}`,
-            raw_data: { items: items.map(i => ({ id: i.id, sale_fee: i.sale_fee })) }
-          });
-        }
-      } catch (error) {
-        logger.error(`[ML Webhook] Error guardando fees de orden ${orderId}: ${error.message}`);
-      }
-    }
-
     await MarketplaceOrderEventRepository.create({
       order_id: savedOrder.id,
       event_type: STOCK_DEDUCT_EVENT_TYPE,
@@ -620,6 +597,16 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
       raw_payload: order,
       notes: `Stock debitado por orden Mercado Libre ${orderId}`,
       company_id: companyId
+    });
+
+    await notifyMercadoLibreSaleRegistered({
+      userId: publicationUserId,
+      companyId,
+      orderId,
+      savedOrder,
+      items,
+      savedItems,
+      totalAmount: order.total_amount || 0
     });
   }
 
@@ -891,6 +878,63 @@ function buildMercadoLibreMessagesSnapshot(messagesData) {
       const bTime = b.received_at ? new Date(b.received_at).getTime() : 0;
       return aTime - bTime;
     });
+}
+
+async function notifyMercadoLibreSaleRegistered({
+  userId,
+  companyId,
+  orderId,
+  savedOrder,
+  items = [],
+  savedItems = [],
+  totalAmount = 0
+}) {
+  if (!userId || !savedOrder?.id || !Array.isArray(savedItems) || savedItems.length === 0) {
+    return null;
+  }
+
+  const itemTitles = items
+    .map((item) => item?.item?.title || item?.title || getListingId(item))
+    .filter(Boolean);
+  const firstTitle = itemTitles[0] || `orden ${orderId}`;
+  const itemCount = savedItems.length;
+  const description = itemCount === 1
+    ? `Se registro una venta de ${firstTitle} en Mercado Libre.`
+    : `Se registro una venta de ${itemCount} productos en Mercado Libre.`;
+
+  try {
+    const notification = await NotificationRepository.create({
+      user_id: userId,
+      company_id: companyId,
+      title: "Nueva venta Mercado Libre",
+      description,
+      type: "marketplace_sale_registered",
+      data: {
+        marketplace: ML_MARKETPLACE_KEY,
+        marketplace_order_id: String(orderId),
+        order_id: savedOrder.id,
+        item_count: itemCount,
+        total_amount: Number(totalAmount || 0),
+        items: savedItems.map((item) => ({
+          order_item_id: item.id,
+          product_id: item.product_id,
+          variant_id: item.variant_id,
+          listing_id: item.listing_id,
+          sku: item.sku,
+          quantity: item.quantity,
+          total_price: item.total_price
+        })),
+        created_at: new Date().toISOString()
+      },
+      status: 0
+    });
+
+    logger.info(`[ML Webhook] Notificacion de venta creada order=${orderId} user_id=${userId} notification_id=${notification?.id}`);
+    return notification;
+  } catch (error) {
+    logger.warn(`[ML Webhook] Error creando notificacion de venta order=${orderId}: ${error.message}`);
+    return null;
+  }
 }
 
 function getMercadoLibreSellerId(credential, order) {
@@ -4754,7 +4798,7 @@ async function processOrderItem(orderItem, ctx) {
           fee_type: 'commission',
           amount: saleFee,
           percentage: unitPrice > 0 ? (saleFee / unitPrice) * 100 : 0,
-          status: 'pending',
+          status: 'charged',
           description: `Comisión ML - Item ${listingId}`,
           raw_data: { sale_fee: saleFee }
         });
