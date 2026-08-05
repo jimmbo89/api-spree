@@ -100,6 +100,22 @@ function buildWarningArtifacts(result) {
   };
 }
 
+function logMarketplaceCredentialSecrets(credentials = []) {
+  credentials.forEach((credential) => {
+    const mpName = credential.marketplace?.name || credential.marketplace?.type || 'Marketplace';
+    logger.warn('[marketplaces-pools][DEBUG_CREDENTIALS] Credencial descifrada', {
+      marketplace: mpName,
+      marketplace_id: credential.marketplace?.id || null,
+      credential_id: credential.id,
+      seller_id: credential.seller_id || null,
+      seller_email: credential.seller_email || null,
+      access_token: credential.access_token || null,
+      refresh_token: credential.refresh_token || null,
+      api_key: credential.api_key || null
+    });
+  });
+}
+
 function normalizeErrorDetails(value) {
   if (!value) return {};
   if (typeof value === 'object') return value;
@@ -970,6 +986,7 @@ async warehouseMarketplaces(req, res) {
 
     // 3. ✅ RENOVAR TOKENS EXPIRADOS ANTES DE TRANSFORMAR
     const refreshedCredentials = await ProductPublishingTaskController.refreshExpiredTokens(credentials, userId);
+    logMarketplaceCredentialSecrets(refreshedCredentials);
 
     // 4. Transformar resultados (igual que antes, pero con credenciales actualizadas)
     /*const marketplaces = refreshedCredentials.map(credential => {
