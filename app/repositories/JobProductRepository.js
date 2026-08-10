@@ -1,14 +1,108 @@
 // src/repositories/JobProductRepository.js
-const { JobProduct, Job, Product, Marketplace, MarketplaceCredential, ProductPublishingTask } = require('../models');
+const { JobProduct, Job, Product, Marketplace, MarketplaceCredential, ProductPublishingTask, ProductMarketplaceLink } = require('../models');
 const { Op } = require('sequelize');
 const logger = require('../../config/logger');
 
 const TASK_SUCCESS_STATUSES = new Set(['published', 'published_with_warnings']);
 const TASK_FAILURE_STATUSES = new Set(['failed', 'deleted', 'cancelled']);
 const TASK_ACTIVE_STATUSES = new Set(['pending', 'processing', 'retrying', 'draft']);
+const MARKETPLACE_FAILURE_STATUSES = new Set(['failed', 'error', 'rejected', 'deleted', 'closed', 'inactive']);
+const MARKETPLACE_REVIEW_STATUSES = new Set(['under_review', 'paused', 'pending']);
 
 function normalizeStatusValue(value) {
   return String(value || '').trim().toLowerCase() || null;
+}
+
+function parseJsonMaybe(value) {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+  if (typeof value !== 'string') return null;
+
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    return null;
+  }
+}
+
+function resolveMarketplaceStatus({ jobProduct = {}, task = null, marketplaceLink = null } = {}) {
+  const details = parseJsonMaybe(jobProduct?.error_details) || {};
+  const taskDetails = parseJsonMaybe(task?.error_details) || {};
+  const apiResponse = parseJsonMaybe(task?.api_response) || {};
+
+  const qcStatus = normalizeStatusValue(
+    taskDetails.qc_status ||
+    taskDetails.marketplace_item_state?.qc_status ||
+    details.qc_status ||
+    details.marketplace_item_state?.qc_status
+  );
+
+  if (qcStatus === 'pending') return 'under_review';
+  if (qcStatus === 'rejected') return 'rejected';
+
+  const candidates = [
+    marketplaceLink?.status,
+    taskDetails.marketplace_item_state?.status,
+    details.marketplace_item_state?.status,
+    taskDetails.marketplace_status,
+    details.marketplace_status,
+    taskDetails.marketplace_display_status,
+    details.marketplace_display_status,
+    apiResponse.status
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = normalizeStatusValue(candidate);
+    if (normalized) return normalized;
+  }
+
+  return null;
+}
+
+function hasWarningDetails(value) {
+  const parsed = parseJsonMaybe(value);
+  return Boolean(
+    parsed &&
+    (
+      parsed.has_warnings === true ||
+      (Array.isArray(parsed.warnings) && parsed.warnings.length > 0) ||
+      (
+        parsed.marketplace_item_state &&
+        typeof parsed.marketplace_item_state === 'object' &&
+        normalizeStatusValue(parsed.marketplace_item_state.status) &&
+        normalizeStatusValue(parsed.marketplace_item_state.status) !== 'active'
+      )
+    )
+  );
+}
+
+function classifyPublicationAttention({ jobProduct = {}, task = null, marketplaceStatus = null } = {}) {
+  const progressStatus = resolveJobProductProgressStatus({ ...jobProduct, task });
+  const taskStatus = normalizeStatusValue(task?.status);
+  const normalizedMarketplaceStatus = normalizeStatusValue(marketplaceStatus);
+  const message = String(jobProduct?.error_message || task?.error_message || '').trim().toLowerCase();
+
+  if (
+    progressStatus === 'error' ||
+    TASK_FAILURE_STATUSES.has(taskStatus) ||
+    MARKETPLACE_FAILURE_STATUSES.has(normalizedMarketplaceStatus)
+  ) {
+    return 'error';
+  }
+
+  if (MARKETPLACE_REVIEW_STATUSES.has(normalizedMarketplaceStatus)) {
+    return 'review';
+  }
+
+  if (normalizedMarketplaceStatus === 'processing' || TASK_ACTIVE_STATUSES.has(taskStatus)) {
+    return 'processing';
+  }
+
+  if (taskStatus === 'published_with_warnings' || hasWarningDetails(jobProduct?.error_details) || message.startsWith('advertencias')) {
+    return 'warning';
+  }
+
+  return 'none';
 }
 
 function resolveJobProductProgressStatus(jobProduct) {
@@ -201,6 +295,7 @@ async getStatsByJobAndMarketplace(jobId) {
         status, marketplace_id, credential_id,
         limit = 100, offset = 0,
         includeDetails = false,
+        includePublicationState = false,
         includePayloads = false  // ← NUEVO: flag para incluir payloads (evita cargar JSON grandes innecesariamente)
       } = filters;
 
@@ -212,21 +307,34 @@ async getStatsByJobAndMarketplace(jobId) {
       // Atributos base
       const baseAttributes = [
         'id', 'product_id', 'marketplace_id', 'credential_id',
+        'task_id',
         'status', 'external_id', 'external_url',
         'error_message', 'attempt_count', 'last_attempt_at',
         'createdAt', 'updatedAt'
       ];
 
       // Agregar payloads solo si se solicitan explícitamente
+      if (includeDetails) {
+        baseAttributes.push('error_details');
+      }
+
       if (includePayloads) {
         baseAttributes.push('product_payload', 'marketplace_payload');
       }
 
-      const includeOptions = includeDetails ? [
+      const includeOptions = [
+        ...(includePublicationState ? [{
+          model: ProductPublishingTask,
+          as: 'task',
+          attributes: ['id', 'status', 'error_message', 'error_details', 'api_response', 'external_id', 'external_url'],
+          required: false
+        }] : []),
+        ...(includeDetails ? [
         { model: Product, as: 'product' },
         { model: Marketplace, as: 'marketplace' },
         { model: MarketplaceCredential, as: 'credential'}
-      ] : [];
+        ] : [])
+      ];
 
       const jobProducts = await JobProduct.findAll({
         where,
@@ -250,7 +358,25 @@ async getStatsByJobAndMarketplace(jobId) {
             try { data.marketplace_payload = JSON.parse(data.marketplace_payload); } catch (e) { data.marketplace_payload = null; }
           }
         }
-        return data;
+        if (!includePublicationState) return data;
+
+        const marketplaceStatus = resolveMarketplaceStatus({
+          jobProduct: data,
+          task: data.task
+        });
+        const progressStatus = resolveJobProductProgressStatus(data);
+
+        return {
+          ...data,
+          progress_status: progressStatus,
+          publication_status: normalizeStatusValue(data.task?.status),
+          marketplace_status: marketplaceStatus,
+          attention_type: classifyPublicationAttention({
+            jobProduct: data,
+            task: data.task,
+            marketplaceStatus
+          })
+        };
       });
 
     } catch (error) {
@@ -868,35 +994,6 @@ async findAllErrorsByJob(job, options = {}) {
       return []; // Retornar array vacío en lugar de lanzar error
     }
 
-    const parseJsonMaybe = (value) => {
-      if (!value) return null;
-      if (typeof value === 'object') return value;
-      if (typeof value !== 'string') return null;
-
-      try {
-        return JSON.parse(value);
-      } catch (e) {
-        return null;
-      }
-    };
-
-    const hasWarningDetails = (value) => {
-      const parsed = parseJsonMaybe(value);
-      return Boolean(
-        parsed &&
-        (
-          parsed.has_warnings === true ||
-          (Array.isArray(parsed.warnings) && parsed.warnings.length > 0) ||
-          (
-            parsed.marketplace_item_state &&
-            typeof parsed.marketplace_item_state === 'object' &&
-            String(parsed.marketplace_item_state.status || '').toLowerCase() &&
-            String(parsed.marketplace_item_state.status || '').toLowerCase() !== 'active'
-          )
-        )
-      );
-    };
-
     const jobProducts = await JobProduct.findAll({
       where: {
         job_id: job.id,
@@ -935,12 +1032,40 @@ async findAllErrorsByJob(job, options = {}) {
           credential_id: jp.credential_id,
           batch_id: job.batch_id  // ✅ job.batch_id ya validado arriba
         },
-        attributes: ['payload', 'id'],
+        attributes: [
+          'payload', 'id', 'status', 'error_message', 'error_details',
+          'api_response', 'external_id', 'external_url'
+        ],
         order: [['createdAt', 'DESC']],
         raw: true
       });
 
       const data = jp.get({ plain: true });
+      let marketplaceLink = null;
+      const externalId = task?.external_id || data.external_id || null;
+
+      if (externalId) {
+        marketplaceLink = await ProductMarketplaceLink.findOne({
+          where: {
+            marketplace_id: jp.marketplace_id,
+            external_id: externalId,
+            ...(job.company_id ? { company_id: job.company_id } : {}),
+            ...(jp.credential_id ? { credential_id: jp.credential_id } : {})
+          },
+          raw: true
+        });
+      }
+
+      const marketplaceStatus = resolveMarketplaceStatus({
+        jobProduct: data,
+        task,
+        marketplaceLink
+      });
+      const attentionType = classifyPublicationAttention({
+        jobProduct: data,
+        task,
+        marketplaceStatus
+      });
       
       // ✅ 3. Procesar payload solo si task existe
       let processedPayload = null;
@@ -966,6 +1091,13 @@ async findAllErrorsByJob(job, options = {}) {
         continue;
       }
 
+      if (
+        !options.includeTransientAttention &&
+        (attentionType === 'review' || attentionType === 'processing' || attentionType === 'none')
+      ) {
+        continue;
+      }
+
       errors.push({
         id: jp.id,
         task_id: task?.id || null,  // ✅ CLAVE: usar optional chaining
@@ -979,6 +1111,10 @@ async findAllErrorsByJob(job, options = {}) {
         credential_id: jp.credential_id,
         credential_name: jp.credential?.name || null,
         status: jp.status,
+        progress_status: resolveJobProductProgressStatus({ ...data, task }),
+        publication_status: normalizeStatusValue(task?.status),
+        marketplace_status: marketplaceStatus,
+        attention_type: attentionType,
         error_message: jp.error_message,
         error_details: options.includeDetails !== false ? jp.error_details : null,
         payload: processedPayload,

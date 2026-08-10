@@ -349,12 +349,22 @@ async getJobProgress(req, res) {
 
     // ✅ 7. Obtener errores detallados SOLO si el job terminó y se solicitan productos
 let errorsByChannel = {};
+let attentionItemsByChannel = {};
 if (['completed', 'completed_with_errors', 'failed'].includes(jobStatus) && include_products === 'true') {
-  const allErrors = await JobProductRepository.findAllErrorsByJob(job, {
+  const attentionItems = await JobProductRepository.findAllErrorsByJob(job, {
     includePayloads: true,
     includeDetails: true,
+    includeTransientAttention: true,
     limit: 200 // Límite para no sobrecargar la respuesta
   });
+  const allErrors = attentionItems.filter((item) => item.attention_type === 'error');
+
+  attentionItemsByChannel = attentionItems.reduce((acc, item) => {
+    const key = item.credential_id;
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(item);
+    return acc;
+  }, {});
   
   // Agrupar errores por credential_id para facilitar el mapeo en frontend
   errorsByChannel = allErrors.reduce((acc, error) => {
@@ -395,13 +405,15 @@ if (['completed', 'completed_with_errors', 'failed'].includes(jobStatus) && incl
       percentage: ch.percentage,
       status: ch.status,
       // ✅ INCLUIR ERRORES DETALLADOS
-      errors: errorsByChannel[ch.credential_id] || []
+      errors: errorsByChannel[ch.credential_id] || [],
+      attention_items: attentionItemsByChannel[ch.credential_id] || []
     })),
     products: include_products === 'true' 
       ? await JobProductRepository.findAllByJob(jobId, { 
           limit: 50, 
           includePayloads: false,
-          includeDetails: true 
+          includeDetails: true,
+          includePublicationState: true
         }) 
       : undefined
   }
