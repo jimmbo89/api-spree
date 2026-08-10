@@ -84,6 +84,37 @@ function isMercadoLibreChildPkAttribute(attr) {
   return attr?.tags?.child_pk === true || hierarchy === 'CHILD_PK';
 }
 
+function isMercadoLibreRequiredAttribute(attr) {
+  return attr?.required === true ||
+    attr?.tags?.required === true ||
+    attr?.tags?.new_required === true ||
+    attr?.tags?.catalog_required === true;
+}
+
+function getMercadoLibreAttributeValue(attributes, attributeId) {
+  const sourceAttributes = Array.isArray(attributes) ? attributes : [];
+  const match = sourceAttributes.find((attr) => String(attr?.id || '').trim() === String(attributeId || '').trim());
+  if (!match) return null;
+  const value = match.value_name ?? match.value ?? match.value_id;
+  return value !== undefined && value !== null ? String(value).trim() : null;
+}
+
+function shouldRequireMercadoLibreChildPkAttribute(attr, resolvedAttributes = []) {
+  const attributeId = String(attr?.id || '').trim();
+  if (!isMercadoLibreRequiredAttribute(attr)) {
+    return false;
+  }
+
+  if (attributeId === 'PACKS_NUMBER') {
+    const saleFormat = getMercadoLibreAttributeValue(resolvedAttributes, 'SALE_FORMAT');
+    const unitsPerPack = Number(getMercadoLibreAttributeValue(resolvedAttributes, 'UNITS_PER_PACK'));
+    const isPackSale = /pack/i.test(String(saleFormat || '')) || String(saleFormat || '') === '1359392';
+    return isPackSale && Number.isFinite(unitsPerPack) && unitsPerPack > 1;
+  }
+
+  return true;
+}
+
 function isMercadoLibreHiddenOrReadOnlyAttribute(attr) {
   return attr?.tags?.hidden === true || attr?.tags?.read_only === true || attr?.id === 'ITEM_CONDITION';
 }
@@ -1676,12 +1707,31 @@ class MercadoLibreAdapter extends BaseAdapter {
 
   validateMercadoLibreUserProductVariant(transformedProduct, variant, categoryInfo, resolvedAttributes = []) {
     const categoryAttributes = Array.isArray(categoryInfo?.attributes) ? categoryInfo.attributes : [];
-    const requiredAttributes = categoryAttributes.filter((attr) => attr?.required === true);
-    const childPkAttributes = categoryAttributes.filter((attr) => isMercadoLibreChildPkAttribute(attr));
+    const requiredAttributes = categoryAttributes.filter((attr) =>
+      isMercadoLibreRequiredAttribute(attr) &&
+      (!isMercadoLibreChildPkAttribute(attr) || shouldRequireMercadoLibreChildPkAttribute(attr, resolvedAttributes))
+    );
+    const childPkAttributes = categoryAttributes.filter((attr) =>
+      isMercadoLibreChildPkAttribute(attr) && shouldRequireMercadoLibreChildPkAttribute(attr, resolvedAttributes)
+    );
     const parentPkAttributes = categoryAttributes.filter((attr) => isMercadoLibreParentPkAttribute(attr));
     const resolveValue = (attr) =>
       this.resolveMercadoLibreAttributeValueFromVariant(variant, attr) ||
       this.resolveMercadoLibreAttributeValueFromAttributes(resolvedAttributes, attr);
+
+    logger.info('[MercadoLibreAdapter] User Product Child PK validation', {
+      categoryId: transformedProduct.category_id || null,
+      sellerSku: variant?.sku || transformedProduct.sku || null,
+      childPkAttributes: categoryAttributes
+        .filter((attr) => isMercadoLibreChildPkAttribute(attr))
+        .map((attr) => ({
+          id: attr.id,
+          required: isMercadoLibreRequiredAttribute(attr),
+          enforced: shouldRequireMercadoLibreChildPkAttribute(attr, resolvedAttributes),
+          value: resolveValue(attr) || null,
+          tags: attr.tags || {}
+        }))
+    });
 
     const missingChildPk = childPkAttributes
       .filter((attr) => !resolveValue(attr))
