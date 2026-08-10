@@ -1315,6 +1315,11 @@ async refreshExpiredTokens(credentials, userId) {
   
   const refreshPromises = credentials.map(async (credential) => {
     try {
+      if (credential.active === false || Number(credential.active) === 0) {
+        logger.debug(`[refreshExpiredTokens] Credential ${credential.id} inactiva; se omite refresh automatico`);
+        return credential;
+      }
+
       const mp = credential.marketplace;
       const mpName = mp?.domain || '';
       
@@ -1371,6 +1376,11 @@ async refreshExpiredTokens(credentials, userId) {
  */
   async refreshSingleCredential(credential, marketplace, userId, forceRefresh = false) {
     try {
+      if (credential?.active === false || Number(credential?.active) === 0) {
+        logger.debug(`[refreshSingleCredential] Credential ${credential.id} inactiva; se omite refresh automatico`);
+        return credential;
+      }
+
       const mpName = marketplace?.domain || '';
     
     // ✅ Solo marketplaces basados en token (no API key)

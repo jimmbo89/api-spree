@@ -359,7 +359,9 @@ async function ensureMercadoLibreWebhookCredential(credential, mlUserId, event =
 }
 
 async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
-  let credential = await MarketplaceCredentialRepository.findByMLUserIdGlobal(userId);
+  let credential = await MarketplaceCredentialRepository.findByMLUserIdGlobal(userId, {
+    includeInactive: true
+  });
   if (!credential || !credential.access_token) {
     await MarketplaceWebhookEventRepository.updateById(event.id, {
       status: "error",
@@ -1362,7 +1364,9 @@ async function resolveMercadoLibreItemWebhookCredential({ itemId, userId }) {
     }
   }
 
-  const fallbackCredential = await MarketplaceCredentialRepository.findByMLUserIdGlobal(userId);
+  const fallbackCredential = await MarketplaceCredentialRepository.findByMLUserIdGlobal(userId, {
+    includeInactive: true
+  });
   if (fallbackCredential?.access_token) {
     logger.warn(
       `[ML Webhook] Credencial resuelta por fallback ml_user_id=${userId}; no habia task/link para item=${itemId}`

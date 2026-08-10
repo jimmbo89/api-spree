@@ -2252,6 +2252,66 @@ async mercadoLibreCallback(req, res) {
       getMLUserIdFromCredential(c) === mlUserId  // Mismo usuario de ML
     );
 
+    if (duplicateCredential && (duplicateCredential.active === false || Number(duplicateCredential.active) === 0)) {
+      logger.info(`[OAuth] Reconectando credencial historica ${duplicateCredential.id} para ML user ${mlUserId}`);
+
+      const duplicateAdditionalData = duplicateCredential.additional_data || {};
+      const originalName = duplicateAdditionalData.original_name || duplicateCredential.name;
+      const reconnectedAdditionalData = {
+        ...duplicateAdditionalData,
+        ml_user_id: mlUserId,
+        connection_status: 'connected',
+        reconnected_at: new Date().toISOString()
+      };
+
+      try {
+        await MarketplaceCredentialRepository.deleteById(credential.id);
+        logger.info(`[OAuth] Credencial temporal ${credential.id} eliminada tras reconectar historica ${duplicateCredential.id}`);
+      } catch (deleteError) {
+        logger.error('[OAuth] Error eliminando credencial temporal tras reconexion:', deleteError.message);
+        throw deleteError;
+      }
+
+      await MarketplaceCredentialRepository.updatePartial(duplicateCredential.id, {
+        name: originalName,
+        access_token: tokenRes.data.access_token,
+        refresh_token: tokenRes.data.refresh_token,
+        expires_at: new Date(Date.now() + tokenRes.data.expires_in * 1000),
+        active: true,
+        additional_data: reconnectedAdditionalData
+      });
+
+      await LogRepository.create({
+        user_id: userId,
+        action: "oauth.mercadolibre.reconnect",
+        description: `Credencial historica reconectada para ML user ${mlUserId}`,
+        ip_address: metadata.ip_address,
+        user_agent: metadata.user_agent,
+        status: "success",
+        meta: {
+          marketplace_id: marketplaceId,
+          credential_id: duplicateCredential.id,
+          temporary_credential_id: credential.id,
+          ml_user_id: mlUserId
+        },
+      });
+
+      credentialIdForCleanup = null;
+      return res.status(200).json({
+        success: true,
+        message: "Cuenta de Mercado Libre reconectada correctamente",
+        data: {
+          marketplace_id: marketplaceId,
+          credential_id: duplicateCredential.id,
+          ml_user_id: mlUserId,
+          reconnected: true,
+          access_token: "[REDACTADO]",
+          refresh_token: "[REDACTADO]",
+          expires_in: tokenRes.data.expires_in,
+        },
+      });
+    }
+
     if (duplicateCredential) {
       logger.warn(`[OAuth] DUPLICADO DETECTADO: ML user ${mlUserId} ya existe en credencial ${duplicateCredential.id}`);
       

@@ -114,6 +114,7 @@ const MarketplaceCredentialController = {
       }
 
       let credentials = await MarketplaceCredentialRepository.findByCompany(companyId, req.body?.marketplace_id ?? null);
+      credentials = credentials.filter((cred) => cred.active !== false && Number(cred.active) !== 0);
 
       if (userId) {
         const membership = await UserCompanyRepository.findByUserIdAndCompanyId(userId, companyId);
@@ -643,6 +644,35 @@ const MarketplaceCredentialController = {
       // Verificar propiedad
       if (!req.user?.role_id && Number(credential.company_id) !== Number(req.user?.company_id)) {
         return res.status(403).json({ msg: "No autorizado" });
+      }
+
+      const historyUsage = await MarketplaceCredentialRepository.getHistoryUsageById(credential.id);
+      if (historyUsage.hasHistory) {
+        await MarketplaceCredentialRepository.disconnectPreservingHistory(credential.id, {
+          reason: 'user_requested'
+        });
+
+        await LogRepository.create({
+          user_id: metadata.user_id,
+          action: 'marketplace_credential.disconnect',
+          description: `Credencial para marketplace "${credential.marketplace.name}" marcada como desconectada para preservar historial`,
+          ip_address: metadata.ip_address,
+          user_agent: metadata.user_agent,
+          status: 'success',
+          meta: {
+            id: credential.id,
+            marketplace_id: credential.marketplace_id,
+            history_usage: historyUsage
+          }
+        });
+
+        return res.status(200).json({
+          success: true,
+          message: 'La conexion tiene historial asociado y fue marcada como desconectada para preservar la trazabilidad.',
+          status: 'disconnected',
+          credential_id: credential.id,
+          history_usage: historyUsage
+        });
       }
 
       await MarketplaceCredentialRepository.delete(credential);

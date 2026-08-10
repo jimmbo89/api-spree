@@ -1,5 +1,17 @@
 // repositories/MarketplaceCredentialRepository.js
-const { MarketplaceCredential, Marketplace, Company, User, ProductFieldMapping, UserMarketplaceCredential } = require('../models');
+const {
+  MarketplaceCredential,
+  Marketplace,
+  Company,
+  User,
+  ProductFieldMapping,
+  UserMarketplaceCredential,
+  ProductPublishingTask,
+  ProductMarketplaceLink,
+  JobProduct,
+  MarketplaceOrder,
+  MarketplaceWebhookEvent
+} = require('../models');
 const EncryptionService = require('../services/EncryptionService');
 const logger = require('../../config/logger');
 const { Op } = require('sequelize');
@@ -76,6 +88,32 @@ function dedupeById(records) {
     }
   }
   return Array.from(map.values());
+}
+
+function normalizeAdditionalData(additionalData) {
+  if (!additionalData) return {};
+  if (typeof additionalData === 'object') return { ...additionalData };
+
+  try {
+    return JSON.parse(additionalData) || {};
+  } catch (error) {
+    return {};
+  }
+}
+
+function getMlUserIdFromAdditionalData(additionalData) {
+  const normalized = normalizeAdditionalData(additionalData);
+  return normalized.ml_user_id != null ? String(normalized.ml_user_id) : null;
+}
+
+function isInactiveCredential(credential) {
+  return credential?.active === false || Number(credential?.active) === 0;
+}
+
+function buildDisconnectedName(name, id) {
+  const original = String(name || 'Conexion').trim();
+  const suffix = ` [desconectada:${id}]`;
+  return `${original.slice(0, Math.max(1, 100 - suffix.length))}${suffix}`;
 }
 
 const MarketplaceCredentialRepository = {
@@ -630,6 +668,69 @@ async deleteById(id) {
     });
   },
 
+  async getHistoryUsageById(id) {
+    const credential = await MarketplaceCredential.findByPk(id);
+    if (!credential) {
+      throw new Error('credentialNotFound');
+    }
+
+    const plain = credential.get({ plain: true });
+    const mlUserId = getMlUserIdFromAdditionalData(plain.additional_data);
+
+    const [
+      publications,
+      publishingTasks,
+      jobProducts,
+      orders,
+      webhooks
+    ] = await Promise.all([
+      ProductMarketplaceLink.count({ where: { credential_id: id } }),
+      ProductPublishingTask.count({ where: { credential_id: id } }),
+      JobProduct.count({ where: { credential_id: id } }),
+      MarketplaceOrder.count({ where: { marketplace_credential_id: id } }),
+      mlUserId
+        ? MarketplaceWebhookEvent.count({ where: { marketplace_user_id: mlUserId } })
+        : Promise.resolve(0)
+    ]);
+
+    const usage = {
+      publications,
+      publishingTasks,
+      jobProducts,
+      orders,
+      webhooks
+    };
+
+    return {
+      ...usage,
+      hasHistory: Object.values(usage).some((count) => Number(count) > 0)
+    };
+  },
+
+  async disconnectPreservingHistory(id, data = {}) {
+    const existing = await MarketplaceCredential.findByPk(id);
+    if (!existing) {
+      throw new Error('credentialNotFound');
+    }
+
+    const additionalData = normalizeAdditionalData(existing.additional_data);
+    await existing.update({
+      name: isInactiveCredential(existing)
+        ? existing.name
+        : buildDisconnectedName(existing.name, existing.id),
+      active: false,
+      additional_data: {
+        ...additionalData,
+        original_name: additionalData.original_name || existing.name,
+        connection_status: 'disconnected',
+        disconnected_at: data.disconnected_at || new Date().toISOString(),
+        disconnected_reason: data.reason || 'user_requested'
+      }
+    });
+
+    return existing.get({ plain: true });
+  },
+
   /**
    * Crea o actualiza una credencial de token (por usuario + marketplace + name)
    */
@@ -663,7 +764,8 @@ async deleteById(id) {
       const conflictWhere = {
         marketplace_id,
         company_id,
-        name: credentialName
+        name: credentialName,
+        active: true
       };
 
       if (id) {
@@ -673,6 +775,28 @@ async deleteById(id) {
       const conflict = await MarketplaceCredential.findOne({ where: conflictWhere });
       if (conflict) {
         throw new Error('Ya existe una credencial con este nombre para este usuario y marketplace');
+      }
+
+      if (!id && credentialName) {
+        const inactiveNameConflict = await MarketplaceCredential.findOne({
+          where: {
+            marketplace_id,
+            company_id,
+            name: credentialName,
+            active: false
+          }
+        });
+
+        if (inactiveNameConflict) {
+          const inactiveAdditionalData = normalizeAdditionalData(inactiveNameConflict.additional_data);
+          await inactiveNameConflict.update({
+            name: buildDisconnectedName(inactiveNameConflict.name, inactiveNameConflict.id),
+            additional_data: {
+              ...inactiveAdditionalData,
+              original_name: inactiveAdditionalData.original_name || inactiveNameConflict.name
+            }
+          });
+        }
       }
 
       const dataToSave = {
@@ -855,9 +979,10 @@ async findByMLUserId(marketplaceId, userId, mlUserId, excludeId = null) {
    * @param {number|string} mlUserId - ID de usuario en MercadoLibre
    * @returns {Promise<object|null>} - Credencial combinada o null
    */
-  async findByMLUserIdGlobal(mlUserId) {
+  async findByMLUserIdGlobal(mlUserId, options = {}) {
+    const { includeInactive = false } = options;
     const credentials = await MarketplaceCredential.findAll({
-      where: { active: true },
+      where: includeInactive ? {} : { active: true },
       include: [
         {
           model: Marketplace,
@@ -1025,7 +1150,8 @@ async findByMLUserId(marketplaceId, userId, mlUserId, excludeId = null) {
     const where = {
       marketplace_id: marketplaceId,
       company_id: companyId,
-      name: name?.trim()
+      name: name?.trim(),
+      active: true
     };
 
     if (excludeId) {
@@ -1039,7 +1165,8 @@ async findByMLUserId(marketplaceId, userId, mlUserId, excludeId = null) {
     async existsByCredentials(marketplaceId, companyId, credentials, excludeId = null) {
     const where = {
       marketplace_id: marketplaceId,
-      company_id: companyId
+      company_id: companyId,
+      active: true
     };
 
     if (excludeId) {
