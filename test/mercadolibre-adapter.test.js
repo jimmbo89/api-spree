@@ -83,7 +83,7 @@ test('publish de User Products no depende de categoryInfo implícito y no envía
   assert.equal(calls[0].body.variations, undefined);
 });
 
-test('buildMercadoLibreUserProductItemPayload bloquea family_name que excede max_title_length', () => {
+test('buildMercadoLibreUserProductItemPayload normaliza family_name que excede max_title_length', () => {
   const adapter = createAdapter();
   const payload = adapter.buildMercadoLibreUserProductItemPayload(
     {
@@ -92,14 +92,18 @@ test('buildMercadoLibreUserProductItemPayload bloquea family_name que excede max
       currency_id: 'CLP',
       price: 1000,
       available_quantity: 1,
+      listing_type_id: 'gold_special',
+      buying_mode: 'buy_it_now',
+      condition: 'new',
+      pictures: [{ source: 'https://example.com/1.jpg' }],
       attributes: []
     },
     { sku: 'SKU-001' },
     { category: { settings: { max_title_length: 120 } }, attributes: [] }
   );
 
-  assert.ok(payload.__blocked_error);
-  assert.equal(payload.__blocked_error.code, 'family_name_too_long');
+  assert.equal(payload.__blocked_error, undefined);
+  assert.equal(payload.family_name, 'X'.repeat(120));
 });
 
 test('updateItem User Products usa user_product_id para stock y no envía stock en PUT /items', async (t) => {

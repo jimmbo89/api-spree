@@ -1741,12 +1741,57 @@ class MercadoLibreAdapter extends BaseAdapter {
     return null;
   }
 
+  normalizeMercadoLibreFamilyName(familyName, maxLength = null) {
+    const normalized = (familyName || 'Producto sin nombre')
+      .toString()
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const limit = Number(maxLength || 0);
+    if (!Number.isFinite(limit) || limit <= 0 || normalized.length <= limit) {
+      return {
+        value: normalized,
+        originalValue: normalized,
+        wasTruncated: false
+      };
+    }
+
+    let truncated = normalized.slice(0, limit).trim();
+    const lastSpaceIndex = truncated.lastIndexOf(' ');
+    if (lastSpaceIndex > Math.floor(limit * 0.6)) {
+      truncated = truncated.slice(0, lastSpaceIndex).trim();
+    }
+
+    if (!truncated) {
+      truncated = normalized.slice(0, limit).trim();
+    }
+
+    return {
+      value: truncated,
+      originalValue: normalized,
+      wasTruncated: truncated !== normalized
+    };
+  }
+
   buildMercadoLibreUserProductItemPayload(transformedProduct, variant, metadata = null) {
-    const familyName = (transformedProduct.family_name || transformedProduct.name || transformedProduct.title || 'Producto sin nombre')
+    const rawFamilyName = (transformedProduct.family_name || transformedProduct.name || transformedProduct.title || 'Producto sin nombre')
       .toString()
       .trim();
     const categoryInfo = metadata || {};
     const maxTitleLength = Number(categoryInfo?.category?.settings?.max_title_length || categoryInfo?.settings?.max_title_length || 0) || null;
+    const familyNameInfo = this.normalizeMercadoLibreFamilyName(rawFamilyName, maxTitleLength);
+    const familyName = familyNameInfo.value;
+
+    if (familyNameInfo.wasTruncated) {
+      logger.warn('[MercadoLibreAdapter] family_name ajustado a max_title_length', {
+        categoryId: transformedProduct.category_id || null,
+        sellerSku: variant?.sku || transformedProduct.sku || null,
+        maxTitleLength,
+        originalFamilyName: familyNameInfo.originalValue,
+        normalizedFamilyName: familyName
+      });
+    }
+
     if (maxTitleLength && familyName.length > maxTitleLength) {
       return {
         __blocked_error: createMercadoLibreError({
