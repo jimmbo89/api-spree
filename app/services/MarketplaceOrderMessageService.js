@@ -44,6 +44,8 @@ const MarketplaceOrderMessageService = {
       credential
     );
 
+    await appendSentMessageSnapshot(order, sentMessage, text, credential);
+
     const refreshed = await MarketplaceOrderSyncService.refreshById(orderId);
     logger.info(`[MarketplaceOrderMessageService] Mensaje enviado correctamente: ${sentMessage?.id || 'unknown'}`);
     return refreshed;
@@ -236,6 +238,61 @@ function normalizeSentMessage(message) {
     },
     date_created: message.date_created || message.created_at || null
   };
+}
+
+async function appendSentMessageSnapshot(order, sentMessage, text, credential) {
+  const existingMessages = parseJsonMaybe(order.messages_snapshot);
+  const messages = Array.isArray(existingMessages) ? existingMessages : [];
+  const now = new Date().toISOString();
+  const sellerId = credential?.seller_id || credential?.additional_data?.ml_user_id || null;
+  const buyerId = parseJsonMaybe(order.raw_payload)?.order?.buyer?.id || order.buyer_id || null;
+  const messageId = sentMessage?.id || `local-${order.id}-${Date.now()}`;
+
+  if (messages.some((message) => String(message?.message_id || '') === String(messageId))) {
+    return;
+  }
+
+  const nextMessages = [
+    ...messages,
+    {
+      message_id: String(messageId),
+      text: sentMessage?.text || text,
+      conversation_status: null,
+      received_at: sentMessage?.date_created || now,
+      sender: 'seller',
+      sender_user_id: sellerId != null ? String(sellerId) : null,
+      receiver_user_id: buyerId != null ? String(buyerId) : null,
+      status: 'available',
+      raw_payload: {
+        id: String(messageId),
+        text: sentMessage?.text || text,
+        from: sellerId != null ? { user_id: sellerId } : null,
+        to: buyerId != null ? { user_id: buyerId } : null,
+        status: 'available',
+        message_date: {
+          received: sentMessage?.date_created || now,
+          created: sentMessage?.date_created || now
+        },
+        source: sentMessage?.id ? 'mercadolibre_send' : 'local_send_fallback'
+      }
+    }
+  ].sort((a, b) => (a.received_at ? new Date(a.received_at).getTime() : 0) - (b.received_at ? new Date(b.received_at).getTime() : 0));
+
+  await MarketplaceOrderRepository.updateById(order.id, {
+    messages_snapshot: nextMessages
+  });
+}
+
+function parseJsonMaybe(value) {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+  if (typeof value !== 'string') return null;
+
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    return null;
+  }
 }
 
 function sleep(ms) {

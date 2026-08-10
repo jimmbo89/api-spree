@@ -27,7 +27,7 @@ const MarketplaceOrderSyncService = {
     }
 
     const fallbackOrder = (error) => ({
-      order: order.get({ plain: true }),
+      order: serializeOrderForResponse(order),
       refreshed_at: new Date().toISOString(),
       source: 'local_fallback',
       error: error || null
@@ -122,7 +122,7 @@ const MarketplaceOrderSyncService = {
 
       const refreshedOrder = await MarketplaceOrderRepository.findById(order.id);
       return {
-        order: refreshedOrder ? refreshedOrder.get({ plain: true }) : null,
+        order: serializeOrderForResponse(refreshedOrder),
         refreshed_at: new Date().toISOString(),
         source: 'mercadolibre'
       };
@@ -132,6 +132,111 @@ const MarketplaceOrderSyncService = {
     }
   }
 };
+
+function serializeOrderForResponse(orderRecord) {
+  if (!orderRecord) return null;
+
+  const order = typeof orderRecord.get === 'function'
+    ? orderRecord.get({ plain: true })
+    : { ...orderRecord };
+
+  const messages = normalizeMessagesForResponse(order.messages_snapshot, order);
+  const notes = normalizeNotesForResponse(order.notes_snapshot);
+
+  delete order.raw_payload;
+
+  order.messages_snapshot = messages;
+  order.messages = messages;
+  order.notes_snapshot = notes;
+
+  if (Array.isArray(order.events)) {
+    order.events = order.events.map((event) => {
+      const cleanEvent = { ...event };
+      delete cleanEvent.raw_payload;
+      return cleanEvent;
+    });
+  }
+
+  if (order.customerSnapshot) {
+    const cleanCustomer = { ...order.customerSnapshot };
+    delete cleanCustomer.raw_order_payload;
+    delete cleanCustomer.raw_billing_payload;
+    delete cleanCustomer.raw_shipping_payload;
+    order.customerSnapshot = cleanCustomer;
+  }
+
+  return order;
+}
+
+function normalizeMessagesForResponse(messagesSnapshot, order = {}) {
+  const messages = parseJsonMaybe(messagesSnapshot);
+  const list = Array.isArray(messages) ? messages : [];
+  const sellerId = resolveSellerIdFromOrderSnapshot(order);
+
+  return list
+    .map((message) => {
+      const raw = parseJsonMaybe(message?.raw_payload) || {};
+      const senderUserId = message?.sender_user_id || raw?.from?.user_id || raw?.from?.id || null;
+      const receiverUserId = message?.receiver_user_id || raw?.to?.user_id || raw?.to?.id || null;
+      const receivedAt =
+        message?.received_at ||
+        raw?.message_date?.received ||
+        raw?.message_date?.created ||
+        raw?.created_at ||
+        raw?.date_created ||
+        null;
+
+      return {
+        message_id: message?.message_id || raw?.id || null,
+        text: message?.text || raw?.text || '',
+        received_at: receivedAt,
+        sender_user_id: senderUserId != null ? String(senderUserId) : null,
+        receiver_user_id: receiverUserId != null ? String(receiverUserId) : null,
+        direction: sellerId && String(senderUserId) === String(sellerId) ? 'outbound' : 'inbound',
+        status: message?.status || raw?.status || null,
+        read_at: message?.read_at || raw?.message_date?.read || null
+      };
+    })
+    .filter((message) => message.message_id || message.text)
+    .sort((a, b) => (a.received_at ? new Date(a.received_at).getTime() : 0) - (b.received_at ? new Date(b.received_at).getTime() : 0));
+}
+
+function normalizeNotesForResponse(notesSnapshot) {
+  const notes = parseJsonMaybe(notesSnapshot);
+  const list = Array.isArray(notes) ? notes : [];
+
+  return list
+    .map((note) => ({
+      note_id: note?.note_id || null,
+      text: note?.text || '',
+      created_at: note?.created_at || null,
+      created_by_user_id: note?.created_by_user_id ?? null,
+      created_by_user_name: note?.created_by_user_name ?? null
+    }))
+    .filter((note) => note.note_id || note.text);
+}
+
+function resolveSellerIdFromOrderSnapshot(order = {}) {
+  const rawPayload = parseJsonMaybe(order.raw_payload) || {};
+  return (
+    rawPayload?.order?.seller?.id ||
+    rawPayload?.order?.seller_id ||
+    rawPayload?.messages?.conversation_status?.path?.match(/\/sellers\/([^/]+)/)?.[1] ||
+    null
+  );
+}
+
+function parseJsonMaybe(value) {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+  if (typeof value !== 'string') return null;
+
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    return null;
+  }
+}
 
 async function persistMarketplaceOrderCustomerSnapshot(orderId, customerSnapshot) {
   if (!customerSnapshot) return null;
