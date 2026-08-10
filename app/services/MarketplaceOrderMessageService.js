@@ -16,7 +16,7 @@ class MercadoLibreError extends Error {
 const ML_MESSAGE_MAX_LEN = 350;
 
 const MarketplaceOrderMessageService = {
-  async sendByOrderId(orderId, text) {
+  async sendByOrderId(orderId, text, spreeUser = null) {
     const order = await MarketplaceOrderRepository.findById(orderId);
     if (!order) {
       throw new Error('order_not_found');
@@ -44,7 +44,7 @@ const MarketplaceOrderMessageService = {
       credential
     );
 
-    await appendSentMessageSnapshot(order, sentMessage, text, credential);
+    await appendSentMessageSnapshot(order, sentMessage, text, credential, spreeUser);
 
     const refreshed = await MarketplaceOrderSyncService.refreshById(orderId);
     logger.info(`[MarketplaceOrderMessageService] Mensaje enviado correctamente: ${sentMessage?.id || 'unknown'}`);
@@ -240,13 +240,14 @@ function normalizeSentMessage(message) {
   };
 }
 
-async function appendSentMessageSnapshot(order, sentMessage, text, credential) {
+async function appendSentMessageSnapshot(order, sentMessage, text, credential, spreeUser = null) {
   const existingMessages = parseJsonMaybe(order.messages_snapshot);
   const messages = Array.isArray(existingMessages) ? existingMessages : [];
   const now = new Date().toISOString();
   const sellerId = credential?.seller_id || credential?.additional_data?.ml_user_id || null;
   const buyerId = parseJsonMaybe(order.raw_payload)?.order?.buyer?.id || order.buyer_id || null;
   const messageId = sentMessage?.id || `local-${order.id}-${Date.now()}`;
+  const spreeSender = normalizeSpreeSender(spreeUser);
 
   if (messages.some((message) => String(message?.message_id || '') === String(messageId))) {
     return;
@@ -262,6 +263,7 @@ async function appendSentMessageSnapshot(order, sentMessage, text, credential) {
       sender: 'seller',
       sender_user_id: sellerId != null ? String(sellerId) : null,
       receiver_user_id: buyerId != null ? String(buyerId) : null,
+      spree_sender: spreeSender,
       status: 'available',
       raw_payload: {
         id: String(messageId),
@@ -269,6 +271,7 @@ async function appendSentMessageSnapshot(order, sentMessage, text, credential) {
         from: sellerId != null ? { user_id: sellerId } : null,
         to: buyerId != null ? { user_id: buyerId } : null,
         status: 'available',
+        spree_sender: spreeSender,
         message_date: {
           received: sentMessage?.date_created || now,
           created: sentMessage?.date_created || now
@@ -281,6 +284,19 @@ async function appendSentMessageSnapshot(order, sentMessage, text, credential) {
   await MarketplaceOrderRepository.updateById(order.id, {
     messages_snapshot: nextMessages
   });
+}
+
+function normalizeSpreeSender(user) {
+  if (!user || typeof user !== 'object') return null;
+
+  const userId = user.id ?? user.user_id ?? null;
+  if (userId == null) return null;
+
+  return {
+    user_id: Number(userId),
+    name: user.name || user.user || user.full_name || null,
+    email: user.email || null
+  };
 }
 
 function parseJsonMaybe(value) {

@@ -102,7 +102,7 @@ const MarketplaceOrderController = {
       logger.info(`Datos recibidos:\n ${JSON.stringify(req.body)}`);
 
       const { id, text } = req.body || {};
-      const result = await MarketplaceOrderMessageService.sendByOrderId(id, text);
+      const result = await MarketplaceOrderMessageService.sendByOrderId(id, text, req.user);
 
       return res.json({
         success: true,

@@ -172,6 +172,8 @@ function normalizeMessagesForResponse(messagesSnapshot, order = {}) {
   const messages = parseJsonMaybe(messagesSnapshot);
   const list = Array.isArray(messages) ? messages : [];
   const sellerId = resolveSellerIdFromOrderSnapshot(order);
+  const buyerName = order.buyer_name || order.customerSnapshot?.full_name || null;
+  const sellerName = order.credential?.name || order.credential?.seller_email || null;
 
   return list
     .map((message) => {
@@ -185,6 +187,26 @@ function normalizeMessagesForResponse(messagesSnapshot, order = {}) {
         raw?.created_at ||
         raw?.date_created ||
         null;
+      const direction = sellerId && String(senderUserId) === String(sellerId) ? 'outbound' : 'inbound';
+      const spreeSender = normalizeSpreeSender(message?.spree_sender || raw?.spree_sender || null);
+      const marketplaceSender = {
+        user_id: senderUserId != null ? String(senderUserId) : null,
+        type: direction === 'outbound' ? 'seller' : 'buyer',
+        name: direction === 'outbound'
+          ? (sellerName || 'Cuenta Mercado Libre')
+          : buyerName
+      };
+      const displaySender = spreeSender
+        ? {
+            source: 'spree',
+            user_id: spreeSender.user_id,
+            name: spreeSender.name || spreeSender.email || `Usuario ${spreeSender.user_id}`
+          }
+        : {
+            source: 'marketplace',
+            user_id: marketplaceSender.user_id,
+            name: marketplaceSender.name || marketplaceSender.user_id || null
+          };
 
       return {
         message_id: message?.message_id || raw?.id || null,
@@ -192,13 +214,29 @@ function normalizeMessagesForResponse(messagesSnapshot, order = {}) {
         received_at: receivedAt,
         sender_user_id: senderUserId != null ? String(senderUserId) : null,
         receiver_user_id: receiverUserId != null ? String(receiverUserId) : null,
-        direction: sellerId && String(senderUserId) === String(sellerId) ? 'outbound' : 'inbound',
+        direction,
+        marketplace_sender: marketplaceSender,
+        spree_sender: spreeSender,
+        display_sender: displaySender,
         status: message?.status || raw?.status || null,
         read_at: message?.read_at || raw?.message_date?.read || null
       };
     })
     .filter((message) => message.message_id || message.text)
     .sort((a, b) => (a.received_at ? new Date(a.received_at).getTime() : 0) - (b.received_at ? new Date(b.received_at).getTime() : 0));
+}
+
+function normalizeSpreeSender(sender) {
+  if (!sender || typeof sender !== 'object') return null;
+
+  const userId = sender.user_id ?? sender.id ?? null;
+  if (userId == null) return null;
+
+  return {
+    user_id: Number(userId),
+    name: sender.name || sender.user || sender.full_name || null,
+    email: sender.email || null
+  };
 }
 
 function normalizeNotesForResponse(notesSnapshot) {
