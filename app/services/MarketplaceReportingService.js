@@ -59,6 +59,64 @@ function getMarketplaceMetaFromLookup(marketplaceId, lookup = {}) {
   };
 }
 
+function parseJsonMaybe(value) {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+  if (typeof value !== 'string') return null;
+
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    return null;
+  }
+}
+
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    if (value !== null && value !== undefined && String(value).trim() !== '') {
+      return value;
+    }
+  }
+  return null;
+}
+
+function buildBuyerSummary(order) {
+  const snapshot = order?.customerSnapshot || {};
+  const rawPayload = parseJsonMaybe(order?.raw_payload) || {};
+  const rawBuyer = rawPayload?.order?.buyer || {};
+  const billingInfo = rawPayload?.billing_info?.buyer?.billing_info || {};
+  const legalName = [snapshot.first_name, snapshot.last_name].filter(Boolean).join(' ').trim();
+  const billingName = [billingInfo.name, billingInfo.last_name].filter(Boolean).join(' ').trim();
+
+  return {
+    id: firstNonEmpty(snapshot.marketplace_customer_id, order?.buyer_id, rawBuyer.id),
+    nickname: firstNonEmpty(order?.buyer_name, rawBuyer.nickname, snapshot.full_name),
+    name: firstNonEmpty(snapshot.legal_name, legalName, billingName, rawBuyer.nickname, order?.buyer_name),
+    first_name: firstNonEmpty(snapshot.first_name, rawBuyer.first_name, billingInfo.name),
+    last_name: firstNonEmpty(snapshot.last_name, rawBuyer.last_name, billingInfo.last_name),
+    email: firstNonEmpty(snapshot.email, order?.buyer_email, rawBuyer.email),
+    document_type: firstNonEmpty(snapshot.document_type, billingInfo.identification?.type),
+    document_number: firstNonEmpty(snapshot.document_number, order?.buyer_document, billingInfo.identification?.number),
+    phone: firstNonEmpty(snapshot.phone, snapshot.phone_secondary),
+    customer_type: snapshot.customer_type || null
+  };
+}
+
+function buildSellerSummary(order) {
+  const credential = order?.credential || {};
+  const rawPayload = parseJsonMaybe(order?.raw_payload) || {};
+  const rawSeller = rawPayload?.order?.seller || {};
+  const sellerCredentialData = parseJsonMaybe(credential.additional_data) || {};
+
+  return {
+    id: firstNonEmpty(credential.seller_id, sellerCredentialData.ml_user_id, rawSeller.id),
+    name: firstNonEmpty(credential.name, sellerCredentialData.nickname, sellerCredentialData.seller_name),
+    email: firstNonEmpty(credential.seller_email, sellerCredentialData.email),
+    credential_id: order?.marketplace_credential_id || credential.id || null,
+    credential_name: credential.name || null
+  };
+}
+
 const MarketplaceReportingService = {
 
   // ========================
@@ -94,13 +152,19 @@ const MarketplaceReportingService = {
           totalShipping: stats.total_shipping || 0,
           totalTax: stats.total_tax || 0
         },
-        orders: ordersResult.rows.map(order => ({
+        orders: ordersResult.rows.map(order => {
+          const buyer = buildBuyerSummary(order);
+          const seller = buildSellerSummary(order);
+
+          return {
           id: order.id,
           marketplace: order.marketplace_credential_id,
           ...getMarketplaceMetaFromCredential(order.credential),
           orderRef: order.marketplace_order_id,
           date: order.createdAt,
-          customer: order.buyer_name || order.buyer_id || 'N/A',
+          customer: buyer.name || buyer.nickname || buyer.id || 'N/A',
+          buyer,
+          seller,
           status: order.order_status,
           paymentStatus: order.payment_status,
           itemsCount: order.items?.length || 0,
@@ -111,7 +175,8 @@ const MarketplaceReportingService = {
           invoiceNumber: order.invoice_number,
           invoiceType: order.invoice_type,
           notes_snapshot: normalizeNotesSnapshot(order.notes_snapshot)
-        }))
+          };
+        })
       };
 
     } catch (error) {
