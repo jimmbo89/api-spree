@@ -7,6 +7,76 @@ const fs = require('fs');
 const { generateImageVersion } = require('../util/imageCacheUtils');
 const { UPLOAD_BASE_PATH } = require('../../config/upload');
 
+function toNumber(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function normalizePromotionalPrice(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function buildWarehouseVariantResponse(wpv) {
+  const variantValuesRaw = Array.isArray(wpv.variant?.variantValues) ? wpv.variant.variantValues : [];
+  const variantValues = variantValuesRaw.map(v => ({
+    id: v.id,
+    name: v.name,
+    code: v.code,
+    variant_definition_id: v.variant_definition_id,
+    definition: v.definition ? { id: v.definition.id, name: v.definition.name } : null
+  })).sort((a, b) => {
+    if (a.variant_definition_id !== b.variant_definition_id) {
+      return a.variant_definition_id - b.variant_definition_id;
+    }
+    return a.id - b.id;
+  });
+  const variantLabel = variantValues.map(v => v.name).filter(Boolean).join(" / ");
+
+  return {
+    id: wpv.id,
+    variant_id: wpv.variant_id,
+    sku: wpv.variant?.sku || '',
+    attributes: wpv.variant?.attributes || {},
+    variant_values: variantValues,
+    variant_label: variantLabel,
+    active: wpv.active !== false,
+    published: wpv.published || false,
+    local_sku: wpv.local_sku || '',
+    price: toNumber(wpv.price),
+    purchase_price: toNumber(wpv.purchase_price),
+    promotional_price: normalizePromotionalPrice(wpv.promotional_price),
+    stock: parseInt(wpv.stock, 10) || 0,
+    createdAt: wpv.createdAt || null
+  };
+}
+
+function consolidateWarehouseVariants(warehouseVariants = []) {
+  const grouped = new Map();
+
+  for (const wpv of warehouseVariants) {
+    const item = buildWarehouseVariantResponse(wpv);
+    const key = String(item.variant_id || item.id);
+
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        ...item,
+        lot_ids: [item.id],
+        lots: [item]
+      });
+      continue;
+    }
+
+    const current = grouped.get(key);
+    current.stock += item.stock;
+    current.lot_ids.push(item.id);
+    current.lots.push(item);
+  }
+
+  return Array.from(grouped.values());
+}
+
 const WarehouseProductRepository = {
 async findFiltered({ companyId, userId, branchId, warehouseId, includeInactive = false } = {}) {
   const where = {};
@@ -206,39 +276,7 @@ async findFiltered({ companyId, userId, branchId, warehouseId, includeInactive =
     // Procesar variantes del almacén
     const warehouseVariants = wpJson.warehouseVariants || [];
 
-    const variantsWithStock = warehouseVariants.map(wpv => {
-      const variantValuesRaw = Array.isArray(wpv.variant?.variantValues) ? wpv.variant.variantValues : [];
-      const variantValues = variantValuesRaw.map(v => ({
-        id: v.id,
-        name: v.name,
-        code: v.code,
-        variant_definition_id: v.variant_definition_id,
-        definition: v.definition ? { id: v.definition.id, name: v.definition.name } : null
-      })).sort((a, b) => {
-        if (a.variant_definition_id !== b.variant_definition_id) {
-          return a.variant_definition_id - b.variant_definition_id;
-        }
-        return a.id - b.id;
-      });
-      const variantLabel = variantValues.map(v => v.name).filter(Boolean).join(" / ");
-
-      return {
-        id: wpv.id,
-        variant_id: wpv.variant_id,
-        sku: wpv.variant?.sku || '',
-        attributes: wpv.variant?.attributes || {},
-        variant_values: variantValues,
-        variant_label: variantLabel,
-        active: wpv.active !== false,
-        published: wpv.published || false,
-        local_sku: wpv.local_sku || '',
-        price: parseFloat(wpv.price) || 0,
-        purchase_price: parseFloat(wpv.purchase_price) || 0,
-        promotional_price: wpv.promotional_price ? parseFloat(wpv.promotional_price) : null,
-        stock: parseInt(wpv.stock) || 0,
-        createdAt: wpv.createdAt || null
-      };
-    });
+    const variantsWithStock = consolidateWarehouseVariants(warehouseVariants);
 
     // Calcular stock total solo de variantes activas
     const totalStock = variantsWithStock
@@ -406,7 +444,7 @@ async getProductWarehousesWithStock({ productIds, companyId, branchId, warehouse
     if (!resultMap[productId]) resultMap[productId] = [];
 
     // Calcular stock total y obtener precios de las variantes
-    const variants = wp.warehouseVariants || [];
+    const variants = consolidateWarehouseVariants(wp.warehouseVariants || []);
     const totalStock = variants.reduce((sum, v) => sum + (parseInt(v.stock, 10) || 0), 0);
 
     // Obtener precios (usar el primer variante activo como referencia)
@@ -430,41 +468,7 @@ async getProductWarehousesWithStock({ productIds, companyId, branchId, warehouse
         address: warehouse?.address || null,
         image: warehouse?.image || null
       },
-      variants: variants.map(v => {
-        // ⭐ Procesar variant_values si existen
-        const variantValuesRaw = Array.isArray(v.variant?.variantValues) ? v.variant.variantValues : [];
-        const variantValues = variantValuesRaw.map(vv => ({
-          id: vv.id,
-          name: vv.name,
-          code: vv.code,
-          variant_definition_id: vv.variant_definition_id,
-          definition: vv.definition ? { id: vv.definition.id, name: vv.definition.name } : null
-        })).sort((a, b) => {
-          if (a.variant_definition_id !== b.variant_definition_id) {
-            return a.variant_definition_id - b.variant_definition_id;
-          }
-          return a.id - b.id;
-        });
-
-        // ⭐ Crear variant_label similar a /warehouse-products-not-in-warehouse
-        const variantLabel = variantValues.map(vv => vv.name).filter(Boolean).join(" / ");
-
-        return {
-          id: v.id,  // warehouse_product_variant_id
-          variant_id: v.variant_id,
-          sku: v.variant?.sku || '',
-          attributes: v.variant?.attributes || {},
-          variant_values: variantValues,
-          variant_label: variantLabel,
-          local_sku: v.local_sku || '',
-          stock: parseInt(v.stock, 10) || 0,
-          price: parseFloat(v.price) || 0,
-          purchase_price: parseFloat(v.purchase_price) || 0,
-          promotional_price: v.promotional_price ? parseFloat(v.promotional_price) : null,
-          active: v.active,
-          published: v.published
-        };
-      })
+      variants
     });
   });
 

@@ -49,6 +49,58 @@ const WarehouseProductVariantRepository = {
     });
   },
 
+  async findMatchingLotByVariantAndWarehouse({
+    variantId,
+    warehouseProductId,
+    localSku = null,
+    price = 0,
+    purchasePrice = 0,
+    promotionalPrice = null
+  }) {
+    const normalizeNumber = (value) => {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+    const normalizeNullableNumber = (value) => {
+      if (value === null || value === undefined || value === '') return null;
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+
+    const lots = await WarehouseProductVariant.findAll({
+      where: {
+        variant_id: variantId,
+        warehouse_product_id: warehouseProductId,
+        active: true
+      },
+      order: [['createdAt', 'ASC']]
+    });
+
+    const normalizedSku = String(localSku || '').trim();
+    const normalizedPrice = normalizeNumber(price);
+    const normalizedPurchasePrice = normalizeNumber(purchasePrice);
+    const normalizedPromotionalPrice = normalizeNullableNumber(promotionalPrice);
+
+    return lots.find((lot) => {
+      const lotSku = String(lot.local_sku || '').trim();
+      const lotPrice = normalizeNumber(lot.price);
+      const lotPurchasePrice = normalizeNumber(lot.purchase_price);
+      const lotPromotionalPrice = normalizeNullableNumber(lot.promotional_price);
+
+      return lotSku === normalizedSku
+        && Math.abs(lotPrice - normalizedPrice) < 0.01
+        && Math.abs(lotPurchasePrice - normalizedPurchasePrice) < 0.01
+        && (
+          lotPromotionalPrice === normalizedPromotionalPrice ||
+          (
+            lotPromotionalPrice !== null &&
+            normalizedPromotionalPrice !== null &&
+            Math.abs(lotPromotionalPrice - normalizedPromotionalPrice) < 0.01
+          )
+        );
+    }) || null;
+  },
+
   /**
    * NUEVO: Obtiene el stock total de una variante en un almacén (suma de todos los lotes)
    */

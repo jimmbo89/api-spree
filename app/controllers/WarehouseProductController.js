@@ -874,6 +874,8 @@ const WarehouseProductController = {
         // Si el frontend envía purchase_price, usarlo. Si no, usar price como fallback
         const actualPurchasePrice = parseFloat(purchase_price) || parseFloat(price) || 0;
         const salePrice = parseFloat(price) || 0;
+        const effectiveLocalSku = local_sku || product.sku;
+        const effectivePromotionalPrice = promotional_price || null;
         
         // Crear nuevo lote con su precio de compra específico
         const totalStockBeforeEntry = await WarehouseProductVariantRepository.getTotalStockByVariantAndWarehouse(
@@ -883,18 +885,36 @@ const WarehouseProductController = {
         const stockBefore = totalStockBeforeEntry?.total_stock || 0;
         const stockAfter = stockBefore + quantity;
 
-        const newStock = quantity;
-        const createdLot = await WarehouseProductVariantRepository.create({
+        const matchingLot = await WarehouseProductVariantRepository.findMatchingLotByVariantAndWarehouse({
+          variantId: actualVariantId,
+          warehouseProductId: originWp.id,
+          localSku: effectiveLocalSku,
+          price: salePrice,
+          purchasePrice: actualPurchasePrice,
+          promotionalPrice: effectivePromotionalPrice
+        });
+
+        let affectedLot = matchingLot;
+        let lotCreated = false;
+        if (matchingLot) {
+          await WarehouseProductVariantRepository.update(matchingLot, {
+            stock: (parseInt(matchingLot.stock, 10) || 0) + quantity,
+            active: true
+          }, { transaction });
+        } else {
+          affectedLot = await WarehouseProductVariantRepository.create({
           warehouse_product_id: originWp.id,
           variant_id: actualVariantId,  // ✅ Usar variant_id válido
-          stock: newStock,
-          local_sku: local_sku || product.sku,
+          stock: quantity,
+          local_sku: effectiveLocalSku,
           price: salePrice,              // Precio de venta
           purchase_price: actualPurchasePrice, // 💰 PRECIO DE COMPRA DEL LOTE (nuevo campo)
-          promotional_price: promotional_price || null,
+          promotional_price: effectivePromotionalPrice,
           active: true,
           published: false
         }, { transaction });
+          lotCreated = true;
+        }
 
         // Registrar movimiento de entrada con el precio de compra
         await InventoryMovementRepository.create({
@@ -916,8 +936,9 @@ const WarehouseProductController = {
           notes: notes?.trim() || null,
           user_id: currentUserId,
           meta: {  // ⭐ AGREGADO: Información del lote creado
-            lot_created: true,
-            lot_id: createdLot.id,
+            lot_created: lotCreated,
+            lot_updated: !lotCreated,
+            lot_id: affectedLot.id,
             purchase_price: actualPurchasePrice,
             sale_price: salePrice
           }
@@ -1491,7 +1512,7 @@ async function _processVariantMovement({
   referenceId,
   transaction
 }) {
-  const { variant_id, quantity, local_sku, price, promotional_price } = variantData;
+  const { variant_id, quantity, local_sku, price, purchase_price, promotional_price } = variantData;
 
   if (!Number.isInteger(quantity) || quantity <= 0) {
     throw new Error(`Cantidad inválida para variante ${variant_id}`);
@@ -1516,6 +1537,7 @@ async function _processVariantMovement({
       quantity,
       local_sku,
       price,
+      purchase_price,
       promotional_price,
       product,
       originWarehouse,
@@ -1594,6 +1616,8 @@ async function _processEntry({
   // Si el frontend envía purchase_price, usarlo. Si no, usar price como fallback
   const actualPurchasePrice = parseFloat(purchase_price) || parseFloat(price) || 0;
   const salePrice = parseFloat(price) || 0;
+  const effectiveLocalSku = local_sku || product.sku;
+  const effectivePromotionalPrice = promotional_price || null;
 
   // Crear nuevo lote con su precio de compra específico
   const totalStockBeforeEntry = await WarehouseProductVariantRepository.getTotalStockByVariantAndWarehouse(
@@ -1603,18 +1627,37 @@ async function _processEntry({
   const stockBefore = totalStockBeforeEntry?.total_stock || 0;
   const stockAfter = stockBefore + quantity;
 
-  const newStock = quantity;
-  const createdLot = await WarehouseProductVariantRepository.create({
+  const matchingLot = await WarehouseProductVariantRepository.findMatchingLotByVariantAndWarehouse({
+    variantId: actualVariantId,
+    warehouseProductId: originWp.id,
+    localSku: effectiveLocalSku,
+    price: salePrice,
+    purchasePrice: actualPurchasePrice,
+    promotionalPrice: effectivePromotionalPrice
+  });
+
+  let affectedLot = matchingLot;
+  let lotCreated = false;
+
+  if (matchingLot) {
+    await WarehouseProductVariantRepository.update(matchingLot, {
+      stock: (parseInt(matchingLot.stock, 10) || 0) + quantity,
+      active: true
+    }, { transaction });
+  } else {
+    affectedLot = await WarehouseProductVariantRepository.create({
     warehouse_product_id: originWp.id,
     variant_id: actualVariantId,  // ✅ Usar variant_id válido
-    stock: newStock,
-    local_sku: local_sku || product.sku,
+    stock: quantity,
+    local_sku: effectiveLocalSku,
     price: salePrice,
     purchase_price: actualPurchasePrice, // 💰 PRECIO DE COMPRA DEL LOTE
-    promotional_price: promotional_price || null,
+    promotional_price: effectivePromotionalPrice,
     active: true,
     published: false
   }, { transaction });
+    lotCreated = true;
+  }
 
   await InventoryMovementRepository.create({
     warehouse_id: originWarehouse.id,
@@ -1635,8 +1678,9 @@ async function _processEntry({
     notes: notes?.trim() || null,
     user_id: currentUserId,
     meta: {
-      lot_created: true,
-      lot_id: createdLot.id,
+      lot_created: lotCreated,
+      lot_updated: !lotCreated,
+      lot_id: affectedLot.id,
       purchase_price: actualPurchasePrice,
       sale_price: salePrice
     }
