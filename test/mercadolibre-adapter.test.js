@@ -172,3 +172,120 @@ test('updateItem User Products usa user_product_id para stock y no envía stock 
   assert.equal(putCalls[1].url, 'https://api.mercadolibre.com/items/MLC2098657781');
   assert.deepEqual(putCalls[1].body, { price: 15990 });
 });
+
+test('publish update User Products omite title y variations residuales', async (t) => {
+  const originalGet = axios.get;
+  const originalPut = axios.put;
+  const putCalls = [];
+
+  axios.get = async (url) => {
+    if (String(url).includes('/items/MLC-existing-up')) {
+      return {
+        status: 200,
+        statusText: 'OK',
+        data: {
+          id: 'MLC-existing-up',
+          status: 'active',
+          user_product_id: 'MLU-existing-up',
+          family_name: 'Pack de gorras',
+          tags: ['user_product_listing'],
+          variations: []
+        }
+      };
+    }
+
+    throw new Error(`Unexpected axios.get: ${url}`);
+  };
+
+  axios.put = async (url, body) => {
+    putCalls.push({ url, body });
+    return { data: { id: 'MLC-existing-up' } };
+  };
+
+  t.after(() => {
+    axios.get = originalGet;
+    axios.put = originalPut;
+  });
+
+  const adapter = createAdapter({
+    ensureValidCredentials: async () => ({ valid: true }),
+    getMercadoLibreSellerProfile: async () => ({ user_product_seller: true, seller_id: 123 }),
+    loadMercadoLibreMetadata: async () => ({
+      category: { settings: { max_title_length: 200 } },
+      attributes: [],
+      sale_term_ids: [],
+      shippingPreferences: { user: { modes: ['me2'] }, category: { logistics: [] } }
+    }),
+    logPublishPayloadMarker: () => undefined
+  });
+
+  const result = await adapter.publish({
+    __ml_existing_item_id: 'MLC-existing-up',
+    category_id: 'MLC437579',
+    title: 'Pack de gorras',
+    family_name: 'Pack de gorras',
+    name: 'Pack de gorras',
+    price: 29900,
+    available_quantity: 2,
+    currency_id: 'CLP',
+    listing_type_id: 'gold_special',
+    buying_mode: 'buy_it_now',
+    condition: 'new',
+    pictures: [{ source: 'https://example.com/1.jpg' }],
+    attributes: [],
+    variations: [{ id: 123, price: 29900, available_quantity: 1 }]
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.error, undefined);
+  assert.equal(putCalls.length, 1);
+  assert.equal(putCalls[0].url, 'https://api.mercadolibre.com/items/MLC-existing-up');
+  assert.deepEqual(putCalls[0].body, {
+    price: 29900,
+    available_quantity: 2,
+    pictures: [{ source: 'https://example.com/1.jpg' }]
+  });
+});
+
+test('buildMercadoLibreUserProductItemPayload no bloquea Child PK no requerido', () => {
+  const adapter = createAdapter();
+  const payload = adapter.buildMercadoLibreUserProductItemPayload(
+    {
+      category_id: 'MLC10871',
+      family_name: 'Tinta Canon GI-190 PGBK Negra 135 ml',
+      currency_id: 'CLP',
+      price: 17880,
+      available_quantity: 1,
+      listing_type_id: 'gold_special',
+      buying_mode: 'buy_it_now',
+      condition: 'new',
+      pictures: [{ source: 'https://example.com/1.jpg' }],
+      attributes: [
+        { id: 'BRAND', value_name: 'Canon' },
+        { id: 'MODEL', value_name: 'GI-190 PGBK' },
+        { id: 'SALE_FORMAT', value_name: 'Unidad', value_id: '1359391' },
+        { id: 'UNITS_PER_PACK', value_name: '1' },
+        { id: 'UNIT_VOLUME', value_name: '135 mL' }
+      ]
+    },
+    {
+      sku: '0667C001AB-NEGRO',
+      variant_values: [{ name: 'Negro', definition: { name: 'Color' } }]
+    },
+    {
+      category: { settings: { max_title_length: 60 } },
+      attributes: [
+        { id: 'BRAND', name: 'Marca', hierarchy: 'PARENT_PK', tags: { required: true } },
+        { id: 'MODEL', name: 'Modelo', hierarchy: 'PARENT_PK', tags: { required: true } },
+        { id: 'INK_COLOR', name: 'Color de la tinta', hierarchy: 'CHILD_PK', tags: { allow_variations: true } },
+        { id: 'SALE_FORMAT', name: 'Formato de venta', hierarchy: 'CHILD_PK', tags: {} },
+        { id: 'UNITS_PER_PACK', name: 'Unidades por pack', hierarchy: 'CHILD_PK', tags: { conditional_required: true } },
+        { id: 'PACKS_NUMBER', name: 'Cantidad de packs', hierarchy: 'CHILD_PK', tags: { required: true } },
+        { id: 'UNIT_VOLUME', name: 'Volumen de la unidad', hierarchy: 'CHILD_PK', tags: { unit_yield: true } }
+      ]
+    }
+  );
+
+  assert.equal(payload.__blocked_error, undefined);
+  assert.equal(payload.family_name, 'Tinta Canon GI-190 PGBK Negra 135 ml');
+});
