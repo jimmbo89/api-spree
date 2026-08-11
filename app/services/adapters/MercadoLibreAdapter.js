@@ -2179,12 +2179,16 @@ class MercadoLibreAdapter extends BaseAdapter {
         errors: blockingCauses
       };
 
-      logger.info('[MercadoLibreAdapter] Resultado de validación ML:', validation);
+      logger.info('[MercadoLibreAdapter] Resultado de validacion ML', { validation });
 
       if (!validation.valid) {
         return {
           valid: false,
           error: 'mercadolibre_validation_failed',
+          details: {
+            error_code: 'mercadolibre_validation_failed',
+            validation
+          },
           validation
         };
       }
@@ -2200,11 +2204,15 @@ class MercadoLibreAdapter extends BaseAdapter {
         valid: false
       };
 
-      logger.error('[MercadoLibreAdapter] Error ejecutando /items/validate:', validation);
+      logger.error('[MercadoLibreAdapter] Error ejecutando /items/validate', { validation });
 
       return {
         valid: false,
         error: 'mercadolibre_validation_failed',
+        details: {
+          error_code: 'mercadolibre_validation_failed',
+          validation
+        },
         validation
       };
     }
@@ -2758,35 +2766,19 @@ class MercadoLibreAdapter extends BaseAdapter {
 
         if (isUserProduct) {
           if (typeof transformedProduct.title === 'string' && transformedProduct.title.trim()) {
-            return {
-              __blocked_error: createMercadoLibreError({
-                operation: 'update',
-                itemModel: 'user_product',
-                itemId: mlExistingItemId,
-                categoryId,
-                field: 'title',
-                receivedValue: transformedProduct.title.trim(),
-                code: 'title_not_allowed',
-                message: 'User Products no admite actualización de title',
-                metadataSource: 'GET /items/{item_id}'
-              })
-            };
+            logger.info('[MercadoLibreAdapter] title omitido en update User Products', {
+              itemId: mlExistingItemId,
+              categoryId,
+              title: transformedProduct.title.trim()
+            });
           }
 
           if (hasIncomingClassicVariations) {
-            return {
-              __blocked_error: createMercadoLibreError({
-                operation: 'update',
-                itemModel: 'user_product',
-                itemId: mlExistingItemId,
-                categoryId,
-                field: 'variations',
-                receivedValue: transformedProduct.variations,
-                code: 'variations_not_allowed',
-                message: 'User Products no admite variaciones en update',
-                metadataSource: 'GET /items/{item_id}'
-              })
-            };
+            logger.info('[MercadoLibreAdapter] variations omitidas en update User Products', {
+              itemId: mlExistingItemId,
+              categoryId,
+              variationsCount: transformedProduct.variations.length
+            });
           }
         }
 
@@ -3280,6 +3272,10 @@ class MercadoLibreAdapter extends BaseAdapter {
             return {
               success: false,
               error: validationResult.error,
+              details: validationResult.details || {
+                error_code: validationResult.error,
+                validation: validationResult.validation
+              },
               validation: validationResult.validation,
               sku: variant?.sku || transformedProduct.sku || null
             };
@@ -3460,6 +3456,10 @@ class MercadoLibreAdapter extends BaseAdapter {
         return {
           success: false,
           error: validationResult.error,
+          details: validationResult.details || {
+            error_code: validationResult.error,
+            validation: validationResult.validation
+          },
           validation: validationResult.validation
         };
       }

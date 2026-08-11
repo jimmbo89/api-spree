@@ -165,6 +165,17 @@ function normalizeDetailsObject(details) {
   }
 }
 
+function buildPublishFailureDetails(result) {
+  if (result?.details) return result.details;
+  if (result?.validation) {
+    return {
+      error_code: result.error || 'mercadolibre_validation_failed',
+      validation: result.validation
+    };
+  }
+  return null;
+}
+
 function normalizeWarningEntry(warning) {
   if (typeof warning === 'string') {
     const message = warning.trim();
@@ -1235,6 +1246,8 @@ class PublishingService {
         };
       }
 
+      const publishFailureDetails = buildPublishFailureDetails(result);
+
       if (isMercadoLibre && mercadoLibreInitialTask) {
         if (mercadoLibreCreatedItems.length > 0) {
           for (const createdItem of mercadoLibreCreatedItems) {
@@ -1245,7 +1258,7 @@ class PublishingService {
                 ...normalizeDetailsObject(createdItem.task.error_details),
                 partial_publication: true,
                 adapter_error: result.error || 'unknown_error',
-                details: result.details || null
+                details: publishFailureDetails
               },
               api_response: createdItem.response || result.data || null,
               published_at: new Date()
@@ -1288,7 +1301,7 @@ class PublishingService {
         await ProductPublishingTaskRepository.updateTask(mercadoLibreInitialTask, {
           status: 'failed',
           error_message: result.error || 'Error desconocido en el adapter',
-          error_details: result.details || null,
+          error_details: publishFailureDetails,
           api_response: result.status_code ? {
             status_code: result.status_code,
             payload: result.payload
@@ -1298,7 +1311,7 @@ class PublishingService {
         return {
           success: false,
           error: result.error || 'unknown_error',
-          details: result.details,
+          details: publishFailureDetails,
           status_code: result.status_code,
           payload: transformed,
           product_id: productData.id,
@@ -1319,7 +1332,7 @@ class PublishingService {
         status: 'failed',
         payload: transformed,
         error_message: result.error || 'Error desconocido en el adapter',
-        error_details: result.details || null,
+        error_details: publishFailureDetails,
         api_response: result.status_code ? {
           status_code: result.status_code,
           payload: result.payload
@@ -1333,7 +1346,7 @@ class PublishingService {
       return {
         success: false,
         error: result.error || 'unknown_error',
-        details: result.details,
+        details: publishFailureDetails,
         status_code: result.status_code,
         payload: transformed,
         product_id: productData.id,
