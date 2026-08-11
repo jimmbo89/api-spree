@@ -436,6 +436,12 @@ class MercadoLibreAdapter extends BaseAdapter {
   formatMercadoLibreAttribute(attr, attrMeta = null) {
     if (!attr || !attr.id) return null;
 
+    if (String(attr.id).trim() === 'GTIN') {
+      const rawGtin = attr.value_name ?? attr.value ?? attr.value_id ?? null;
+      const gtinValue = rawGtin !== null && rawGtin !== undefined ? String(rawGtin).trim() : '';
+      return gtinValue ? { id: 'GTIN', value_name: gtinValue } : null;
+    }
+
     const valueType = String(attrMeta?.value_type || '').trim().toLowerCase();
     const rawValue = attr.value_name ?? attr.value ?? attr.value_struct?.number ?? null;
     const rawUnit = attr.unit ?? attr.value_struct?.unit ?? null;
@@ -564,9 +570,19 @@ class MercadoLibreAdapter extends BaseAdapter {
       gtinMeta?.type === 'product_identifier'
     );
     const existingGtin = attributes.find((attr) => String(attr?.id || '').trim() === 'GTIN');
-    const gtinSeed = productData.gtin || productData.ean || productData.upc || readAttributeValue(existingGtin);
     const generatedGtinSeed = productData.sku || productData.id || productData.name;
-    const resolvedGtin = gtinSeed || (gtinRequiredByCategory ? this.generateValidGTIN(generatedGtinSeed) : null);
+    const incomingGtinCandidates = [
+      productData.gtin,
+      productData.ean,
+      productData.upc,
+      readAttributeValue(existingGtin)
+    ].filter((value) => value !== undefined && value !== null && String(value).trim() !== '');
+    const validIncomingGtin = incomingGtinCandidates
+      .map((value) => this.extractDigits(value))
+      .find((digits) => this.isValidGTIN(digits));
+    const resolvedGtin = validIncomingGtin || (
+      gtinRequiredByCategory ? this.generateValidGTIN(generatedGtinSeed) : null
+    );
 
     if (resolvedGtin) {
       const normalizedGtin = this.generateValidGTIN(resolvedGtin);
@@ -613,10 +629,23 @@ class MercadoLibreAdapter extends BaseAdapter {
     const categoryAttributesMap = new Map(
       (Array.isArray(categoryAttributes) ? categoryAttributes : []).map((attr) => [attr.id, attr])
     );
+    const hasGtinValue = attributes.some((attr) =>
+      String(attr?.id || '').trim() === 'GTIN' &&
+      String(attr?.value_name ?? attr?.value ?? attr?.value_id ?? '').trim()
+    );
 
     return attributes
       .filter(attr => attr && attr.id && (attr.value_name || attr.value_id || attr.value !== undefined || attr.unit || attr.value_struct))
       .filter(attr => {
+        const attrId = String(attr.id || '').trim();
+        if (attrId === 'EMPTY_GTIN_REASON' && hasGtinValue) {
+          logger.warn('[ML Adapter] EMPTY_GTIN_REASON filtrado porque GTIN esta presente');
+          return false;
+        }
+        if (['PACKAGE_HEIGHT', 'PACKAGE_WIDTH', 'PACKAGE_LENGTH', 'PACKAGE_WEIGHT'].includes(attrId)) {
+          logger.warn(`[ML Adapter] Atributo ${attrId} filtrado (no modificable en item.attributes)`);
+          return false;
+        }
         if (attr.id === 'ITEM_CONDITION') {
           logger.warn(`[ML Adapter] ⚠️ Atributo ${attr.id} filtrado (ITEM_CONDITION viaja como condition)`);
           return false;
@@ -1261,6 +1290,10 @@ class MercadoLibreAdapter extends BaseAdapter {
       categoryAttrsById,
       variationAttrs
     );
+    const hasMarketplaceGtinValue = Array.isArray(marketplaceAttributes) && marketplaceAttributes.some((attr) =>
+      String(attr?.id || '').trim() === 'GTIN' &&
+      String(attr?.value_name ?? attr?.value ?? attr?.value_id ?? '').trim()
+    );
 
     if (variationAttrs.length === 0) return null;
 
@@ -1332,15 +1365,22 @@ class MercadoLibreAdapter extends BaseAdapter {
         );
 
         for (const mlAttr of variationValueAttrs) {
+          if (mlAttr?.id === 'EMPTY_GTIN_REASON' && hasMarketplaceGtinValue) {
+            continue;
+          }
+
           const match = [...variantSources, ...marketplaceVariationValueSources].find(
             ({ key, value, source, attributeId }) => {
-              const directMatch =
-                String(attributeId || '').trim() === String(mlAttr.id || '').trim() ||
-                this.matchesFlexibleText(key, mlAttr.name) ||
-                this.matchesFlexibleText(key, mlAttr.id);
+              const exactAttributeMatch = String(attributeId || '').trim() === String(mlAttr.id || '').trim();
 
-              if (directMatch) return true;
-              if (source === 'marketplace') return false;
+              if (source === 'marketplace') return exactAttributeMatch;
+              if (
+                exactAttributeMatch ||
+                this.matchesFlexibleText(key, mlAttr.name) ||
+                this.matchesFlexibleText(key, mlAttr.id)
+              ) {
+                return true;
+              }
 
               return (
                 this.matchesFlexibleText(value, mlAttr.name) ||
@@ -1641,6 +1681,16 @@ class MercadoLibreAdapter extends BaseAdapter {
       variationAttrs
     );
     const variationSources = [...variantSources, ...marketplaceSources];
+    const hasGtinValue = (
+      byId.has('GTIN') &&
+      String(byId.get('GTIN')?.value_name ?? byId.get('GTIN')?.value ?? byId.get('GTIN')?.value_id ?? '').trim()
+    ) || (
+      Array.isArray(marketplaceAttributes) &&
+      marketplaceAttributes.some((attr) =>
+        String(attr?.id || '').trim() === 'GTIN' &&
+        String(attr?.value_name ?? attr?.value ?? attr?.value_id ?? '').trim()
+      )
+    );
     const hasExplicitMarketplaceAttribute = (attributeId) =>
       Array.isArray(marketplaceAttributes) &&
       marketplaceAttributes.some((attr) => String(attr?.id || '').trim() === String(attributeId || '').trim());
@@ -1656,6 +1706,10 @@ class MercadoLibreAdapter extends BaseAdapter {
     };
 
     for (const mlAttr of variationAttrs) {
+      if (mlAttr?.id === 'EMPTY_GTIN_REASON' && hasGtinValue) {
+        continue;
+      }
+
       if (
         mlAttr?.id === 'EMPTY_GTIN_REASON' &&
         !hasExplicitMarketplaceAttribute(mlAttr.id) &&
@@ -1665,16 +1719,17 @@ class MercadoLibreAdapter extends BaseAdapter {
       }
 
       const match = variationSources.find(({ key, value, source, attributeId }) => {
-        const directMatch =
-          String(attributeId || '').trim() === String(mlAttr.id || '').trim() ||
+        const exactAttributeMatch = String(attributeId || '').trim() === String(mlAttr.id || '').trim();
+
+        if (source === 'marketplace') return exactAttributeMatch;
+
+        if (
+          exactAttributeMatch ||
           this.matchesFlexibleText(key, mlAttr.name) ||
-          this.matchesFlexibleText(key, mlAttr.id);
-
-        if (directMatch) return true;
-
-        // Marketplace attributes from the front are category-approved facts.
-        // Do not use their values to infer unrelated ML attributes.
-        if (source === 'marketplace') return false;
+          this.matchesFlexibleText(key, mlAttr.id)
+        ) {
+          return true;
+        }
 
         return (
           this.matchesFlexibleText(value, mlAttr.name) ||
@@ -3196,8 +3251,21 @@ class MercadoLibreAdapter extends BaseAdapter {
       productToPublish.buying_mode = commercialFields.buying_mode;
       productToPublish.condition = commercialFields.condition;
 
-      if (Array.isArray(transformedProduct.attributes)) {
-        productToPublish.attributes = transformedProduct.attributes;
+      const sourceMarketplaceAttributes = Array.isArray(transformedProduct.__ml_marketplace_attributes)
+        ? transformedProduct.__ml_marketplace_attributes
+        : (Array.isArray(transformedProduct.attributes) ? transformedProduct.attributes : []);
+      const sanitizedMarketplaceAttributes = this.enrichMercadoLibreParentAttributes(
+        sourceMarketplaceAttributes,
+        transformedProduct,
+        categoryInfo?.attributes || []
+      );
+      const sanitizedProductAttributes = this.buildMercadoLibreAttributes(
+        sanitizedMarketplaceAttributes,
+        categoryInfo?.attributes || []
+      );
+
+      if (sanitizedProductAttributes.length > 0) {
+        productToPublish.attributes = sanitizedProductAttributes;
       }
 
       const saleTermsToSend = buildWarrantySaleTerms(transformedProduct);
@@ -3233,9 +3301,7 @@ class MercadoLibreAdapter extends BaseAdapter {
       const sourcePublishableVariants = Array.isArray(transformedProduct.__ml_source_variants)
         ? transformedProduct.__ml_source_variants.filter((variant) => variant && variant.publish && Number(variant.price) > 0)
         : [];
-      const marketplaceAttributesForVariations = Array.isArray(transformedProduct.__ml_marketplace_attributes)
-        ? transformedProduct.__ml_marketplace_attributes
-        : transformedProduct.attributes;
+      const marketplaceAttributesForVariations = sanitizedMarketplaceAttributes;
 
       if (useUserProductsModel) {
         const publishableVariants = sourcePublishableVariants.length > 0
@@ -3255,10 +3321,10 @@ class MercadoLibreAdapter extends BaseAdapter {
         if (publishableVariants.length > 1 && parentPkAttributes.length > 0) {
           const parentSignatures = publishableVariants.map((variant) => {
             const resolvedAttributes = this.buildMercadoLibreUserProductAttributes(
-              transformedProduct.attributes,
+              sanitizedProductAttributes,
               variant,
               categoryInfo?.attributes || [],
-              transformedProduct.__ml_marketplace_attributes || []
+              marketplaceAttributesForVariations
             );
             return parentPkAttributes
               .map((attr) =>
@@ -3296,7 +3362,9 @@ class MercadoLibreAdapter extends BaseAdapter {
           const userProductPayload = this.buildMercadoLibreUserProductItemPayload(
             {
               ...transformedProduct,
-              family_name: familyName
+              family_name: familyName,
+              attributes: sanitizedProductAttributes,
+              __ml_marketplace_attributes: marketplaceAttributesForVariations
             },
             variant,
             categoryInfo
