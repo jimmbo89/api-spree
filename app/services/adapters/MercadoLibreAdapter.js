@@ -523,7 +523,15 @@ class MercadoLibreAdapter extends BaseAdapter {
     const attributes = Array.isArray(rawAttributes)
       ? rawAttributes.filter(Boolean).map((attr) => ({ ...attr }))
       : [];
-    const byId = new Set(attributes.map((attr) => String(attr?.id || '').trim()).filter(Boolean));
+    const readAttributeValue = (attr) => String(
+      attr?.value_name ?? attr?.value ?? attr?.value_id ?? ''
+    ).trim();
+    const byId = new Set(
+      attributes
+        .filter((attr) => readAttributeValue(attr))
+        .map((attr) => String(attr?.id || '').trim())
+        .filter(Boolean)
+    );
     const categoryIds = new Set(
       (Array.isArray(categoryAttributes) ? categoryAttributes : [])
         .map((attr) => String(attr?.id || '').trim())
@@ -545,7 +553,30 @@ class MercadoLibreAdapter extends BaseAdapter {
 
     addIfMissing('BRAND', productData.brand);
     addIfMissing('MODEL', productData.model);
-    addIfMissing('GTIN', productData.gtin || productData.ean || productData.upc);
+    const gtinMeta = (Array.isArray(categoryAttributes) ? categoryAttributes : [])
+      .find((attr) => String(attr?.id || '').trim() === 'GTIN');
+    const gtinRequiredByCategory = !!gtinMeta && (
+      gtinMeta?.tags?.required === true ||
+      gtinMeta?.tags?.catalog_required === true ||
+      gtinMeta?.tags?.conditional_required === true ||
+      gtinMeta?.tags?.new_required === true ||
+      gtinMeta?.tags?.validate === true ||
+      gtinMeta?.type === 'product_identifier'
+    );
+    const existingGtin = attributes.find((attr) => String(attr?.id || '').trim() === 'GTIN');
+    const gtinSeed = productData.gtin || productData.ean || productData.upc || readAttributeValue(existingGtin);
+    const generatedGtinSeed = productData.sku || productData.id || productData.name;
+    const resolvedGtin = gtinSeed || (gtinRequiredByCategory ? this.generateValidGTIN(generatedGtinSeed) : null);
+
+    if (resolvedGtin) {
+      const normalizedGtin = this.generateValidGTIN(resolvedGtin);
+      if (existingGtin) {
+        existingGtin.value_name = normalizedGtin;
+        byId.add('GTIN');
+      } else {
+        addIfMissing('GTIN', normalizedGtin);
+      }
+    }
     addIfMissing('SELLER_SKU', productData.sku);
 
     addIfMissing('PACKAGE_HEIGHT', productData.height_cm, { unit: 'cm' });
@@ -1294,13 +1325,28 @@ class MercadoLibreAdapter extends BaseAdapter {
 
       if (combinations.length === variationAttrs.length) {
         const variationAttributes = [];
+        const marketplaceVariationValueSources = this.extractMarketplaceAttributeSources(
+          marketplaceAttributes,
+          categoryAttrsById,
+          variationValueAttrs
+        );
+
         for (const mlAttr of variationValueAttrs) {
-          const match = variantSources.find(
-            ({ key, value }) =>
-              this.matchesFlexibleText(key, mlAttr.name) ||
-              this.matchesFlexibleText(key, mlAttr.id) ||
-              this.matchesFlexibleText(value, mlAttr.name) ||
-              this.matchesFlexibleText(value, mlAttr.id)
+          const match = [...variantSources, ...marketplaceVariationValueSources].find(
+            ({ key, value, source, attributeId }) => {
+              const directMatch =
+                String(attributeId || '').trim() === String(mlAttr.id || '').trim() ||
+                this.matchesFlexibleText(key, mlAttr.name) ||
+                this.matchesFlexibleText(key, mlAttr.id);
+
+              if (directMatch) return true;
+              if (source === 'marketplace') return false;
+
+              return (
+                this.matchesFlexibleText(value, mlAttr.name) ||
+                this.matchesFlexibleText(value, mlAttr.id)
+              );
+            }
           );
 
           if (!match) continue;

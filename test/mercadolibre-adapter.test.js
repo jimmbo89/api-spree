@@ -289,3 +289,69 @@ test('buildMercadoLibreUserProductItemPayload no bloquea Child PK no requerido',
   assert.equal(payload.__blocked_error, undefined);
   assert.equal(payload.family_name, 'Tinta Canon GI-190 PGBK Negra 135 ml');
 });
+
+test('enrichMercadoLibreParentAttributes genera GTIN cuando la categoria lo exige condicionalmente', () => {
+  const adapter = createAdapter();
+  const attributes = adapter.enrichMercadoLibreParentAttributes(
+    [{ id: 'BRAND', value_name: 'Canon' }],
+    { id: 32, sku: '0667C001AB', name: 'Tinta Canon GI-190 PGBK Negra 135 ml' },
+    [
+      { id: 'BRAND', tags: { required: true } },
+      {
+        id: 'GTIN',
+        type: 'product_identifier',
+        tags: { conditional_required: true, variation_attribute: true, validate: true }
+      }
+    ]
+  );
+
+  const gtin = attributes.find((attr) => attr.id === 'GTIN')?.value_name;
+  assert.equal(gtin, '06670016');
+  assert.equal(adapter.isValidGTIN(gtin), true);
+});
+
+test('buildValidMercadoLibreVariations propaga GTIN de marketplace a cada variante', () => {
+  const adapter = createAdapter();
+  const variations = adapter.buildValidMercadoLibreVariations(
+    [
+      {
+        sku: '0667C001AB-NEGRO',
+        publish: true,
+        price: 17880,
+        publishStock: 1,
+        variant_values: [{ name: 'Negro', definition: { name: 'Color de la tinta' } }]
+      },
+      {
+        sku: '0667C001AB-CIAN',
+        publish: true,
+        price: 17880,
+        publishStock: 1,
+        variant_values: [{ name: 'Cian', definition: { name: 'Color de la tinta' } }]
+      }
+    ],
+    [
+      {
+        id: 'INK_COLOR',
+        name: 'Color de la tinta',
+        tags: { allow_variations: true },
+        values: [
+          { id: '52049', name: 'Negro' },
+          { id: '52053', name: 'Cian' }
+        ]
+      },
+      {
+        id: 'GTIN',
+        name: 'Codigo universal de producto',
+        type: 'product_identifier',
+        tags: { variation_attribute: true, conditional_required: true, validate: true }
+      }
+    ],
+    17880,
+    [{ source: 'https://example.com/1.jpg' }],
+    [{ id: 'GTIN', value_name: '06670016' }]
+  );
+
+  assert.equal(variations.length, 2);
+  assert.equal(variations[0].attributes.some((attr) => attr.id === 'GTIN' && attr.value_name === '06670016'), true);
+  assert.equal(variations[1].attributes.some((attr) => attr.id === 'GTIN' && attr.value_name === '06670016'), true);
+});
