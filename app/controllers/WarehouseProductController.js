@@ -18,6 +18,77 @@ const { getRequestMetadata } = require("../util/requestUtil");
 const { getUserId } = require("../../config/context");
 const { v4: uuidv4 } = require('uuid');
 
+function normalizeVariantsInput(variants, { required = false } = {}) {
+  if (variants === undefined || variants === null || variants === "") {
+    if (required) {
+      return { ok: false, variants: [], message: "variantsRequired" };
+    }
+    return { ok: true, variants: [] };
+  }
+
+  let parsed = variants;
+  if (typeof variants === "string") {
+    try {
+      parsed = JSON.parse(variants);
+    } catch (error) {
+      return { ok: false, variants: [], message: "variantsInvalidJSON" };
+    }
+  }
+
+  if (Array.isArray(parsed)) {
+    if (required && parsed.length === 0) {
+      return { ok: false, variants: [], message: "variantsRequired" };
+    }
+    return { ok: true, variants: parsed };
+  }
+
+  if (parsed && typeof parsed === "object") {
+    return { ok: true, variants: [parsed] };
+  }
+
+  return { ok: false, variants: [], message: "variants debe ser un array" };
+}
+
+function normalizeWarehouseProductVariantPayload(variantData = {}) {
+  const stock = variantData.stock ?? variantData.quantity;
+  return {
+    ...variantData,
+    ...(stock !== undefined ? { stock } : {})
+  };
+}
+
+function normalizeMovementVariantPayload(variantData = {}) {
+  const quantity = variantData.quantity ?? variantData.stock;
+  return {
+    ...variantData,
+    ...(quantity !== undefined ? { quantity: Number(quantity) } : {})
+  };
+}
+
+function normalizeMoneyValue(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizeNullableMoneyValue(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function sameMoney(left, right) {
+  return Math.abs(normalizeMoneyValue(left) - normalizeMoneyValue(right)) < 0.01;
+}
+
+function sameNullableMoney(left, right) {
+  const normalizedLeft = normalizeNullableMoneyValue(left);
+  const normalizedRight = normalizeNullableMoneyValue(right);
+  if (normalizedLeft === null || normalizedRight === null) {
+    return normalizedLeft === normalizedRight;
+  }
+  return Math.abs(normalizedLeft - normalizedRight) < 0.01;
+}
+
 const WarehouseProductController = {
   async list(req, res) {
     logger.info(`${req.user?.name || "Unknown"} - Lista warehouse_products`);
@@ -194,25 +265,15 @@ const WarehouseProductController = {
       logger.info(`WarehouseProduct creado ID: ${wp.id}`);
 
       // 👉 5. PROCESAR VARIANTES
-      let variantsData = [];
-      if (variantsString) {
-        try {
-          variantsData = JSON.parse(variantsString);
-          if (!Array.isArray(variantsData)) {
-            await transaction.rollback();
-            return res.status(400).json({
-              success: false,
-              msg: "variants debe ser un array",
-            });
-          }
-        } catch (e) {
-          await transaction.rollback();
-          return res.status(400).json({
-            success: false,
-            msg: "variantsInvalidJSON",
-          });
-        }
+      const normalizedVariants = normalizeVariantsInput(variantsString);
+      if (!normalizedVariants.ok) {
+        await transaction.rollback();
+        return res.status(400).json({
+          success: false,
+          msg: normalizedVariants.message,
+        });
       }
+      const variantsData = normalizedVariants.variants.map(normalizeWarehouseProductVariantPayload);
 
       if (variantsData.length > 0) {
         logger.info(`Procesando ${variantsData.length} variantes...`);
@@ -356,23 +417,15 @@ const WarehouseProductController = {
       });
 
       // 👉 3. Procesar variantes solo si se envían
-      if (variantsString) {
-        let variantsData = [];
-        try {
-          variantsData = JSON.parse(variantsString);
-          if (!Array.isArray(variantsData)) {
-            await transaction.rollback();
-            return res
-              .status(400)
-              .json({ success: false, msg: "variants debe ser un array" });
-          }
-        } catch (e) {
+      if (variantsString !== undefined && variantsString !== null && variantsString !== "") {
+        const normalizedVariants = normalizeVariantsInput(variantsString);
+        if (!normalizedVariants.ok) {
           await transaction.rollback();
           return res
             .status(400)
-            .json({ success: false, msg: "variantsInvalidJSON" });
+            .json({ success: false, msg: normalizedVariants.message });
         }
-
+        const variantsData = normalizedVariants.variants.map(normalizeWarehouseProductVariantPayload);
         // 👉 4. Obtener variantes existentes en la BD para este warehouse_product
         const existingVariants =
           await WarehouseProductVariantRepository.findByWarehouseProductId(id);
@@ -422,11 +475,16 @@ const WarehouseProductController = {
           const hasActive = variantData.active !== undefined;
           const hasPublished = variantData.published !== undefined;
 
+          const normalizedPrice = hasPrice ? normalizeMoneyValue(price) : null;
           const normalizedPurchasePrice = hasPurchasePrice
-            ? (parseFloat(purchase_price) || 0)
+            ? normalizeMoneyValue(purchase_price)
             : null;
+          const normalizedPromotionalPrice = hasPromotionalPrice
+            ? normalizeNullableMoneyValue(promotional_price)
+            : null;
+          const normalizedLocalSku = hasLocalSku ? String(local_sku || '').trim() : null;
 
-          logger.info(`[DEBUG] Buscando variante con key: ${key}, purchase_price: ${normalizedPurchasePrice}`);
+          logger.info(`[DEBUG] Buscando variante con key: ${key}, local_sku: ${normalizedLocalSku}, price: ${normalizedPrice}, purchase_price: ${normalizedPurchasePrice}, promotional_price: ${normalizedPromotionalPrice}`);
 
           // ⭐ BUSCAR lote existente con el MISMO purchase_price y misma variante_id
           let existingWithSamePrice = null;
@@ -435,12 +493,22 @@ const WarehouseProductController = {
               const vNormalizedVariantId = v.variant_id != null ? String(v.variant_id) : null;
               const vKey = `global-${vNormalizedVariantId}`;
               
-              const vPurchasePrice = parseFloat(v.purchase_price) || 0;
-              const priceMatch = Math.abs(vPurchasePrice - normalizedPurchasePrice) < 0.01;
-              
-              logger.info(`[DEBUG] Comparando con variante existente: key=${vKey}, purchase_price=${vPurchasePrice}, match=${vKey === key && priceMatch}`);
-              
-              return vKey === key && priceMatch;
+              const variantMatches = vKey === key;
+              const skuMatches = !hasLocalSku || String(v.local_sku || '').trim() === normalizedLocalSku;
+              const priceMatches = !hasPrice || sameMoney(v.price, normalizedPrice);
+              const purchasePriceMatches = sameMoney(v.purchase_price, normalizedPurchasePrice);
+              const promotionalPriceMatches = !hasPromotionalPrice || sameNullableMoney(v.promotional_price, normalizedPromotionalPrice);
+              const activeMatches = v.active !== false;
+              const lotMatches = variantMatches
+                && skuMatches
+                && priceMatches
+                && purchasePriceMatches
+                && promotionalPriceMatches
+                && activeMatches;
+
+              logger.info(`[DEBUG] Comparando lote existente: key=${vKey}, local_sku=${v.local_sku || null}, price=${v.price}, purchase_price=${v.purchase_price}, promotional_price=${v.promotional_price || null}, match=${lotMatches}`);
+
+              return lotMatches;
             });
           }
 
@@ -697,6 +765,13 @@ const WarehouseProductController = {
   try {
     transaction = await sequelize.transaction();
 
+    const normalizedVariants = normalizeVariantsInput(variants, { required: true });
+    if (!normalizedVariants.ok) {
+      await transaction.rollback();
+      return res.status(400).json({ success: false, message: normalizedVariants.message });
+    }
+    const variantsData = normalizedVariants.variants.map(normalizeMovementVariantPayload);
+
     // === Validar movimiento_type ===
     if (!['entry', 'exit', 'transfer'].includes(movement_type)) {
       await transaction.rollback();
@@ -775,7 +850,7 @@ const WarehouseProductController = {
     const originVariantMap = new Map(originWpVariants.map(v => [v.variant_id, v]));
 
     // === Procesar cada variante ===
-    for (const variantData of variants) {
+    for (const variantData of variantsData) {
       const {
         variant_id,
         quantity,
@@ -1476,9 +1551,14 @@ async function _processProductMovement({
   // === Cargar variantes actuales del origen (para validar stock) ===
   const originWpVariants = await WarehouseProductVariantRepository.findByWarehouseProductId(originWp.id);
   const originVariantMap = new Map(originWpVariants.map(v => [v.variant_id, v]));
+  const normalizedVariants = normalizeVariantsInput(variants, { required: true });
+  if (!normalizedVariants.ok) {
+    throw new Error(normalizedVariants.message);
+  }
+  const variantsData = normalizedVariants.variants.map(normalizeMovementVariantPayload);
 
   // === Procesar cada variante del producto ===
-  for (const variantData of variants) {
+  for (const variantData of variantsData) {
     await _processVariantMovement({
       movement_type,
       originWarehouse,
