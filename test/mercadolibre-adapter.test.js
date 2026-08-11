@@ -355,3 +355,125 @@ test('buildValidMercadoLibreVariations propaga GTIN de marketplace a cada varian
   assert.equal(variations[0].attributes.some((attr) => attr.id === 'GTIN' && attr.value_name === '06670016'), true);
   assert.equal(variations[1].attributes.some((attr) => attr.id === 'GTIN' && attr.value_name === '06670016'), true);
 });
+
+test('GTIN numerico se regenera desde SKU y excluye EMPTY_GTIN_REASON', () => {
+  const adapter = createAdapter();
+  const categoryAttributes = [
+    {
+      id: 'GTIN',
+      type: 'product_identifier',
+      tags: { conditional_required: true, variation_attribute: true, validate: true }
+    },
+    {
+      id: 'EMPTY_GTIN_REASON',
+      tags: { hidden: true, variation_attribute: true, conditional_required: true },
+      values: [{ id: '17055161', name: 'Otra razon' }]
+    },
+    { id: 'PACKAGE_HEIGHT', value_type: 'number_unit', allowed_units: [{ id: 'cm' }] },
+    { id: 'SELLER_PACKAGE_WEIGHT', value_type: 'number_unit', allowed_units: [{ id: 'g' }] }
+  ];
+
+  const rawAttributes = adapter.enrichMercadoLibreParentAttributes(
+    [
+      { id: 'GTIN', value_name: 6670016 },
+      { id: 'EMPTY_GTIN_REASON', value_id: 17055161, value_name: 'Otra razon' },
+      { id: 'PACKAGE_HEIGHT', value_name: 5, unit: 'cm' },
+      { id: 'SELLER_PACKAGE_WEIGHT', value_name: 193, unit: 'g' }
+    ],
+    { id: 32, sku: '0667C001AB' },
+    categoryAttributes
+  );
+  const attributes = adapter.buildMercadoLibreAttributes(rawAttributes, categoryAttributes);
+
+  assert.equal(attributes.find((attr) => attr.id === 'GTIN')?.value_name, '06670016');
+  assert.equal(attributes.some((attr) => attr.id === 'EMPTY_GTIN_REASON'), false);
+  assert.equal(attributes.some((attr) => attr.id === 'PACKAGE_HEIGHT'), false);
+  assert.equal(attributes.find((attr) => attr.id === 'SELLER_PACKAGE_WEIGHT')?.value_name, '193 g');
+});
+
+test('GTIN valido enviado por el front se conserva como primera fuente', () => {
+  const adapter = createAdapter();
+  const categoryAttributes = [
+    {
+      id: 'GTIN',
+      type: 'product_identifier',
+      tags: { conditional_required: true, variation_attribute: true, validate: true }
+    }
+  ];
+
+  const rawAttributes = adapter.enrichMercadoLibreParentAttributes(
+    [{ id: 'GTIN', value_name: '12345670' }],
+    { id: 32, sku: '0667C001AB' },
+    categoryAttributes
+  );
+  const attributes = adapter.buildMercadoLibreAttributes(rawAttributes, categoryAttributes);
+
+  assert.equal(adapter.isValidGTIN('12345670'), true);
+  assert.equal(attributes.find((attr) => attr.id === 'GTIN')?.value_name, '12345670');
+});
+
+test('User Products no infiere EMPTY_GTIN_REASON desde GTIN', () => {
+  const adapter = createAdapter();
+  const attributes = adapter.buildMercadoLibreUserProductAttributes(
+    [{ id: 'GTIN', value_name: '06670016' }],
+    { sku: '0667C001AB-NEGRO', attributes: {}, variant_values: [] },
+    [
+      {
+        id: 'GTIN',
+        name: 'Codigo universal de producto',
+        type: 'product_identifier',
+        tags: { variation_attribute: true, conditional_required: true, validate: true }
+      },
+      {
+        id: 'EMPTY_GTIN_REASON',
+        name: 'Motivo de GTIN vacio',
+        tags: { hidden: true, variation_attribute: true, conditional_required: true },
+        values: [{ id: '17055161', name: 'Otra razon' }]
+      },
+      { id: 'SELLER_SKU', name: 'SKU', tags: { hidden: true, variation_attribute: true } }
+    ],
+    [
+      { id: 'GTIN', value_name: '06670016' },
+      { id: 'EMPTY_GTIN_REASON', value_id: 17055161, value_name: 'Otra razon' }
+    ]
+  );
+
+  assert.equal(attributes.find((attr) => attr.id === 'GTIN')?.value_name, '06670016');
+  assert.equal(attributes.some((attr) => attr.id === 'EMPTY_GTIN_REASON'), false);
+});
+
+test('validateMercadoLibrePayload expone codigo y mensaje real de Mercado Libre', async (t) => {
+  const originalPost = axios.post;
+  axios.post = async () => ({
+    status: 400,
+    data: {
+      message: 'Validation error',
+      error: 'validation_error',
+      cause: [
+        {
+          department: 'supply',
+          cause_id: 7711,
+          type: 'error',
+          code: 'item.attribute.product_identifier.invalid_format',
+          references: ['item.attributes[12].values'],
+          message: 'Product Identifier [GTIN] contains values with invalid format: [6670016]'
+        }
+      ]
+    }
+  });
+
+  t.after(() => {
+    axios.post = originalPost;
+  });
+
+  const adapter = createAdapter({
+    logPublishPayloadMarker: () => undefined
+  });
+  const result = await adapter.validateMercadoLibrePayload({ attributes: [] });
+
+  assert.equal(result.valid, false);
+  assert.equal(result.error, 'item.attribute.product_identifier.invalid_format');
+  assert.equal(result.message, 'Product Identifier [GTIN] contains values with invalid format: [6670016]');
+  assert.equal(result.details.error_code, 'item.attribute.product_identifier.invalid_format');
+  assert.equal(result.details.marketplace_errors.length, 1);
+});

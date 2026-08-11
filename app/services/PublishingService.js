@@ -176,6 +176,18 @@ function buildPublishFailureDetails(result) {
   return null;
 }
 
+function resolvePublishFailureMessage(result, fallback = 'Error desconocido en el adapter') {
+  const details = normalizeDetailsObject(result?.details);
+  return (
+    result?.message ||
+    details.marketplace_primary_error?.message ||
+    details.marketplace_message ||
+    details.validation?.errors?.[0]?.message ||
+    result?.error ||
+    fallback
+  );
+}
+
 function normalizeWarningEntry(warning) {
   if (typeof warning === 'string') {
     const message = warning.trim();
@@ -1247,6 +1259,7 @@ class PublishingService {
       }
 
       const publishFailureDetails = buildPublishFailureDetails(result);
+      const publishFailureMessage = resolvePublishFailureMessage(result);
 
       if (isMercadoLibre && mercadoLibreInitialTask) {
         if (mercadoLibreCreatedItems.length > 0) {
@@ -1300,7 +1313,7 @@ class PublishingService {
 
         await ProductPublishingTaskRepository.updateTask(mercadoLibreInitialTask, {
           status: 'failed',
-          error_message: result.error || 'Error desconocido en el adapter',
+          error_message: publishFailureMessage,
           error_details: publishFailureDetails,
           api_response: result.status_code ? {
             status_code: result.status_code,
@@ -1311,6 +1324,7 @@ class PublishingService {
         return {
           success: false,
           error: result.error || 'unknown_error',
+          message: publishFailureMessage,
           details: publishFailureDetails,
           status_code: result.status_code,
           payload: transformed,
@@ -1331,7 +1345,7 @@ class PublishingService {
         date: new Date(),
         status: 'failed',
         payload: transformed,
-        error_message: result.error || 'Error desconocido en el adapter',
+        error_message: publishFailureMessage,
         error_details: publishFailureDetails,
         api_response: result.status_code ? {
           status_code: result.status_code,
@@ -1346,6 +1360,7 @@ class PublishingService {
       return {
         success: false,
         error: result.error || 'unknown_error',
+        message: publishFailureMessage,
         details: publishFailureDetails,
         status_code: result.status_code,
         payload: transformed,

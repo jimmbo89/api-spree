@@ -2255,6 +2255,14 @@ class MercadoLibreAdapter extends BaseAdapter {
 
   async validateMercadoLibrePayload(payload) {
     try {
+      this.logPublishPayloadMarker({
+        label: 'validate',
+        model: payload?.family_name ? 'user_products' : 'classic',
+        sku: payload?.seller_custom_field || payload?.seller_sku || null,
+        itemId: null,
+        payload
+      });
+
       const response = await axios.post(
         'https://api.mercadolibre.com/items/validate',
         payload,
@@ -2283,11 +2291,21 @@ class MercadoLibreAdapter extends BaseAdapter {
       logger.info('[MercadoLibreAdapter] Resultado de validacion ML', { validation });
 
       if (!validation.valid) {
+        const primaryError = blockingCauses[0] || null;
+        const primaryErrorCode = primaryError?.code || response.data?.error || 'mercadolibre_validation_failed';
+        const primaryErrorMessage = primaryError?.message || response.data?.message || 'Validacion de Mercado Libre fallida';
+
         return {
           valid: false,
-          error: 'mercadolibre_validation_failed',
+          error: primaryErrorCode,
+          message: primaryErrorMessage,
           details: {
-            error_code: 'mercadolibre_validation_failed',
+            error_code: primaryErrorCode,
+            marketplace_error: response.data?.error || null,
+            marketplace_message: response.data?.message || null,
+            marketplace_primary_error: primaryError,
+            marketplace_errors: blockingCauses,
+            marketplace_warnings: warningCauses,
             validation
           },
           validation

@@ -325,7 +325,7 @@ const JobBackgroundProcessor = {
     }
 
     // Error → marcar y terminar
-    const errorMessage = result?.error || result?.message || 'unknown_error';
+    const errorMessage = result?.message || result?.error || 'unknown_error';
     logger.warn(`[JobProcessor] ❌ Producto ${product_id} falló: ${errorMessage}`);
     
     await JobProductRepository.update(jobProduct, {
