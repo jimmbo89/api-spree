@@ -92,13 +92,44 @@ function dedupeById(records) {
 
 function normalizeAdditionalData(additionalData) {
   if (!additionalData) return {};
-  if (typeof additionalData === 'object') return { ...additionalData };
 
-  try {
-    return JSON.parse(additionalData) || {};
-  } catch (error) {
+  let normalized = additionalData;
+  if (typeof normalized === 'string') {
+    try {
+      normalized = JSON.parse(normalized) || {};
+    } catch (error) {
+      return {};
+    }
+  }
+
+  if (typeof normalized !== 'object' || Array.isArray(normalized)) {
     return {};
   }
+
+  const entries = Object.entries(normalized);
+  const numericEntries = entries
+    .filter(([key]) => /^\d+$/.test(String(key)))
+    .sort(([a], [b]) => Number(a) - Number(b));
+  let parsedNumericPayload = {};
+
+  if (numericEntries.length > 0) {
+    const rawPayload = numericEntries.map(([, value]) => String(value)).join('');
+    try {
+      const parsed = JSON.parse(rawPayload);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        parsedNumericPayload = parsed;
+      }
+    } catch (error) {
+      parsedNumericPayload = {};
+    }
+  }
+
+  return entries.reduce((acc, [key, value]) => {
+    if (!/^\d+$/.test(String(key))) {
+      acc[key] = value;
+    }
+    return acc;
+  }, { ...parsedNumericPayload });
 }
 
 function getMlUserIdFromAdditionalData(additionalData) {
@@ -108,12 +139,6 @@ function getMlUserIdFromAdditionalData(additionalData) {
 
 function isInactiveCredential(credential) {
   return credential?.active === false || Number(credential?.active) === 0;
-}
-
-function buildDisconnectedName(name, id) {
-  const original = String(name || 'Conexion').trim();
-  const suffix = ` [desconectada:${id}]`;
-  return `${original.slice(0, Math.max(1, 100 - suffix.length))}${suffix}`;
 }
 
 const MarketplaceCredentialRepository = {
@@ -715,9 +740,6 @@ async deleteById(id) {
 
     const additionalData = normalizeAdditionalData(existing.additional_data);
     await existing.update({
-      name: isInactiveCredential(existing)
-        ? existing.name
-        : buildDisconnectedName(existing.name, existing.id),
       active: false,
       additional_data: {
         ...additionalData,
@@ -777,28 +799,6 @@ async deleteById(id) {
         throw new Error('Ya existe una credencial con este nombre para este usuario y marketplace');
       }
 
-      if (!id && credentialName) {
-        const inactiveNameConflict = await MarketplaceCredential.findOne({
-          where: {
-            marketplace_id,
-            company_id,
-            name: credentialName,
-            active: false
-          }
-        });
-
-        if (inactiveNameConflict) {
-          const inactiveAdditionalData = normalizeAdditionalData(inactiveNameConflict.additional_data);
-          await inactiveNameConflict.update({
-            name: buildDisconnectedName(inactiveNameConflict.name, inactiveNameConflict.id),
-            additional_data: {
-              ...inactiveAdditionalData,
-              original_name: inactiveAdditionalData.original_name || inactiveNameConflict.name
-            }
-          });
-        }
-      }
-
       const dataToSave = {
         marketplace_id,
         user_id,
@@ -809,7 +809,7 @@ async deleteById(id) {
         expires_at: expires_at || null,
         seller_email: seller_email || null,
         seller_id: seller_id || null,
-        additional_data: additional_data || null
+        additional_data: additional_data ? normalizeAdditionalData(additional_data) : null
       };
 
       if (access_token !== undefined) {
@@ -885,7 +885,9 @@ async deleteById(id) {
         updateData.seller_id = data.seller_id || null;
       }
       if (data.additional_data !== undefined) {
-        updateData.additional_data = data.additional_data || null;
+        updateData.additional_data = data.additional_data
+          ? normalizeAdditionalData(data.additional_data)
+          : null;
       }
 
       // Campos encriptados
@@ -949,8 +951,7 @@ async findByMLUserId(marketplaceId, userId, mlUserId, excludeId = null) {
     // Excluir si es la misma credencial (para updates)
     if (excludeId && cred.id === excludeId) return false;
     
-    // Verificar si additional_data tiene ml_user_id
-    return cred.additional_data?.ml_user_id === mlUserId;
+    return getMlUserIdFromAdditionalData(cred.additional_data) === String(mlUserId);
   });
 
   if (!matched) return null;
@@ -967,7 +968,7 @@ async findByMLUserId(marketplaceId, userId, mlUserId, excludeId = null) {
 
     const matched = credentials.find(cred => {
       if (excludeId && cred.id === excludeId) return false;
-      return cred.additional_data?.ml_user_id === mlUserId;
+      return getMlUserIdFromAdditionalData(cred.additional_data) === String(mlUserId);
     });
 
     if (!matched) return null;
@@ -995,24 +996,13 @@ async findByMLUserId(marketplaceId, userId, mlUserId, excludeId = null) {
     const targetId = mlUserId != null ? String(mlUserId) : null;
     if (!targetId) return null;
 
-    const extractMlUserId = (additionalData) => {
-      if (!additionalData) return null;
-      if (typeof additionalData === 'object') return additionalData.ml_user_id;
-      try {
-        const parsed = JSON.parse(additionalData);
-        return parsed?.ml_user_id;
-      } catch (e) {
-        return null;
-      }
-    };
-
     let match = null;
     for (const cred of credentials) {
       const plain = cred.get({ plain: true });
       const domain = plain.marketplace?.domain || '';
       if (!domain.includes('mercadolibre')) continue;
 
-      const stored = extractMlUserId(plain.additional_data);
+      const stored = getMlUserIdFromAdditionalData(plain.additional_data);
       if (stored != null && String(stored) === targetId) {
         match = plain;
         break;

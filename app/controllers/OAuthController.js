@@ -820,26 +820,53 @@ const normalizeMarketplaceShippingEntry = (entry, fallbackKey = "value") => {
   };
 };
 
+const normalizeMarketplaceCredentialAdditionalData = (additionalData) => {
+  if (!additionalData) return {};
+
+  let normalized = additionalData;
+  if (typeof normalized === "string") {
+    try {
+      normalized = JSON.parse(normalized);
+    } catch (e) {
+      return {};
+    }
+  }
+
+  if (typeof normalized !== "object" || Array.isArray(normalized)) return {};
+
+  const entries = Object.entries(normalized);
+  const numericEntries = entries
+    .filter(([key]) => /^\d+$/.test(String(key)))
+    .sort(([a], [b]) => Number(a) - Number(b));
+  let parsedNumericPayload = {};
+
+  if (numericEntries.length > 0) {
+    const rawPayload = numericEntries.map(([, value]) => String(value)).join("");
+    try {
+      const parsed = JSON.parse(rawPayload);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        parsedNumericPayload = parsed;
+      }
+    } catch (e) {
+      parsedNumericPayload = {};
+    }
+  }
+
+  return entries.reduce((acc, [key, value]) => {
+    if (!/^\d+$/.test(String(key))) {
+      acc[key] = value;
+    }
+    return acc;
+  }, { ...parsedNumericPayload });
+};
+
 const getMercadoLibreUserIdFromCredential = (cred) => {
   if (!cred) return null;
 
   if (cred.ml_user_id) return cred.ml_user_id;
 
-  const additional = cred.additional_data;
-  if (!additional) return null;
-
-  if (typeof additional === "object") return additional.ml_user_id || null;
-
-  if (typeof additional === "string") {
-    try {
-      const parsed = JSON.parse(additional);
-      return parsed?.ml_user_id || null;
-    } catch (e) {
-      return null;
-    }
-  }
-
-  return null;
+  const additional = normalizeMarketplaceCredentialAdditionalData(cred.additional_data);
+  return additional.ml_user_id || null;
 };
 
 const fetchMercadoLibreUserId = async (accessToken) => {
@@ -861,16 +888,7 @@ const persistMercadoLibreUserIdOnCredential = async (credential, mlUserId) => {
   }
 
   try {
-    let additional = credential.additional_data;
-    if (typeof additional === "string") {
-      try {
-        additional = JSON.parse(additional);
-      } catch (e) {
-        additional = {};
-      }
-    }
-
-    if (typeof additional !== "object" || additional === null) additional = {};
+    const additional = normalizeMarketplaceCredentialAdditionalData(credential.additional_data);
 
     await MarketplaceCredentialRepository.updatePartial(credential.id, {
       additional_data: { ...additional, ml_user_id: mlUserId }
@@ -2228,37 +2246,23 @@ async mercadoLibreCallback(req, res) {
       ? await MarketplaceCredentialRepository.findByCompany(companyId)
       : await MarketplaceCredentialRepository.findByUser(userId);
 
-    function getMLUserIdFromCredential(cred) {
-  if (!cred.additional_data) return null;
-  
-  // Si ya es objeto (depende de configuración de Sequelize)
-  if (typeof cred.additional_data === 'object') {
-    return cred.additional_data.ml_user_id;
-  }
-  
-  // Si es string JSON, parsearlo
-  try {
-    const parsed = JSON.parse(cred.additional_data);
-    return parsed?.ml_user_id;
-  } catch (e) {
-    return null;
-  }
-}
-    
     // Filtrar las que son de este marketplace y tienen el mismo ml_user_id
     const duplicateCredential = allCredentials.find(c => 
       c.marketplace_id === Number(marketplaceId) &&
       c.id !== credential.id &&  // Excluir la credencial actual
-      getMLUserIdFromCredential(c) === mlUserId  // Mismo usuario de ML
+      String(getMercadoLibreUserIdFromCredential(c) || '') === String(mlUserId)  // Mismo usuario de ML
     );
 
     if (duplicateCredential && (duplicateCredential.active === false || Number(duplicateCredential.active) === 0)) {
       logger.info(`[OAuth] Reconectando credencial historica ${duplicateCredential.id} para ML user ${mlUserId}`);
 
-      const duplicateAdditionalData = duplicateCredential.additional_data || {};
-      const originalName = duplicateAdditionalData.original_name || duplicateCredential.name;
+      const duplicateAdditionalData = normalizeMarketplaceCredentialAdditionalData(duplicateCredential.additional_data);
+      const reconnectedName = String(credential.name || '').trim()
+        || duplicateAdditionalData.original_name
+        || duplicateCredential.name;
       const reconnectedAdditionalData = {
         ...duplicateAdditionalData,
+        original_name: reconnectedName,
         ml_user_id: mlUserId,
         connection_status: 'connected',
         reconnected_at: new Date().toISOString()
@@ -2273,7 +2277,7 @@ async mercadoLibreCallback(req, res) {
       }
 
       await MarketplaceCredentialRepository.updatePartial(duplicateCredential.id, {
-        name: originalName,
+        name: reconnectedName,
         access_token: tokenRes.data.access_token,
         refresh_token: tokenRes.data.refresh_token,
         expires_at: new Date(Date.now() + tokenRes.data.expires_in * 1000),
@@ -2340,7 +2344,7 @@ async mercadoLibreCallback(req, res) {
 
     // ✅ No hay duplicado: guardar tokens + ml_user_id en additional_data
     const updatedAdditionalData = {
-      ...(credential.additional_data || {}),
+      ...normalizeMarketplaceCredentialAdditionalData(credential.additional_data),
       ml_user_id: mlUserId  // ← Guardar ID de usuario de ML
     };
 
