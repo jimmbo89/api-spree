@@ -22,7 +22,7 @@ const FalabellaOrderSyncService = {
     }
 
     const fallbackOrder = (error) => ({
-      order: order.get({ plain: true }),
+      order: serializeOrderForResponse(order),
       refreshed_at: new Date().toISOString(),
       source: 'local_fallback',
       error: error || null
@@ -77,7 +77,7 @@ const FalabellaOrderSyncService = {
 
       const refreshedOrder = await MarketplaceOrderRepository.findById(order.id);
       return {
-        order: refreshedOrder ? refreshedOrder.get({ plain: true }) : null,
+        order: serializeOrderForResponse(refreshedOrder),
         refreshed_at: new Date().toISOString(),
         source: 'falabella'
       };
@@ -87,6 +87,50 @@ const FalabellaOrderSyncService = {
     }
   }
 };
+
+function serializeOrderForResponse(orderRecord) {
+  if (!orderRecord) return null;
+
+  const order = typeof orderRecord.get === 'function'
+    ? orderRecord.get({ plain: true })
+    : { ...orderRecord };
+
+  delete order.raw_payload;
+  order.notes_snapshot = normalizeNotesForResponse(order.notes_snapshot);
+  return order;
+}
+
+function normalizeNotesForResponse(notesSnapshot) {
+  const notes = parseJsonMaybe(notesSnapshot);
+  const list = Array.isArray(notes) ? notes : [];
+
+  return list
+    .map((note) => {
+      const text = typeof note?.text === 'string' ? note.text.trim() : '';
+      if (!text) return null;
+
+      return {
+        note_id: note?.note_id || null,
+        text,
+        created_at: note?.created_at || null,
+        created_by_user_id: note?.created_by_user_id ?? null,
+        created_by_user_name: note?.created_by_user_name ?? null
+      };
+    })
+    .filter(Boolean);
+}
+
+function parseJsonMaybe(value) {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+  if (typeof value !== 'string') return null;
+
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    return null;
+  }
+}
 
 async function persistMarketplaceOrderCustomerSnapshot(orderId, customerSnapshot) {
   if (!customerSnapshot) return null;

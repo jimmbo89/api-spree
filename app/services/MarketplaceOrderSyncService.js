@@ -244,14 +244,19 @@ function normalizeNotesForResponse(notesSnapshot) {
   const list = Array.isArray(notes) ? notes : [];
 
   return list
-    .map((note) => ({
-      note_id: note?.note_id || null,
-      text: note?.text || '',
-      created_at: note?.created_at || null,
-      created_by_user_id: note?.created_by_user_id ?? null,
-      created_by_user_name: note?.created_by_user_name ?? null
-    }))
-    .filter((note) => note.note_id || note.text);
+    .map((note) => {
+      const text = typeof note?.text === 'string' ? note.text.trim() : '';
+      if (!text) return null;
+
+      return {
+        note_id: note?.note_id || null,
+        text,
+        created_at: note?.created_at || null,
+        created_by_user_id: note?.created_by_user_id ?? null,
+        created_by_user_name: note?.created_by_user_name ?? null
+      };
+    })
+    .filter(Boolean);
 }
 
 function resolveSellerIdFromOrderSnapshot(order = {}) {

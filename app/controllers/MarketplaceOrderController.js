@@ -72,7 +72,7 @@ const MarketplaceOrderController = {
       return res.json({
         success: true,
         data: {
-          order: order ? order.get({ plain: true }) : null,
+          order: serializeOrderForNotesResponse(order),
           refreshed_at: new Date().toISOString()
         }
       });
@@ -155,13 +155,16 @@ function normalizeNotesPayload(notes) {
   return notes
     .map((note, index) => {
       if (typeof note === 'string') {
+        const text = note.trim();
+        if (!text) return null;
+
         return {
           note_id: `note-${Date.now()}-${index}`,
-          text: note,
+          text,
           created_at: new Date().toISOString(),
           created_by_user_id: null,
           created_by_user_name: null,
-          raw_payload: { text: note }
+          raw_payload: { text }
         };
       }
 
@@ -177,6 +180,36 @@ function normalizeNotesPayload(notes) {
         created_by_user_id: note.created_by_user_id ?? null,
         created_by_user_name: note.created_by_user_name ?? null,
         raw_payload: note.raw_payload || note
+      };
+    })
+    .filter(Boolean);
+}
+
+function serializeOrderForNotesResponse(orderRecord) {
+  if (!orderRecord) return null;
+
+  const order = typeof orderRecord.get === 'function'
+    ? orderRecord.get({ plain: true })
+    : { ...orderRecord };
+
+  order.notes_snapshot = normalizeNotesForResponse(order.notes_snapshot);
+  return order;
+}
+
+function normalizeNotesForResponse(notesSnapshot) {
+  const list = Array.isArray(notesSnapshot) ? notesSnapshot : [];
+
+  return list
+    .map((note) => {
+      const text = typeof note?.text === 'string' ? note.text.trim() : '';
+      if (!text) return null;
+
+      return {
+        note_id: note?.note_id || null,
+        text,
+        created_at: note?.created_at || null,
+        created_by_user_id: note?.created_by_user_id ?? null,
+        created_by_user_name: note?.created_by_user_name ?? null
       };
     })
     .filter(Boolean);

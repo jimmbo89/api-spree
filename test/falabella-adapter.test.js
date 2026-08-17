@@ -133,6 +133,32 @@ test('FalabellaAdapter: buildFalabellaProductNodeXml no usa ProductId interno', 
   assert.equal(node.ProductId, undefined);
 });
 
+test('FalabellaAdapter: ProductData normaliza fechas Falabella a ISO8601', () => {
+  const adapter = createAdapter();
+  const node = adapter.buildFalabellaProductNodeXml({
+    sku: 'SKU-1',
+    productName: 'Producto',
+    brand: 'Marca',
+    price: 1000,
+    stock: 1,
+    PrimaryCategory: '1234',
+    description: 'Descripcion real',
+    attributes: [
+      { id: 'ConditionType', value_name: 'Nuevo', value: 'Nuevo' },
+      { id: 'SaleStartDateFalabella', value: '13-08-2026' },
+      { id: 'SaleEndDateFalabella', value: '13/08/2030' }
+    ],
+    package_height: 10,
+    package_width: 10,
+    package_length: 10,
+    package_weight: 1,
+    images: ['https://example.com/image.jpg']
+  });
+
+  assert.equal(node.ProductData.SaleStartDateFalabella, '2026-08-13');
+  assert.equal(node.ProductData.SaleEndDateFalabella, '2030-08-13');
+});
+
 test('FalabellaAdapter: ConditionType se normaliza al contrato oficial', () => {
   const adapter = createAdapter();
   assert.equal(adapter.normalizeFalabellaConditionType('new'), 'Nuevo');

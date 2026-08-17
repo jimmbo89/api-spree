@@ -59,6 +59,42 @@ class FalabellaAdapter extends BaseAdapter {
            `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}-03:00`;
   }
 
+  isFalabellaDateAttribute(feedName) {
+    const normalized = this.normalizeFalabellaText(feedName);
+    return normalized.includes('date') || normalized.includes('fecha');
+  }
+
+  normalizeFalabellaDateValue(value) {
+    if (value === null || value === undefined) return value;
+
+    const raw = String(value).trim();
+    if (!raw) return raw;
+
+    const isoDateMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s].*)?$/);
+    if (isoDateMatch) {
+      return `${isoDateMatch[1]}-${isoDateMatch[2]}-${isoDateMatch[3]}`;
+    }
+
+    const dayFirstMatch = raw.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+    if (!dayFirstMatch) return raw;
+
+    const day = Number(dayFirstMatch[1]);
+    const month = Number(dayFirstMatch[2]);
+    const year = Number(dayFirstMatch[3]);
+    const parsed = new Date(Date.UTC(year, month - 1, day));
+
+    if (
+      parsed.getUTCFullYear() !== year ||
+      parsed.getUTCMonth() !== month - 1 ||
+      parsed.getUTCDate() !== day
+    ) {
+      return raw;
+    }
+
+    const pad = n => String(n).padStart(2, '0');
+    return `${year}-${pad(month)}-${pad(day)}`;
+  }
+
   // ✅ XML escaping seguro
   escapeXml(str) {
     if (typeof str !== 'string') return String(str || '');
@@ -2284,6 +2320,9 @@ _transformImages(images = []) {
         }
 
         let value = this.normalizeFalabellaAttributeValue(attr);
+        if (this.isFalabellaDateAttribute(feedName)) {
+          value = this.normalizeFalabellaDateValue(value);
+        }
         if ([
           'DuracionEnCondicionesPrevisiblesDeUso',
           'PlazoDeDisponibilidadDeRepuestos',
