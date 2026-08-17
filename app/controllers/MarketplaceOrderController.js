@@ -63,6 +63,15 @@ const MarketplaceOrderController = {
       }
 
       const normalizedNotes = normalizeNotesPayload(notes);
+      if (hasSubmittedNoteContent(notes) && normalizedNotes.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'MESSAGE_TEXT_INVALID',
+          message: 'Las notas enviadas no son válidas.'
+        });
+      }
+
+      logger.info(`[MarketplaceOrderController] Notas normalizadas para orden ${id}: ${normalizedNotes.length}`);
       await MarketplaceOrderRepository.updateById(id, {
         notes_snapshot: normalizedNotes
       });
@@ -73,6 +82,7 @@ const MarketplaceOrderController = {
         success: true,
         data: {
           order: serializeOrderForNotesResponse(order),
+          notes_snapshot: normalizeNotesForResponse(normalizedNotes),
           refreshed_at: new Date().toISOString()
         }
       });
@@ -150,9 +160,12 @@ const MarketplaceOrderController = {
 };
 
 function normalizeNotesPayload(notes) {
-  if (!Array.isArray(notes)) return [];
+  const parsedNotes = parseJsonMaybe(notes);
+  const list = normalizeNotesList(parsedNotes);
+  if (!Array.isArray(list)) return [];
+  const now = new Date().toISOString();
 
-  return notes
+  return list
     .map((note, index) => {
       if (typeof note === 'string') {
         const text = note.trim();
@@ -161,7 +174,7 @@ function normalizeNotesPayload(notes) {
         return {
           note_id: `note-${Date.now()}-${index}`,
           text,
-          created_at: new Date().toISOString(),
+          created_at: now,
           created_by_user_id: null,
           created_by_user_name: null,
           raw_payload: { text }
@@ -176,13 +189,41 @@ function normalizeNotesPayload(notes) {
       return {
         note_id: note.note_id || `note-${Date.now()}-${index}`,
         text,
-        created_at: note.created_at || new Date().toISOString(),
+        created_at: note.created_at || now,
         created_by_user_id: note.created_by_user_id ?? null,
         created_by_user_name: note.created_by_user_name ?? null,
         raw_payload: note.raw_payload || note
       };
     })
     .filter(Boolean);
+}
+
+function normalizeNotesList(notes) {
+  if (Array.isArray(notes)) return notes;
+  if (!notes || typeof notes !== 'object') return [];
+
+  if (typeof notes.text === 'string') return [notes];
+
+  const numericKeys = Object.keys(notes)
+    .filter((key) => /^\d+$/.test(key))
+    .sort((a, b) => Number(a) - Number(b));
+
+  if (numericKeys.length > 0) {
+    return numericKeys.map((key) => notes[key]);
+  }
+
+  return [];
+}
+
+function hasSubmittedNoteContent(notes) {
+  const parsedNotes = parseJsonMaybe(notes);
+  const list = normalizeNotesList(parsedNotes);
+
+  return list.some((note) => {
+    if (typeof note === 'string') return note.trim().length > 0;
+    if (!note || typeof note !== 'object') return false;
+    return typeof note.text === 'string' && note.text.trim().length > 0;
+  });
 }
 
 function serializeOrderForNotesResponse(orderRecord) {
@@ -197,7 +238,8 @@ function serializeOrderForNotesResponse(orderRecord) {
 }
 
 function normalizeNotesForResponse(notesSnapshot) {
-  const list = Array.isArray(notesSnapshot) ? notesSnapshot : [];
+  const notes = parseJsonMaybe(notesSnapshot);
+  const list = Array.isArray(notes) ? notes : [];
 
   return list
     .map((note) => {
@@ -213,6 +255,18 @@ function normalizeNotesForResponse(notesSnapshot) {
       };
     })
     .filter(Boolean);
+}
+
+function parseJsonMaybe(value) {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+  if (typeof value !== 'string') return null;
+
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    return null;
+  }
 }
 
 module.exports = MarketplaceOrderController;
