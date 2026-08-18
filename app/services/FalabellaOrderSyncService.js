@@ -43,8 +43,6 @@ const FalabellaOrderSyncService = {
 
       const orderInfo = parseFalabellaOrderInfo(remoteOrder);
       const customerSnapshot = buildFalabellaCustomerSnapshot(remoteOrder, orderInfo);
-      const existingNotes = normalizeNotesSnapshot(order.notes_snapshot);
-
       const orderData = {
         order_status: mapFalabellaOrderStatus(orderInfo.status),
         payment_status: order.payment_status || 'pending',
@@ -68,7 +66,6 @@ const FalabellaOrderSyncService = {
           ]) || orderInfo.shippingAddress || order.shipping_address || null,
         shipping_city: customerSnapshot.shipping_city || orderInfo.shippingCity || order.shipping_city || null,
         shipping_region: customerSnapshot.shipping_state || orderInfo.shippingRegion || order.shipping_region || null,
-        notes_snapshot: existingNotes,
         raw_payload: remoteOrder
       };
 
@@ -456,51 +453,6 @@ function mapFalabellaOrderStatus(status) {
     'order created': 'pending'
   };
   return map[String(status).toLowerCase()] || 'pending';
-}
-
-function normalizeNotesSnapshot(notesSnapshot) {
-  if (Array.isArray(notesSnapshot)) {
-    return notesSnapshot
-      .map((note, index) => {
-        if (typeof note === 'string') {
-          return {
-            note_id: `legacy-note-${index}`,
-            text: note,
-            created_at: null,
-            created_by_user_id: null,
-            created_by_user_name: null,
-            raw_payload: { text: note }
-          };
-        }
-
-        if (!note || typeof note !== 'object') return null;
-        const text = typeof note.text === 'string' ? note.text : '';
-        if (!text) return null;
-
-        return {
-          note_id: note.note_id || `legacy-note-${index}`,
-          text,
-          created_at: note.created_at || null,
-          created_by_user_id: note.created_by_user_id ?? null,
-          created_by_user_name: note.created_by_user_name ?? null,
-          raw_payload: note.raw_payload || note
-        };
-      })
-      .filter(Boolean);
-  }
-
-  if (notesSnapshot && typeof notesSnapshot === 'object') {
-    return [{
-      note_id: notesSnapshot.note_id || 'legacy-note-0',
-      text: notesSnapshot.text || '',
-      created_at: notesSnapshot.created_at || null,
-      created_by_user_id: notesSnapshot.created_by_user_id ?? null,
-      created_by_user_name: notesSnapshot.created_by_user_name ?? null,
-      raw_payload: notesSnapshot.raw_payload || notesSnapshot
-    }].filter((note) => note.text);
-  }
-
-  return [];
 }
 
 function timestampMinus03(date = new Date()) {
