@@ -1089,10 +1089,11 @@ class PublishingService {
           const falabellaErrorDetails = {
             feed_id: falabellaFeedId,
             action: result.data?.action || 'ProductCreate',
-            status: 'processing',
+            status: falabellaHasWarnings ? 'pending' : (result.data?.status || 'processing'),
             sku: transformed.sku,
             category_id: transformed.PrimaryCategory,
             category_name: transformed.categoryName,
+            image_upload: result.data?.image_upload || null,
             sent_at: new Date().toISOString()
           };
 
@@ -1117,7 +1118,7 @@ class PublishingService {
             });
           }
 
-          logger.info(`[PublishingService] ✅ Falabella quedó en processing; webhook terminará la confirmación.`);
+          logger.info(`[PublishingService] ✅ Falabella quedó en ${falabellaErrorDetails.status}; webhook o feed posterior terminará la confirmación si aplica.`);
 
           return {
             success: true,

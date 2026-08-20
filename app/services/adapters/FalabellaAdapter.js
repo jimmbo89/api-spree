@@ -763,12 +763,19 @@ class FalabellaAdapter extends BaseAdapter {
 
       if (warnings.length > 0) {
         logger.warn(`[FalabellaAdapter] Producto publicado con advertencias confirmadas por FeedStatus`, warnings);
+        const warningMessage = warnings.map(item => item?.message).filter(Boolean).join(' | ');
         return {
           success: true,
           external_id: transformedProduct.sku,
           has_warnings: true,
           warnings,
-          data: feedData
+          warning_message: warningMessage
+            ? `Pendiente en Falabella: ${warningMessage}`
+            : 'Pendiente en Falabella por advertencias del marketplace',
+          data: {
+            ...feedData,
+            feed_confirmed: true
+          }
         };
       }
 
@@ -793,6 +800,84 @@ class FalabellaAdapter extends BaseAdapter {
       external_id: transformedProduct.sku,
       data: feedData
     };
+  }
+
+  async uploadImagesAfterConfirmedProductCreate(transformedProduct, currentImageUploadResult = null) {
+    const images = this.normalizeFalabellaImages(transformedProduct?.images || []);
+    const baseResult = currentImageUploadResult || (
+      images.length > 0
+        ? {
+            success: false,
+            skipped: true,
+            pending: true,
+            reason: 'awaiting_product_create_feed',
+            images_count: images.length
+          }
+        : { success: true, skipped: true, pending: false, images_count: 0 }
+    );
+
+    if (images.length === 0) {
+      return baseResult;
+    }
+
+    const sellerSku = transformedProduct?.sku;
+    let productStatus = null;
+
+    try {
+      productStatus = await this.fetchProductStatus(sellerSku);
+    } catch (error) {
+      logger.warn(
+        `[FalabellaAdapter] No se pudo verificar existencia del producto ${sellerSku} antes de subir imágenes: ${error.message}`
+      );
+      return {
+        ...baseResult,
+        pending: true,
+        reason: 'product_status_check_failed',
+        error: error.message
+      };
+    }
+
+    if (!productStatus?.found) {
+      logger.info(
+        `[FalabellaAdapter] ProductCreate confirmado para ${sellerSku}, pero GetProducts aún no lo expone; imágenes quedan pendientes`
+      );
+      return {
+        ...baseResult,
+        pending: true,
+        reason: 'product_not_visible_after_confirmed_feed',
+        product_status: productStatus
+      };
+    }
+
+    if (productStatus.has_image !== false) {
+      logger.info(`[FalabellaAdapter] SKU ${sellerSku} ya reporta imagen en Falabella; se omite Action=Image`);
+      return {
+        success: true,
+        skipped: true,
+        pending: false,
+        reason: 'already_has_image',
+        images_count: images.length,
+        product_status: productStatus
+      };
+    }
+
+    const terminalStatus = String(productStatus.status || '').trim().toLowerCase();
+    if (['inactive', 'deleted'].includes(terminalStatus)) {
+      logger.info(
+        `[FalabellaAdapter] SKU ${sellerSku} está en estado terminal ${terminalStatus}; se omite Action=Image`
+      );
+      return {
+        ...baseResult,
+        pending: false,
+        reason: 'terminal_product_status',
+        product_status: productStatus
+      };
+    }
+
+    logger.info(
+      `[FalabellaAdapter] ProductCreate confirmado para ${sellerSku}; asociando ${images.length} imagen(es) via Action=Image`
+    );
+    return await this.uploadProductImages(sellerSku, images);
   }
 
   async resolveImmediateProductCreateFeedResult({ transformedProduct, requestId, imageUploadResult }) {
@@ -836,6 +921,33 @@ class FalabellaAdapter extends BaseAdapter {
 
       if (!feedResult.success || failedRecords > 0 || errors.length > 0) {
         return feedResult;
+      }
+
+      const confirmedImageUploadResult = await this.uploadImagesAfterConfirmedProductCreate(
+        transformedProduct,
+        imageUploadResult
+      );
+
+      feedResult.data = {
+        ...(feedResult.data || {}),
+        image_upload: confirmedImageUploadResult
+      };
+
+      if (confirmedImageUploadResult?.success === false && confirmedImageUploadResult?.skipped !== true) {
+        feedResult.has_warnings = true;
+        feedResult.warnings = [
+          ...(Array.isArray(feedResult.warnings) ? feedResult.warnings : []),
+          {
+            field: 'images',
+            sku: transformedProduct.sku,
+            message: confirmedImageUploadResult.error || 'No se pudo iniciar la subida de imágenes en Falabella',
+            value: null
+          }
+        ];
+        feedResult.warning_message = [
+          feedResult.warning_message,
+          `La subida de imágenes quedó pendiente: ${confirmedImageUploadResult.error || confirmedImageUploadResult.reason || 'sin detalle'}`
+        ].filter(Boolean).join(' | ');
       }
 
       return {
@@ -2580,7 +2692,13 @@ _transformImages(images = []) {
           return immediateFeedResult;
         }
 
-        const immediateFeedData = immediateFeedResult?.feed_result?.data || null;
+        const immediateFeedResultData = immediateFeedResult?.feed_result || null;
+        const immediateFeedData = immediateFeedResultData?.data || null;
+        const finalImageUploadResult = immediateFeedData?.image_upload || imageUploadResult;
+        const finalWarnings = Array.isArray(immediateFeedResultData?.warnings)
+          ? immediateFeedResultData.warnings
+          : [];
+        const finalHasWarnings = immediateFeedResultData?.has_warnings === true || finalWarnings.length > 0;
 
         return {
           success: true,
@@ -2599,13 +2717,13 @@ _transformImages(images = []) {
               && transformedProduct.falabella_products.length > 1,
             category_id: transformedProduct.PrimaryCategory,
             category_name: transformedProduct.categoryName,
-            image_upload: imageUploadResult
+            image_upload: finalImageUploadResult
           },
-          has_warnings: false,
-          warnings: [],
-          warning_message: normalizedImages.length > 0 && imageUploadResult?.success === false
+          has_warnings: finalHasWarnings,
+          warnings: finalWarnings,
+          warning_message: immediateFeedResultData?.warning_message || (normalizedImages.length > 0 && finalImageUploadResult?.success === false
             ? `${marketplaceMessage}. La subida de imágenes falló y debe reintentarse.`
-            : marketplaceMessage,
+            : marketplaceMessage),
           message: marketplaceMessage
         };
 

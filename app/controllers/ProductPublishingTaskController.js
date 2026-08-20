@@ -845,6 +845,7 @@ function buildFalabellaPublishedStateSnapshot(product, sellerSku) {
     raw_status: rawStatus,
     is_published: isPublished,
     qc_status: qcStatus,
+    has_image: FalabellaAdapter.hasFalabellaImage(product),
     price: businessUnit?.Price !== undefined && businessUnit?.Price !== null
       ? Number(businessUnit.Price)
       : null,
@@ -852,6 +853,8 @@ function buildFalabellaPublishedStateSnapshot(product, sellerSku) {
       ? Number(businessUnit.Stock)
       : null,
     permalink: product?.Url || product?.url || null,
+    url: product?.Url || product?.url || null,
+    shop_sku: product?.ShopSku || product?.shop_sku || null,
     // ✅ NUEVO: Incluir errores específicos del producto
     product_errors: normalizedErrors.map(err => ({
       code: err.Code || err.code || null,
@@ -3838,44 +3841,67 @@ async publishedProducts(req, res) {
       let refreshedProduct = null;
 
       if (feedFinishedSuccessfully) {
-        // ✅ CASO 1: Feed confirmado exitosamente
-        // Construimos el snapshot mezclando: estado actual + solo los campos enviados
-        currentProductState = {
-          sku: externalId,
-          // ✅ Status: si se envió, usar el nuevo; si no, mantener el actual
-          status: hasStatus
-            ? String(status).trim().toLowerCase()
+        try {
+          refreshedProduct = await adapter.findExistingProductBySellerSku(externalId);
+        } catch (getError) {
+          logger.warn(`[updateFalabellaItem] GetProducts post-feed falló: ${getError.message}`);
+        }
+
+        if (refreshedProduct) {
+          currentProductState = buildFalabellaPublishedStateSnapshot(
+            refreshedProduct.raw || refreshedProduct,
+            externalId
+          );
+          logger.info(`[updateFalabellaItem] ✅ Feed confirmado y snapshot real desde GetProducts:`, {
+            sku: currentProductState.sku,
+            status: currentProductState.status,
+            raw_status: currentProductState.raw_status,
+            price: currentProductState.price,
+            stock: currentProductState.available_quantity,
+            is_published: currentProductState.is_published,
+            qc_status: currentProductState.qc_status,
+            has_image: currentProductState.has_image,
+            changedFields
+          });
+        } else {
+          const requestedStatus = hasStatus ? String(status).trim().toLowerCase() : null;
+          const fallbackRawStatus = requestedStatus || currentState.raw_status || currentState.status;
+          const fallbackStatus = requestedStatus === 'active' && currentState.is_published !== true && !currentState.permalink
+            ? 'pending'
             : (currentState.raw_status === 'active' && currentState.is_published === false
                 ? 'not_published'
-                : (currentState.qc_status === 'rejected' ? 'rejected' : (currentState.raw_status || currentState.status))),
-          raw_status: hasStatus
-            ? String(status).trim().toLowerCase()
-            : (currentState.raw_status || currentState.status),
-          // ✅ Precio: si se envió, usar el nuevo; si no, mantener el actual
-          price: hasPrice
-            ? Number(price)
-            : currentState.price,
-          // ✅ Stock: si se envió, usar el nuevo; si no, mantener el actual
-          available_quantity: hasQuantity
-            ? Number(available_quantity)
-            : currentState.available_quantity,
-          // ✅ PRESERVAR IsPublished y QCStatus del estado existente
-          is_published: currentState.is_published,
-          qc_status: currentState.qc_status,
-          permalink: currentState.permalink,
-          raw: null
-        };
+                : (currentState.qc_status === 'rejected' ? 'rejected' : fallbackRawStatus));
 
-        logger.info(`[updateFalabellaItem] ✅ Feed confirmado exitoso. Snapshot construido (solo campos enviados):`, {
-          sku: currentProductState.sku,
-          status: currentProductState.status,
-          raw_status: currentProductState.raw_status,
-          price: currentProductState.price,
-          stock: currentProductState.available_quantity,
-          is_published: currentProductState.is_published,
-          qc_status: currentProductState.qc_status,
-          changedFields
-        });
+          currentProductState = {
+            sku: externalId,
+            status: fallbackStatus,
+            raw_status: fallbackRawStatus,
+            price: hasPrice
+              ? Number(price)
+              : currentState.price,
+            available_quantity: hasQuantity
+              ? Number(available_quantity)
+              : currentState.available_quantity,
+            is_published: currentState.is_published,
+            qc_status: currentState.qc_status,
+            has_image: null,
+            permalink: currentState.permalink,
+            url: currentState.permalink,
+            shop_sku: null,
+            raw: null
+          };
+
+          logger.warn(`[updateFalabellaItem] Feed confirmado pero GetProducts no devolvió datos. Snapshot conservador:`, {
+            sku: currentProductState.sku,
+            status: currentProductState.status,
+            raw_status: currentProductState.raw_status,
+            price: currentProductState.price,
+            stock: currentProductState.available_quantity,
+            is_published: currentProductState.is_published,
+            qc_status: currentProductState.qc_status,
+            changedFields
+          });
+        }
       } else {
         // ✅ CASO 2: Feed no confirmado o con errores
         // Intentar GetProducts como fallback para obtener estado real
@@ -3932,9 +3958,12 @@ async publishedProducts(req, res) {
         }
       }
 
-      // ✅ CORRECCIÓN: No marcar como warning si el feed fue exitoso
-      const isActive = currentProductState.status === 'active' || feedFinishedSuccessfully;
-      const shouldKeepWarning = !feedFinishedSuccessfully && currentProductState.status && !isActive;
+      const marketplaceDisplayStatus = resolveFalabellaMarketplaceDisplayStatus(currentProductState, {
+        taskStatus: task.status,
+        hasImage: currentProductState.has_image
+      });
+      const isActive = marketplaceDisplayStatus === 'active';
+      const shouldKeepWarning = currentProductState.status && !isActive;
 
       const currentDetails = normalizeErrorDetails(task.error_details);
       const mergedDetails = {
@@ -3947,9 +3976,11 @@ async publishedProducts(req, res) {
           is_published: currentProductState.is_published,
           stock: currentProductState.available_quantity,
           price: currentProductState.price,
+          has_image: currentProductState.has_image ?? null,
           verified: feedFinishedSuccessfully,
           item_found: !!refreshedProduct || feedFinishedSuccessfully,
-          note: feedFinishedSuccessfully ? 'feed_confirmed' : (refreshedProduct ? 'get_products' : 'fallback'),
+          display_status: marketplaceDisplayStatus,
+          note: refreshedProduct ? 'get_products' : (feedFinishedSuccessfully ? 'feed_confirmed_without_get_products' : 'fallback'),
           updated_at: new Date().toISOString()
         },
         manual_update: {
@@ -3996,11 +4027,12 @@ async publishedProducts(req, res) {
         external_url: currentProductState.permalink || task.external_url || null
       };
 
-      // ✅ CORRECCIÓN: Si el feed fue exitoso, siempre marcar como 'published'
-      if (feedFinishedSuccessfully) {
+      if (feedFinishedSuccessfully && isActive) {
         taskUpdate.status = 'published';
       } else if (isActive && task.status === 'published_with_warnings') {
         taskUpdate.status = 'published';
+      } else if (feedFinishedSuccessfully && !isActive) {
+        taskUpdate.status = 'pending';
       } else if (shouldKeepWarning && task.status === 'published') {
         taskUpdate.status = 'published_with_warnings';
       }
@@ -4011,7 +4043,7 @@ async publishedProducts(req, res) {
       // Esto preserva IsPublished, QCStatus, ProductData, etc.
       if (link) {
         await link.update({
-          status: currentProductState.raw_status || currentProductState.status || link.status,
+          status: marketplaceDisplayStatus || currentProductState.status || link.status,
           external_url: currentProductState.permalink || link.external_url || null,
           published_stock: currentProductState.available_quantity,
           published_payload: apiResponseToSave, // ✅ Payload completo con MERGE

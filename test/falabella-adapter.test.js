@@ -247,6 +247,84 @@ test('FalabellaAdapter: publish no sube imagenes antes de confirmar ProductCreat
   }
 });
 
+test('FalabellaAdapter: ProductCreate con warnings sube imagenes si el producto ya existe', async () => {
+  const adapter = createAdapter();
+  const originalPost = axios.post;
+  const postedUrls = [];
+
+  adapter.ensureValidCredentials = async () => ({ valid: true });
+  adapter.hydrateAttributesForPublish = async (product) => product;
+  adapter.findExistingProductBySellerSku = async () => null;
+  adapter.fetchProductStatus = async () => ({
+    found: true,
+    sku: 'SKU-1',
+    status: 'active',
+    has_image: false,
+    is_published: false
+  });
+  adapter.pollFeedStatus = async () => ({
+    timedOut: false,
+    feed: {
+      FeedID: 'PRODUCT-FEED-WARN',
+      Status: 'Finished',
+      Action: 'ProductCreate',
+      TotalRecords: '1',
+      ProcessedRecords: '1',
+      FailedRecords: '0',
+      FeedWarnings: {
+        Warning: {
+          Message: 'Selling this brand requires an approval. Please get in contact with Falabella',
+          SellerSku: 'SKU-1'
+        }
+      }
+    }
+  });
+
+  axios.post = async (url) => {
+    postedUrls.push(url);
+    if (url.includes('Action=Image')) {
+      return {
+        status: 200,
+        data: '<SuccessResponse><Body><RequestId>IMAGE-FEED-1</RequestId></Body></SuccessResponse>'
+      };
+    }
+    return {
+      status: 200,
+      data: '<SuccessResponse><Body><RequestId>PRODUCT-FEED-WARN</RequestId></Body></SuccessResponse>'
+    };
+  };
+
+  try {
+    const result = await adapter.publish({
+      sku: 'SKU-1',
+      productName: 'Producto real',
+      brand: 'Marca real',
+      price: 14990,
+      stock: 2,
+      PrimaryCategory: '1234',
+      description: 'Descripcion real',
+      package_height: 20,
+      package_width: 15,
+      package_length: 30,
+      package_weight: 1,
+      attributes: [
+        { id: 'ConditionType', value_name: 'Nuevo', value: 'Nuevo' }
+      ],
+      images: ['https://example.com/1.jpg']
+    });
+
+    assert.equal(result.success, true);
+    assert.equal(result.has_warnings, true);
+    assert.equal(result.data.feed_confirmed, true);
+    assert.equal(result.data.image_upload.success, true);
+    assert.equal(result.data.image_upload.request_id, 'IMAGE-FEED-1');
+    assert.ok(postedUrls.some((url) => url.includes('Action=ProductCreate')));
+    assert.ok(postedUrls.some((url) => url.includes('Action=Image')));
+  } finally {
+    axios.post = originalPost;
+  }
+});
+
 test('FalabellaAdapter: ProductCreate falla si FeedStatus inmediato termina con FeedErrors', async () => {
   const adapter = createAdapter();
   const originalPost = axios.post;
