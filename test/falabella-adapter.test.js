@@ -197,6 +197,17 @@ test('FalabellaAdapter: publish no sube imagenes antes de confirmar ProductCreat
   adapter.ensureValidCredentials = async () => ({ valid: true });
   adapter.hydrateAttributesForPublish = async (product) => product;
   adapter.findExistingProductBySellerSku = async () => null;
+  adapter.pollFeedStatus = async () => ({
+    timedOut: true,
+    feed: {
+      FeedID: 'PRODUCT-FEED-1',
+      Status: 'Processing',
+      Action: 'ProductCreate',
+      TotalRecords: '1',
+      ProcessedRecords: '0',
+      FailedRecords: '0'
+    }
+  });
 
   axios.post = async (url) => {
     postedUrls.push(url);
@@ -231,6 +242,67 @@ test('FalabellaAdapter: publish no sube imagenes antes de confirmar ProductCreat
     assert.equal(postedUrls.length, 1);
     assert.ok(postedUrls[0].includes('Action=ProductCreate'));
     assert.ok(!postedUrls.some((url) => url.includes('Action=Image')));
+  } finally {
+    axios.post = originalPost;
+  }
+});
+
+test('FalabellaAdapter: ProductCreate falla si FeedStatus inmediato termina con FeedErrors', async () => {
+  const adapter = createAdapter();
+  const originalPost = axios.post;
+
+  adapter.ensureValidCredentials = async () => ({ valid: true });
+  adapter.hydrateAttributesForPublish = async (product) => product;
+  adapter.findExistingProductBySellerSku = async () => null;
+  adapter.pollFeedStatus = async () => ({
+    timedOut: false,
+    feed: {
+      FeedID: 'PRODUCT-FEED-FAILED',
+      Status: 'Finished',
+      Action: 'ProductCreate',
+      TotalRecords: '1',
+      ProcessedRecords: '1',
+      FailedRecords: '1',
+      FeedErrors: {
+        Error: {
+          Code: '0',
+          Message: 'El Peso del producto empacado (kg) debe estar entre 0.015 kg y 15 kg para esta categoría.',
+          SellerSku: 'SKU-1'
+        }
+      }
+    }
+  });
+
+  axios.post = async () => ({
+    status: 200,
+    data: '<SuccessResponse><Body><RequestId>PRODUCT-FEED-FAILED</RequestId></Body></SuccessResponse>'
+  });
+
+  try {
+    const result = await adapter.publish({
+      sku: 'SKU-1',
+      productName: 'Producto real',
+      brand: 'Marca real',
+      price: 14990,
+      stock: 2,
+      PrimaryCategory: '1234',
+      description: 'Descripcion real',
+      package_height: 20,
+      package_width: 15,
+      package_length: 30,
+      package_weight: 0.002,
+      attributes: [
+        { id: 'ConditionType', value_name: 'Nuevo', value: 'Nuevo' }
+      ],
+      images: ['https://example.com/1.jpg']
+    });
+
+    assert.equal(result.success, false);
+    assert.equal(result.details.error_code, 'feed_failed');
+    assert.equal(result.data.feed_id, 'PRODUCT-FEED-FAILED');
+    assert.equal(result.data.failed_records, 1);
+    assert.match(result.error, /Peso del producto empacado/);
+    assert.equal(result.data.errors[0].sku, 'SKU-1');
   } finally {
     axios.post = originalPost;
   }

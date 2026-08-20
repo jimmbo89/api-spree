@@ -746,10 +746,18 @@ class FalabellaAdapter extends BaseAdapter {
           error: errorMessage,
           details: {
             error_code: 'feed_failed',
+            marketplace_error: {
+              request_action: feed?.Action || action || 'ProductCreate',
+              error_message: errorMessage,
+              raw: feed?.raw || feed
+            },
             feed: feedData
           },
           external_id: transformedProduct.sku,
-          data: feedData
+          data: {
+            ...feedData,
+            feed_confirmed: true
+          }
         };
       }
 
@@ -768,7 +776,10 @@ class FalabellaAdapter extends BaseAdapter {
       return {
         success: true,
         external_id: transformedProduct.sku,
-        data: feedData
+        data: {
+          ...feedData,
+          feed_confirmed: true
+        }
       };
     }
 
@@ -783,6 +794,63 @@ class FalabellaAdapter extends BaseAdapter {
       data: feedData
     };
   }
+
+  async resolveImmediateProductCreateFeedResult({ transformedProduct, requestId, imageUploadResult }) {
+    const maxAttempts = Number(process.env.FALABELLA_PRODUCT_CREATE_FEED_STATUS_MAX_ATTEMPTS || 2);
+    const intervalMs = Number(process.env.FALABELLA_PRODUCT_CREATE_FEED_STATUS_INTERVAL_MS || 3000);
+
+    if (maxAttempts <= 0) return null;
+
+    try {
+      const { feed, timedOut } = await this.pollFeedStatus(requestId, {
+        maxAttempts,
+        intervalMs
+      });
+
+      if (timedOut || !feed) return null;
+
+      const feedStatusLower = String(feed?.Status || '').toLowerCase();
+      const failedRecords = parseInt(feed?.FailedRecords || '0', 10);
+      const errors = this.normalizeFeedMessages(feed?.FeedErrors);
+
+      if (!['finished', 'error', 'canceled'].includes(feedStatusLower)) {
+        return null;
+      }
+
+      const feedResult = this.buildFeedDrivenResult({
+        transformedProduct,
+        requestId,
+        feed,
+        timedOut: false,
+        action: 'ProductCreate'
+      });
+
+      feedResult.data = {
+        ...(feedResult.data || {}),
+        feed_id: feedResult.data?.feed_id || requestId,
+        action: feedResult.data?.action || 'ProductCreate',
+        sku: transformedProduct.sku,
+        image_upload: imageUploadResult,
+        feed_status_checked_immediately: true
+      };
+
+      if (!feedResult.success || failedRecords > 0 || errors.length > 0) {
+        return feedResult;
+      }
+
+      return {
+        feed,
+        feed_result: feedResult
+      };
+    } catch (error) {
+      logger.warn(
+        `[FalabellaAdapter] No se pudo confirmar FeedStatus inmediato para ProductCreate ${requestId}: ${error.message}`
+      );
+    }
+
+    return null;
+  }
+
 getFalabellaConfig(productData) {
   const falabellaConfigs = productData?.falabella;
   if (!falabellaConfigs || typeof falabellaConfigs !== 'object') {
@@ -2500,6 +2568,20 @@ _transformImages(images = []) {
         logger.info(`[FalabellaAdapter] ✅ Feed aceptado por Falabella. FeedID: ${requestId}`);
         const marketplaceMessage = `Falabella emitió FeedID: ${requestId}; confirmar luego con FeedStatus`;
 
+        const immediateFeedResult = action === 'ProductCreate'
+          ? await this.resolveImmediateProductCreateFeedResult({
+              transformedProduct,
+              requestId,
+              imageUploadResult
+            })
+          : null;
+
+        if (immediateFeedResult?.success === false) {
+          return immediateFeedResult;
+        }
+
+        const immediateFeedData = immediateFeedResult?.feed_result?.data || null;
+
         return {
           success: true,
           external_id: transformedProduct.sku,
@@ -2507,6 +2589,8 @@ _transformImages(images = []) {
             feed_id: requestId,
             action: action,
             status: 'processing',
+            feed_status_result: immediateFeedData,
+            feed_confirmed: Boolean(immediateFeedData?.feed_confirmed),
             sku: transformedProduct.sku,
             published_skus: Array.isArray(transformedProduct.falabella_products)
               ? transformedProduct.falabella_products.map((item) => item?.sku).filter(Boolean)
