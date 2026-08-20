@@ -6193,6 +6193,298 @@ logger.info(`comisión encontrada en la bd: \n ${JSON.stringify(commissionByPath
     return res.status(500).json({ success: false, error: "Error interno al procesar categorías con pricing de Falabella." });
   }
 },
+async falabellaEnrichedCategory(req, res) {
+  logger.info(`Datos recibidos para enriquecer categoría Falabella:\n ${JSON.stringify(req.body)}`);
+
+  const {
+    credential_id,
+    category_id,
+    category_name,
+    path,
+    search_term,
+    product,
+    product_price,
+    price
+  } = req.body;
+  const user_id = req.user?.id;
+  const categoryId = String(category_id || '').trim();
+
+  if (!credential_id) {
+    return res.status(400).json({ success: false, error: "credential_id es requerido" });
+  }
+  if (!categoryId) {
+    return res.status(400).json({ success: false, error: "category_id es requerido" });
+  }
+
+  try {
+    try {
+      await marketplaceRateLimiter.consume(user_id);
+    } catch (rateLimitError) {
+      logger.warn(`Rate limit excedido para usuario ${user_id}`);
+      return res.status(429).json({ success: false, error: "Demasiadas solicitudes" });
+    }
+
+    const credential = await MarketplaceCredentialRepository.findById(credential_id);
+    if (!credential) {
+      return res.status(404).json({ success: false, error: "Credencial no encontrada" });
+    }
+    if (credential.user_id !== user_id) {
+      return res.status(403).json({ success: false, error: "No autorizado" });
+    }
+
+    const marketplace_id = credential.marketplace_id;
+    const baseUrl = "https://sellercenter-api.falabella.com";
+    const userId = credential.seller_email;
+    const apiKey = credential.api_key;
+
+    if (!userId || !apiKey) {
+      return res.status(500).json({ success: false, error: "Faltan credenciales de Falabella" });
+    }
+
+    const rawPrice = product?.price ?? product_price ?? price;
+    const productPrice = rawPrice !== undefined && rawPrice !== null && !isNaN(rawPrice)
+      ? parseFloat(rawPrice)
+      : null;
+
+    const treeData = await OAuthController.fetchFalabellaCategoryTree(baseUrl, userId, apiKey);
+    const treeMatch = await OAuthController.findCategoryInTree(treeData, categoryId);
+    const resolvedName = String(category_name || treeMatch?.api_name || '').trim();
+    const resolvedPath = String(path || [
+      treeMatch?.level1,
+      treeMatch?.level2,
+      treeMatch?.level3,
+      treeMatch?.level4
+    ].filter(Boolean).join(' > ')).trim();
+
+    let categoryData = getFromCache(`credential_${credential_id}`, 'category_attributes', categoryId);
+    let cacheHit = Boolean(categoryData);
+
+    if (!categoryData) {
+      const attributes = await OAuthController.fetchFalabellaCategoryAttributes(baseUrl, userId, apiKey, categoryId);
+
+      categoryData = {
+        id: categoryId,
+        name: resolvedName,
+        path: resolvedPath,
+        search_term: search_term || product?.name || "",
+        attributes
+      };
+
+      saveToCache(`credential_${credential_id}`, 'category_attributes', categoryId, categoryData);
+    } else {
+      categoryData = {
+        ...categoryData,
+        id: String(categoryData.id || categoryId),
+        name: categoryData.name || resolvedName,
+        path: categoryData.path || resolvedPath,
+        search_term: categoryData.search_term || search_term || product?.name || ""
+      };
+    }
+
+    let pricing = null;
+    let pricingCalls = 0;
+    if (productPrice !== null) {
+      const pricingResult = await OAuthController.resolveFalabellaCategoryPricing({
+        credential_id,
+        marketplace_id,
+        categoryId,
+        categoryName: categoryData.name,
+        globalIdentifier: categoryData.path,
+        productPrice,
+        treeData
+      });
+      pricing = pricingResult.pricing;
+      pricingCalls = pricingResult.pricing_calls;
+      categoryData = { ...categoryData, pricing };
+    }
+
+    return res.status(200).json({
+      success: true,
+      category: categoryData,
+      categories: [categoryData],
+      stats: {
+        cache_hit: cacheHit,
+        pricing_requested: productPrice !== null,
+        pricing_calls: pricingCalls
+      }
+    });
+  } catch (error) {
+    logger.error(`Error en falabellaEnrichedCategory: ${error.message}`);
+    if (error.response?.data?.ErrorResponse?.Head) {
+      const head = error.response.data.ErrorResponse.Head;
+      const errorCode = head.ErrorCode;
+      let errorMessage = head.ErrorMessage, statusCode = 500;
+      if (errorCode === "7") { errorMessage = "Firma inválida (E007)"; statusCode = 401; }
+      else if (errorCode === "9") { errorMessage = "Acceso denegado (E009)"; statusCode = 403; }
+      else if ([3, 4].includes(Number(errorCode))) { errorMessage = "Error de timestamp (E003/E004)"; statusCode = 400; }
+      return res.status(statusCode).json({ success: false, error: errorMessage });
+    }
+    return res.status(500).json({ success: false, error: "Error interno al enriquecer categoría de Falabella." });
+  }
+},
+async fetchFalabellaCategoryAttributes(baseUrl, userId, apiKey, categoryId) {
+  const paramsAttrs = {
+    UserID: userId,
+    Version: "1.0",
+    Action: "GetCategoryAttributes",
+    Format: "JSON",
+    PrimaryCategory: String(categoryId),
+    Timestamp: timestampMinus03(),
+  };
+  const keysAttrs = Object.keys(paramsAttrs).sort();
+  const canonicalQueryAttrs = keysAttrs
+    .map(k => `${rfc3986Encode(k)}=${rfc3986Encode(String(paramsAttrs[k]))}`)
+    .join("&");
+  const signatureAttrs = rfc3986Encode(
+    crypto.createHmac("sha256", apiKey).update(canonicalQueryAttrs).digest("hex")
+  );
+  const urlAttrs = `${baseUrl}?${canonicalQueryAttrs}&Signature=${signatureAttrs}`;
+
+  try {
+    const attrResponse = await axios.get(urlAttrs);
+    const attrData = attrResponse.data;
+    if (attrData.SuccessResponse?.Body?.Attribute) {
+      const rawAttrs = attrData.SuccessResponse.Body.Attribute;
+      const attrList = Array.isArray(rawAttrs) ? rawAttrs : [rawAttrs];
+      const attributes = attrList
+        .map(mapFalabellaCategoryAttribute)
+        .filter(Boolean)
+        .sort((a, b) => (a.is_mandatory ? 0 : 1) - (b.is_mandatory ? 0 : 1));
+      logger.info(`[FALABELLA][ATTRIBUTES] Categoría ${categoryId}: ${attributes.length} atributo(s) mapeado(s)`);
+      return attributes;
+    }
+    if (attrData.ErrorResponse) {
+      logger.warn(`[FALABELLA][ATTRIBUTES] Error GetCategoryAttributes para ${categoryId}: ${JSON.stringify(attrData.ErrorResponse)}`);
+    } else {
+      logger.warn(`[FALABELLA][ATTRIBUTES] Categoría ${categoryId} sin Attribute en respuesta`);
+    }
+  } catch (attrErr) {
+    logger.warn(`Error GetCategoryAttributes para ${categoryId}: ${attrErr.message}`);
+  }
+
+  return [];
+},
+async resolveFalabellaCategoryPricing({
+  credential_id,
+  marketplace_id,
+  categoryId,
+  categoryName,
+  globalIdentifier,
+  productPrice,
+  treeData
+}) {
+  const pricingCacheKey = `pricing_${categoryId}_${categoryName}_${productPrice}`;
+  const cachedPricing = getFromCache(`credential_${credential_id}`, 'category_pricing', pricingCacheKey);
+  if (cachedPricing) {
+    return { pricing: cachedPricing, pricing_calls: 0 };
+  }
+
+  let pricing = null;
+  let pricingCalls = 1;
+
+  try {
+    let commission = await CategoryCommissionRepository.findByCategory(
+      marketplace_id,
+      { categoryId, categoryName, globalIdentifier }
+    );
+
+    if (!commission) {
+      const commissionBySuggestion = await CategoryCommissionRepository.findByFalabellaSuggestion(
+        marketplace_id,
+        { categoryId, categoryName, globalIdentifier }
+      );
+
+      if (commissionBySuggestion) {
+        await CategoryCommissionRepository.updateCommissionIdentifiers(
+          commissionBySuggestion.id,
+          {
+            category_id: categoryId,
+            global_identifier: globalIdentifier,
+            category_name_api: categoryName
+          }
+        );
+        commission = commissionBySuggestion;
+      }
+    }
+
+    if (!commission) {
+      const treeMatch = await OAuthController.findCategoryInTree(treeData, categoryId);
+      if (treeMatch && Object.keys(treeMatch).length > 0) {
+        let commissionToUse = await CategoryCommissionRepository.findByCategoryPathWithLevels(
+          marketplace_id,
+          {
+            level1: treeMatch.level1,
+            level2: treeMatch.level2,
+            level3: treeMatch.level3,
+            level4: treeMatch.level4
+          }
+        );
+
+        if (!commissionToUse) {
+          commissionToUse = await CategoryCommissionRepository.findByCategoryWithFallback(
+            marketplace_id,
+            {
+              categoryId,
+              categoryName,
+              globalIdentifier,
+              level1: treeMatch.level1,
+              level2: treeMatch.level2,
+              level3: treeMatch.level3
+            }
+          );
+        }
+
+        if (!commissionToUse) {
+          commissionToUse = await CategoryCommissionRepository.findByCategoryWithFallback(
+            marketplace_id,
+            {
+              categoryId,
+              globalIdentifier,
+              level1: treeMatch.level1,
+              level2: treeMatch.level2,
+              level3: treeMatch.level3,
+              categoryName: null
+            }
+          );
+        }
+
+        if (commissionToUse) {
+          await CategoryCommissionRepository.updateCommissionIdentifiers(
+            commissionToUse.id,
+            {
+              category_id: categoryId,
+              global_identifier: globalIdentifier,
+              category_name_api: categoryName
+            }
+          );
+          commission = commissionToUse;
+        }
+      }
+    }
+
+    if (commission) {
+      pricing = CategoryCommissionRepository.calculatePricing(commission, productPrice);
+    } else {
+      pricing = {
+        sale_fee_amount: null,
+        listing_fee_amount: 0,
+        total_fee_amount: null,
+        fee_percentage: null,
+        net_amount: null,
+        currency: 'CLP',
+        warning: `Comisión no configurada para "${categoryName}"`,
+        source: 'tabla_local'
+      };
+    }
+
+    saveToCache(`credential_${credential_id}`, 'category_pricing', pricingCacheKey, pricing, 86400);
+  } catch (pricingErr) {
+    logger.warn(`Error calculando pricing para ${categoryId}: ${pricingErr.message}`);
+    pricing = { error: 'Cálculo no disponible', sale_fee_amount: null, fee_percentage: null, currency: 'CLP' };
+  }
+
+  return { pricing, pricing_calls: pricingCalls };
+},
 /**
  * Obtiene el árbol completo de categorías de Falabella
  * @returns {Object} Respuesta de GetCategoryTree
