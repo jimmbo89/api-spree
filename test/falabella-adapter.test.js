@@ -133,7 +133,7 @@ test('FalabellaAdapter: buildFalabellaProductNodeXml no usa ProductId interno', 
   assert.equal(node.ProductId, undefined);
 });
 
-test('FalabellaAdapter: ProductData normaliza fechas Falabella a ISO8601', () => {
+test('FalabellaAdapter: oferta Falabella se envia en BusinessUnit con campos oficiales', () => {
   const adapter = createAdapter();
   const node = adapter.buildFalabellaProductNodeXml({
     sku: 'SKU-1',
@@ -145,6 +145,7 @@ test('FalabellaAdapter: ProductData normaliza fechas Falabella a ISO8601', () =>
     description: 'Descripcion real',
     attributes: [
       { id: 'ConditionType', value_name: 'Nuevo', value: 'Nuevo' },
+      { id: 'SalePriceFalabella', value: 2500 },
       { id: 'SaleStartDateFalabella', value: '13-08-2026' },
       { id: 'SaleEndDateFalabella', value: '13/08/2030' }
     ],
@@ -155,8 +156,42 @@ test('FalabellaAdapter: ProductData normaliza fechas Falabella a ISO8601', () =>
     images: ['https://example.com/image.jpg']
   });
 
-  assert.equal(node.ProductData.SaleStartDateFalabella, '2026-08-13');
-  assert.equal(node.ProductData.SaleEndDateFalabella, '2030-08-13');
+  assert.equal(node.BusinessUnits.BusinessUnit.Price, '1000.00');
+  assert.equal(node.BusinessUnits.BusinessUnit.SpecialPrice, undefined);
+  assert.equal(node.ProductData.SalePriceFalabella, undefined);
+  assert.equal(node.ProductData.SaleStartDateFalabella, undefined);
+  assert.equal(node.ProductData.SaleEndDateFalabella, undefined);
+});
+
+test('FalabellaAdapter: oferta valida queda como SpecialPrice y fechas DateTime oficiales', () => {
+  const adapter = createAdapter();
+  const node = adapter.buildFalabellaProductNodeXml({
+    sku: 'SKU-1',
+    productName: 'Producto',
+    brand: 'Marca',
+    price: 19990,
+    stock: 1,
+    PrimaryCategory: '1234',
+    description: 'Descripcion real',
+    attributes: [
+      { id: 'ConditionType', value_name: 'Nuevo', value: 'Nuevo' },
+      { id: 'SalePriceFalabella', value: 2500 },
+      { id: 'SaleStartDateFalabella', value: '13-08-2026' },
+      { id: 'SaleEndDateFalabella', value: '13/08/2030' }
+    ],
+    package_height: 10,
+    package_width: 10,
+    package_length: 10,
+    package_weight: 1,
+    images: ['https://example.com/image.jpg']
+  });
+
+  assert.equal(node.BusinessUnits.BusinessUnit.SpecialPrice, '2500.00');
+  assert.equal(node.BusinessUnits.BusinessUnit.SpecialFromDate, '2026-08-13 00:00:00');
+  assert.equal(node.BusinessUnits.BusinessUnit.SpecialToDate, '2030-08-13 23:59:59');
+  assert.equal(node.ProductData.SalePriceFalabella, undefined);
+  assert.equal(node.ProductData.SaleStartDateFalabella, undefined);
+  assert.equal(node.ProductData.SaleEndDateFalabella, undefined);
 });
 
 test('FalabellaAdapter: ConditionType se normaliza al contrato oficial', () => {

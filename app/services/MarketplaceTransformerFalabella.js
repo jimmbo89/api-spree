@@ -112,6 +112,9 @@ class MarketplaceTransformerFalabella {
       transformed.brand = product.brand || null;
       transformed.price = product.price ?? product.Price ?? null;
       transformed.stock = product.stock ?? product.Stock ?? product.available_quantity ?? null;
+      transformed.SpecialPrice = product.SpecialPrice ?? product.special_price ?? null;
+      transformed.SpecialFromDate = product.SpecialFromDate ?? product.special_from_date ?? null;
+      transformed.SpecialToDate = product.SpecialToDate ?? product.special_to_date ?? null;
       transformed.PrimaryCategory = product.PrimaryCategory || product.category_id || product.category?.category_id || product.category?.id;
       transformed.description = product.description || product.Description || null;
       
