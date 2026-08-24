@@ -95,6 +95,88 @@ class FalabellaAdapter extends BaseAdapter {
     return `${year}-${pad(month)}-${pad(day)}`;
   }
 
+  normalizeFalabellaDateTimeValue(value, endOfDay = false) {
+    const normalizedDate = this.normalizeFalabellaDateValue(value);
+    if (!normalizedDate || typeof normalizedDate !== 'string') return null;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(normalizedDate)) return null;
+
+    const raw = String(value).trim();
+    const timeMatch = raw.match(/[T\s](\d{2}:\d{2}(?::\d{2})?)/);
+    if (timeMatch) {
+      const time = timeMatch[1].length === 5 ? `${timeMatch[1]}:00` : timeMatch[1];
+      return `${normalizedDate} ${time}`;
+    }
+
+    return `${normalizedDate} ${endOfDay ? '23:59:59' : '00:00:00'}`;
+  }
+
+  getFalabellaAttributeValueByNames(product, feedNames = []) {
+    for (const feedName of feedNames) {
+      const value = this.getFalabellaAttributeValue(product, feedName);
+      if (value !== null && value !== undefined && String(value).trim() !== '') {
+        return value;
+      }
+    }
+    return null;
+  }
+
+  resolveFalabellaOffer(product, priceValue = null) {
+    const specialPriceRaw =
+      product?.SpecialPrice ??
+      product?.special_price ??
+      product?.sale_price ??
+      product?.promotional_price ??
+      this.getFalabellaAttributeValueByNames(product, ['SpecialPrice', 'SalePriceFalabella']);
+
+    const specialPrice = this.normalizeFalabellaFloat(specialPriceRaw);
+    if (specialPrice === null || specialPrice <= 0) return null;
+
+    const basePrice = priceValue !== null
+      ? priceValue
+      : this.normalizeFalabellaFloat(product?.price ?? product?.Price);
+
+    if (basePrice !== null && specialPrice >= basePrice) {
+      logger.warn(
+        `[FalabellaAdapter] Oferta omitida para SKU ${product?.sku || product?.SellerSku || 'n/a'}: SpecialPrice ${specialPrice} debe ser menor que Price ${basePrice}`
+      );
+      return null;
+    }
+
+    const fromRaw =
+      product?.SpecialFromDate ??
+      product?.special_from_date ??
+      product?.sale_start_date ??
+      this.getFalabellaAttributeValueByNames(product, ['SpecialFromDate', 'SaleStartDateFalabella']);
+    const toRaw =
+      product?.SpecialToDate ??
+      product?.special_to_date ??
+      product?.sale_end_date ??
+      this.getFalabellaAttributeValueByNames(product, ['SpecialToDate', 'SaleEndDateFalabella']);
+
+    const specialFromDate = this.normalizeFalabellaDateTimeValue(fromRaw, false);
+    const specialToDate = this.normalizeFalabellaDateTimeValue(toRaw, true);
+
+    if (!specialFromDate || !specialToDate) {
+      logger.warn(
+        `[FalabellaAdapter] Oferta omitida para SKU ${product?.sku || product?.SellerSku || 'n/a'}: fechas de oferta incompletas o invalidas`
+      );
+      return null;
+    }
+
+    if (new Date(specialToDate.replace(' ', 'T')) < new Date(specialFromDate.replace(' ', 'T'))) {
+      logger.warn(
+        `[FalabellaAdapter] Oferta omitida para SKU ${product?.sku || product?.SellerSku || 'n/a'}: SpecialToDate anterior a SpecialFromDate`
+      );
+      return null;
+    }
+
+    return {
+      SpecialPrice: specialPrice.toFixed(2),
+      SpecialFromDate: specialFromDate,
+      SpecialToDate: specialToDate
+    };
+  }
+
   // ✅ XML escaping seguro
   escapeXml(str) {
     if (typeof str !== 'string') return String(str || '');
@@ -1209,6 +1291,9 @@ _transformImages(images = []) {
       package_length: packageMeasurements.package_length,
       package_weight: packageMeasurements.package_weight,
       attributes: attributes,
+      SpecialPrice: validVariant?.SpecialPrice ?? validVariant?.special_price ?? validVariant?.sale_price ?? validVariant?.promotional_price ?? productData.SpecialPrice ?? productData.special_price ?? productData.sale_price ?? productData.promotional_price ?? null,
+      SpecialFromDate: validVariant?.SpecialFromDate ?? validVariant?.special_from_date ?? validVariant?.sale_start_date ?? productData.SpecialFromDate ?? productData.special_from_date ?? productData.sale_start_date ?? null,
+      SpecialToDate: validVariant?.SpecialToDate ?? validVariant?.special_to_date ?? validVariant?.sale_end_date ?? productData.SpecialToDate ?? productData.special_to_date ?? productData.sale_end_date ?? null,
       images: this._transformImages(productData.images || productData.pictures || []),
       productIdentifier: attributeProductId || productData.productIdentifier || productData.gtin || productData.ean || productData.upc || productData.isbn || null,
       gtin: productData.gtin || null,
@@ -1597,6 +1682,12 @@ _transformImages(images = []) {
       'productimage',
       'productimages',
       'pricefalabella',
+      'salepricefalabella',
+      'salestartdatefalabella',
+      'saleenddatefalabella',
+      'specialprice',
+      'specialfromdate',
+      'specialtodate',
       'quantityfalabella',
       'operatorcode',
       'productdata'
@@ -1841,6 +1932,9 @@ _transformImages(images = []) {
         description: prepared.description,
         PrimaryCategory: prepared.PrimaryCategory,
         price: Number(variant?.price ?? prepared.price) || prepared.price,
+        SpecialPrice: variant?.SpecialPrice ?? variant?.special_price ?? variant?.sale_price ?? variant?.promotional_price ?? prepared.SpecialPrice ?? null,
+        SpecialFromDate: variant?.SpecialFromDate ?? variant?.special_from_date ?? variant?.sale_start_date ?? prepared.SpecialFromDate ?? null,
+        SpecialToDate: variant?.SpecialToDate ?? variant?.special_to_date ?? variant?.sale_end_date ?? prepared.SpecialToDate ?? null,
         stock: Math.max(0, Math.round(Number(variant?.publishStock ?? variant?.totalStock ?? variant?.stock ?? prepared.stock ?? 0) || 0)),
         attributes: this.mergeFalabellaAttributes(prepared.attributes, variantAttributes),
         images
@@ -2001,6 +2095,9 @@ _transformImages(images = []) {
       productName: this.adjustFalabellaTextForVariation(productName, variationValue || variantSku),
       description: this.adjustFalabellaTextForVariation(productDescription, variationValue || variantSku),
       price: this.normalizeFalabellaFloat(variant?.price ?? variant?.publishPrice ?? prepared.price),
+      SpecialPrice: variant?.SpecialPrice ?? variant?.special_price ?? variant?.sale_price ?? variant?.promotional_price ?? prepared.SpecialPrice ?? null,
+      SpecialFromDate: variant?.SpecialFromDate ?? variant?.special_from_date ?? variant?.sale_start_date ?? prepared.SpecialFromDate ?? null,
+      SpecialToDate: variant?.SpecialToDate ?? variant?.special_to_date ?? variant?.sale_end_date ?? prepared.SpecialToDate ?? null,
       stock: this.normalizeFalabellaInteger(variant?.publishStock ?? variant?.totalStock ?? variant?.stock ?? prepared.stock),
       attributes: this.buildFalabellaAttributes({
         ...prepared,
@@ -2432,6 +2529,7 @@ _transformImages(images = []) {
     const stockValue = this.normalizeFalabellaInteger(product.stock);
     const price = priceValue !== null ? priceValue.toFixed(2) : undefined;
     const stock = stockValue !== null ? Math.max(0, stockValue) : undefined;
+    const offer = this.resolveFalabellaOffer(product, priceValue);
     const marketplaceProductId = this.resolveMarketplaceProductId(product);
     const operatorCode = this.getFalabellaOperatorCode();
 
@@ -2531,6 +2629,7 @@ _transformImages(images = []) {
         BusinessUnit: {
           OperatorCode: operatorCode || undefined,
           Price: price,
+          ...(offer || {}),
           Stock: stock !== undefined ? String(stock) : undefined,
           Status: 'active'
         }
