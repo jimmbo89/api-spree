@@ -17,6 +17,115 @@ const fs = require("fs").promises;
 const { getRequestMetadata } = require("../util/requestUtil");
 const { getUserId } = require("../../config/context");
 const { v4: uuidv4 } = require('uuid');
+const AuditEventService = require("../services/AuditEventService");
+const { detectChanges } = require("../util/auditUtils");
+
+function toPlain(record) {
+  if (!record) return null;
+  return typeof record.get === "function" ? record.get({ plain: true }) : record;
+}
+
+function getWarehouseAuditLabel(warehouse) {
+  const plain = toPlain(warehouse) || {};
+  return [plain.code, plain.name].filter(Boolean).join(" / ") || `Almacen ${plain.id}`;
+}
+
+function getProductAuditLabel(product) {
+  const plain = toPlain(product) || {};
+  return [plain.sku, plain.name].filter(Boolean).join(" / ") || `Producto ${plain.id}`;
+}
+
+function buildWarehouseAuditPayload(warehouse, data = {}) {
+  const plain = toPlain(warehouse) || {};
+  const companyId = data.company_id || plain.company_id;
+  return {
+    company_id: companyId,
+    module: "warehouse",
+    resource_type: "warehouse",
+    resource_id: plain.id,
+    resource_label: getWarehouseAuditLabel(plain),
+    warehouse_id: plain.id,
+    branch_id: plain.branch_id,
+    ...data
+  };
+}
+
+function changesToValueSnapshot(changes, valueKey) {
+  return changes.reduce((snapshot, change) => {
+    snapshot[change.field] = change[valueKey];
+    return snapshot;
+  }, {});
+}
+
+function getMovementAuditAction(movementType, isBulk = false) {
+  if (isBulk && (movementType === "transfer" || movementType === "transfer_exit" || movementType === "transfer_entry")) {
+    return "warehouse.bulk_transfer";
+  }
+  if (isBulk) return "warehouse.bulk_operation";
+  if (movementType === "entry") return "warehouse.stock_entry";
+  if (movementType === "exit") return "warehouse.stock_exit";
+  if (movementType === "transfer" || movementType === "transfer_exit" || movementType === "transfer_entry") {
+    return "warehouse.transfer";
+  }
+  return "warehouse.stock_adjustment";
+}
+
+function getMovementDescription(movement) {
+  const type = movement.movement_type;
+  const productName = movement.product?.name || `producto ${movement.product_id}`;
+
+  if (type === "entry") return `Entrada de stock: ${productName}`;
+  if (type === "exit") return `Salida de stock: ${productName}`;
+  if (type === "transfer_exit") return `Transferencia de salida: ${productName}`;
+  if (type === "transfer_entry") return `Transferencia de entrada: ${productName}`;
+  return `Movimiento de inventario: ${productName}`;
+}
+
+async function recordMovementAuditEvents(req, referenceId, { isBulk = false } = {}) {
+  const movements = await InventoryMovementRepository.findByReferenceId(referenceId);
+
+  await Promise.all(movements.map(async (movement) => {
+    const warehouse = await WarehouseRepository.findById(movement.warehouse_id);
+    if (!warehouse) return null;
+    const companyId = warehouse.company_id || await _resolveCompanyFromWarehouse(warehouse.id);
+
+    return AuditEventService.safeRecordFromRequest(req, buildWarehouseAuditPayload(warehouse, {
+      company_id: companyId,
+      action: getMovementAuditAction(movement.movement_type, isBulk),
+      result: "success",
+      related_resource_type: "inventory_movement",
+      related_resource_id: movement.id,
+      job_id: null,
+      previous_value: { stock: movement.stock_before },
+      new_value: { stock: movement.stock_after },
+      changes: [{
+        field: "stock",
+        old_value: movement.stock_before,
+        new_value: movement.stock_after
+      }],
+      description: getMovementDescription(movement),
+      correlation_id: referenceId,
+      metadata: {
+        movement_id: movement.id,
+        movement_type: movement.movement_type,
+        product_id: movement.product_id,
+        variant_id: movement.variant_id,
+        quantity: movement.quantity,
+        reference_type: movement.reference_type,
+        reference_id: movement.reference_id,
+        origin_warehouse_id: movement.origin_warehouse_id,
+        destination_warehouse_id: movement.destination_warehouse_id,
+        reason: movement.reason,
+        notes: movement.notes,
+        total_value: movement.total_value,
+        transfer_side: movement.movement_type === "transfer_exit"
+          ? "origin"
+          : (movement.movement_type === "transfer_entry" ? "destination" : null),
+        bulk: isBulk
+      }
+    }));
+  }));
+}
 
 function normalizeVariantsInput(variants, { required = false } = {}) {
   if (variants === undefined || variants === null || variants === "") {
@@ -308,6 +417,24 @@ const WarehouseProductController = {
 
       // Log
       const metadata = getRequestMetadata(req);
+      await AuditEventService.safeRecordFromRequest(req, buildWarehouseAuditPayload(warehouse, {
+        action: "warehouse.product_added",
+        result: "success",
+        related_resource_type: "product",
+        related_resource_id: productRecord.id,
+        new_value: {
+          warehouse_product_id: wp.id,
+          product_id: productRecord.id,
+          active: wp.active,
+          code: wp.code,
+          minimum_stock: wp.minimum_stock
+        },
+        description: `Producto agregado al almacen: ${getProductAuditLabel(productRecord)}`,
+        metadata: {
+          product_label: getProductAuditLabel(productRecord),
+          variants_count: variantsData.length
+        }
+      }));
       await LogRepository.create({
         user_id: metadata.user_id,
         action: "warehouse_product.create",
@@ -410,6 +537,9 @@ const WarehouseProductController = {
         await transaction.rollback();
         return res.status(404).json({ msg: "WarehouseProductNotFound" });
       }
+      const previousRecord = toPlain(record);
+      const warehouse = await WarehouseRepository.findById(record.warehouse_id);
+      const productRecord = await ProductRepository.findById(record.product_id);
 
       // 👉 2. Actualizar el registro principal (warehouse_products)
       record = await WarehouseProductRepository.update(record, req.body, {
@@ -647,6 +777,25 @@ const WarehouseProductController = {
       }
       await transaction.commit();
 
+      const recordChanges = detectChanges(previousRecord, toPlain(record), ["active", "code", "minimum_stock"]);
+      if (warehouse) {
+        await AuditEventService.safeRecordFromRequest(req, buildWarehouseAuditPayload(warehouse, {
+          action: "warehouse.product_config_updated",
+          result: "success",
+          related_resource_type: "product",
+          related_resource_id: record.product_id,
+          previous_value: changesToValueSnapshot(recordChanges, "old_value"),
+          new_value: changesToValueSnapshot(recordChanges, "new_value"),
+          changes: recordChanges,
+          description: `Configuracion de producto modificada en almacen: ${productRecord ? getProductAuditLabel(productRecord) : record.product_id}`,
+          metadata: {
+            warehouse_product_id: record.id,
+            product_label: productRecord ? getProductAuditLabel(productRecord) : null,
+            variants_updated: variantsString !== undefined && variantsString !== null && variantsString !== ""
+          }
+        }));
+      }
+
       // 👉 7. Obtener los registros actualizados con los mismos filtros del request
       /*const records = await WarehouseProductRepository.findFiltered({
         companyId: req.body.company_id,
@@ -719,8 +868,27 @@ const WarehouseProductController = {
       const record = await WarehouseProductRepository.findById(req.body.id);
       if (!record)
         return res.status(404).json({ msg: "WarehouseProductNotFound" });
+      const previousRecord = toPlain(record);
+      const [warehouse, productRecord] = await Promise.all([
+        WarehouseRepository.findById(record.warehouse_id),
+        ProductRepository.findById(record.product_id)
+      ]);
 
       await WarehouseProductRepository.delete(record);
+      if (warehouse) {
+        await AuditEventService.safeRecordFromRequest(req, buildWarehouseAuditPayload(warehouse, {
+          action: "warehouse.product_removed",
+          result: "success",
+          related_resource_type: "product",
+          related_resource_id: previousRecord.product_id,
+          previous_value: previousRecord,
+          description: `Producto eliminado del almacen: ${productRecord ? getProductAuditLabel(productRecord) : previousRecord.product_id}`,
+          metadata: {
+            warehouse_product_id: previousRecord.id,
+            product_label: productRecord ? getProductAuditLabel(productRecord) : null
+          }
+        }));
+      }
       await LogRepository.create({
         user_id: metadata.user_id,
         action: "warehouse_product.delete",
@@ -1285,6 +1453,7 @@ const WarehouseProductController = {
     }
 
     await transaction.commit();
+    await recordMovementAuditEvents(req, referenceId);
 
     // === Registrar en log ===
     const metadata = getRequestMetadata(req);
@@ -1425,6 +1594,7 @@ async createBulkMovement(req, res) {
     }
 
     await transaction.commit();
+    await recordMovementAuditEvents(req, referenceId, { isBulk: true });
 
     // === Log ===
     const metadata = getRequestMetadata(req);

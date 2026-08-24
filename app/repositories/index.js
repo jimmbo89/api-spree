@@ -1,4 +1,5 @@
 const AttributeRepository = require("./AttributeRepository");
+const AuditEventRepository = require("./AuditEventRepository");
 const BillingOrderRepository = require("./BillingOrderRepository");
 const BranchRepository = require("./BranchRepository");
 const BusinessTypeRepository = require("./BusinessTypeRepository");
@@ -54,6 +55,7 @@ const DashboardRepository = require("./DashboardRepository");
 const UserMarketplaceCredentialRepository = require("./UserMarketplaceCredentialRepository");
 
 module.exports = {
+    AuditEventRepository,
     RoleRepository,
     UserRepository,
     UserTokenRepository,

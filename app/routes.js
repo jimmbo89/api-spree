@@ -90,6 +90,8 @@ const MarketplaceWebhookController = require("./controllers/MarketplaceWebhookCo
 const MarketplaceReportController = require("./controllers/MarketplaceReportController.js");
 const MarketplaceOrderController = require("./controllers/MarketplaceOrderController.js");
 const DashboardController = require("./controllers/DashboardController.js");
+const AuditEventController = require("./controllers/AuditEventController.js");
+const { auditEventListSchema } = require("./middlewares/validations/auditEventValidations.js");
 const router = express.Router();
 
 
@@ -513,5 +515,8 @@ router.post('/jobs-detail', requireRoles([ 'Backoffice', 'Admin', 'Seller Manage
 
 // Dashboard
 router.post('/dashboard', requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), DashboardController.getDashboard);
+
+// Auditoria centralizada
+router.post("/audit-events", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager', 'Publicador', 'Viewer', 'User']), validateSchema(auditEventListSchema), AuditEventController.list);
 
 module.exports = router;

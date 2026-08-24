@@ -10,6 +10,7 @@ const {
   MarketplaceCredentialRepository
 } = require("../repositories");
 const { verifyMercadoLibreItem } = require("../services/MarketplaceItemVerificationService");
+const PublicationAuditService = require("../services/PublicationAuditService");
 const checkIsError = (item) => {
   if (!item) return false;
   const isFailedStatus = item.status === 'error' || item.status === 'failed';
@@ -1132,6 +1133,33 @@ async republishFromJob(req, res) {
 
     await JobProduct.bulkCreate(jobProductsData);
 
+    await PublicationAuditService.recordProcessEvent(req, originalJob.get ? originalJob.get({ plain: true }) : originalJob, 'process.reprocessed', {
+      description: `Proceso #${originalJob.id} reprocesado mediante proceso #${newJob.id}`,
+      related_resource_type: 'job',
+      related_resource_id: newJob.id,
+      new_value: {
+        reprocess_job_id: newJob.id,
+        tasks_count: tasksToRepublish.length
+      },
+      metadata: {
+        reprocess_job_id: newJob.id,
+        reprocessed_tasks: task_ids
+      }
+    });
+
+    await PublicationAuditService.recordProcessEvent(req, newJob.get ? newJob.get({ plain: true }) : newJob, 'process.created', {
+      description: `Proceso #${newJob.id} originado desde proceso #${originalJob.id}`,
+      origin_job_id: originalJob.id,
+      new_value: {
+        status: newJob.status,
+        total_products: newJob.total_products
+      },
+      metadata: {
+        origin_job_id: originalJob.id,
+        reprocessed_tasks: task_ids
+      }
+    });
+
     // 5. Disparar proceso en background (ej: mediante cola o worker)
     //    Aquí puedes integrar con tu sistema de colas (Bull, Bee-Queue, etc.)
     //    Ejemplo: await publishingQueue.add('publish', { jobId: newJob.id });
@@ -1209,6 +1237,7 @@ async republishFromJob(req, res) {
         });
       }
 
+      await PublicationAuditService.recordDraftCancelled(req, job);
       await JobRepository.delete(job_id);
 
       logger.info(`Borrador eliminado: Job ID ${job_id} por usuario ${userId}`);

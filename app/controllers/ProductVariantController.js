@@ -5,6 +5,40 @@ const ProductVariantValueRepository = require("../repositories/ProductVariantVal
 const { ProductVariant, Product, sequelize } = require("../models");
 const { Op } = require("sequelize");
 const { ProductRepository } = require("../repositories");
+const AuditEventService = require("../services/AuditEventService");
+const { detectChanges } = require("../util/auditUtils");
+
+function toPlain(record) {
+  if (!record) return null;
+  return typeof record.get === "function" ? record.get({ plain: true }) : record;
+}
+
+function getProductAuditLabel(product) {
+  const plain = toPlain(product) || {};
+  return [plain.sku, plain.name].filter(Boolean).join(" / ") || `Producto ${plain.id}`;
+}
+
+function buildVariantAuditPayload(product, variant, data = {}) {
+  const productPlain = toPlain(product) || {};
+  const variantPlain = toPlain(variant) || {};
+  return {
+    company_id: productPlain.company_id,
+    module: "product",
+    resource_type: "product",
+    resource_id: productPlain.id,
+    resource_label: getProductAuditLabel(productPlain),
+    related_resource_type: "product_variant",
+    related_resource_id: variantPlain.id,
+    ...data
+  };
+}
+
+function changesToValueSnapshot(changes, valueKey) {
+  return changes.reduce((snapshot, change) => {
+    snapshot[change.field] = change[valueKey];
+    return snapshot;
+  }, {});
+}
 
 const ProductVariantController = {
   async update(req, res) {
@@ -31,6 +65,7 @@ const ProductVariantController = {
     try {
      // Actualizar solo los atributos (no SKU, no product_id)
       const updateData = { attributes };
+      const previousVariant = toPlain(variant);
 
       const updated = await ProductVariantRepository.update(variant, updateData, { transaction: t });
 
@@ -43,6 +78,19 @@ const ProductVariantController = {
       }
 
       await t.commit();
+
+      const changes = detectChanges(previousVariant, toPlain(updated), ["sku", "attributes"]);
+      await AuditEventService.safeRecordFromRequest(req, buildVariantAuditPayload(product, updated, {
+        action: "product.variant_updated",
+        result: "success",
+        previous_value: changesToValueSnapshot(changes, "old_value"),
+        new_value: changesToValueSnapshot(changes, "new_value"),
+        changes,
+        description: `Variante actualizada: ${updated.sku}`,
+        metadata: {
+          variant_value_ids_updated: variant_value_ids !== undefined
+        }
+      }));
 
       return res.status(200).json({
         success: true,
@@ -105,6 +153,16 @@ const ProductVariantController = {
 
     await t.commit();
 
+    await AuditEventService.safeRecordFromRequest(req, buildVariantAuditPayload(product, newVariant, {
+      action: "product.variant_created",
+      result: "success",
+      new_value: toPlain(newVariant),
+      description: `Variante creada: ${newVariant.sku}`,
+      metadata: {
+        variant_value_ids: variant_value_ids || []
+      }
+    }));
+
     return res.status(201).json({
       success: true,
       message: "Variante creada correctamente",
@@ -135,9 +193,24 @@ const ProductVariantController = {
           message: "Variante no encontrada"
         });
       }
+    const product = await ProductRepository.findById(variant.product_id);
+    if (!product) {
+      return res.status(400).json({
+        success: false,
+        message: "Producto asociado no válido"
+      });
+    }
     try {
 
+      const previousVariant = toPlain(variant);
       await ProductVariantRepository.delete(variant);
+
+      await AuditEventService.safeRecordFromRequest(req, buildVariantAuditPayload(product, previousVariant, {
+        action: "product.variant_deleted",
+        result: "success",
+        previous_value: previousVariant,
+        description: `Variante eliminada: ${previousVariant.sku}`
+      }));
 
       return res.status(200).json({
         success: true,

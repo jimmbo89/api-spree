@@ -29,6 +29,8 @@ const { verifyMercadoLibreItem } = require("../services/MarketplaceItemVerificat
 const FalabellaAdapter = require('../services/adapters/FalabellaAdapter');
 const MercadoLibreAdapter = require('../services/adapters/MercadoLibreAdapter');
 const { trackPendingOperation } = require("../utils/pendingOperations");
+const PublicationAuditService = require("../services/PublicationAuditService");
+const SalesAuditService = require("../services/SalesAuditService");
 
 const ML_MARKETPLACE_KEY = "mercadolibre";
 const FB_MARKETPLACE_KEY = "falabella";
@@ -43,6 +45,18 @@ const FB_FETCH_RETRY_MAX = 3;
 const FB_FETCH_RETRY_BASE_DELAY_MS = 1500;
 const FB_FETCH_RETRY_MAX_DELAY_MS = 8000;
 const FB_WEBHOOK_RECOVERY_GRACE_MS = Number(process.env.FB_WEBHOOK_RECOVERY_GRACE_MS || 3000);
+
+function parseJsonObject(value) {
+  if (!value) return {};
+  if (typeof value === "object" && !Array.isArray(value)) return value;
+  if (typeof value !== "string") return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch (error) {
+    return {};
+  }
+}
 const FB_ENABLE_PRODUCT_EVENT_RECONCILIATION = false;
 const FB_ORDER_TOPICS = new Set(["onordercreated", "ordercreated", "onorderitemsstatuschanged"]);
 const FB_FEED_TOPICS = new Set(["onfeedcompleted", "onfeedcreated"]);
@@ -332,6 +346,11 @@ async function ensureMercadoLibreWebhookCredential(credential, mlUserId, event =
       credential
     );
     adapter.credential = credential;
+    adapter.auditContext = {
+      source: 'marketplace_webhook',
+      triggered_by: 'webhook',
+      correlation_id: event?.event_id || event?.id || null
+    };
 
     if (isExpired && credential.refresh_token && typeof adapter.refreshAccessToken === 'function') {
       logger.info(`[ML Webhook] Token expirado para credential ${credential.id}; renovando antes de procesar webhook`);
@@ -528,6 +547,29 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
       order,
       { company_id: companyId }
     );
+    await SalesAuditService.recordMarketplaceEvent(
+      credential.marketplace || { id: credential.marketplace_id, name: ML_MARKETPLACE_KEY },
+      savedOrder,
+      'sales.received',
+      {
+        marketplace_id: credential.marketplace_id,
+        new_value: SalesAuditService.buildOrderSnapshot(savedOrder),
+        description: 'Nueva venta recibida desde Mercado Libre',
+        metadata: {
+          webhook_event_id: event.id,
+          topic: payload?.topic || null,
+          resource: payload?.resource || null
+        }
+      }
+    );
+    await SalesAuditService.recordSystemEvent(savedOrder, 'sales.order_created', {
+      new_value: SalesAuditService.buildOrderSnapshot(savedOrder),
+      description: 'Spree creó la orden local desde la venta recibida',
+      metadata: {
+        webhook_event_id: event.id,
+        marketplace: ML_MARKETPLACE_KEY
+      }
+    });
   } else if (statusChanged) {
     await MarketplaceOrderEventRepository.createStatusChange(
       savedOrder.id,
@@ -536,6 +578,40 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
       currentOrderStatus,
       order,
       { company_id: companyId }
+    );
+    const changes = SalesAuditService.getOrderChanges(existingOrder, savedOrder);
+    await SalesAuditService.recordMarketplaceEvent(
+      credential.marketplace || { id: credential.marketplace_id, name: ML_MARKETPLACE_KEY },
+      savedOrder,
+      'sales.status_changed',
+      {
+        marketplace_id: credential.marketplace_id,
+        previous_value: SalesAuditService.changesToValueSnapshot(changes, 'old_value'),
+        new_value: SalesAuditService.changesToValueSnapshot(changes, 'new_value'),
+        changes,
+        description: 'Marketplace informó cambio de estado de la venta',
+        metadata: {
+          webhook_event_id: event.id,
+          topic: payload?.topic || null,
+          resource: payload?.resource || null
+        }
+      }
+    );
+  } else {
+    await SalesAuditService.recordMarketplaceEvent(
+      credential.marketplace || { id: credential.marketplace_id, name: ML_MARKETPLACE_KEY },
+      savedOrder,
+      'sales.synced',
+      {
+        marketplace_id: credential.marketplace_id,
+        new_value: SalesAuditService.buildOrderSnapshot(savedOrder),
+        description: 'Venta sincronizada desde Mercado Libre',
+        metadata: {
+          webhook_event_id: event.id,
+          topic: payload?.topic || null,
+          resource: payload?.resource || null
+        }
+      }
     );
   }
 
@@ -600,6 +676,19 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
       notes: `Stock debitado por orden Mercado Libre ${orderId}`,
       company_id: companyId
     });
+    await SalesAuditService.recordSystemEvent(savedOrder, 'sales.stock_deducted', {
+      new_value: {
+        items_count: savedItems.length,
+        total_quantity: totalQuantity
+      },
+      description: 'Spree descontó stock por la venta',
+      metadata: {
+        marketplace: ML_MARKETPLACE_KEY,
+        webhook_event_id: event.id,
+        items_count: savedItems.length,
+        total_quantity: totalQuantity
+      }
+    });
 
     await notifyMercadoLibreSaleRegistered({
       userId: publicationUserId,
@@ -636,6 +725,17 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
         raw_payload: order,
         notes: `Stock revertido por estado ${currentOrderStatus} en orden Mercado Libre ${orderId}`,
         company_id: companyId
+      });
+      await SalesAuditService.recordSystemEvent(savedOrder, 'sales.stock_reversed', {
+        new_value: {
+          reversed_items: reversalResult.reversed_items || null
+        },
+        description: 'Spree revirtió stock por cambio de estado de la venta',
+        metadata: {
+          marketplace: ML_MARKETPLACE_KEY,
+          webhook_event_id: event.id,
+          reason: 'mercadolibre_reversal'
+        }
       });
     }
   }
@@ -1112,11 +1212,57 @@ async function persistMercadoLibreItemState({
         ? 'processing'
         : (snapshot.status || link?.status || 'unpublished')),
     external_url: item?.permalink || link?.external_url || null,
+    published_stock: item?.available_quantity ?? link?.published_stock ?? null,
+    published_payload: item || link?.published_payload || null,
     last_synced_at: new Date()
   };
 
   if (link) {
+    const previousPublishedState = {
+      status: link.status,
+      price: link.published_payload?.price ?? null,
+      available_quantity: link.published_stock,
+      external_url: link.external_url || null
+    };
+    const nextPublishedState = {
+      status: updatePayload.status,
+      price: item?.price ?? previousPublishedState.price,
+      available_quantity: updatePayload.published_stock,
+      external_url: updatePayload.external_url
+    };
     await link.update(updatePayload);
+
+    const publishedChanges = PublicationAuditService.getPublishedProductChanges(previousPublishedState, nextPublishedState);
+    const actionForChange = (change) => {
+      if (change.field === 'price') return 'published_product.price_changed';
+      if (change.field === 'available_quantity' || change.field === 'published_stock') return 'published_product.stock_changed';
+      if (change.field === 'status' && change.new_value === 'paused') return 'published_product.paused';
+      if (change.field === 'status' && change.new_value === 'active') return 'published_product.reactivated';
+      if (change.field === 'status' && ['closed', 'deleted'].includes(change.new_value)) return 'published_product.deleted';
+      if (change.field === 'status') return 'published_product.marketplace_status_changed';
+      return 'published_product.synced';
+    };
+
+    await Promise.all(publishedChanges.map((change) =>
+      PublicationAuditService.recordPublishedProductFromMarketplace(
+        credential.marketplace || { id: marketplaceId, name: ML_MARKETPLACE_KEY },
+        link,
+        actionForChange(change),
+        {
+          previous_value: { [change.field]: change.old_value },
+          new_value: { [change.field]: change.new_value },
+          changes: [change],
+          description: `Marketplace informó cambio en publicación ${itemId}`,
+          metadata: {
+            topic: payload?.topic || null,
+            resource: payload?.resource || null,
+            external_id: String(itemId),
+            webhook_sent: payload?.sent || null,
+            webhook_received: payload?.received || null
+          }
+        }
+      )
+    ));
   }
 
   if (task) {
@@ -2484,13 +2630,57 @@ async function processFalabellaProductWebhook(payload, options = {}) {
         }
       }
       if (link) {
-        await link.update({
+        const previousBusinessUnit = parseJsonObject(link.published_payload)?.BusinessUnits?.BusinessUnit || {};
+        const previousPublishedState = {
+          status: link.status,
+          price: previousBusinessUnit.Price != null ? Number(previousBusinessUnit.Price) : null,
+          available_quantity: link.published_stock,
+          external_url: link.external_url || null
+        };
+        const nextPublishedState = {
           status: nextStatus === 'published' ? 'active' : nextStatus,
-          external_url: snapshot.url || link.external_url,
-          published_stock: snapshot.stock ?? link.published_stock,
+          price: snapshot.price ?? previousPublishedState.price,
+          available_quantity: snapshot.stock ?? link.published_stock,
+          external_url: snapshot.url || link.external_url || null
+        };
+        await link.update({
+          status: nextPublishedState.status,
+          external_url: nextPublishedState.external_url,
+          published_stock: nextPublishedState.available_quantity,
           published_payload: snapshot.raw || link.published_payload,
           last_synced_at: new Date()
         });
+
+        const publishedChanges = PublicationAuditService.getPublishedProductChanges(previousPublishedState, nextPublishedState);
+        const actionForChange = (change) => {
+          if (change.field === 'price') return 'published_product.price_changed';
+          if (change.field === 'available_quantity' || change.field === 'published_stock') return 'published_product.stock_changed';
+          if (change.field === 'status' && change.new_value === 'paused') return 'published_product.paused';
+          if (change.field === 'status' && change.new_value === 'active') return 'published_product.reactivated';
+          if (change.field === 'status' && ['closed', 'deleted', 'not_published', 'failed'].includes(change.new_value)) return 'published_product.deleted';
+          if (change.field === 'status') return 'published_product.marketplace_status_changed';
+          return 'published_product.synced';
+        };
+
+        await Promise.all(publishedChanges.map((change) =>
+          PublicationAuditService.recordPublishedProductFromMarketplace(
+            credential?.marketplace || { id: task.marketplace_id, name: FB_MARKETPLACE_KEY },
+            link,
+            actionForChange(change),
+            {
+              previous_value: { [change.field]: change.old_value },
+              new_value: { [change.field]: change.new_value },
+              changes: [change],
+              description: `Marketplace informó cambio en publicación ${task.external_id}`,
+              metadata: {
+                topic: normalizedTopic || topic,
+                external_id: task.external_id,
+                seller_sku: sellerSku,
+                webhook_event_id: event?.event_id || event?.id || null
+              }
+            }
+          )
+        ));
       }
     }
 
@@ -2671,6 +2861,29 @@ async function processFalabellaEvent({ event, payload, orderId }) {
       orderData,
       { company_id: companyId }
     );
+    await SalesAuditService.recordMarketplaceEvent(
+      credential.marketplace || { id: credential.marketplace_id, name: FB_MARKETPLACE_KEY },
+      savedOrder,
+      'sales.received',
+      {
+        marketplace_id: credential.marketplace_id,
+        new_value: SalesAuditService.buildOrderSnapshot(savedOrder),
+        description: 'Nueva venta recibida desde Falabella',
+        metadata: {
+          webhook_event_id: event.id,
+          topic: event.topic || null,
+          resource: event.resource || null
+        }
+      }
+    );
+    await SalesAuditService.recordSystemEvent(savedOrder, 'sales.order_created', {
+      new_value: SalesAuditService.buildOrderSnapshot(savedOrder),
+      description: 'Spree creó la orden local desde la venta recibida',
+      metadata: {
+        webhook_event_id: event.id,
+        marketplace: FB_MARKETPLACE_KEY
+      }
+    });
   } else if (statusChanged) {
     await MarketplaceOrderEventRepository.createStatusChange(
       savedOrder.id,
@@ -2679,6 +2892,40 @@ async function processFalabellaEvent({ event, payload, orderId }) {
       currentOrderStatus,
       orderData,
       { company_id: companyId }
+    );
+    const changes = SalesAuditService.getOrderChanges(existingOrder, savedOrder);
+    await SalesAuditService.recordMarketplaceEvent(
+      credential.marketplace || { id: credential.marketplace_id, name: FB_MARKETPLACE_KEY },
+      savedOrder,
+      'sales.status_changed',
+      {
+        marketplace_id: credential.marketplace_id,
+        previous_value: SalesAuditService.changesToValueSnapshot(changes, 'old_value'),
+        new_value: SalesAuditService.changesToValueSnapshot(changes, 'new_value'),
+        changes,
+        description: 'Marketplace informó cambio de estado de la venta',
+        metadata: {
+          webhook_event_id: event.id,
+          topic: event.topic || null,
+          resource: event.resource || null
+        }
+      }
+    );
+  } else {
+    await SalesAuditService.recordMarketplaceEvent(
+      credential.marketplace || { id: credential.marketplace_id, name: FB_MARKETPLACE_KEY },
+      savedOrder,
+      'sales.synced',
+      {
+        marketplace_id: credential.marketplace_id,
+        new_value: SalesAuditService.buildOrderSnapshot(savedOrder),
+        description: 'Venta sincronizada desde Falabella',
+        metadata: {
+          webhook_event_id: event.id,
+          topic: event.topic || null,
+          resource: event.resource || null
+        }
+      }
     );
   }
 
@@ -2737,6 +2984,17 @@ async function processFalabellaEvent({ event, payload, orderId }) {
       notes: `Stock debitado por orden Falabella ${orderId}`,
       company_id: companyId
     });
+    await SalesAuditService.recordSystemEvent(savedOrder, 'sales.stock_deducted', {
+      new_value: {
+        items_count: savedItems.length
+      },
+      description: 'Spree descontó stock por la venta',
+      metadata: {
+        marketplace: FB_MARKETPLACE_KEY,
+        webhook_event_id: event.id,
+        items_count: savedItems.length
+      }
+    });
   }
 
   if (shouldReverseStock) {
@@ -2763,6 +3021,17 @@ async function processFalabellaEvent({ event, payload, orderId }) {
         raw_payload: orderData,
         notes: `Stock revertido por estado ${currentOrderStatus} en orden Falabella ${orderId}`,
         company_id: companyId
+      });
+      await SalesAuditService.recordSystemEvent(savedOrder, 'sales.stock_reversed', {
+        new_value: {
+          reversed_items: reversalResult.reversed_items || null
+        },
+        description: 'Spree revirtió stock por cambio de estado de la venta',
+        metadata: {
+          marketplace: FB_MARKETPLACE_KEY,
+          webhook_event_id: event.id,
+          reason: 'falabella_reversal'
+        }
       });
     }
   }

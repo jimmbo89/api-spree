@@ -24,6 +24,7 @@ const { detectChanges } = require("../util/auditUtils");
 const { getRequestMetadata } = require("../util/requestUtil");
 const FileService = require("../services/FileService");
 const ProductBulkImportService = require("../services/ProductBulkImportService");
+const AuditEventService = require("../services/AuditEventService");
 const { imageUrl } = require("../util/imageCacheUtils");
 const DEFAULT_IMAGE = "products/default.jpg";
 
@@ -51,6 +52,35 @@ const PRODUCT_AUDIT_FIELDS = [
   "packaging_measurements",
   "sync_meta",
 ];
+
+function toPlain(record) {
+  if (!record) return null;
+  return typeof record.get === "function" ? record.get({ plain: true }) : record;
+}
+
+function getProductAuditLabel(product) {
+  const plain = toPlain(product) || {};
+  return [plain.sku, plain.name].filter(Boolean).join(" / ") || `Producto ${plain.id}`;
+}
+
+function buildProductAuditPayload(product, data = {}) {
+  const plain = toPlain(product) || {};
+  return {
+    company_id: plain.company_id,
+    module: "product",
+    resource_type: "product",
+    resource_id: plain.id,
+    resource_label: getProductAuditLabel(plain),
+    ...data
+  };
+}
+
+function changesToValueSnapshot(changes, valueKey) {
+  return changes.reduce((snapshot, change) => {
+    snapshot[change.field] = change[valueKey];
+    return snapshot;
+  }, {});
+}
 
 function getDuplicateVariantSkuError(error) {
   if (error?.name !== "SequelizeUniqueConstraintError") {
@@ -394,6 +424,8 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
         );
       }
 
+      const createdWarehouseAuditEvents = [];
+
       // Asociar con almacenes si hay configuración
       if (parsedWarehouseConfig.length > 0) {
         logger.info(
@@ -434,6 +466,8 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
           );
 
           // Configurar cada variante en el almacén
+          let variantsConfigured = 0;
+          let initialStockTotal = 0;
           if (whConfig.variants && Array.isArray(whConfig.variants)) {
             logger.info(
               `Configurando ${whConfig.variants.length} variantes para almacén ${warehouse.name}`
@@ -473,6 +507,8 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
 
                 // Registrar movimiento de inventario inicial
                 const stockQty = parseInt(variantConfig.stock) || 0;
+                variantsConfigured += 1;
+                initialStockTotal += stockQty;
                 await InventoryMovementRepository.create({
                   warehouse_id: warehouse.id,
                   product_id: product.id,
@@ -534,6 +570,8 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
 
                 // Registrar movimiento de inventario inicial
                 const stockQty = parseInt(variantConfig.stock) || 0;
+                variantsConfigured += 1;
+                initialStockTotal += stockQty;
                 await InventoryMovementRepository.create({
                   warehouse_id: warehouse.id,
                   product_id: product.id,
@@ -587,6 +625,7 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
               );
 
               // Registrar movimiento de inventario inicial (stock 0)
+              variantsConfigured += 1;
               await InventoryMovementRepository.create({
                 warehouse_id: warehouse.id,
                 product_id: product.id,
@@ -610,6 +649,16 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
               }, { transaction });
             }
           }
+
+          createdWarehouseAuditEvents.push({
+            warehouse,
+            warehouse_product_id: wp.id,
+            variantsConfigured,
+            initialStockTotal,
+            active: wp.active,
+            code: wp.code,
+            minimum_stock: wp.minimum_stock
+          });
         }
       } else {
         logger.info("No hay configuración de almacenes para este producto");
@@ -620,6 +669,43 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
       logger.info(
         `Producto ${product.name} creado exitosamente con ID: ${product.id}`
       );
+
+      await AuditEventService.safeRecordFromRequest(req, buildProductAuditPayload(product, {
+        action: "product.created",
+        result: "success",
+        new_value: toPlain(product),
+        description: `Producto creado: ${product.name}`,
+        metadata: {
+          sku: product.sku,
+          variants_count: createdVariants.length,
+          attributes_count: productAttributes.length,
+          warehouses_count: parsedWarehouseConfig.length,
+          source: "manual"
+        }
+      }));
+
+      await Promise.all(createdWarehouseAuditEvents.map((event) => (
+        AuditEventService.safeRecordFromRequest(req, buildProductAuditPayload(product, {
+          action: "product.warehouse_configured",
+          result: "success",
+          warehouse_id: event.warehouse.id,
+          branch_id: event.warehouse.branch_id,
+          new_value: {
+            warehouse_product_id: event.warehouse_product_id,
+            active: event.active,
+            code: event.code,
+            minimum_stock: event.minimum_stock,
+            initial_stock_total: event.initialStockTotal
+          },
+          description: `Producto configurado en almacen: ${event.warehouse.name}`,
+          metadata: {
+            operation: "created",
+            source: "product_creation",
+            warehouse_name: event.warehouse.name,
+            variants_configured: event.variantsConfigured
+          }
+        }))
+      )));
 
       // Obtener productos actualizados
       const products = await ProductRepository.findFiltered({
@@ -670,6 +756,29 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
         companyId: Number(company_id),
         userId,
       });
+
+      const successfulRows = Array.isArray(summary.rows)
+        ? summary.rows.filter(row => row.success && row.product_id)
+        : [];
+
+      await Promise.all(successfulRows.map(row => (
+        AuditEventService.safeRecordFromRequest(req, {
+          company_id: Number(company_id),
+          module: "product",
+          action: "product.bulk_imported",
+          result: "success",
+          resource_type: "product",
+          resource_id: row.product_id,
+          resource_label: [row.sku, row.name].filter(Boolean).join(" / ") || `Producto ${row.product_id}`,
+          description: `Producto importado masivamente: ${row.name || row.sku}`,
+          metadata: {
+            row_number: row.row_number,
+            sku: row.sku,
+            warnings: row.warnings || [],
+            source: "bulk_import"
+          }
+        })
+      )));
 
       return res.status(200).json(summary);
     } catch (error) {
@@ -887,6 +996,7 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
         transaction = await sequelize.transaction();
         const files =
           req.files && Array.isArray(req.files.images) ? req.files.images : [];
+        const productBeforeUpdate = toPlain(product);
         // 1. Actualizar el producto principal
         const updated = await ProductRepository.update(
           product,
@@ -1024,10 +1134,29 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
         await transaction.commit();
 
         const fieldChanges = detectChanges(
-          { ...product.get({ plain: true }) },
+          productBeforeUpdate,
           updated.get({ plain: true }),
           PRODUCT_AUDIT_FIELDS
         );
+
+        await AuditEventService.safeRecordFromRequest(req, buildProductAuditPayload(updated, {
+          action: "product.updated",
+          result: "success",
+          previous_value: changesToValueSnapshot(fieldChanges, "old_value"),
+          new_value: changesToValueSnapshot(fieldChanges, "new_value"),
+          changes: fieldChanges,
+          description: `Producto actualizado: ${fieldChanges.length} campo(s) modificado(s)`,
+          metadata: {
+            attributes_updated: productAttributes !== null,
+            variants_updated: Boolean(product_variants),
+            images_updated: Boolean(
+              req.files?.images?.length ||
+              req.body.images_order !== undefined ||
+              req.body.images_to_remove !== undefined ||
+              req.body.images !== undefined
+            )
+          }
+        }));
 
         await LogRepository.create({
           user_id: metadata.user_id,
@@ -1104,13 +1233,23 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
   }
 
   let transaction;
+  const warehouseAuditEvents = [];
   try {
     transaction = await sequelize.transaction();
 
     for (const whConfig of warehouse_config) {
       const warehouse = await WarehouseRepository.findById(whConfig.warehouse_id);
+      if (!warehouse) {
+        await transaction.rollback();
+        return res.status(400).json({
+          success: false,
+          msg: `Warehouse ${whConfig.warehouse_id} no encontrado`,
+        });
+      }
       // Buscar o crear WarehouseProduct
       let wp = await WarehouseProductRepository.findByProductAndWarehouse(product_id, whConfig.warehouse_id);
+      const previousWarehouseProduct = toPlain(wp);
+      const operation = wp ? "updated" : "created";
       if (!wp) {
         wp = await WarehouseProductRepository.create(
           {
@@ -1136,7 +1275,11 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
           { transaction }
         );
       }
+      const warehouseProductChanges = previousWarehouseProduct
+        ? detectChanges(previousWarehouseProduct, toPlain(wp), ["active", "code", "minimum_stock"])
+        : [];
       // Procesar variantes (sin eliminar las existentes)
+      let variantsConfigured = 0;
       if (whConfig.variants && Array.isArray(whConfig.variants)) {
         for (let i = 0; i < whConfig.variants.length; i++) {
           const variantConfig = whConfig.variants[i];
@@ -1173,11 +1316,36 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
             // ➕ Crear
             await WarehouseProductVariantRepository.create(variantData, { transaction });
           }
+          variantsConfigured += 1;
         }
       }
+      warehouseAuditEvents.push({
+        warehouse,
+        operation,
+        variantsConfigured,
+        changes: warehouseProductChanges
+      });
     }
 
     await transaction.commit();
+
+    await Promise.all(warehouseAuditEvents.map(({ warehouse, operation, variantsConfigured, changes }) => (
+      AuditEventService.safeRecordFromRequest(req, buildProductAuditPayload(product, {
+        action: "product.warehouse_configured",
+        result: "success",
+        warehouse_id: warehouse.id,
+        branch_id: warehouse.branch_id,
+        previous_value: changesToValueSnapshot(changes, "old_value"),
+        new_value: changesToValueSnapshot(changes, "new_value"),
+        changes,
+        description: `Producto configurado en almacen: ${warehouse.name}`,
+        metadata: {
+          operation,
+          warehouse_name: warehouse.name,
+          variants_configured: variantsConfigured
+        }
+      }))
+    )));
 
     res.status(200).json({
       success: true,
@@ -1206,7 +1374,24 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
 
   try {
 
+    const previousAttributes = product.attributes;
     const updatedProduct = await ProductRepository.updateAttributes(product, attributes);
+
+    await AuditEventService.safeRecordFromRequest(req, buildProductAuditPayload(updatedProduct, {
+      action: "product.attributes_updated",
+      result: "success",
+      previous_value: { attributes: previousAttributes },
+      new_value: { attributes: updatedProduct.attributes },
+      changes: [{
+        field: "attributes",
+        old_value: previousAttributes,
+        new_value: updatedProduct.attributes
+      }],
+      description: `Atributos del producto actualizados: ${updatedProduct.name}`,
+      metadata: {
+        attributes_count: attributes.length
+      }
+    }));
 
     return res.status(200).json({
       success: true,
@@ -1228,8 +1413,19 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
     try {
       const product = await ProductRepository.findById(req.body.id);
       if (!product) return res.status(404).json({ msg: "ProductNotFound" });
+      const productBeforeDelete = toPlain(product);
 
       await ProductRepository.delete(product);
+      await AuditEventService.safeRecordFromRequest(req, buildProductAuditPayload(productBeforeDelete, {
+        action: "product.deleted",
+        result: "success",
+        previous_value: productBeforeDelete,
+        description: `Producto eliminado: ${productBeforeDelete.name}`,
+        metadata: {
+          sku: productBeforeDelete.sku,
+          state: productBeforeDelete.state
+        }
+      }));
       await LogRepository.create({
         user_id: metadata.user_id,
         action: "product.delete",
@@ -1272,8 +1468,24 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
     try {
       const product = await ProductRepository.findById(req.body.id);
       if (!product) return res.status(404).json({ msg: "ProductNotFound" });
+      const previousState = product.state;
 
       await ProductRepository.changeState(product, state);
+      await AuditEventService.safeRecordFromRequest(req, buildProductAuditPayload(product, {
+        action: "product.state_changed",
+        result: "success",
+        previous_value: { state: previousState },
+        new_value: { state },
+        changes: [{
+          field: "state",
+          old_value: previousState,
+          new_value: state
+        }],
+        description: `Estado del producto actualizado: ${product.name}`,
+        metadata: {
+          sku: product.sku
+        }
+      }));
       await LogRepository.create({
         user_id: metadata.user_id,
         action: "product.state",

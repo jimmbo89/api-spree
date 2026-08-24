@@ -408,7 +408,7 @@ const ProductRepository = {
     }
   },
 
-  async update(product, body, files = []) {
+  async update(product, body, files = [], options = {}) {
     try {
       let currentImages = [];
       if (Array.isArray(product.images)) {
@@ -508,7 +508,7 @@ const ProductRepository = {
         updatedData.images = finalImages;
       }
 
-      await product.update(updatedData);
+      await product.update(updatedData, options);
       logger.info(`Producto actualizado (ID: ${product.id})`);
       return product;
     } catch (error) {

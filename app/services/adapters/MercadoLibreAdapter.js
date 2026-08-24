@@ -7,6 +7,8 @@ const MarketplaceTransformerMercadoLibre = require("../MarketplaceTransformerMer
 const MercadoLibreAttributesService = require('../MercadoLibreAttributesService');
 const MercadoLibreCapabilitiesService = require('../MercadoLibreCapabilitiesService');
 const { verifyMercadoLibreItem, resolveExistingItemModel } = require('../MarketplaceItemVerificationService');
+const AuditEventService = require('../AuditEventService');
+const { detectChanges } = require('../../util/auditUtils');
 
 const ML_SUPPORTED_LISTING_TYPES = ['gold_pro', 'gold_special', 'free'];
 const ML_STRATEGY = {
@@ -72,6 +74,54 @@ function parseJsonObject(value) {
   } catch (error) {
     return {};
   }
+}
+
+function sanitizeAuditMetadata(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeAuditMetadata(item));
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.keys(value).reduce((safe, key) => {
+      const normalizedKey = key.toLowerCase();
+      if (normalizedKey.includes('token') || normalizedKey.includes('secret') || normalizedKey.includes('api_key')) {
+        safe[key] = '[REDACTED]';
+      } else {
+        safe[key] = sanitizeAuditMetadata(value[key]);
+      }
+      return safe;
+    }, {});
+  }
+
+  return value;
+}
+
+function sanitizeCredentialForAudit(credential) {
+  const additionalData = parseJsonObject(credential?.additional_data);
+
+  return {
+    id: credential?.id || null,
+    marketplace_id: credential?.marketplace_id || null,
+    company_id: credential?.company_id || null,
+    user_id: credential?.user_id || null,
+    name: credential?.name || null,
+    country: credential?.country || null,
+    seller_email: credential?.seller_email || null,
+    seller_id: credential?.seller_id || null,
+    active: credential?.active,
+    expires_at: credential?.expires_at || null,
+    additional_data: sanitizeAuditMetadata(additionalData),
+    access_token_configured: !!credential?.access_token,
+    refresh_token_configured: !!credential?.refresh_token,
+    api_key_configured: !!credential?.api_key
+  };
+}
+
+function changesToValueSnapshot(changes, valueKey) {
+  return changes.reduce((snapshot, change) => {
+    snapshot[change.field] = change[valueKey];
+    return snapshot;
+  }, {});
 }
 
 function isMercadoLibreParentPkAttribute(attr) {
@@ -2711,6 +2761,8 @@ class MercadoLibreAdapter extends BaseAdapter {
       refresh_token: response.data.refresh_token || credential.refresh_token,
       expires_at: expiresAt 
     };
+
+    await this.recordTokenRenewalAudit(credential, this.credential, response.data.expires_in);
     
     return true;
     
@@ -2734,6 +2786,62 @@ class MercadoLibreAdapter extends BaseAdapter {
     throw new Error(`refresh_failed: ${error.message}`);
   }
 }
+
+  async recordTokenRenewalAudit(previousCredential, updatedCredential, expiresIn = null) {
+    const companyId = updatedCredential?.company_id || previousCredential?.company_id || this.companyId;
+    if (!updatedCredential?.id || !companyId) return null;
+
+    const previousValue = sanitizeCredentialForAudit(previousCredential);
+    const newValue = sanitizeCredentialForAudit(updatedCredential);
+    const changes = detectChanges(previousValue, newValue, [
+      'expires_at',
+      'access_token_configured',
+      'refresh_token_configured'
+    ]);
+    const context = this.auditContext || {};
+    const actor = context.actor_type
+      ? {
+          actor_type: context.actor_type,
+          actor_id: context.actor_id !== undefined && context.actor_id !== null ? String(context.actor_id) : null,
+          actor_name: context.actor_name || null
+        }
+      : AuditEventService.automaticProcessActor({
+          id: context.job_id || null,
+          job_type: context.source || 'marketplace_token_refresh'
+        });
+
+    return AuditEventService.safeRecord({
+      ...actor,
+      company_id: companyId,
+      module: 'marketplace',
+      action: 'marketplace.token_renewed',
+      result: 'success',
+      resource_type: 'marketplace_credential',
+      resource_id: updatedCredential.id,
+      resource_label: [
+        updatedCredential.marketplace?.name || updatedCredential.marketplace?.domain,
+        updatedCredential.name
+      ].filter(Boolean).join(' / ') || `Credencial marketplace ${updatedCredential.id}`,
+      marketplace_id: updatedCredential.marketplace_id || previousCredential?.marketplace_id || this.marketplaceId,
+      marketplace_credential_id: updatedCredential.id,
+      previous_value: changesToValueSnapshot(changes, 'old_value'),
+      new_value: changesToValueSnapshot(changes, 'new_value'),
+      changes,
+      description: `Token renovado para la conexion ${updatedCredential.name || updatedCredential.id}`,
+      metadata: {
+        auth_type: 'oauth',
+        source: context.source || 'adapter',
+        triggered_by: context.triggered_by || 'automatic',
+        expires_in: expiresIn,
+        marketplace_name: updatedCredential.marketplace?.name || updatedCredential.marketplace?.domain || null
+      },
+      job_id: context.job_id || null,
+      correlation_id: context.correlation_id || null,
+      ip_address: context.ip_address || null,
+      user_agent: context.user_agent || null
+    });
+  }
+
   async predictCategory(title) {
     logger.info(`[MercadoLibreAdapter] Prediciendo categoría para título: ${title}`);
     if (!this.credential.access_token) {

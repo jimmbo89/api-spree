@@ -12,6 +12,22 @@ const PublishingAdapterFactory = require('../services/adapters/PublishingAdapter
 const EncryptionService = require('../services/EncryptionService');
 const ProductPublishingTaskController = require('./ProductPublishingTaskController');
 const { getRequestMetadata } = require('../util/requestUtil');
+const AuditEventService = require('../services/AuditEventService');
+const { detectChanges } = require('../util/auditUtils');
+
+const MARKETPLACE_CREDENTIAL_AUDIT_FIELDS = [
+  'name',
+  'country',
+  'active',
+  'expires_at',
+  'additional_data',
+  'access_token_configured',
+  'refresh_token_configured',
+  'api_key_configured'
+];
+
+const EXTERNAL_ACCOUNT_AUDIT_FIELDS = ['seller_email', 'seller_id', 'ml_user_id'];
+
 function formatSequelizeValidationError(error) {
   if (error.name === 'SequelizeValidationError' && error.errors?.length) {
     return error.errors.map(err => {
@@ -37,6 +53,95 @@ function resolveCompanyId(req) {
 
   const companyId = Number(rawCompanyId);
   return Number.isInteger(companyId) && companyId > 0 ? companyId : NaN;
+}
+
+function toPlain(record) {
+  if (!record) return null;
+  return typeof record.get === 'function' ? record.get({ plain: true }) : record;
+}
+
+function sanitizeAdditionalData(value) {
+  const plainValue = typeof value === 'string' ? (() => {
+    try {
+      return JSON.parse(value);
+    } catch (error) {
+      return value;
+    }
+  })() : value;
+
+  if (Array.isArray(plainValue)) {
+    return plainValue.map((item) => sanitizeAdditionalData(item));
+  }
+
+  if (plainValue && typeof plainValue === 'object') {
+    return Object.keys(plainValue).reduce((safe, key) => {
+      const normalizedKey = key.toLowerCase();
+      if (normalizedKey.includes('token') || normalizedKey.includes('secret') || normalizedKey.includes('api_key')) {
+        safe[key] = '[REDACTED]';
+      } else {
+        safe[key] = sanitizeAdditionalData(plainValue[key]);
+      }
+      return safe;
+    }, {});
+  }
+
+  return plainValue;
+}
+
+function getMarketplaceCredentialAuditLabel(credential) {
+  const plain = toPlain(credential) || {};
+  const marketplaceName = plain.marketplace?.name || plain.marketplace?.domain;
+  return [marketplaceName, plain.name].filter(Boolean).join(' / ') || `Credencial marketplace ${plain.id}`;
+}
+
+function sanitizeCredentialForAudit(credential) {
+  const plain = toPlain(credential) || {};
+  return {
+    id: plain.id,
+    marketplace_id: plain.marketplace_id,
+    company_id: plain.company_id,
+    user_id: plain.user_id,
+    name: plain.name,
+    country: plain.country,
+    seller_email: plain.seller_email,
+    seller_id: plain.seller_id,
+    active: plain.active,
+    expires_at: plain.expires_at,
+    additional_data: sanitizeAdditionalData(plain.additional_data),
+    access_token_configured: !!plain.access_token,
+    refresh_token_configured: !!plain.refresh_token,
+    api_key_configured: !!plain.api_key
+  };
+}
+
+function getExternalAccountSnapshot(credential) {
+  const safe = sanitizeCredentialForAudit(credential);
+  return {
+    seller_email: safe.seller_email || null,
+    seller_id: safe.seller_id || null,
+    ml_user_id: safe.additional_data?.ml_user_id || null
+  };
+}
+
+function buildMarketplaceCredentialAuditPayload(credential, data = {}) {
+  const plain = toPlain(credential) || {};
+  return {
+    company_id: data.company_id || plain.company_id,
+    module: 'marketplace',
+    resource_type: 'marketplace_credential',
+    resource_id: plain.id,
+    resource_label: getMarketplaceCredentialAuditLabel(plain),
+    marketplace_id: plain.marketplace_id,
+    marketplace_credential_id: plain.id,
+    ...data
+  };
+}
+
+function changesToValueSnapshot(changes, valueKey) {
+  return changes.reduce((snapshot, change) => {
+    snapshot[change.field] = change[valueKey];
+    return snapshot;
+  }, {});
 }
 
 const MarketplaceCredentialController = {
@@ -249,7 +354,7 @@ const MarketplaceCredentialController = {
         });
       }
 
-      await MarketplaceCredentialRepository.createOrUpdate({
+      newCredential = await MarketplaceCredentialRepository.createOrUpdate({
         marketplace_id,
         user_id: userId,
         company_id: companyId,
@@ -271,6 +376,18 @@ const MarketplaceCredentialController = {
         status: 'success',
         meta: { marketplace_id, name }
       });
+
+      await AuditEventService.safeRecordFromRequest(req, buildMarketplaceCredentialAuditPayload(newCredential, {
+        action: 'marketplace.connection_created',
+        result: 'success',
+        new_value: sanitizeCredentialForAudit(newCredential),
+        description: `Conexion creada para marketplace ${marketplace.name || marketplace_id}`,
+        metadata: {
+          auth_type: 'manual',
+          authenticated_by_user_id: userId,
+          marketplace_name: marketplace.name || null
+        }
+      }));
 
       return res.status(201).json({
         success: true,
@@ -312,11 +429,33 @@ const MarketplaceCredentialController = {
       if (!adapter) {
         return res.status(400).json({ success: false, message: "Adaptador no disponible" });
       }
+      adapter.auditContext = {
+        actor_type: AuditEventService.ACTOR_TYPES.USER,
+        actor_id: userId,
+        actor_name: req.user?.name || req.user?.email || `Usuario ${userId}`,
+        source: 'marketplace_credential_create',
+        triggered_by: 'user',
+        ip_address: metadata.ip_address,
+        user_agent: metadata.user_agent
+      };
 
       const status = await adapter.ensureValidCredentials();
 
       if (status.valid) {
         // Ya esta conectado (caso raro al crear, pero posible)
+        const connectedCredential = await MarketplaceCredentialRepository.findById(newCredential.id);
+        await AuditEventService.safeRecordFromRequest(req, buildMarketplaceCredentialAuditPayload(connectedCredential || newCredential, {
+          action: 'marketplace.connection_created',
+          result: 'success',
+          new_value: sanitizeCredentialForAudit(connectedCredential || newCredential),
+          description: `Conexion OAuth creada para marketplace ${marketplace.name || marketplace_id}`,
+          metadata: {
+            auth_type: 'oauth',
+            authenticated_by_user_id: userId,
+            marketplace_name: marketplace.name || null
+          }
+        }));
+
         return res.status(201).json({ 
           success: true, 
           message: "Ya conectado",
@@ -324,6 +463,18 @@ const MarketplaceCredentialController = {
         });
       } else if (status.auth_required) {
         // Devolver URL de autorizacion
+        await AuditEventService.safeRecordFromRequest(req, buildMarketplaceCredentialAuditPayload(newCredential, {
+          action: 'marketplace.connection_created',
+          result: 'pending',
+          new_value: sanitizeCredentialForAudit(newCredential),
+          description: `Conexion OAuth creada pendiente de autenticacion para marketplace ${marketplace.name || marketplace_id}`,
+          metadata: {
+            auth_type: 'oauth',
+            auth_required: true,
+            marketplace_name: marketplace.name || null
+          }
+        }));
+
         return res.status(409).json({
           success: false,
           auth_required: true,
@@ -423,6 +574,16 @@ const MarketplaceCredentialController = {
         message: "Adaptador no disponible" 
       });
     }
+    const metadata = getRequestMetadata(req);
+    adapter.auditContext = {
+      actor_type: AuditEventService.ACTOR_TYPES.USER,
+      actor_id: userId,
+      actor_name: req.user?.name || req.user?.email || `Usuario ${userId}`,
+      source: 'marketplace_credential_refresh',
+      triggered_by: 'user',
+      ip_address: metadata.ip_address,
+      user_agent: metadata.user_agent
+    };
 
     // 4. Ejecutar validacion/refresh con la credencial especifica
     const status = await adapter.ensureValidCredentials();
@@ -524,6 +685,16 @@ const MarketplaceCredentialController = {
 
       // 5. Ejecutar actualizacion parcial
       const credential = await MarketplaceCredentialRepository.updatePartial(id, updatePayload);
+      const fieldChanges = detectChanges(
+        sanitizeCredentialForAudit(existing),
+        sanitizeCredentialForAudit(credential),
+        MARKETPLACE_CREDENTIAL_AUDIT_FIELDS
+      );
+      const externalAccountChanges = detectChanges(
+        getExternalAccountSnapshot(existing),
+        getExternalAccountSnapshot(credential),
+        EXTERNAL_ACCOUNT_AUDIT_FIELDS
+      );
 
       // 6. Verificar conexion al marketplace (similar a warehouseMarketplaces)
       const marketplace = await MarketplaceRepository.findById(credential.marketplace_id);
@@ -546,6 +717,15 @@ const MarketplaceCredentialController = {
         );
 
         if (adapter && typeof adapter.ensureValidCredentials === 'function') {
+          adapter.auditContext = {
+            actor_type: AuditEventService.ACTOR_TYPES.USER,
+            actor_id: req.user.id,
+            actor_name: req.user?.name || req.user?.email || `Usuario ${req.user.id}`,
+            source: 'marketplace_credential_update',
+            triggered_by: 'user',
+            ip_address: metadata.ip_address,
+            user_agent: metadata.user_agent
+          };
           connectionStatus = await adapter.ensureValidCredentials();
         }
       } else {
@@ -566,6 +746,57 @@ const MarketplaceCredentialController = {
         status: 'success',
         meta: { id: credential.id, updated_fields: Object.keys(updatePayload), connection_valid: connectionStatus.valid }
       });
+
+      const isDisconnecting = existing.active !== false && Number(existing.active) !== 0 && (credential.active === false || Number(credential.active) === 0);
+      const configurationChanges = isDisconnecting
+        ? fieldChanges.filter((change) => change.field !== 'active')
+        : fieldChanges;
+
+      if (configurationChanges.length > 0) {
+        await AuditEventService.safeRecordFromRequest(req, buildMarketplaceCredentialAuditPayload(credential, {
+          action: 'marketplace.connection_updated',
+          result: 'success',
+          previous_value: changesToValueSnapshot(configurationChanges, 'old_value'),
+          new_value: changesToValueSnapshot(configurationChanges, 'new_value'),
+          changes: configurationChanges,
+          description: `Configuracion modificada para la conexion ${credential.name || credential.id}`,
+          metadata: {
+            updated_fields: configurationChanges.map((change) => change.field),
+            connection_valid: connectionStatus.valid,
+            auth_required: !!connectionStatus.auth_required,
+            marketplace_name: marketplace.name || null
+          }
+        }));
+      }
+
+      if (externalAccountChanges.length > 0) {
+        await AuditEventService.safeRecordFromRequest(req, buildMarketplaceCredentialAuditPayload(credential, {
+          action: 'marketplace.external_account_changed',
+          result: 'success',
+          previous_value: changesToValueSnapshot(externalAccountChanges, 'old_value'),
+          new_value: changesToValueSnapshot(externalAccountChanges, 'new_value'),
+          changes: externalAccountChanges,
+          description: `Cuenta externa modificada para la conexion ${credential.name || credential.id}`,
+          metadata: {
+            marketplace_name: marketplace.name || null
+          }
+        }));
+      }
+
+      if (isDisconnecting) {
+        await AuditEventService.safeRecordFromRequest(req, buildMarketplaceCredentialAuditPayload(credential, {
+          action: 'marketplace.connection_disconnected',
+          result: 'success',
+          previous_value: { active: true },
+          new_value: { active: false },
+          changes: [{ field: 'active', old_value: true, new_value: false }],
+          description: `Conexion desconectada para marketplace ${marketplace.name || credential.marketplace_id}`,
+          metadata: {
+            reason: 'manual_update',
+            marketplace_name: marketplace.name || null
+          }
+        }));
+      }
 
       // 8. Respuesta segura (sin tokens) + estado de conexion
       const { access_token: _, refresh_token: __, api_key: ___, ...safeCredential } = credential;
@@ -648,9 +879,11 @@ const MarketplaceCredentialController = {
 
       const historyUsage = await MarketplaceCredentialRepository.getHistoryUsageById(credential.id);
       if (historyUsage.hasHistory) {
+        const previousValue = sanitizeCredentialForAudit(credential);
         await MarketplaceCredentialRepository.disconnectPreservingHistory(credential.id, {
           reason: 'user_requested'
         });
+        const disconnectedCredential = await MarketplaceCredentialRepository.findById(credential.id);
 
         await LogRepository.create({
           user_id: metadata.user_id,
@@ -666,6 +899,24 @@ const MarketplaceCredentialController = {
           }
         });
 
+        await AuditEventService.safeRecordFromRequest(req, buildMarketplaceCredentialAuditPayload(disconnectedCredential || credential, {
+          action: 'marketplace.connection_disconnected',
+          result: 'success',
+          previous_value: previousValue,
+          new_value: sanitizeCredentialForAudit(disconnectedCredential || credential),
+          changes: detectChanges(
+            previousValue,
+            sanitizeCredentialForAudit(disconnectedCredential || credential),
+            MARKETPLACE_CREDENTIAL_AUDIT_FIELDS
+          ),
+          description: `Conexion desconectada para preservar historial de ${credential.marketplace?.name || credential.marketplace_id}`,
+          metadata: {
+            reason: 'user_requested',
+            history_usage: historyUsage,
+            marketplace_name: credential.marketplace?.name || null
+          }
+        }));
+
         return res.status(200).json({
           success: true,
           message: 'La conexion tiene historial asociado y fue marcada como desconectada para preservar la trazabilidad.',
@@ -674,6 +925,16 @@ const MarketplaceCredentialController = {
           history_usage: historyUsage
         });
       }
+
+      await AuditEventService.safeRecordFromRequest(req, buildMarketplaceCredentialAuditPayload(credential, {
+        action: 'marketplace.connection_deleted',
+        result: 'success',
+        previous_value: sanitizeCredentialForAudit(credential),
+        description: `Conexion eliminada para marketplace ${credential.marketplace?.name || credential.marketplace_id}`,
+        metadata: {
+          marketplace_name: credential.marketplace?.name || null
+        }
+      }));
 
       await MarketplaceCredentialRepository.delete(credential);
 

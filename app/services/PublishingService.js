@@ -12,6 +12,7 @@ const {
   verifyMercadoLibreItem
 } = require('./MarketplaceItemVerificationService');
 const logger = require('../../config/logger');
+const PublicationAuditService = require('./PublicationAuditService');
 
 function normalizePublishedStock(payload) {
   if (!payload || typeof payload !== 'object') return null;
@@ -622,6 +623,15 @@ class PublishingService {
         task_id: failedTask.id
       };
     }
+    adapter.auditContext = {
+      actor_type: userId ? 'user' : undefined,
+      actor_id: userId || null,
+      actor_name: userId ? `Usuario ${userId}` : null,
+      source: 'publishing_service',
+      triggered_by: userId ? 'user' : 'automatic',
+      job_id: job_id || null,
+      correlation_id: batch_id || null
+    };
 
     try {
       // === 1. Preparar producto ===
@@ -1253,6 +1263,38 @@ class PublishingService {
           });
         }
 
+        if (finalSuccess) {
+          await PublicationAuditService.recordPublishedProductByUser(userId, {
+            ...task.get?.({ plain: true }),
+            ...task,
+            product_id: productData.id,
+            marketplace_id: marketplace.marketplace_id,
+            credential_id: credentialId,
+            company_id: warehouse.company_id || null,
+            branch_id: warehouse.branch_id || null,
+            warehouse_id: warehouse.id,
+            external_id: externalId,
+            external_url: result.data?.permalink || null,
+            batch_id: batch_id || null,
+            payload: transformed
+          }, 'published_product.created', {
+            new_value: {
+              status,
+              external_id: externalId,
+              external_url: result.data?.permalink || null,
+              published_stock: normalizePublishedStock(transformed)
+            },
+            description: `Publicacion realizada en ${marketplace.name || marketplace.domain || 'marketplace'}`,
+            metadata: {
+              job_id,
+              batch_id,
+              has_warnings: hasWarnings,
+              marketplace_domain: marketplace.domain || null
+            },
+            job_id: job_id || null
+          });
+        }
+
         logger.info(
           `[PublishingService] ${finalSuccess ? '✅' : '⚠️'} Producto publicado ` +
           `${finalSuccess ? (hasWarnings ? 'con advertencias' : 'exitosamente') : 'sin confirmación final'}`
@@ -1477,10 +1519,9 @@ class PublishingService {
         product_id: productData.id,
         credential_id: credentialId,
         task_id: failedTask.id
-      };
+        };
+      }
     }
-  }
-
   /**
  * ✅ REPUBLICAR producto con payload YA construido
  * NO transforma, NO prepara, publica directo
@@ -1543,6 +1584,15 @@ static async republishProduct(task, marketplace, credential, userId) {
         marketplace_id: marketplace.marketplace_id
       };
     }
+    adapter.auditContext = {
+      actor_type: userId ? 'user' : undefined,
+      actor_id: userId || null,
+      actor_name: userId ? `Usuario ${userId}` : null,
+      source: 'publishing_service',
+      triggered_by: userId ? 'user' : 'automatic',
+      job_id: task.job_id || null,
+      correlation_id: task.batch_id || null
+    };
     // 2. ✅ VALIDAR payload (opcional pero recomendado)
     const validation = adapter.validateProduct(task.payload);
     logger.info(`Errores de validación:\n ${JSON.stringify(validation)}`);
@@ -1693,6 +1743,26 @@ static async republishProduct(task, marketplace, credential, userId) {
         published_stock: normalizePublishedStock(task.payload),
         published_payload: task.payload,
         last_synced_at: new Date()
+      });
+
+      await PublicationAuditService.recordPublishedProductByUser(userId, {
+        ...task.get?.({ plain: true }),
+        ...task,
+        external_id: externalId,
+        external_url: result.data?.permalink || task.external_url || null
+      }, 'published_product.reprocessed', {
+        new_value: {
+          status,
+          external_id: externalId,
+          external_url: result.data?.permalink || null,
+          published_stock: normalizePublishedStock(task.payload)
+        },
+        description: `Publicacion reprocesada en ${marketplace.name || marketplace.domain || 'marketplace'}`,
+        metadata: {
+          source: 'spree_reprocess',
+          marketplace_domain: marketplace.domain || null,
+          has_warnings: hasWarnings
+        }
       });
     }
 

@@ -28,6 +28,7 @@ const PublishingService = require('../services/PublishingService');
 const { getRequestMetadata } = require('../util/requestUtil');
 const PublishingAdapterFactory = require('../services/adapters/PublishingAdapterFactory');
 const MercadoLibreCapabilitiesService = require('../services/MercadoLibreCapabilitiesService');
+const PublicationAuditService = require('../services/PublicationAuditService');
 
 function normalizeWarningEntry(warning) {
   if (typeof warning === 'string') {
@@ -1420,6 +1421,13 @@ async refreshExpiredTokens(credentials, userId) {
       logger.warn(`[refreshSingleCredential] Adapter no soporta refresh para ${mpName}`);
       return credential;
     }
+    adapter.auditContext = {
+      actor_type: 'user',
+      actor_id: userId,
+      actor_name: `Usuario ${userId}`,
+      source: 'product_publishing',
+      triggered_by: 'user'
+    };
     
     if (forceRefresh && credential.refresh_token && typeof adapter.refreshAccessToken === 'function') {
       adapter.credential = credential;
@@ -1660,11 +1668,31 @@ async store(req, res) {
       job_id: jobId,
       batch_id,
       product_count: products.length,
-      marketplace_count: marketplaces.length,
+      marketplace_count: Array.isArray(marketplaces) ? marketplaces.length : 0,
       mode: actualMode,
       total_expected: totalExpected
     }
   });
+
+  if (isDraft) {
+    await PublicationAuditService.recordDraftCreated(req, jobRecord, {
+      products,
+      marketplaces: Array.isArray(marketplaces) ? marketplaces : []
+    });
+  } else {
+    await PublicationAuditService.recordProcessEvent(req, jobRecord, 'process.created', {
+      description: `Proceso #${jobId} creado para publicación`,
+      new_value: {
+        products_count: products.length,
+        marketplaces_count: Array.isArray(marketplaces) ? marketplaces.length : 0,
+        total_expected: totalExpected
+      }
+    });
+    await PublicationAuditService.recordProcessEvent(req, jobRecord, 'process.started', {
+      description: `Proceso #${jobId} iniciado`,
+      new_value: { status: 'pending' }
+    });
+  }
 
   // ✅ Responder inmediatamente (background job)
   return res.status(202).json({
@@ -1914,7 +1942,7 @@ async store(req, res) {
         _total_expected: totalExpected
       };
 
-      await JobRepository.update(jobInstance, {
+      const updatedJob = await JobRepository.update(jobInstance, {
         job_type,
         mode: actualMode,
         draft_name: draft_name ?? job.draft_name,
@@ -2023,6 +2051,22 @@ async store(req, res) {
           action
         }
       });
+
+      await PublicationAuditService.recordDraftDiff(req, job, updatedJob);
+      if (action === 'publish') {
+        await PublicationAuditService.recordDraftExecuted(req, updatedJob);
+        await PublicationAuditService.recordProcessEvent(req, updatedJob, 'process.created', {
+          description: `Proceso #${updatedJob.id} creado desde borrador`,
+          new_value: {
+            status: updatedJob.status,
+            total_products: updatedJob.total_products
+          }
+        });
+        await PublicationAuditService.recordProcessEvent(req, updatedJob, 'process.started', {
+          description: `Proceso #${updatedJob.id} iniciado por publicación`,
+          new_value: { status: updatedJob.status }
+        });
+      }
 
       return res.status(202).json({
         success: true,
@@ -3378,6 +3422,13 @@ async publishedProducts(req, res) {
         userId,
         credential
       );
+      preflightAdapter.auditContext = {
+        actor_type: 'user',
+        actor_id: userId,
+        actor_name: req.user?.name || req.user?.email || `Usuario ${userId}`,
+        source: 'product_publication_edit_preflight',
+        triggered_by: 'user'
+      };
 
       const credentialStatus = await preflightAdapter.ensureValidCredentials();
       if (!credentialStatus?.valid) {
@@ -3422,6 +3473,13 @@ async publishedProducts(req, res) {
         userId,
         refreshedCredential
       );
+      adapter.auditContext = {
+        actor_type: 'user',
+        actor_id: userId,
+        actor_name: req.user?.name || req.user?.email || `Usuario ${userId}`,
+        source: 'product_publication_edit',
+        triggered_by: 'user'
+      };
 
       let result = await adapter.updateItem({
         itemId: externalId,
@@ -3448,6 +3506,13 @@ async publishedProducts(req, res) {
             userId,
             refreshedCredential
           );
+          retryAdapter.auditContext = {
+            actor_type: 'user',
+            actor_id: userId,
+            actor_name: req.user?.name || req.user?.email || `Usuario ${userId}`,
+            source: 'product_publication_edit_retry',
+            triggered_by: 'user'
+          };
 
           const retryResult = await retryAdapter.updateItem({
             itemId: externalId,
@@ -3559,14 +3624,50 @@ async publishedProducts(req, res) {
       );
 
       if (link) {
-        await link.update({
+        const previousPublishedState = {
+          status: link.status,
+          price: link.published_payload?.price ?? null,
+          available_quantity: link.published_stock,
+          external_url: link.external_url || null
+        };
+        const nextPublishedState = {
           status: isPictureProcessing ? 'processing' : (marketplaceStateSnapshot.status || link.status),
-          external_url: updatedItem.permalink || link.external_url || null,
-          published_stock: extractPublishedStock(updatedItem),
+          price: updatedItem.price ?? previousPublishedState.price,
+          available_quantity: extractPublishedStock(updatedItem),
+          external_url: updatedItem.permalink || link.external_url || null
+        };
+        await link.update({
+          status: nextPublishedState.status,
+          external_url: nextPublishedState.external_url,
+          published_stock: nextPublishedState.available_quantity,
           published_payload: updatedItem,
           last_synced_at: new Date(),
           user_id: userId
         });
+
+        const publishedChanges = PublicationAuditService.getPublishedProductChanges(previousPublishedState, nextPublishedState);
+        const actionForChange = (change) => {
+          if (change.field === 'price') return 'published_product.price_changed';
+          if (change.field === 'available_quantity' || change.field === 'published_stock') return 'published_product.stock_changed';
+          if (change.field === 'status' && change.new_value === 'paused') return 'published_product.paused';
+          if (change.field === 'status' && change.new_value === 'active') return 'published_product.reactivated';
+          if (change.field === 'status' && ['closed', 'deleted'].includes(change.new_value)) return 'published_product.deleted';
+          return 'published_product.marketplace_status_changed';
+        };
+
+        await Promise.all(publishedChanges.map((change) =>
+          PublicationAuditService.recordPublishedProductFromRequest(req, task, actionForChange(change), {
+            previous_value: { [change.field]: change.old_value },
+            new_value: { [change.field]: change.new_value },
+            changes: [change],
+            description: `Publicacion ${externalId} actualizada desde Spree`,
+            metadata: {
+              source: 'spree_marketplace_edit',
+              external_id: externalId,
+              changed_fields: Object.keys(result.requested_changes || {})
+            }
+          })
+        ));
       }
 
       await LogRepository.create({
@@ -4042,14 +4143,52 @@ async publishedProducts(req, res) {
       // ✅ CORRECCIÓN CRÍTICA #4: Actualizar ProductMarketplaceLink con el payload MERGEADO
       // Esto preserva IsPublished, QCStatus, ProductData, etc.
       if (link) {
-        await link.update({
+        const previousBusinessUnit = normalizePublishedPayload(link.published_payload)?.BusinessUnits?.BusinessUnit || {};
+        const previousPublishedState = {
+          status: link.status,
+          price: previousBusinessUnit.Price != null ? Number(previousBusinessUnit.Price) : null,
+          available_quantity: link.published_stock,
+          external_url: link.external_url || null
+        };
+        const nextPublishedState = {
           status: marketplaceDisplayStatus || currentProductState.status || link.status,
-          external_url: currentProductState.permalink || link.external_url || null,
-          published_stock: currentProductState.available_quantity,
+          price: currentProductState.price,
+          available_quantity: currentProductState.available_quantity,
+          external_url: currentProductState.permalink || link.external_url || null
+        };
+        await link.update({
+          status: nextPublishedState.status,
+          external_url: nextPublishedState.external_url,
+          published_stock: nextPublishedState.available_quantity,
           published_payload: apiResponseToSave, // ✅ Payload completo con MERGE
           last_synced_at: new Date(),
           user_id: userId
         });
+
+        const publishedChanges = PublicationAuditService.getPublishedProductChanges(previousPublishedState, nextPublishedState);
+        const actionForChange = (change) => {
+          if (change.field === 'price') return 'published_product.price_changed';
+          if (change.field === 'available_quantity' || change.field === 'published_stock') return 'published_product.stock_changed';
+          if (change.field === 'status' && change.new_value === 'paused') return 'published_product.paused';
+          if (change.field === 'status' && change.new_value === 'active') return 'published_product.reactivated';
+          if (change.field === 'status' && ['closed', 'deleted', 'not_published'].includes(change.new_value)) return 'published_product.deleted';
+          return 'published_product.marketplace_status_changed';
+        };
+
+        await Promise.all(publishedChanges.map((change) =>
+          PublicationAuditService.recordPublishedProductFromRequest(req, task, actionForChange(change), {
+            previous_value: { [change.field]: change.old_value },
+            new_value: { [change.field]: change.new_value },
+            changes: [change],
+            description: `Publicacion ${externalId} actualizada desde Spree`,
+            metadata: {
+              source: 'spree_marketplace_edit',
+              external_id: externalId,
+              changed_fields: changedFields,
+              feed_confirmed: feedFinishedSuccessfully
+            }
+          })
+        ));
 
         logger.info(`[updateFalabellaItem] ✅ ProductMarketplaceLink actualizado:`, {
           published_stock: currentProductState.available_quantity,
@@ -4158,6 +4297,40 @@ async destroy(req, res) {
       return res.status(403).json({ msg: "Forbidden" });
     }
 
+    if (task.status === 'draft') {
+      await PublicationAuditService.recordPublishedProductFromRequest(req, task, 'publication_draft.products_removed', {
+        module: 'publication_draft',
+        resource_type: 'product_publishing_task',
+        resource_id: task.id,
+        previous_value: {
+          product_id: task.product_id,
+          marketplace_id: task.marketplace_id,
+          credential_id: task.credential_id,
+          status: task.status
+        },
+        description: `Producto eliminado del borrador de publicación`,
+        metadata: {
+          source: 'publishing_task_delete',
+          task_id: task.id
+        }
+      });
+    } else {
+      await PublicationAuditService.recordPublishedProductFromRequest(req, task, 'published_product.deleted', {
+        previous_value: {
+          product_id: task.product_id,
+          marketplace_id: task.marketplace_id,
+          credential_id: task.credential_id,
+          external_id: task.external_id,
+          status: task.status
+        },
+        description: `Publicación eliminada en Spree`,
+        metadata: {
+          source: 'publishing_task_delete',
+          task_id: task.id
+        }
+      });
+    }
+
     await ProductPublishingTaskRepository.delete(task);
     
     
@@ -4221,6 +4394,8 @@ async updatePayload(req, res) {
         updated_at: updatedTask.updatedAt
       }
     });
+
+    await PublicationAuditService.recordDraftPayloadChanges(req, task, task.payload, updatedTask.payload);
 
     // ✅ Respuesta exitosa (solo campos esenciales para no saturar)
     return res.status(200).json({ 

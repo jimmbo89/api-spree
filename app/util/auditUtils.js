@@ -1,22 +1,55 @@
 // src/utils/auditUtils.js
 
-/**
- * Compara dos objetos y devuelve los campos que cambiaron
- * @param {Object} original - Objeto original (ej: empresa antes de update)
- * @param {Object} updated - Objeto actualizado
- * @param {string[]} fieldsToAudit - Lista de campos a auditar (ej: ['name', 'rut', 'status'])
- * @returns {Array} - Lista de cambios: { field, old_value, new_value }
- */
+function parseJsonLikeString(value) {
+  if (typeof value !== 'string') return value;
+
+  const trimmed = value.trim();
+  if (!trimmed) return value;
+
+  const looksLikeJson =
+    (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+    (trimmed.startsWith('[') && trimmed.endsWith(']'));
+
+  if (!looksLikeJson) return value;
+
+  try {
+    return JSON.parse(trimmed);
+  } catch (error) {
+    return value;
+  }
+}
+
+function normalizeAuditValue(value, field = '') {
+  if (value === null || value === undefined || value === '') return null;
+
+  const parsed = parseJsonLikeString(value);
+
+  if (Array.isArray(parsed)) {
+    return parsed.map((item) => normalizeAuditValue(item));
+  }
+
+  if (parsed && typeof parsed === 'object') {
+    return Object.keys(parsed)
+      .sort()
+      .reduce((normalized, key) => {
+        normalized[key] = normalizeAuditValue(parsed[key], key);
+        return normalized;
+      }, {});
+  }
+
+  if (/_id$/.test(field) && typeof parsed === 'string' && /^\d+$/.test(parsed)) {
+    return Number(parsed);
+  }
+
+  return parsed;
+}
+
 const detectChanges = (original, updated, fieldsToAudit) => {
   const changes = [];
 
   for (const field of fieldsToAudit) {
-    const oldValue = original[field];
-    const newValue = updated[field];
-
-    // Normalizar valores nulos/vacios para comparación justa
-    const normalizedOld = oldValue === null || oldValue === undefined ? null : oldValue;
-    const normalizedNew = newValue === null || newValue === undefined ? null : newValue;
+    const normalizedOld = normalizeAuditValue(original[field], field);
+    const normalizedNew = normalizeAuditValue(updated[field], field);
 
     if (JSON.stringify(normalizedOld) !== JSON.stringify(normalizedNew)) {
       changes.push({
@@ -30,4 +63,4 @@ const detectChanges = (original, updated, fieldsToAudit) => {
   return changes;
 };
 
-module.exports = { detectChanges };
+module.exports = { detectChanges, normalizeAuditValue };

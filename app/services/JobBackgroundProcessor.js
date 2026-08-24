@@ -3,6 +3,7 @@ const { JobRepository, JobProductRepository, MarketplaceRepository, MarketplaceC
 const MarketplaceStockSyncService = require('./MarketplaceStockSyncService');
 const PublishingService = require('./PublishingService');
 const logger = require('../../config/logger');
+const PublicationAuditService = require('./PublicationAuditService');
 
 // ⚙️ Configuración ajustada para cPanel (recursos limitados)
 const CONFIG = {
@@ -126,7 +127,17 @@ const JobBackgroundProcessor = {
         const elapsedMin = (Date.now() - new Date(job.started_at)) / 60000;
         if (elapsedMin > CONFIG.JOB_TIMEOUT_MINUTES) {
           logger.warn(`[JobProcessor] Job ${job.id} excedió timeout (${elapsedMin}min)`);
-          await JobRepository.fail(job.id, 'timeout', { elapsed_minutes: elapsedMin });
+          const failedJob = await JobRepository.fail(job.id, 'timeout', { elapsed_minutes: elapsedMin });
+          await PublicationAuditService.recordProcessSystemEvent(failedJob, 'process.stopped', {
+            result: 'error',
+            previous_value: { status: job.status },
+            new_value: { status: failedJob.status },
+            description: `Proceso #${job.id} detenido por timeout`,
+            metadata: {
+              reason: 'timeout',
+              elapsed_minutes: elapsedMin
+            }
+          });
           continue;
         }
       }
@@ -157,7 +168,12 @@ const JobBackgroundProcessor = {
     try {
       // Si está pending, marcar como processing
       if (job.status === 'pending') {
-        await JobRepository.startProcessing(jobId);
+        const startedJob = await JobRepository.startProcessing(jobId);
+        await PublicationAuditService.recordProcessSystemEvent(startedJob, 'process.started', {
+          previous_value: { status: job.status },
+          new_value: { status: startedJob.status, started_at: startedJob.started_at },
+          description: `Proceso #${jobId} iniciado`
+        });
         //logger.info(`[JobProcessor] Job ${jobId} iniciado`);
       }
 
@@ -189,7 +205,17 @@ const JobBackgroundProcessor = {
 
     } catch (error) {
       logger.error(`[JobProcessor] Error crítico en job ${job.id}:`, error.message);
-      await JobRepository.fail(jobId, error.message, { stage: 'job_process' });
+      const failedJob = await JobRepository.fail(jobId, error.message, { stage: 'job_process' });
+      await PublicationAuditService.recordProcessSystemEvent(failedJob, 'process.failed', {
+        result: 'error',
+        previous_value: { status: job.status },
+        new_value: { status: failedJob.status },
+        description: `Proceso #${jobId} fallido`,
+        metadata: {
+          error: error.message,
+          stage: 'job_process'
+        }
+      });
     }
   },
 
@@ -551,9 +577,21 @@ async _processProduct(jobProduct, parentJobId) {
     logger.info(`[JobProcessor] Verificando completado job ${jobId}: ${stats.processed}/${stats.total} procesados, ${stats.successful} éxitos, ${stats.errors} errores`);
 
     if (stats.processed >= stats.total && stats.total > 0) {
-      await JobRepository.complete(jobId, {
+      const completedJob = await JobRepository.complete(jobId, {
         successful: stats.successful,
         errors_count: stats.errors
+      });
+      await PublicationAuditService.recordProcessSystemEvent(completedJob, 'process.finished', {
+        result: stats.errors > 0 ? 'warning' : 'success',
+        new_value: {
+          status: completedJob.status,
+          successful: stats.successful,
+          errors_count: stats.errors,
+          total: stats.total
+        },
+        description: stats.errors > 0
+          ? `Proceso #${jobId} finalizado con errores`
+          : `Proceso #${jobId} finalizado correctamente`
       });
       logger.info(`[JobProcessor] 🏁 Job ${jobId} completado: ${stats.successful}/${stats.total}`);
       return true;

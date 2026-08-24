@@ -2,6 +2,7 @@ const logger = require('../../config/logger');
 const { WarehouseRepository, CompanyRepository, UserRepository, BranchRepository, LogRepository, UserAclScopeRepository } = require('../repositories');
 const { detectChanges } = require('../util/auditUtils');
 const { getRequestMetadata } = require('../util/requestUtil');
+const AuditEventService = require('../services/AuditEventService');
 
 const WAREHOUSE_AUDIT_FIELDS = [
   'code', 'name', 'description', 'type', 'address', 'city', 
@@ -9,6 +10,38 @@ const WAREHOUSE_AUDIT_FIELDS = [
   'allow_mermas', 'rotation_policy', 'status', 'company_id', 
   'branch_id', 'user_id'
 ];
+
+function toPlain(record) {
+  if (!record) return null;
+  return typeof record.get === 'function' ? record.get({ plain: true }) : record;
+}
+
+function getWarehouseAuditLabel(warehouse) {
+  const plain = toPlain(warehouse) || {};
+  return [plain.code, plain.name].filter(Boolean).join(' / ') || `Almacen ${plain.id}`;
+}
+
+function buildWarehouseAuditPayload(warehouse, data = {}) {
+  const plain = toPlain(warehouse) || {};
+  const companyId = data.company_id || plain.company_id;
+  return {
+    company_id: companyId,
+    module: 'warehouse',
+    resource_type: 'warehouse',
+    resource_id: plain.id,
+    resource_label: getWarehouseAuditLabel(plain),
+    warehouse_id: plain.id,
+    branch_id: plain.branch_id,
+    ...data
+  };
+}
+
+function changesToValueSnapshot(changes, valueKey) {
+  return changes.reduce((snapshot, change) => {
+    snapshot[change.field] = change[valueKey];
+    return snapshot;
+  }, {});
+}
 
 const WarehouseController = {
   async list(req, res) {
@@ -211,6 +244,16 @@ const WarehouseController = {
 
     try {
       const warehouse = await WarehouseRepository.create(req.body, req.file);
+
+      await AuditEventService.safeRecordFromRequest(req, buildWarehouseAuditPayload(warehouse, {
+        action: 'warehouse.created',
+        result: 'success',
+        new_value: toPlain(warehouse),
+        description: `Almacen creado: ${warehouse.name}`,
+        metadata: {
+          source: 'manual'
+        }
+      }));
       
       // ✅ Devolver lista actualizada igual que el endpoint list
       const companyId = company_id ? Number(company_id) : undefined;
@@ -322,6 +365,20 @@ const WarehouseController = {
       // ✅ Detectar cambios y crear UN SOLO log
       const fieldChanges = detectChanges(originalData, updated.get({ plain: true }), WAREHOUSE_AUDIT_FIELDS);
 
+      await AuditEventService.safeRecordFromRequest(req, buildWarehouseAuditPayload(updated, {
+        action: 'warehouse.updated',
+        result: 'success',
+        previous_value: changesToValueSnapshot(fieldChanges, 'old_value'),
+        new_value: changesToValueSnapshot(fieldChanges, 'new_value'),
+        changes: fieldChanges,
+        description: fieldChanges.length > 0
+          ? `Almacen actualizado: ${fieldChanges.length} campo(s) modificado(s)`
+          : `Actualizacion de almacen sin cambios: ${updated.name}`,
+        metadata: {
+          image_updated: Boolean(req.file)
+        }
+      }));
+
       let logEntry;
       if (fieldChanges.length > 0) {
         logEntry = {
@@ -381,8 +438,15 @@ const WarehouseController = {
     try {
       const warehouse = await WarehouseRepository.findById(req.body.id);
       if (!warehouse) return res.status(404).json({ msg: 'WarehouseNotFound' });
+      const warehouseBeforeDelete = toPlain(warehouse);
 
       await WarehouseRepository.delete(warehouse);
+      await AuditEventService.safeRecordFromRequest(req, buildWarehouseAuditPayload(warehouseBeforeDelete, {
+        action: 'warehouse.deleted',
+        result: 'success',
+        previous_value: warehouseBeforeDelete,
+        description: `Almacen eliminado: ${warehouseBeforeDelete.name}`
+      }));
       const warehouses = await WarehouseRepository.findFiltered({
         companyId: warehouse.company_id,
         branchId: warehouse.branch_id,
@@ -407,6 +471,19 @@ const WarehouseController = {
       const originalData = { ...warehouse.get({ plain: true }) };
       
       await warehouse.update({ status: newStatus });
+
+      await AuditEventService.safeRecordFromRequest(req, buildWarehouseAuditPayload(warehouse, {
+        action: 'warehouse.status_changed',
+        result: 'success',
+        previous_value: { status: originalData.status },
+        new_value: { status: newStatus },
+        changes: [{
+          field: 'status',
+          old_value: originalData.status,
+          new_value: newStatus
+        }],
+        description: `Estado de almacen cambiado de ${originalData.status} a ${newStatus}`
+      }));
       
       // Log de auditoría
       await LogRepository.create({

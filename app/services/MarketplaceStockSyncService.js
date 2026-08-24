@@ -219,6 +219,14 @@ class MarketplaceStockSyncService {
     if (!adapter || typeof adapter.ensureValidCredentials !== 'function') {
       throw new Error('adapter_not_found');
     }
+    adapter.auditContext = {
+      actor_type: jobUserId ? 'user' : undefined,
+      actor_id: jobUserId || null,
+      actor_name: jobUserId ? `Usuario ${jobUserId}` : null,
+      source: 'marketplace_stock_sync',
+      triggered_by: jobUserId ? 'user' : 'automatic',
+      job_id: jobConfig.job_id || jobConfig.id || null
+    };
 
     const status = await adapter.ensureValidCredentials();
     if (!status?.valid) {

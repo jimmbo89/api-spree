@@ -13,6 +13,8 @@ const { getFromCache, clearMarketplaceCache, clearAllCache, saveToCache, getCach
 const { marketplaceRateLimiter } = require("../../config/rateLimiter");
 const { getMercadoLibreSiteId } = require("../util/marketplaceUtil");
 const MercadoLibreCapabilitiesService = require("../services/MercadoLibreCapabilitiesService");
+const AuditEventService = require("../services/AuditEventService");
+const { detectChanges } = require("../util/auditUtils");
 
 const rfc3986Encode = (str) =>
   encodeURIComponent(str).replace(
@@ -867,6 +869,90 @@ const getMercadoLibreUserIdFromCredential = (cred) => {
 
   const additional = normalizeMarketplaceCredentialAdditionalData(cred.additional_data);
   return additional.ml_user_id || null;
+};
+
+const sanitizeAuditMetadata = (value) => {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeAuditMetadata(item));
+  }
+
+  if (value && typeof value === "object") {
+    return Object.keys(value).reduce((safe, key) => {
+      const normalizedKey = key.toLowerCase();
+      if (normalizedKey.includes("token") || normalizedKey.includes("secret") || normalizedKey.includes("api_key")) {
+        safe[key] = "[REDACTED]";
+      } else {
+        safe[key] = sanitizeAuditMetadata(value[key]);
+      }
+      return safe;
+    }, {});
+  }
+
+  return value;
+};
+
+const sanitizeMarketplaceCredentialForAudit = (credential) => {
+  const additionalData = normalizeMarketplaceCredentialAdditionalData(credential?.additional_data);
+
+  return {
+    id: credential?.id || null,
+    marketplace_id: credential?.marketplace_id || null,
+    company_id: credential?.company_id || null,
+    user_id: credential?.user_id || null,
+    name: credential?.name || null,
+    country: credential?.country || null,
+    seller_email: credential?.seller_email || null,
+    seller_id: credential?.seller_id || null,
+    active: credential?.active,
+    expires_at: credential?.expires_at || null,
+    additional_data: sanitizeAuditMetadata(additionalData),
+    access_token_configured: !!credential?.access_token,
+    refresh_token_configured: !!credential?.refresh_token,
+    api_key_configured: !!credential?.api_key
+  };
+};
+
+const getMarketplaceCredentialAuditLabel = (credential) => {
+  const marketplaceName = credential?.marketplace?.name || credential?.marketplace?.domain;
+  return [marketplaceName, credential?.name].filter(Boolean).join(" / ") || `Credencial marketplace ${credential?.id}`;
+};
+
+const getExternalAccountAuditSnapshot = (credential) => {
+  const additionalData = normalizeMarketplaceCredentialAdditionalData(credential?.additional_data);
+  return {
+    seller_email: credential?.seller_email || null,
+    seller_id: credential?.seller_id || null,
+    ml_user_id: additionalData.ml_user_id || null
+  };
+};
+
+const changesToValueSnapshot = (changes, valueKey) => {
+  return changes.reduce((snapshot, change) => {
+    snapshot[change.field] = change[valueKey];
+    return snapshot;
+  }, {});
+};
+
+const recordMarketplaceCredentialOAuthAudit = async (req, credential, userId, data = {}) => {
+  if (!credential?.id || !credential?.company_id) return null;
+
+  const metadata = getRequestMetadata(req);
+
+  return AuditEventService.safeRecord({
+    actor_type: AuditEventService.ACTOR_TYPES.USER,
+    actor_id: userId ? String(userId) : null,
+    actor_name: userId ? `Usuario ${userId}` : "Usuario OAuth",
+    ip_address: metadata.ip_address,
+    user_agent: metadata.user_agent,
+    company_id: credential.company_id,
+    module: "marketplace",
+    resource_type: "marketplace_credential",
+    resource_id: credential.id,
+    resource_label: getMarketplaceCredentialAuditLabel(credential),
+    marketplace_id: credential.marketplace_id,
+    marketplace_credential_id: credential.id,
+    ...data
+  });
 };
 
 const fetchMercadoLibreUserId = async (accessToken) => {
@@ -2256,6 +2342,8 @@ async mercadoLibreCallback(req, res) {
     if (duplicateCredential && (duplicateCredential.active === false || Number(duplicateCredential.active) === 0)) {
       logger.info(`[OAuth] Reconectando credencial historica ${duplicateCredential.id} para ML user ${mlUserId}`);
 
+      const previousCredentialValue = sanitizeMarketplaceCredentialForAudit(duplicateCredential);
+      const previousExternalAccount = getExternalAccountAuditSnapshot(duplicateCredential);
       const duplicateAdditionalData = normalizeMarketplaceCredentialAdditionalData(duplicateCredential.additional_data);
       const reconnectedName = String(credential.name || '').trim()
         || duplicateAdditionalData.original_name
@@ -2284,6 +2372,13 @@ async mercadoLibreCallback(req, res) {
         active: true,
         additional_data: reconnectedAdditionalData
       });
+      const reconnectedCredential = await MarketplaceCredentialRepository.findById(duplicateCredential.id);
+      const reconnectedCredentialValue = sanitizeMarketplaceCredentialForAudit(reconnectedCredential || duplicateCredential);
+      const authChanges = detectChanges(
+        previousCredentialValue,
+        reconnectedCredentialValue,
+        ['name', 'active', 'expires_at', 'additional_data', 'access_token_configured', 'refresh_token_configured']
+      );
 
       await LogRepository.create({
         user_id: userId,
@@ -2299,6 +2394,44 @@ async mercadoLibreCallback(req, res) {
           ml_user_id: mlUserId
         },
       });
+
+      await recordMarketplaceCredentialOAuthAudit(req, reconnectedCredential || duplicateCredential, userId, {
+        action: "marketplace.connection_authenticated",
+        result: "success",
+        previous_value: changesToValueSnapshot(authChanges, "old_value"),
+        new_value: changesToValueSnapshot(authChanges, "new_value"),
+        changes: authChanges,
+        description: `Conexion autenticada por usuario ${userId}`,
+        metadata: {
+          auth_type: "oauth",
+          reconnected: true,
+          authenticated_by_user_id: userId,
+          temporary_credential_id: credential.id,
+          ml_user_id: mlUserId
+        }
+      });
+
+      const reconnectedExternalAccount = getExternalAccountAuditSnapshot(reconnectedCredential || duplicateCredential);
+      const externalAccountChanges = detectChanges(
+        previousExternalAccount,
+        reconnectedExternalAccount,
+        ['seller_email', 'seller_id', 'ml_user_id']
+      );
+      if (externalAccountChanges.length > 0) {
+        await recordMarketplaceCredentialOAuthAudit(req, reconnectedCredential || duplicateCredential, userId, {
+          action: "marketplace.external_account_changed",
+          result: "success",
+          previous_value: changesToValueSnapshot(externalAccountChanges, "old_value"),
+          new_value: changesToValueSnapshot(externalAccountChanges, "new_value"),
+          changes: externalAccountChanges,
+          description: `Cuenta externa autenticada para ML user ${mlUserId}`,
+          metadata: {
+            auth_type: "oauth",
+            ml_user_id: mlUserId,
+            reconnected: true
+          }
+        });
+      }
 
       credentialIdForCleanup = null;
       return res.status(200).json({
@@ -2343,6 +2476,8 @@ async mercadoLibreCallback(req, res) {
 
 
     // ✅ No hay duplicado: guardar tokens + ml_user_id en additional_data
+    const previousCredentialValue = sanitizeMarketplaceCredentialForAudit(credential);
+    const previousExternalAccount = getExternalAccountAuditSnapshot(credential);
     const updatedAdditionalData = {
       ...normalizeMarketplaceCredentialAdditionalData(credential.additional_data),
       ml_user_id: mlUserId  // ← Guardar ID de usuario de ML
@@ -2354,6 +2489,13 @@ async mercadoLibreCallback(req, res) {
       expires_at: new Date(Date.now() + tokenRes.data.expires_in * 1000),
       additional_data: updatedAdditionalData  // ← NUEVO: Incluir ml_user_id
     });
+    const authenticatedCredential = await MarketplaceCredentialRepository.findById(credential.id);
+    const authenticatedCredentialValue = sanitizeMarketplaceCredentialForAudit(authenticatedCredential || credential);
+    const authChanges = detectChanges(
+      previousCredentialValue,
+      authenticatedCredentialValue,
+      ['expires_at', 'additional_data', 'access_token_configured', 'refresh_token_configured']
+    );
 
     await LogRepository.create({
       user_id: userId,
@@ -2368,6 +2510,42 @@ async mercadoLibreCallback(req, res) {
         ml_user_id: mlUserId
       },
     });
+    await recordMarketplaceCredentialOAuthAudit(req, authenticatedCredential || credential, userId, {
+      action: "marketplace.connection_authenticated",
+      result: "success",
+      previous_value: changesToValueSnapshot(authChanges, "old_value"),
+      new_value: changesToValueSnapshot(authChanges, "new_value"),
+      changes: authChanges,
+      description: `Conexion autenticada por usuario ${userId}`,
+      metadata: {
+        auth_type: "oauth",
+        authenticated_by_user_id: userId,
+        ml_user_id: mlUserId,
+        expires_in: tokenRes.data.expires_in
+      }
+    });
+
+    const authenticatedExternalAccount = getExternalAccountAuditSnapshot(authenticatedCredential || credential);
+    const externalAccountChanges = detectChanges(
+      previousExternalAccount,
+      authenticatedExternalAccount,
+      ['seller_email', 'seller_id', 'ml_user_id']
+    );
+    if (externalAccountChanges.length > 0) {
+      await recordMarketplaceCredentialOAuthAudit(req, authenticatedCredential || credential, userId, {
+        action: "marketplace.external_account_changed",
+        result: "success",
+        previous_value: changesToValueSnapshot(externalAccountChanges, "old_value"),
+        new_value: changesToValueSnapshot(externalAccountChanges, "new_value"),
+        changes: externalAccountChanges,
+        description: `Cuenta externa autenticada para ML user ${mlUserId}`,
+        metadata: {
+          auth_type: "oauth",
+          ml_user_id: mlUserId
+        }
+      });
+    }
+
     credentialIdForCleanup = null;
     return res.status(200).json({
       success: true,

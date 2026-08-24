@@ -2,6 +2,7 @@
 const MarketplaceOrderSyncService = require('../services/MarketplaceOrderSyncService');
 const { MarketplaceOrderRepository } = require('../repositories');
 const { MarketplaceOrderMessageService, MercadoLibreError } = require('../services/MarketplaceOrderMessageService');
+const SalesAuditService = require('../services/SalesAuditService');
 
 const MarketplaceOrderController = {
   async refresh(req, res) {
@@ -12,6 +13,17 @@ const MarketplaceOrderController = {
       const { id } = req.body || {};
 
       const report = await MarketplaceOrderSyncService.refreshById(id);
+      const refreshedOrder = await MarketplaceOrderRepository.findById(id);
+      if (refreshedOrder) {
+        await SalesAuditService.recordFromRequest(req, refreshedOrder, 'sales.refreshed', {
+          new_value: SalesAuditService.buildOrderSnapshot(refreshedOrder),
+          description: 'Spree sincronizó la venta manualmente',
+          metadata: {
+            refresh_source: report?.source || null,
+            fallback_error: report?.error || null
+          }
+        });
+      }
 
       logger.info(`${req.user?.user || 'Unknown'} - Refresh de orden marketplace exitoso`);
       return res.json({
@@ -62,7 +74,8 @@ const MarketplaceOrderController = {
         });
       }
 
-      const normalizedNotes = normalizeNotesPayload(notes);
+      const previousNotes = normalizeNotesForResponse(existingOrder.notes_snapshot);
+      const normalizedNotes = normalizeNotesPayload(notes, req.user);
       if (hasSubmittedNoteContent(notes) && normalizedNotes.length === 0) {
         return res.status(400).json({
           success: false,
@@ -77,6 +90,22 @@ const MarketplaceOrderController = {
       });
 
       const order = await MarketplaceOrderRepository.findById(id);
+      const previousNoteIds = new Set(previousNotes.map((note) => String(note.note_id || '')));
+      const addedNotes = normalizeNotesForResponse(normalizedNotes)
+        .filter((note) => note.note_id && !previousNoteIds.has(String(note.note_id)));
+
+      if (addedNotes.length > 0) {
+        await SalesAuditService.recordFromRequest(req, order || existingOrder, 'sales.note_added', {
+          new_value: {
+            notes_count: addedNotes.length,
+            notes: addedNotes
+          },
+          description: `${addedNotes.length} nota(s) interna(s) agregada(s) a la venta`,
+          metadata: {
+            notes_count: addedNotes.length
+          }
+        });
+      }
 
       return res.json({
         success: true,
@@ -113,6 +142,19 @@ const MarketplaceOrderController = {
 
       const { id, text } = req.body || {};
       const result = await MarketplaceOrderMessageService.sendByOrderId(id, text, req.user);
+      const order = await MarketplaceOrderRepository.findById(id);
+      if (order) {
+        await SalesAuditService.recordFromRequest(req, order, 'sales.message_sent', {
+          new_value: {
+            text_length: typeof text === 'string' ? text.trim().length : 0
+          },
+          description: 'Mensaje enviado al comprador desde Spree',
+          metadata: {
+            marketplace: order.marketplace,
+            refresh_source: result?.source || null
+          }
+        });
+      }
 
       return res.json({
         success: true,
@@ -159,7 +201,7 @@ const MarketplaceOrderController = {
   }
 };
 
-function normalizeNotesPayload(notes) {
+function normalizeNotesPayload(notes, user = null) {
   const parsedNotes = parseJsonMaybe(notes);
   const list = normalizeNotesList(parsedNotes);
   if (!Array.isArray(list)) return [];
@@ -175,8 +217,8 @@ function normalizeNotesPayload(notes) {
           note_id: `note-${Date.now()}-${index}`,
           text,
           created_at: now,
-          created_by_user_id: null,
-          created_by_user_name: null,
+          created_by_user_id: user?.id || null,
+          created_by_user_name: user?.name || user?.email || user?.user || null,
           raw_payload: { text }
         };
       }
@@ -190,8 +232,8 @@ function normalizeNotesPayload(notes) {
         note_id: note.note_id || `note-${Date.now()}-${index}`,
         text,
         created_at: note.created_at || now,
-        created_by_user_id: note.created_by_user_id ?? null,
-        created_by_user_name: note.created_by_user_name ?? null,
+        created_by_user_id: note.created_by_user_id ?? user?.id ?? null,
+        created_by_user_name: note.created_by_user_name ?? user?.name ?? user?.email ?? user?.user ?? null,
         raw_payload: note.raw_payload || note
       };
     })
