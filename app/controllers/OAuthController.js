@@ -833,6 +833,77 @@ const normalizeMlSuggestedCategoriesResponseDetail = (value) => {
   return "essential";
 };
 
+const normalizeMercadoLibreAttributeList = (attributes = [], {
+  categoryId = null,
+  source = "GET /categories/{category_id}/attributes",
+  predictedAttributes = []
+} = {}) => {
+  if (!Array.isArray(attributes)) return [];
+
+  const predictedById = new Map(
+    (Array.isArray(predictedAttributes) ? predictedAttributes : [])
+      .filter((attr) => attr?.id)
+      .map((attr) => [String(attr.id), attr])
+  );
+
+  return attributes.map((attr) => {
+    const tags = attr?.tags && typeof attr.tags === "object" ? attr.tags : {};
+    const predicted = predictedById.get(String(attr?.id || "")) || null;
+    const required = Boolean(
+      tags.required ||
+      tags.catalog_required ||
+      tags.catalog_listing_required ||
+      tags.conditional_required
+    );
+    const values = Array.isArray(attr?.values)
+      ? attr.values.map((value) => ({ ...value }))
+      : [];
+    const allowedUnits = Array.isArray(attr?.allowed_units)
+      ? attr.allowed_units.map((unit) => ({ ...unit }))
+      : [];
+
+    return {
+      ...attr,
+      tags,
+      values,
+      allowed_units: allowedUnits,
+      is_mandatory: required,
+      required: Boolean(tags.required),
+      catalog_required: Boolean(tags.catalog_required),
+      catalog_listing_required: Boolean(tags.catalog_listing_required),
+      conditional_required: Boolean(tags.conditional_required),
+      allow_variations: Boolean(tags.allow_variations || tags.variation_attribute),
+      hidden: Boolean(tags.hidden),
+      read_only: Boolean(tags.read_only),
+      multivalued: Boolean(tags.multivalued),
+      official_metadata: {
+        source,
+        category_id: categoryId,
+        id: attr?.id || null,
+        name: attr?.name || null,
+        value_type: attr?.value_type || null,
+        value_max_length: attr?.value_max_length ?? null,
+        value_min_length: attr?.value_min_length ?? null,
+        hierarchy: attr?.hierarchy || null,
+        relevance: attr?.relevance ?? null,
+        attribute_group_id: attr?.attribute_group_id || null,
+        attribute_group_name: attr?.attribute_group_name || null,
+        default_unit: attr?.default_unit || null,
+        allowed_units: allowedUnits,
+        values_count: values.length,
+        tags,
+        predicted_value: predicted
+          ? {
+              source: "GET /sites/{site_id}/domain_discovery/search",
+              value_id: predicted.value_id ?? null,
+              value_name: predicted.value_name ?? null
+            }
+          : null
+      }
+    };
+  });
+};
+
 const buildMlSuggestedCategoryPayload = (categoryData, responseDetail) => {
   if (responseDetail === "full") {
     return categoryData;
@@ -849,6 +920,7 @@ const buildMlSuggestedCategoryPayload = (categoryData, responseDetail) => {
     listing_resolution: categoryData.listing_resolution,
     selection_warnings: Array.isArray(categoryData.selection_warnings) ? categoryData.selection_warnings : [],
     attributes: Array.isArray(categoryData.attributes) ? categoryData.attributes : [],
+    predicted_attributes: Array.isArray(categoryData.predicted_attributes) ? categoryData.predicted_attributes : [],
     available_choices: {
       listing_types: Array.isArray(categoryData.listing_types)
         ? categoryData.listing_types.map((item) => ({
@@ -1724,6 +1796,7 @@ const buildMlSelectionCategoryPayload = ({
     domain_name: cat.domain_name,
     path: cat.path,
     attributes: Array.isArray(attributes) ? attributes : [],
+    predicted_attributes: Array.isArray(cat.predicted_attributes) ? cat.predicted_attributes : [],
     listing_types: Array.isArray(listingTypesForCategory) ? listingTypesForCategory : [],
     shipping_modes: Array.isArray(filteredShippingModes) ? filteredShippingModes : [],
     shipping_options: Array.isArray(shippingOptions) ? shippingOptions : [],
@@ -2790,7 +2863,9 @@ async mercadoLibreCallback(req, res) {
 
       return res.status(200).json({
         success: true,
-        attributes: response.data,
+        attributes: normalizeMercadoLibreAttributeList(response.data, {
+          categoryId: category_id
+        }),
       });
     } catch (error) {
       logger.error("OAuth Category error:", {
@@ -2849,7 +2924,7 @@ async mercadoLibreCallback(req, res) {
         if (!categoryId) return null;
         if (ancestry.has(categoryId)) return null;
 
-        const cachedCategoryDetail = getFromCache(cacheNamespace, 'category_structure_v3', categoryId);
+        const cachedCategoryDetail = getFromCache(cacheNamespace, 'category_structure_v4', categoryId);
         if (cachedCategoryDetail) {
           return cachedCategoryDetail;
         }
@@ -2946,7 +3021,9 @@ async mercadoLibreCallback(req, res) {
               ? pathFromRoot.map((entry) => entry.name).filter(Boolean).join(' > ')
               : categoryName,
             search_text: searchText,
-            attributes: Array.isArray(attributesResponse.data) ? attributesResponse.data : [],
+            attributes: normalizeMercadoLibreAttributeList(attributesResponse.data, {
+              categoryId
+            }),
             path_from_root: pathFromRoot,
             children_categories,
             category_settings: detail.settings || {},
@@ -2957,7 +3034,7 @@ async mercadoLibreCallback(req, res) {
             total_items_in_this_category: detail.total_items_in_this_category ?? null
           };
 
-          saveToCache(cacheNamespace, 'category_structure_v3', categoryId, structuredCategory, 86400);
+          saveToCache(cacheNamespace, 'category_structure_v4', categoryId, structuredCategory, 86400);
           return structuredCategory;
         } catch (error) {
           logger.warn(`No se pudo obtener la estructura de la categoría ${categoryId} en site ${site_id}: ${error.message}`);
@@ -2983,7 +3060,7 @@ async mercadoLibreCallback(req, res) {
             total_items_in_this_category: null
           };
 
-          saveToCache(cacheNamespace, 'category_structure_v3', categoryId, fallbackCategory, 86400);
+          saveToCache(cacheNamespace, 'category_structure_v4', categoryId, fallbackCategory, 86400);
           return fallbackCategory;
         }
       };
@@ -4043,7 +4120,10 @@ async mercadoLibreShippingCosts(req, res) {
             category_name: cat.category_name,
             domain_id: cat.domain_id,
             domain_name: cat.domain_name,
-            path: cat.domain_name || ""
+            path: cat.domain_name || "",
+            predicted_attributes: Array.isArray(cat.attributes)
+              ? cat.attributes.map((attr) => ({ ...attr }))
+              : []
           }));
         } catch (catErr) {
           logger.error(`Error al obtener categorías para "${nameFixed}": ${catErr.message}`);
@@ -4074,7 +4154,10 @@ async mercadoLibreShippingCosts(req, res) {
                 timeout: 20000
               }
             );
-            attributes = attrResponse.data || [];
+            attributes = normalizeMercadoLibreAttributeList(attrResponse.data, {
+              categoryId: cat.category_id,
+              predictedAttributes: cat.predicted_attributes
+            });
           } catch (attrErr) {
             logger.error(`Error al cargar atributos para categoría ${cat.category_id}: ${attrErr.message}`);
           }
@@ -4789,7 +4872,10 @@ async mercadoLibreShippingCosts(req, res) {
             category_name: cat.category_name,
             domain_id: cat.domain_id,
             domain_name: cat.domain_name,
-            path: cat.domain_name || ''
+            path: cat.domain_name || '',
+            predicted_attributes: Array.isArray(cat.attributes)
+              ? cat.attributes.map((attr) => ({ ...attr }))
+              : []
           }));
         } catch (catErr) {
           logger.error(`Error al obtener categorías para "${nameFixed}": ${catErr.message}`);
@@ -4845,7 +4931,10 @@ async mercadoLibreShippingCosts(req, res) {
             categoryId: cat.category_id,
             response: categoryResponse.data
           });
-          attributes = attrResponse.data || [];
+          attributes = normalizeMercadoLibreAttributeList(attrResponse.data, {
+            categoryId: cat.category_id,
+            predictedAttributes: cat.predicted_attributes
+          });
           categoryInfo = categoryResponse.data || null;
         } catch (attrErr) {
           logger.error(`Error al cargar atributos para categoría ${cat.category_id}: ${attrErr.message}`);
@@ -5265,6 +5354,7 @@ async mercadoLibreShippingCosts(req, res) {
           domain_id: cat.domain_id,
           domain_name: cat.domain_name,
           path: cat.path,
+          predicted_attributes: Array.isArray(cat.predicted_attributes) ? cat.predicted_attributes : [],
           listing_types: listingTypesForCategory,
           shipping_modes: filteredShippingModes,
           shipping_modes_scope: "valid_modes_for_this_product_and_category",
