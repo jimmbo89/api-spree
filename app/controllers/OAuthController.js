@@ -43,9 +43,105 @@ const normalizeFalabellaOptions = (options) => {
   return list
     .map((option) => ({
       id: option?.id ?? option?.Name ?? option?.Value ?? null,
-      name: option?.Name ?? option?.Value ?? option?.id ?? null
+      name: option?.Name ?? option?.Value ?? option?.id ?? null,
+      value_name: option?.Name ?? option?.Value ?? option?.id ?? null,
+      global_identifier: option?.GlobalIdentifier || null,
+      is_default: normalizeFalabellaBoolean(option?.isDefault ?? option?.IsDefault)
     }))
     .filter((option) => option.id !== null || option.name !== null);
+};
+
+const normalizeFalabellaInteger = (value) => {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
+};
+
+const normalizeFalabellaString = (value) => {
+  const text = String(value ?? '').trim();
+  return text || null;
+};
+
+const normalizeFalabellaAttributeKey = (value) =>
+  String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/^attributes\./, '')
+    .replace(/[^a-z0-9]/g, '');
+
+const FALABELLA_PRODUCT_CREATE_ATTRIBUTE_RULES = Object.freeze({
+  Description: {
+    source: 'ProductCreate',
+    html: true,
+    min_length: 6,
+    max_length: 25000,
+    required: true,
+    section: 'Product'
+  },
+  PrimaryCategory: {
+    source: 'ProductCreate',
+    category_source: 'GetCategoryTree',
+    required: true,
+    section: 'Product'
+  },
+  PackageHeight: {
+    source: 'ProductCreate',
+    unit: 'cm',
+    required: true,
+    section: 'ProductData'
+  },
+  PackageWidth: {
+    source: 'ProductCreate',
+    unit: 'cm',
+    required: true,
+    section: 'ProductData'
+  },
+  PackageLength: {
+    source: 'ProductCreate',
+    unit: 'cm',
+    required: true,
+    section: 'ProductData'
+  },
+  PackageWeight: {
+    source: 'ProductCreate',
+    unit: 'kg',
+    required: true,
+    section: 'ProductData'
+  }
+});
+
+const getFalabellaProductCreateRule = (feedName) =>
+  FALABELLA_PRODUCT_CREATE_ATTRIBUTE_RULES[String(feedName || '')] || null;
+
+const FALABELLA_CATEGORY_ATTRIBUTES_CACHE_TYPE = 'category_attributes_v2';
+const FALABELLA_PRODUCT_SUGGESTION_CACHE_TYPE = 'product_suggestion_v2';
+
+const resolveFalabellaOperatorForContentScore = (credential = {}) => {
+  const additional = credential?.additional_data;
+  const nestedAdditional = additional && typeof additional === 'object'
+    ? additional.falabella || additional
+    : null;
+  const candidates = [
+    nestedAdditional?.operator_code,
+    nestedAdditional?.OperatorCode,
+    credential?.operator_code,
+    credential?.OperatorCode,
+    credential?.business_unit_code,
+    credential?.businessUnitCode
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = String(candidate ?? '').trim().toLowerCase();
+    if (['facl', 'fape', 'faco'].includes(normalized)) return normalized;
+  }
+
+  const country = String(credential?.country || '').trim().toLowerCase();
+  if (country === 'cl') return 'facl';
+  if (country === 'pe') return 'fape';
+  if (country === 'co') return 'faco';
+
+  return null;
 };
 
 const mapFalabellaCategoryAttribute = (attr) => {
@@ -54,18 +150,44 @@ const mapFalabellaCategoryAttribute = (attr) => {
   const label = attr?.Label || attr?.Name || feedName;
   const mandatory = normalizeFalabellaBoolean(attr?.isMandatory);
   const attributeType = attr?.AttributeType || attr?.Type || "string";
+  const productCreateRule = getFalabellaProductCreateRule(feedName);
 
   return {
     id: feedName,
+    feed_name: feedName,
+    attribute_name: attr?.Name || null,
     name: label,
     label,
     is_mandatory: mandatory,
     description: attr?.Description || '',
     attribute_type: attributeType,
     example_value: attr?.ExampleValue || '',
+    global_identifier: normalizeFalabellaString(attr?.GlobalIdentifier),
+    group_name: normalizeFalabellaString(attr?.GroupName),
+    input_type: normalizeFalabellaString(attr?.InputType),
+    product_type: normalizeFalabellaString(attr?.ProductType),
+    is_global_attribute: attr?.IsGlobalAttribute === undefined && attr?.is_global_attribute === undefined
+      ? null
+      : normalizeFalabellaBoolean(attr?.IsGlobalAttribute ?? attr?.is_global_attribute),
+    max_length: normalizeFalabellaInteger(attr?.MaxLength ?? attr?.maxLength ?? attr?.MaximumLength ?? attr?.maximum_length),
+    product_create_rule: productCreateRule,
     value_type: ['option', 'multi_option'].includes(attributeType) ? 'list' :
       attributeType === 'numberfield' ? 'number' : 'string',
     values: normalizeFalabellaOptions(attr?.Options),
+    official_metadata: {
+      source: 'GetCategoryAttributes',
+      name: attr?.Name || null,
+      feed_name: feedName,
+      global_identifier: normalizeFalabellaString(attr?.GlobalIdentifier),
+      group_name: normalizeFalabellaString(attr?.GroupName),
+      input_type: normalizeFalabellaString(attr?.InputType),
+      product_type: normalizeFalabellaString(attr?.ProductType),
+      is_global_attribute: attr?.IsGlobalAttribute === undefined && attr?.is_global_attribute === undefined
+        ? null
+        : normalizeFalabellaBoolean(attr?.IsGlobalAttribute ?? attr?.is_global_attribute),
+      max_length: normalizeFalabellaInteger(attr?.MaxLength ?? attr?.maxLength ?? attr?.MaximumLength ?? attr?.maximum_length),
+      product_create_rule: productCreateRule
+    },
     tags: { required: mandatory, catalog_required: mandatory, hidden: false }
   };
 };
@@ -5827,7 +5949,7 @@ async getMercadoLibreCacheStats(req, res) {
       const nameFixed = product.name.trim();
 
       // Usar credential_id en la clave de caché para diferenciar
-      const cachedProductResult = getFromCache(`credential_${credential_id}`, 'product_suggestion', nameFixed);
+      const cachedProductResult = getFromCache(`credential_${credential_id}`, FALABELLA_PRODUCT_SUGGESTION_CACHE_TYPE, nameFixed);
 
       if (cachedProductResult) {
         logger.info(`[CACHE HIT] Producto "${nameFixed}" en credential ${credential_id}`);
@@ -5887,7 +6009,7 @@ async getMercadoLibreCacheStats(req, res) {
 
         const categoryId = item.CategoryId.toString();
 
-        const cachedCategory = getFromCache(`credential_${credential_id}`, 'category_attributes', categoryId);
+        const cachedCategory = getFromCache(`credential_${credential_id}`, FALABELLA_CATEGORY_ATTRIBUTES_CACHE_TYPE, categoryId);
 
         if (cachedCategory) {
           logger.info(`[CACHE HIT] Categoría ${categoryId} en credential ${credential_id}`);
@@ -5965,7 +6087,7 @@ async getMercadoLibreCacheStats(req, res) {
           attributes
         };
 
-        saveToCache(`credential_${credential_id}`, 'category_attributes', categoryId, categoryData);
+        saveToCache(`credential_${credential_id}`, FALABELLA_CATEGORY_ATTRIBUTES_CACHE_TYPE, categoryId, categoryData);
         categories.push(categoryData);
       }
 
@@ -6080,7 +6202,7 @@ async falabellaSuggestedCategoriesWithAttributes(req, res) {
         ? parseFloat(product.price) : null;
 
       // === Cache de producto ===
-      const cachedProductResult = getFromCache(`credential_${credential_id}`, 'product_suggestion', nameFixed);
+      const cachedProductResult = getFromCache(`credential_${credential_id}`, FALABELLA_PRODUCT_SUGGESTION_CACHE_TYPE, nameFixed);
       if (Array.isArray(cachedProductResult) && cachedProductResult.length > 0) {
         cacheHits++;
         suggestions.push({ product_id: product.id, credential_id, marketplace_id, categories: cachedProductResult });
@@ -6125,46 +6247,19 @@ async falabellaSuggestedCategoriesWithAttributes(req, res) {
         const categoryId = item.CategoryId.toString();
 
         // === Cache de categoría ===
-        const cachedCategory = getFromCache(`credential_${credential_id}`, 'category_attributes', categoryId);
+        const cachedCategory = getFromCache(`credential_${credential_id}`, FALABELLA_CATEGORY_ATTRIBUTES_CACHE_TYPE, categoryId);
         if (cachedCategory) {
           categories.push(cachedCategory);
           continue;
         }
 
-        // === GetCategoryAttributes ===
-        const paramsAttrs = {
-          UserID: userId, Version: "1.0", Action: "GetCategoryAttributes", Format: "JSON",
-          PrimaryCategory: categoryId, Timestamp: timestampMinus03(),
-        };
-        const keysAttrs = Object.keys(paramsAttrs).sort();
-        const canonicalQueryAttrs = keysAttrs
-          .map(k => `${rfc3986Encode(k)}=${rfc3986Encode(String(paramsAttrs[k]))}`)
-          .join("&");
-        const signatureAttrs = rfc3986Encode(
-          crypto.createHmac("sha256", apiKey).update(canonicalQueryAttrs).digest("hex")
+        const attributes = await OAuthController.fetchFalabellaCategoryAttributes(
+          baseUrl,
+          userId,
+          apiKey,
+          categoryId,
+          credential
         );
-        const urlAttrs = `${baseUrl}?${canonicalQueryAttrs}&Signature=${signatureAttrs}`;
-        let attributes = [];
-
-        try {
-          const attrResponse = await axios.get(urlAttrs);
-          const attrData = attrResponse.data;
-          if (attrData.SuccessResponse?.Body?.Attribute) {
-            const rawAttrs = attrData.SuccessResponse.Body.Attribute;
-            const attrList = Array.isArray(rawAttrs) ? rawAttrs : [rawAttrs];
-            attributes = attrList
-              .map(mapFalabellaCategoryAttribute)
-              .filter(Boolean)
-              .sort((a, b) => (a.is_mandatory ? 0 : 1) - (b.is_mandatory ? 0 : 1));
-            logger.info(`[FALABELLA][ATTRIBUTES] Categoría ${categoryId}: ${attributes.length} atributo(s) mapeado(s)`);
-          } else if (attrData.ErrorResponse) {
-            logger.warn(`[FALABELLA][ATTRIBUTES] Error GetCategoryAttributes para ${categoryId}: ${JSON.stringify(attrData.ErrorResponse)}`);
-          } else {
-            logger.warn(`[FALABELLA][ATTRIBUTES] Categoría ${categoryId} sin Attribute en respuesta`);
-          }
-        } catch (attrErr) {
-          logger.warn(`Error GetCategoryAttributes para ${categoryId}: ${attrErr.message}`);
-        }
 
         // === 💰 NUEVO: Obtener pricing/comisión con auto-mapeo ===
         let pricing = null;
@@ -6330,12 +6425,12 @@ logger.info(`comisión encontrada en la bd: \n ${JSON.stringify(commissionByPath
           ...(productPrice !== null && { pricing })
         };
 
-        saveToCache(`credential_${credential_id}`, 'category_attributes', categoryId, categoryData);
+        saveToCache(`credential_${credential_id}`, FALABELLA_CATEGORY_ATTRIBUTES_CACHE_TYPE, categoryId, categoryData);
         categories.push(categoryData);
       }
 
       if (categories.length > 0) {
-        saveToCache(`credential_${credential_id}`, 'product_suggestion', nameFixed, categories);
+        saveToCache(`credential_${credential_id}`, FALABELLA_PRODUCT_SUGGESTION_CACHE_TYPE, nameFixed, categories);
       }
       suggestions.push({ product_id: product.id, credential_id, marketplace_id, categories });
     }
@@ -6434,11 +6529,17 @@ async falabellaEnrichedCategory(req, res) {
       treeMatch?.level4
     ].filter(Boolean).join(' > ')).trim();
 
-    let categoryData = getFromCache(`credential_${credential_id}`, 'category_attributes', categoryId);
+    let categoryData = getFromCache(`credential_${credential_id}`, FALABELLA_CATEGORY_ATTRIBUTES_CACHE_TYPE, categoryId);
     let cacheHit = Boolean(categoryData);
 
     if (!categoryData) {
-      const attributes = await OAuthController.fetchFalabellaCategoryAttributes(baseUrl, userId, apiKey, categoryId);
+      const attributes = await OAuthController.fetchFalabellaCategoryAttributes(
+        baseUrl,
+        userId,
+        apiKey,
+        categoryId,
+        credential
+      );
 
       categoryData = {
         id: categoryId,
@@ -6448,7 +6549,7 @@ async falabellaEnrichedCategory(req, res) {
         attributes
       };
 
-      saveToCache(`credential_${credential_id}`, 'category_attributes', categoryId, categoryData);
+      saveToCache(`credential_${credential_id}`, FALABELLA_CATEGORY_ATTRIBUTES_CACHE_TYPE, categoryId, categoryData);
     } else {
       categoryData = {
         ...categoryData,
@@ -6500,7 +6601,7 @@ async falabellaEnrichedCategory(req, res) {
     return res.status(500).json({ success: false, error: "Error interno al enriquecer categoría de Falabella." });
   }
 },
-async fetchFalabellaCategoryAttributes(baseUrl, userId, apiKey, categoryId) {
+async fetchFalabellaCategoryAttributes(baseUrl, userId, apiKey, categoryId, credential = null) {
   const paramsAttrs = {
     UserID: userId,
     Version: "1.0",
@@ -6524,10 +6625,21 @@ async fetchFalabellaCategoryAttributes(baseUrl, userId, apiKey, categoryId) {
     if (attrData.SuccessResponse?.Body?.Attribute) {
       const rawAttrs = attrData.SuccessResponse.Body.Attribute;
       const attrList = Array.isArray(rawAttrs) ? rawAttrs : [rawAttrs];
-      const attributes = attrList
+      let attributes = attrList
         .map(mapFalabellaCategoryAttribute)
         .filter(Boolean)
         .sort((a, b) => (a.is_mandatory ? 0 : 1) - (b.is_mandatory ? 0 : 1));
+      const operatorCode = resolveFalabellaOperatorForContentScore(credential);
+      if (operatorCode) {
+        const contentScoreRules = await OAuthController.fetchFalabellaContentScoreRules(
+          baseUrl,
+          userId,
+          apiKey,
+          categoryId,
+          operatorCode
+        );
+        attributes = OAuthController.applyFalabellaContentScoreRules(attributes, contentScoreRules);
+      }
       logger.info(`[FALABELLA][ATTRIBUTES] Categoría ${categoryId}: ${attributes.length} atributo(s) mapeado(s)`);
       return attributes;
     }
@@ -6541,6 +6653,112 @@ async fetchFalabellaCategoryAttributes(baseUrl, userId, apiKey, categoryId) {
   }
 
   return [];
+},
+async fetchFalabellaContentScoreRules(baseUrl, userId, apiKey, categoryId, operatorCode) {
+  const cacheKey = `${categoryId}_${operatorCode}`;
+  const cachedRules = getFromCache(`falabella_content_score_${userId}`, 'rules', cacheKey);
+  if (Array.isArray(cachedRules)) return cachedRules;
+
+  const paramsScore = {
+    UserID: userId,
+    Version: "1.0",
+    Action: "GetContentScore",
+    Format: "JSON",
+    CategoryId: String(categoryId),
+    Operator: operatorCode,
+    GetRulesOnly: 1,
+    Timestamp: timestampMinus03(),
+  };
+  const keysScore = Object.keys(paramsScore).sort();
+  const canonicalQueryScore = keysScore
+    .map(k => `${rfc3986Encode(k)}=${rfc3986Encode(String(paramsScore[k]))}`)
+    .join("&");
+  const signatureScore = rfc3986Encode(
+    crypto.createHmac("sha256", apiKey).update(canonicalQueryScore).digest("hex")
+  );
+  const urlScore = `${baseUrl}?${canonicalQueryScore}&Signature=${signatureScore}`;
+
+  try {
+    const scoreResponse = await axios.get(urlScore, { timeout: 20000 });
+    const rules = OAuthController.normalizeFalabellaContentScoreRules(scoreResponse.data);
+    saveToCache(`falabella_content_score_${userId}`, 'rules', cacheKey, rules, 86400);
+    logger.info(`[FALABELLA][CONTENT_SCORE] Categoría ${categoryId}: ${rules.length} regla(s) oficial(es)`);
+    return rules;
+  } catch (scoreErr) {
+    logger.warn(`[FALABELLA][CONTENT_SCORE] No se pudieron obtener reglas para ${categoryId}: ${scoreErr.message}`);
+    saveToCache(`falabella_content_score_${userId}`, 'rules', cacheKey, [], 3600);
+    return [];
+  }
+},
+normalizeFalabellaContentScoreRules(scoreData) {
+  const categoryRules = scoreData?.SuccessResponse?.Body?.CategoryRules;
+  const configs = categoryRules?.Config
+    ? (Array.isArray(categoryRules.Config) ? categoryRules.Config : [categoryRules.Config])
+    : [];
+
+  return configs
+    .map((config) => {
+      const field = normalizeFalabellaString(
+        config?.Field || config?.Name || config?.Attribute || config?.FeedName
+      );
+      if (!field) return null;
+
+      const rules = config?.Rules?.Rule
+        ? (Array.isArray(config.Rules.Rule) ? config.Rules.Rule : [config.Rules.Rule])
+        : (Array.isArray(config?.Rule) ? config.Rule : config?.Rule ? [config.Rule] : []);
+
+      return {
+        source: 'GetContentScore',
+        field,
+        normalized_field: normalizeFalabellaAttributeKey(field),
+        min: normalizeFalabellaInteger(config?.Min ?? config?.min),
+        max: normalizeFalabellaInteger(config?.Max ?? config?.max),
+        score: normalizeFalabellaInteger(config?.Score ?? config?.score),
+        weight: normalizeFalabellaInteger(config?.Weight ?? config?.weight),
+        rules: rules.map((rule) => ({
+          id: rule?.id ?? rule?.Id ?? rule?.Code ?? null,
+          name: rule?.Name ?? rule?.name ?? null,
+          description: rule?.Description ?? rule?.description ?? null,
+          value: rule?.Value ?? rule?.value ?? null
+        })),
+        raw: config
+      };
+    })
+    .filter(Boolean);
+},
+applyFalabellaContentScoreRules(attributes = [], contentScoreRules = []) {
+  if (!Array.isArray(attributes) || attributes.length === 0 || !Array.isArray(contentScoreRules) || contentScoreRules.length === 0) {
+    return attributes;
+  }
+
+  const rulesByField = new Map();
+  for (const rule of contentScoreRules) {
+    if (!rule?.normalized_field) continue;
+    const current = rulesByField.get(rule.normalized_field) || [];
+    current.push(rule);
+    rulesByField.set(rule.normalized_field, current);
+  }
+
+  return attributes.map((attr) => {
+    const candidateKeys = [
+      attr?.id,
+      attr?.feed_name,
+      attr?.attribute_name,
+      attr?.name,
+      attr?.label
+    ].map(normalizeFalabellaAttributeKey).filter(Boolean);
+    const matchedRules = candidateKeys.flatMap((key) => rulesByField.get(key) || []);
+    if (matchedRules.length === 0) return attr;
+
+    return {
+      ...attr,
+      content_score_rules: matchedRules,
+      official_metadata: {
+        ...(attr.official_metadata || {}),
+        content_score_rules: matchedRules
+      }
+    };
+  });
 },
 async resolveFalabellaCategoryPricing({
   credential_id,
@@ -6933,90 +7151,13 @@ async falabellaCategories(req, res) {
         });
       }
 
-      // ✅ Parámetros para GetCategoryAttributes
-      const params = {
-        UserID: userId,
-        Version: "1.0",
-        Action: "GetCategoryAttributes",
-        Format: "JSON",
-        PrimaryCategory: category_id.toString(), // ✅ ID de la categoría
-        Timestamp: timestampMinus03(),
-      };
-
-      // 1) ordenar alfabéticamente
-      const keys = Object.keys(params).sort();
-
-      // 2) construir query ENCODEADA (esto se firma)
-      const canonicalQuery = keys
-        .map((k) => `${rfc3986Encode(k)}=${rfc3986Encode(String(params[k]))}`)
-        .join("&");
-
-      // 3) firma HMAC SHA256 HEX
-      const signatureHex = crypto
-        .createHmac("sha256", apiKey)
-        .update(canonicalQuery)
-        .digest("hex");
-
-      // 4) encodear la firma
-      const signature = rfc3986Encode(signatureHex);
-
-      const url = `${baseUrl}?${canonicalQuery}&Signature=${signature}`;
-      
-      logger.info(`🔍 URL para atributos: ${url}`);
-
-      const response = await axios.get(url, { timeout: 20000 });
-
-    const data = response.data;
-    const attributes = [];
-
-    logger.info(`Atributos obtenidos: ${JSON.stringify(data)}`);
-
-    // ✅ Procesar respuesta REAL de Falabella para GetCategoryAttributes
-    if (data.SuccessResponse?.Body?.Attribute) {
-      const attrs = data.SuccessResponse.Body.Attribute;
-      
-      // Manejar array o objeto único
-      const items = Array.isArray(attrs) ? attrs : [attrs];
-
-      items.forEach((attr) => {
-        if (attr.Name && attr.Label) {
-          attributes.push({
-            id: attr.FeedName || attr.Name, // FeedName es el verdadero identificador para XMLs
-            name: attr.Label, // Nombre legibles
-            label: attr.Label,
-            is_mandatory: attr.isMandatory === "1" || attr.isMandatory === true,
-            description: attr.Description || '',
-            attribute_type: attr.AttributeType || 'string',
-            example_value: attr.ExampleValue || '',
-            value_type: 
-              attr.AttributeType === 'option' || attr.AttributeType === 'multi_option'
-                ? 'list'
-                : attr.AttributeType === 'numberfield'
-                  ? 'number'
-                  : 'string',
-            values: attr.Options?.Option 
-              ? (Array.isArray(attr.Options.Option) 
-                  ? attr.Options.Option.map(opt => ({ 
-                      id: opt.id,       // ✅ Campo real: id
-                      name: opt.Name    // ✅ Campo real: Name
-                    }))
-                  : [{ id: attr.Options.Option.id, name: attr.Options.Option.Name }])
-              : [],
-            tags: {
-              required: attr.isMandatory === "1" || attr.isMandatory === true,
-              catalog_required: attr.isMandatory === "1" || attr.isMandatory === true
-            }
-          });
-        }
-      });
-    }
-
-        // ✅ Ordenar: requeridos primero
-        const sortedAttributes = attributes.sort((a, b) => {
-          const aReq = a.is_mandatory ? 0 : 1;
-          const bReq = b.is_mandatory ? 0 : 1;
-          return aReq - bReq;
-        });
+      const sortedAttributes = await OAuthController.fetchFalabellaCategoryAttributes(
+        baseUrl,
+        userId,
+        apiKey,
+        category_id.toString(),
+        credential
+      );
 
       return res.status(200).json({
         success: true,
