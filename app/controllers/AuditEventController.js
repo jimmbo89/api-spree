@@ -3,9 +3,20 @@ const { Op } = require('sequelize');
 const {
   AuditEventRepository,
   CompanyRepository,
+  BranchRepository,
+  PoolRepository,
   UserAclScopeRepository,
+  UserCompanyRepository,
+  WarehouseRepository,
   UserMarketplaceCredentialRepository
 } = require('../repositories');
+const {
+  AuditEvent,
+  MarketplaceCredential,
+  Product,
+  User,
+  UserCompany
+} = require('../models');
 
 const MODULE_LABELS = {
   product: 'Productos',
@@ -174,6 +185,477 @@ function humanizeCode(value) {
 
 function getFieldLabel(key) {
   return FIELD_LABELS[key] || humanizeCode(key);
+}
+
+function toOptions(labels) {
+  return Object.entries(labels).map(([value, label]) => ({ value, label }));
+}
+
+function normalizeOptionValue(value, { stringify = false } = {}) {
+  if (value == null || value === '') return null;
+  return stringify ? String(value) : value;
+}
+
+function makeOption(value, label, metadata = {}, options = {}) {
+  const normalizedValue = normalizeOptionValue(value, options);
+  if (normalizedValue == null) return null;
+
+  return {
+    value: normalizedValue,
+    label: label || String(normalizedValue),
+    ...metadata
+  };
+}
+
+function dedupeOptions(options = []) {
+  const map = new Map();
+
+  for (const option of options) {
+    if (!option || option.value == null) continue;
+    const key = String(option.value);
+    if (!map.has(key)) {
+      map.set(key, option);
+    }
+  }
+
+  return Array.from(map.values());
+}
+
+function buildActionOptionsByModule() {
+  return Object.entries(ACTION_LABELS).reduce((acc, [value, label]) => {
+    const module = value.split('.')[0];
+    if (!acc[module]) acc[module] = [];
+    acc[module].push({ value, label });
+    return acc;
+  }, {});
+}
+
+async function getUserScopeData(req, companyId) {
+  if (req.user?.role_id) {
+    return {
+      has_full_access: true,
+      warehouse_ids: null,
+      pool_ids: null,
+      marketplace_credential_ids: null,
+      marketplace_ids: null
+    };
+  }
+
+  const scopes = await UserAclScopeRepository.findByUserAndCompany(req.user.id, companyId);
+  const allowedCredentials = await UserMarketplaceCredentialRepository.findActiveCredentialsByUserAndCompany(
+    req.user.id,
+    companyId
+  );
+
+  return {
+    has_full_access: false,
+    warehouse_ids: scopes.map(scope => Number(scope.warehouse_id)).filter(Boolean),
+    pool_ids: scopes.map(scope => Number(scope.pool_id)).filter(Boolean),
+    marketplace_credential_ids: allowedCredentials.map(row => Number(row.id)).filter(Boolean),
+    marketplace_ids: allowedCredentials.map(row => Number(row.marketplace_id)).filter(Boolean)
+  };
+}
+
+function applyScopeToWhere(scopeWhere) {
+  return scopeWhere && (Object.keys(scopeWhere).length > 0 || Object.getOwnPropertySymbols(scopeWhere).length > 0)
+    ? [scopeWhere]
+    : [];
+}
+
+function mapUserOption(user) {
+  if (!user) return null;
+
+  const primary = user.name || user.user || user.email || `Usuario ${user.id}`;
+  const subtitle = user.email && user.email !== primary ? user.email : null;
+  return makeOption(user.id, primary, {
+    subtitle,
+    image: user.image || null,
+    status: user.status
+  }, { stringify: true });
+}
+
+async function getUserOptions(companyId) {
+  const memberships = await UserCompany.findAll({
+    where: {
+      company_id: companyId,
+      status: { [Op.ne]: 0 }
+    },
+    include: [{
+      model: User,
+      as: 'user',
+      attributes: ['id', 'name', 'email', 'user', 'status'],
+      required: true
+    }],
+    order: [[{ model: User, as: 'user' }, 'name', 'ASC']]
+  });
+
+  return dedupeOptions(memberships.map(membership => mapUserOption(membership.user)));
+}
+
+async function getMarketplaceAndCredentialOptions(companyId, scopeData) {
+  const where = { company_id: companyId };
+  if (!scopeData.has_full_access) {
+    where.id = {
+      [Op.in]: scopeData.marketplace_credential_ids.length > 0
+        ? scopeData.marketplace_credential_ids
+        : [0]
+    };
+  }
+
+  const credentials = await MarketplaceCredential.findAll({
+    where,
+    attributes: ['id', 'name', 'seller_email', 'seller_id', 'marketplace_id', 'active'],
+    include: [{
+      association: 'marketplace',
+      attributes: ['id', 'name', 'domain', 'active'],
+      required: false
+    }],
+    order: [['name', 'ASC']]
+  });
+
+  const credentialOptions = credentials.map((credential) => {
+    const marketplaceName = credential.marketplace?.name || 'Marketplace';
+    const account = credential.seller_email || credential.seller_id || null;
+    const subtitle = account
+      ? `${marketplaceName} · ${account}`
+      : marketplaceName;
+
+    return makeOption(credential.id, credential.name, {
+      subtitle,
+      marketplace_id: credential.marketplace_id,
+      marketplace_label: marketplaceName,
+      active: credential.active
+    });
+  });
+
+  const marketplaceOptions = dedupeOptions(credentials.map((credential) => makeOption(
+    credential.marketplace_id,
+    credential.marketplace?.name || `Marketplace ${credential.marketplace_id}`,
+    {
+      subtitle: credential.marketplace?.domain || null,
+      domain: credential.marketplace?.domain || null,
+      active: credential.marketplace?.active
+    }
+  )));
+
+  return {
+    marketplaces: marketplaceOptions,
+    marketplace_credentials: dedupeOptions(credentialOptions)
+  };
+}
+
+async function getWarehouseOptions(companyId, scopeData) {
+  const warehouses = await WarehouseRepository.findFiltered({
+    companyId,
+    warehouseIds: scopeData.has_full_access ? null : scopeData.warehouse_ids,
+    includeProducts: false
+  });
+
+  return dedupeOptions(warehouses.map(warehouse => makeOption(warehouse.id, warehouse.code
+    ? `${warehouse.name} (${warehouse.code})`
+    : warehouse.name, {
+      image: warehouse.image || null,
+      branch_label: warehouse.branchName || null,
+      status: warehouse.status
+    })));
+}
+
+async function getBranchOptions(companyId) {
+  const branches = await BranchRepository.findFiltered({ companyId, status: 1 });
+
+  return dedupeOptions(branches.map(branch => makeOption(branch.id, branch.name, {
+    image: branch.image || null,
+    status: branch.status
+  })));
+}
+
+async function getPoolOptions(companyId, scopeData) {
+  const pools = await PoolRepository.findFiltered({
+    companyId,
+    poolIds: scopeData.has_full_access ? null : scopeData.pool_ids,
+    warehouseIds: scopeData.has_full_access ? null : scopeData.warehouse_ids
+  });
+
+  return dedupeOptions(pools.map(pool => makeOption(pool.id, pool.name, {
+    is_active: pool.is_active,
+    warehouse_count: pool.warehouse_count
+  })));
+}
+
+function getProductImage(product) {
+  const images = product?.images;
+  if (Array.isArray(images)) return images[0] || null;
+  if (typeof images === 'string') {
+    try {
+      const parsed = JSON.parse(images);
+      if (Array.isArray(parsed)) return parsed[0] || null;
+    } catch (error) {
+      return images || null;
+    }
+  }
+
+  return null;
+}
+
+async function getProductOptions(companyId) {
+  const products = await Product.findAll({
+    where: { company_id: companyId },
+    attributes: ['id', 'sku', 'name', 'brand', 'images', 'state'],
+    order: [['name', 'ASC']],
+    limit: 500
+  });
+
+  return dedupeOptions(products.map(product => makeOption(product.id, product.name, {
+    subtitle: product.sku || product.brand || null,
+    image: getProductImage(product),
+    sku: product.sku || null,
+    state: product.state
+  }, { stringify: true })));
+}
+
+async function getAuditedResourceOptions(companyId, scopeWhere) {
+  const whereConditions = [
+    { company_id: companyId },
+    {
+      resource_id: {
+        [Op.ne]: null
+      }
+    },
+    ...applyScopeToWhere(scopeWhere)
+  ];
+
+  const events = await AuditEvent.findAll({
+    where: { [Op.and]: whereConditions },
+    attributes: ['resource_type', 'resource_id', 'resource_label'],
+    order: [['id', 'DESC']],
+    limit: 500
+  });
+
+  return events.reduce((acc, event) => {
+    if (!event.resource_type || !event.resource_id) return acc;
+
+    if (!acc[event.resource_type]) acc[event.resource_type] = [];
+    acc[event.resource_type].push(makeOption(
+      event.resource_id,
+      event.resource_label || `${RESOURCE_TYPE_LABELS[event.resource_type] || humanizeCode(event.resource_type)} ${event.resource_id}`,
+      {},
+      { stringify: true }
+    ));
+
+    return acc;
+  }, {});
+}
+
+async function buildFilterOptions({ companyId, req, scopeWhere }) {
+  const actionOptionsByModule = buildActionOptionsByModule();
+  const scopeData = await getUserScopeData(req, companyId);
+  const [
+    users,
+    marketplaceData,
+    warehouses,
+    branches,
+    pools,
+    products,
+    auditedResourceOptions
+  ] = await Promise.all([
+    getUserOptions(companyId),
+    getMarketplaceAndCredentialOptions(companyId, scopeData),
+    getWarehouseOptions(companyId, scopeData),
+    getBranchOptions(companyId),
+    getPoolOptions(companyId, scopeData),
+    getProductOptions(companyId),
+    getAuditedResourceOptions(companyId, scopeWhere)
+  ]);
+
+  const resourceOptionsByType = Object.fromEntries(
+    Object.entries(auditedResourceOptions).map(([type, options]) => [type, dedupeOptions(options)])
+  );
+
+  return {
+    recommended_filters: [
+      'module',
+      // 'action',
+      // 'result',
+      'actor_type',
+      // 'resource_type',
+      'start',
+      'end'
+    ],
+    advanced_filters: [
+      'actor_id',
+      'resource_type',
+      // 'resource_id',
+      // 'related_resource_type',
+      // 'related_resource_id',
+      // 'marketplace_id',
+      'marketplace_credential_id',
+      'product_id',
+      // 'pool_id',
+      'warehouse_id',
+      // 'branch_id',
+      // 'job_id',
+      // 'origin_job_id',
+      // 'correlation_id'
+    ],
+    fields: [
+      {
+        key: 'module',
+        label: 'Módulo',
+        type: 'select',
+        options: toOptions(MODULE_LABELS)
+      },
+      {
+        key: 'action',
+        label: 'Acción',
+        type: 'select',
+        depends_on: 'module',
+        options: toOptions(ACTION_LABELS),
+        options_by_module: actionOptionsByModule
+      },
+      {
+        key: 'result',
+        label: 'Resultado',
+        type: 'select',
+        options: toOptions(RESULT_LABELS)
+      },
+      {
+        key: 'actor_type',
+        label: 'Tipo de actor',
+        type: 'select',
+        options: toOptions(ACTOR_TYPE_LABELS)
+      },
+      {
+        key: 'actor_id',
+        label: 'Actor',
+        type: 'select',
+        depends_on: 'actor_type',
+        advanced: true,
+        options_by_actor_type: {
+          user: users,
+          marketplace: marketplaceData.marketplaces,
+          system: [
+            { value: 'system', label: 'Sistema' },
+            { value: 'spree', label: 'Spree' }
+          ],
+          automatic_process: [],
+          external_integration: []
+        },
+        value_hint: 'Se envía el value estable del actor seleccionado'
+      },
+      {
+        key: 'resource_type',
+        label: 'Tipo de recurso',
+        type: 'select',
+        options: toOptions(RESOURCE_TYPE_LABELS)
+      },
+      // {
+      //   key: 'resource_id',
+      //   label: 'Recurso',
+      //   type: 'select',
+      //   depends_on: 'resource_type',
+      //   advanced: true,
+      //   options_by_resource_type: resourceOptionsByType,
+      //   value_hint: 'Se envía el value estable del recurso seleccionado'
+      // },
+      // {
+      //   key: 'related_resource_type',
+      //   label: 'Tipo relacionado',
+      //   type: 'select',
+      //   options: toOptions(RESOURCE_TYPE_LABELS),
+      //   advanced: true
+      // },
+      // {
+      //   key: 'related_resource_id',
+      //   label: 'Recurso relacionado',
+      //   type: 'select',
+      //   depends_on: 'related_resource_type',
+      //   advanced: true,
+      //   options_by_resource_type: resourceOptionsByType,
+      //   value_hint: 'Se envía el value estable del recurso relacionado'
+      // },
+      // {
+      //   key: 'marketplace_id',
+      //   label: 'Marketplace',
+      //   type: 'select',
+      //   advanced: true,
+      //   options: marketplaceData.marketplaces
+      // },
+      {
+        key: 'marketplace_credential_id',
+        label: 'Credencial marketplace',
+        type: 'select',
+        advanced: true,
+        options: marketplaceData.marketplace_credentials
+      },
+      {
+        key: 'product_id',
+        label: 'Producto',
+        type: 'select',
+        advanced: true,
+        options: products,
+        value_hint: 'Se filtra como recurso de auditoría tipo producto'
+      },
+      // {
+      //   key: 'pool_id',
+      //   label: 'Pool',
+      //   type: 'select',
+      //   advanced: true,
+      //   options: pools
+      // },
+      {
+        key: 'warehouse_id',
+        label: 'Almacén',
+        type: 'select',
+        advanced: true,
+        options: warehouses
+      },
+      // {
+      //   key: 'branch_id',
+      //   label: 'Sucursal',
+      //   type: 'select',
+      //   advanced: true,
+      //   options: branches
+      // },
+      // {
+      //   key: 'job_id',
+      //   label: 'Proceso',
+      //   type: 'number',
+      //   advanced: true
+      // },
+      // {
+      //   key: 'origin_job_id',
+      //   label: 'Proceso origen',
+      //   type: 'number',
+      //   advanced: true
+      // },
+      // {
+      //   key: 'correlation_id',
+      //   label: 'Correlación',
+      //   type: 'text',
+      //   advanced: true
+      // },
+      {
+        key: 'start',
+        label: 'Desde',
+        type: 'date'
+      },
+      {
+        key: 'end',
+        label: 'Hasta',
+        type: 'date'
+      }
+    ],
+    dynamic_options: {
+      users,
+      marketplaces: marketplaceData.marketplaces,
+      marketplace_credentials: marketplaceData.marketplace_credentials,
+      products,
+      warehouses,
+      branches,
+      pools,
+      resources_by_type: resourceOptionsByType
+    }
+  };
 }
 
 function isSensitiveDisplayKey(key) {
@@ -405,6 +887,12 @@ const AuditEventController = {
   async list(req, res) {
     try {
       const companyId = Number(req.body.company_id);
+      const filters = { ...req.body };
+      if (filters.product_id != null && filters.product_id !== '') {
+        filters.resource_type = 'product';
+        filters.resource_id = String(filters.product_id);
+      }
+
       const company = await CompanyRepository.findById(companyId);
 
       if (!company) {
@@ -415,17 +903,23 @@ const AuditEventController = {
       }
 
       const scopeWhere = await buildScopeWhere(req, companyId);
-      const result = await AuditEventRepository.list(req.body, {
+      const result = await AuditEventRepository.list(filters, {
         where: {
           ...scopeWhere
         }
       });
 
-      return res.status(200).json({
+      const response = {
         success: true,
         events: result.events.map(mapEvent),
         pagination: result.pagination
-      });
+      };
+
+      if (req.body.filters === true) {
+        response.filter_options = await buildFilterOptions({ companyId, req, scopeWhere });
+      }
+
+      return res.status(200).json(response);
     } catch (error) {
       logger.error(`AuditEventController->list: ${error.message}`);
       return res.status(500).json({

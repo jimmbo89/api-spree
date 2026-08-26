@@ -18,6 +18,7 @@ const auditEventListSchema = Joi.object({
   related_resource_id: nullableId,
   marketplace_id: Joi.number().integer().positive().optional().allow(null),
   marketplace_credential_id: Joi.number().integer().positive().optional().allow(null),
+  product_id: Joi.number().integer().positive().optional().allow(null),
   pool_id: Joi.number().integer().positive().optional().allow(null),
   warehouse_id: Joi.number().integer().positive().optional().allow(null),
   branch_id: Joi.number().integer().positive().optional().allow(null),
@@ -33,7 +34,8 @@ const auditEventListSchema = Joi.object({
   date_from: Joi.date().iso().optional(),
   date_to: Joi.date().iso().optional(),
   page: Joi.number().integer().min(1).default(1),
-  limit: Joi.number().integer().min(1).max(100).default(100)
+  limit: Joi.number().integer().min(1).max(100).default(100),
+  filters: Joi.boolean().optional().default(false)
 });
 
 module.exports = { auditEventListSchema };
