@@ -11,6 +11,17 @@ const ACTOR_TYPES = Object.freeze({
   EXTERNAL_INTEGRATION: 'external_integration'
 });
 
+const JOB_TYPE_LABELS = Object.freeze({
+  draft: 'borrador',
+  publish: 'publicación',
+  sync: 'sincronización',
+  processing: 'procesamiento',
+  manual: 'manual',
+  quick: 'rápido',
+  advanced: 'avanzado',
+  republish: 'republicación'
+});
+
 const RESULTS = Object.freeze({
   SUCCESS: 'success',
   ERROR: 'error',
@@ -62,10 +73,11 @@ const AuditEventService = {
   },
 
   automaticProcessActor(job) {
+    const jobTypeLabel = JOB_TYPE_LABELS[String(job?.job_type || '').toLowerCase()] || 'proceso automático';
     return {
       actor_type: ACTOR_TYPES.AUTOMATIC_PROCESS,
       actor_id: normalizeId(job?.id),
-      actor_name: job?.job_type ? `Proceso ${job.job_type} #${job.id}` : 'Proceso automatico'
+      actor_name: job?.id ? `Proceso de ${jobTypeLabel} #${job.id}` : 'Proceso automático'
     };
   },
 

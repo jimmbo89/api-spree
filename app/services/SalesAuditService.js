@@ -56,7 +56,12 @@ function getMarketplaceName(order, marketplace = null) {
 
 function buildOrderLabel(order) {
   const plain = toPlain(order) || {};
-  return [plain.marketplace, plain.marketplace_order_id].filter(Boolean).join(' / ') || `Venta ${plain.id}`;
+  const marketplaceName = getMarketplaceName(plain);
+  if (marketplaceName && plain.marketplace_order_id) {
+    return `Venta en ${marketplaceName} / ${plain.marketplace_order_id}`;
+  }
+
+  return marketplaceName || `Venta ${plain.id}`;
 }
 
 function buildOrderSnapshot(order) {

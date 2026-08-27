@@ -199,6 +199,17 @@ const FIELD_LABELS = {
   products_count: 'Cantidad de productos',
   marketplaces_count: 'Cantidad de marketplaces',
   stock_total: 'Stock total',
+  marketplace_order_id: 'ID de la venta en marketplace',
+  task_id: 'ID de la tarea',
+  notes_count: 'Cantidad de notas',
+  text_length: 'Longitud del texto',
+  refresh_source: 'Fuente de actualización',
+  fallback_error: 'Error alternativo',
+  batch_id: 'Lote',
+  reprocess_job_id: 'ID del reproceso',
+  origin_job_id: 'ID del proceso origen',
+  reprocessed_tasks_count: 'Cantidad de tareas reprocesadas',
+  total_total: 'Total',
   draft_name: 'Nombre del borrador',
   external_id: 'ID externo',
   external_url: 'URL externa',
@@ -280,6 +291,33 @@ const HUMANIZE_TOKEN_LABELS = {
   destination: 'destino',
   branch: 'sucursal',
   pool: 'pool',
+  ml: 'Mercado Libre',
+  fb: 'Falabella',
+  job: 'proceso',
+  task: 'tarea',
+  type: 'tipo',
+  count: 'cantidad',
+  total: 'total',
+  expected: 'esperado',
+  refresh: 'actualización',
+  edit: 'edición',
+  update: 'actualización',
+  webhook: 'notificación web',
+  payload: 'carga útil',
+  text: 'texto',
+  length: 'longitud',
+  url: 'URL',
+  id: 'ID',
+  api: 'API',
+  http: 'HTTP',
+  https: 'HTTPS',
+  json: 'JSON',
+  xml: 'XML',
+  sku: 'SKU',
+  ean: 'EAN',
+  gtin: 'GTIN',
+  mpn: 'MPN',
+  ip: 'IP',
   resource: 'recurso',
   related: 'relacionado',
   actor: 'actor',
@@ -320,6 +358,12 @@ const VALUE_LABELS = {
   republish: 'Republicación',
   sync: 'Sincronización',
   processing: 'Procesando',
+  spree: 'Spree',
+  webhook: 'Notificación web',
+  marketplace_webhook: 'Notificación del marketplace',
+  draft_payload_edit: 'Edición de borrador',
+  manual_refresh: 'Actualización manual',
+  refresh: 'Actualización',
   bulk: 'Masivo',
   notes: 'Notas',
   stock: 'Existencias',
@@ -336,11 +380,27 @@ const VALUE_LABELS = {
 function humanizeCode(value) {
   if (!value) return null;
 
-  return String(value)
+  const parts = String(value)
     .split(/[._-]+/)
-    .filter(Boolean)
-    .map(part => HUMANIZE_TOKEN_LABELS[part.toLowerCase()] || part.toLowerCase())
-    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .filter(Boolean);
+
+  if (parts.length === 0) return null;
+
+  const hasUnknownToken = parts.some((part) => {
+    const normalized = part.toLowerCase();
+    if (HUMANIZE_TOKEN_LABELS[normalized]) return false;
+    if (/^\d+$/.test(part)) return false;
+    if (/^[A-Z]{2,6}$/.test(part)) return false;
+    return true;
+  });
+
+  if (hasUnknownToken) {
+    return 'Dato técnico';
+  }
+
+  return parts
+    .map((part) => HUMANIZE_TOKEN_LABELS[part.toLowerCase()] || part.toLowerCase())
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(' ');
 }
 
