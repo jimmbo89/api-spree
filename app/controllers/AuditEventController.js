@@ -191,6 +191,8 @@ const FIELD_LABELS = {
   variants_updated: 'Variantes modificadas',
   source_type: 'Tipo de origen',
   source: 'Origen',
+  publication_step: 'Paso de publicación',
+  draft_name: 'Nombre del borrador',
   external_id: 'ID externo',
   external_url: 'URL externa',
   item_id: 'ID del ítem',
@@ -820,7 +822,7 @@ function isInternalIdDisplayKey(key) {
 }
 
 function shouldHideDisplayKey(key) {
-  return isSensitiveDisplayKey(key) || isInternalIdDisplayKey(key);
+  return isSensitiveDisplayKey(key) || isInternalIdDisplayKey(key) || key === 'draft_name';
 }
 
 function normalizePlainValue(value) {

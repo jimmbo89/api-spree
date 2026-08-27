@@ -110,14 +110,36 @@ function buildPreparedPayloadSnapshot(payload) {
   };
 }
 
+function formatDraftCreatedAt(value) {
+  if (!value) return null;
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+
+  return new Intl.DateTimeFormat('es-CL', {
+    dateStyle: 'medium',
+    timeStyle: 'short'
+  }).format(date);
+}
+
+function buildDraftLabel(job) {
+  const batchLabel = job.batch_id ? `Lote ${job.batch_id}` : 'Lote sin identificar';
+  const createdAt = formatDraftCreatedAt(job.createdAt || job.created_at);
+
+  return createdAt
+    ? `Borrador ${batchLabel}, creado el ${createdAt}`
+    : `Borrador ${batchLabel}`;
+}
+
 function buildJobAuditPayload(job, data = {}) {
   const plain = toPlain(job) || {};
+  const isDraft = data.module === 'publication_draft' || plain.job_type === 'draft';
   return {
     company_id: data.company_id || plain.company_id,
     module: data.module || (plain.job_type === 'draft' ? 'publication_draft' : 'process'),
     resource_type: 'job',
     resource_id: plain.id,
-    resource_label: plain.draft_name || `Proceso #${plain.id}`,
+    resource_label: isDraft ? buildDraftLabel(plain) : `Proceso #${plain.id}`,
     job_id: plain.id,
     correlation_id: data.correlation_id || plain.batch_id || null,
     ...data
@@ -183,7 +205,7 @@ const PublicationAuditService = {
         products: redactSensitive(products),
         marketplaces: redactSensitive(marketplaces)
       },
-      description: `Borrador creado: ${job.draft_name || `#${job.id}`}`,
+      description: `Borrador creado: ${buildDraftLabel(job)}`,
       metadata: {
         batch_id: job.batch_id,
         mode: job.mode,
@@ -237,7 +259,7 @@ const PublicationAuditService = {
     const configChanges = detectChanges(
       normalizeAuditValue(redactSensitive(previousJob?.config || {})),
       normalizeAuditValue(redactSensitive(nextJob?.config || {})),
-      ['economic_config', 'publication_step', 'draft_name', 'mode']
+      ['economic_config', 'publication_step', 'mode']
     );
     if (configChanges.length > 0) {
       events.push({
@@ -266,7 +288,7 @@ const PublicationAuditService = {
       module: 'publication_draft',
       action: 'publication_draft.executed',
       result: 'success',
-      description: `Publicacion ejecutada desde borrador ${job.draft_name || `#${job.id}`}`,
+      description: `Publicación ejecutada desde ${buildDraftLabel(job)}`,
       metadata: {
         batch_id: job.batch_id,
         total_products: job.total_products
@@ -280,7 +302,7 @@ const PublicationAuditService = {
       action: 'publication_draft.cancelled',
       result: 'success',
       previous_value: { status: job.status },
-      description: `Borrador cancelado: ${job.draft_name || `#${job.id}`}`,
+      description: `Borrador eliminado: ${buildDraftLabel(job)}`,
       metadata: {
         batch_id: job.batch_id
       }

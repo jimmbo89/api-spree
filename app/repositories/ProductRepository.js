@@ -111,8 +111,8 @@ const ProductRepository = {
     logger.error('Error al cargar almacenes de productos:', error);
   }
 }
-    logger.info('almacenes asociados');
-    logger.info(JSON.stringify(productToWarehousesMap));
+    //logger.info('almacenes asociados');
+    //logger.info(JSON.stringify(productToWarehousesMap));
     return products.map(product => {
       // Buscar el status correspondiente
       const statusMatch = productStatus.find(s => s.id === product.status);

@@ -1759,6 +1759,12 @@ async store(req, res) {
         return res.status(404).json({ success: false, msg: "draft_not_found" });
       }
       const job = jobInstance.get({ plain: true });
+      // `get({ plain: true })` shares nested JSON values with Sequelize's instance.
+      // Keep an independent state so auditing compares against pre-update config.
+      const previousJob = {
+        ...job,
+        config: JSON.parse(JSON.stringify(job.config || {}))
+      };
 
       if (job.job_type !== 'draft') {
         return res.status(400).json({
@@ -2052,7 +2058,7 @@ async store(req, res) {
         }
       });
 
-      await PublicationAuditService.recordDraftDiff(req, job, updatedJob);
+      await PublicationAuditService.recordDraftDiff(req, previousJob, updatedJob);
       if (action === 'publish') {
         await PublicationAuditService.recordDraftExecuted(req, updatedJob);
         await PublicationAuditService.recordProcessEvent(req, updatedJob, 'process.created', {
