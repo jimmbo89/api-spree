@@ -1539,7 +1539,9 @@ const AuthController = {
       branch_id
     );
     const credentials = company_id
-      ? await MarketplaceCredentialRepository.findByCompany(company_id)
+      ? (await MarketplaceCredentialRepository.findByCompany(company_id)).filter(
+          (credential) => credential.active !== false && Number(credential.active) !== 0
+        )
       : [];
 
     // La forma más confiable de distinguir global vs empresa es leer el
