@@ -110,6 +110,76 @@ function buildPreparedPayloadSnapshot(payload) {
   };
 }
 
+function toArray(value) {
+  if (Array.isArray(value)) return value;
+  if (value == null || value === '') return [];
+  return [value];
+}
+
+function normalizeProcessProducts(products = []) {
+  return toArray(products)
+    .map((product) => {
+      const plain = parseJsonMaybe(product) || {};
+      const stockValue = plain.stock ?? plain.available_quantity ?? plain.quantity ?? plain.publishStock ?? null;
+      const marketplaceCount = Array.isArray(plain.marketplaces) ? plain.marketplaces.length : plain.marketplace_count ?? null;
+      return {
+        id: plain.id ?? plain.product_id ?? null,
+        sku: plain.sku || null,
+        name: plain.name || plain.title || plain.product_name || null,
+        stock: stockValue != null ? Number(stockValue) || stockValue : null,
+        total_stock: plain.total_stock ?? plain.stock_total ?? null,
+        marketplaces_count: marketplaceCount
+      };
+    })
+    .filter((product) => product.id != null || product.sku || product.name);
+}
+
+function normalizeProcessMarketplaces(marketplaces = []) {
+  return toArray(marketplaces)
+    .map((marketplace) => {
+      const plain = parseJsonMaybe(marketplace) || {};
+      return {
+        id: plain.id ?? plain.marketplace_id ?? plain.credential_id ?? null,
+        name: plain.name || plain.marketplace_name || plain.marketplace?.name || null,
+        domain: plain.domain || plain.marketplace?.domain || null,
+        credential_name: plain.credential_name || plain.credential?.name || null
+      };
+    })
+    .filter((marketplace) => marketplace.id != null || marketplace.name || marketplace.domain);
+}
+
+function buildProcessMetadata(job, data = {}) {
+  const plain = toPlain(job) || {};
+  const config = parseJsonMaybe(plain.config || {}) || {};
+  const products = normalizeProcessProducts(data.products || config.products || []);
+  const marketplaces = normalizeProcessMarketplaces(data.marketplaces || config.marketplaces || []);
+
+  const stockTotal = products.reduce((total, product) => {
+    const stock = Number(product.stock);
+    return Number.isFinite(stock) ? total + stock : total;
+  }, 0);
+
+  return {
+    batch_id: plain.batch_id || null,
+    job_type: plain.job_type || null,
+    mode: plain.mode || null,
+    publication_step: plain.publication_step ?? null,
+    total_products: plain.total_products ?? null,
+    total_expected: config._total_expected ?? data.total_expected ?? null,
+    products_count: products.length,
+    marketplaces_count: marketplaces.length,
+    stock_total: stockTotal,
+    products,
+    marketplaces,
+    origin_job_id: data.origin_job_id || null,
+    reprocess_job_id: data.reprocess_job_id || null,
+    reprocessed_tasks_count: Array.isArray(data.reprocessed_tasks)
+      ? data.reprocessed_tasks.length
+      : (data.reprocessed_tasks_count ?? null),
+    ...data.metadata
+  };
+}
+
 function formatDraftCreatedAt(value) {
   if (!value) return null;
 
@@ -343,12 +413,7 @@ const PublicationAuditService = {
       action,
       result: 'success',
       description: data.description || `Proceso #${job.id}`,
-      metadata: {
-        batch_id: job.batch_id,
-        job_type: job.job_type,
-        mode: job.mode,
-        ...data.metadata
-      },
+      metadata: buildProcessMetadata(job, data),
       ...data
     }));
   },
@@ -365,12 +430,7 @@ const PublicationAuditService = {
         previous_value: data.previous_value,
         new_value: data.new_value,
         changes: data.changes,
-        metadata: {
-          batch_id: job.batch_id,
-          job_type: job.job_type,
-          mode: job.mode,
-          ...data.metadata
-        },
+        metadata: buildProcessMetadata(job, data),
         origin_job_id: data.origin_job_id || null,
         ...data
       })
