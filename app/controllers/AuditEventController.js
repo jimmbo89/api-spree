@@ -79,9 +79,9 @@ const ACTION_LABELS = {
   'warehouse.product_added': 'Producto agregado',
   'warehouse.product_config_updated': 'Configuración de producto modificada',
   'warehouse.product_removed': 'Producto eliminado',
-  'warehouse.stock_entry': 'Entrada de stock',
-  'warehouse.stock_exit': 'Salida de stock',
-  'warehouse.stock_adjustment': 'Ajuste de stock',
+  'warehouse.stock_entry': 'Entrada de existencias',
+  'warehouse.stock_exit': 'Salida de existencias',
+  'warehouse.stock_adjustment': 'Ajuste de existencias',
   'warehouse.transfer': 'Transferencia',
   'warehouse.bulk_transfer': 'Transferencia masiva',
   'warehouse.bulk_operation': 'Operación masiva',
@@ -138,6 +138,11 @@ const FIELD_LABELS = {
   marketplace_domain: 'Dominio del marketplace',
   marketplace: 'Marketplace',
   credential_name: 'Credencial',
+  brand: 'Marca',
+  model: 'Modelo',
+  condition: 'Condición',
+  gtin: 'GTIN',
+  mpn: 'MPN',
   warehouse_name: 'Almacén',
   source_warehouse_name: 'Almacén origen',
   destination_warehouse_name: 'Almacén destino',
@@ -151,9 +156,9 @@ const FIELD_LABELS = {
   price: 'Precio',
   sale_price: 'Precio de venta',
   purchase_price: 'Precio de compra',
-  stock: 'Stock',
-  available_quantity: 'Stock disponible',
-  published_stock: 'Stock publicado',
+  stock: 'Existencias',
+  available_quantity: 'Cantidad disponible',
+  published_stock: 'Existencias publicadas',
   quantity: 'Cantidad',
   sku: 'SKU',
   name: 'Nombre',
@@ -165,6 +170,32 @@ const FIELD_LABELS = {
   marketplace_status: 'Estado del marketplace',
   error_message: 'Mensaje de error',
   reason: 'Motivo',
+  field: 'Campo',
+  old_value: 'Valor anterior',
+  previous_value: 'Valor anterior',
+  new_value: 'Valor nuevo',
+  current_value: 'Valor actual',
+  before: 'Antes',
+  after: 'Después',
+  changed_fields: 'Campos modificados',
+  bulk: 'Masivo',
+  notes: 'Notas',
+  movement_type: 'Tipo de movimiento',
+  transfer_side: 'Lado de transferencia',
+  reference_type: 'Tipo de referencia',
+  total_value: 'Valor total',
+  stock_before: 'Stock anterior',
+  stock_after: 'Stock posterior',
+  attributes_updated: 'Atributos modificados',
+  images_updated: 'Imágenes modificadas',
+  variants_updated: 'Variantes modificadas',
+  source_type: 'Tipo de origen',
+  source: 'Origen',
+  external_id: 'ID externo',
+  external_url: 'URL externa',
+  item_id: 'ID del ítem',
+  order_id: 'ID de la venta',
+  publication_id: 'ID de la publicación',
   batch: 'Lote',
   total: 'Total',
   created: 'Creados',
@@ -173,18 +204,140 @@ const FIELD_LABELS = {
   failed: 'Fallidos'
 };
 
+const HUMANIZE_TOKEN_LABELS = {
+  product: 'producto',
+  products: 'productos',
+  warehouse: 'almacén',
+  warehouses: 'almacenes',
+  marketplace: 'marketplace',
+  marketplaces: 'marketplaces',
+  credential: 'credencial',
+  credentials: 'credenciales',
+  publication: 'publicación',
+  publications: 'publicaciones',
+  draft: 'borrador',
+  drafts: 'borradores',
+  process: 'proceso',
+  processes: 'procesos',
+  published: 'publicado',
+  published_product: 'producto publicado',
+  sales: 'ventas',
+  sale: 'venta',
+  order: 'venta',
+  orders: 'ventas',
+  note: 'nota',
+  message: 'mensaje',
+  user: 'usuario',
+  system: 'sistema',
+  automatic: 'automático',
+  integration: 'integración',
+  external: 'externo',
+  connected: 'conectado',
+  disconnected: 'desconectado',
+  authenticated: 'autenticado',
+  created: 'creado',
+  updated: 'actualizado',
+  deleted: 'eliminado',
+  changed: 'modificado',
+  modified: 'modificado',
+  added: 'agregado',
+  removed: 'eliminado',
+  renewed: 'renovado',
+  cancelled: 'cancelado',
+  canceled: 'cancelado',
+  executed: 'ejecutado',
+  started: 'iniciado',
+  stopped: 'detenido',
+  finished: 'finalizado',
+  paused: 'pausado',
+  reactivated: 'reactivado',
+  synced: 'sincronizado',
+  received: 'recibido',
+  failed: 'fallido',
+  warning: 'con advertencias',
+  pending: 'pendiente',
+  success: 'exitoso',
+  error: 'error',
+  stock: 'stock',
+  price: 'precio',
+  quantity: 'cantidad',
+  available: 'disponible',
+  status: 'estado',
+  previous: 'anterior',
+  current: 'actual',
+  new: 'nuevo',
+  old: 'anterior',
+  source: 'origen',
+  destination: 'destino',
+  branch: 'sucursal',
+  pool: 'pool',
+  resource: 'recurso',
+  related: 'relacionado',
+  actor: 'actor',
+  module: 'módulo',
+  result: 'resultado',
+  description: 'descripción',
+  brand: 'marca',
+  name: 'nombre',
+  title: 'título',
+  image: 'imagen',
+  images: 'imágenes',
+  variant: 'variante',
+  variants: 'variantes',
+  attribute: 'atributo',
+  attributes: 'atributos',
+  token: 'token',
+  account: 'cuenta',
+  domain: 'dominio',
+  email: 'correo',
+  reason: 'motivo',
+  change: 'cambio',
+  changes: 'cambios',
+  field: 'campo',
+  fields: 'campos'
+};
+
+const VALUE_LABELS = {
+  origin: 'Origen',
+  destination: 'Destino',
+  transfer: 'Transferencia',
+  transfer_exit: 'Salida de transferencia',
+  transfer_entry: 'Entrada de transferencia',
+  bulk: 'Masivo',
+  notes: 'Notas',
+  stock: 'Existencias',
+  movement: 'Movimiento',
+  value: 'Valor',
+  price: 'Precio',
+  quantity: 'Cantidad',
+  active: 'Activo',
+  inactive: 'Inactivo',
+  true: 'Sí',
+  false: 'No'
+};
+
 function humanizeCode(value) {
   if (!value) return null;
 
   return String(value)
     .split(/[._-]+/)
     .filter(Boolean)
+    .map(part => HUMANIZE_TOKEN_LABELS[part.toLowerCase()] || part.toLowerCase())
     .map(part => part.charAt(0).toUpperCase() + part.slice(1))
     .join(' ');
 }
 
 function getFieldLabel(key) {
   return FIELD_LABELS[key] || humanizeCode(key);
+}
+
+function getValueLabel(value) {
+  if (value == null) return value;
+
+  const normalized = String(value).trim();
+  if (!normalized) return value;
+
+  return VALUE_LABELS[normalized.toLowerCase()] || value;
 }
 
 function toOptions(labels) {
@@ -678,8 +831,29 @@ function normalizePlainValue(value) {
   return value;
 }
 
-function formatDisplayValue(value) {
+function parseDisplayValue(value) {
   const normalized = normalizePlainValue(value);
+
+  if (typeof normalized !== 'string') return normalized;
+
+  const trimmed = normalized.trim();
+  if (!trimmed) return normalized;
+
+  const looksLikeJson =
+    (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+    (trimmed.startsWith('[') && trimmed.endsWith(']'));
+
+  if (!looksLikeJson) return normalized;
+
+  try {
+    return JSON.parse(trimmed);
+  } catch (error) {
+    return normalized;
+  }
+}
+
+function formatDisplayValue(value) {
+  const normalized = parseDisplayValue(value);
 
   if (normalized == null || normalized === '') return 'Sin valor';
   if (typeof normalized === 'boolean') return normalized ? 'Sí' : 'No';
@@ -697,11 +871,11 @@ function formatDisplayValue(value) {
     return entries.map(entry => `${entry.label}: ${entry.value}`).join(' | ');
   }
 
-  return String(normalized);
+  return getValueLabel(String(normalized));
 }
 
 function objectToDisplayRows(value) {
-  const normalized = normalizePlainValue(value);
+  const normalized = parseDisplayValue(value);
 
   if (!normalized || typeof normalized !== 'object' || Array.isArray(normalized)) {
     return [];
@@ -730,19 +904,14 @@ function buildDisplayContext(event) {
     });
   }
 
-  const metadataRows = objectToDisplayRows(event.metadata)
-    .filter(row => !['source', 'source_type'].includes(row.key));
-
-  return [
-    ...context.filter(row => row.value),
-    ...metadataRows
-  ];
+  return context.filter(row => row.value);
 }
 
 function buildDisplayChanges(changes) {
-  if (!Array.isArray(changes)) return [];
+  const normalized = parseDisplayValue(changes);
+  if (!Array.isArray(normalized)) return [];
 
-  return changes
+  return normalized
     .filter(change => change && !shouldHideDisplayKey(change.field || change.key || ''))
     .map(change => {
       const field = change.field || change.key || change.attribute || 'change';
