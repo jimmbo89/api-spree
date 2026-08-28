@@ -5,6 +5,7 @@ const authConfig = require('../../config/auth');
 const bcrypt = require('bcrypt');
 const logger = require("../../config/logger");
 const { InvitationRepository, LogRepository, CompanyRepository, UserRepository, UserCompanyRepository, RoleRepository } = require('../repositories');
+const AuditEventService = require('../services/AuditEventService');
 const { sendEmail } = require('../services/EmailService');
 
 // 📨 Plantilla de correo de invitación (consistente en toda la app)
@@ -245,6 +246,23 @@ async sendInvitation(req, res) {
       user_agent: userAgent,
       status: 'success'
     });
+
+    await AuditEventService.safeRecordFromRequest(req, {
+      company_id,
+      module: 'user',
+      action: 'user.invite',
+      result: 'success',
+      resource_type: 'user_company',
+      resource_label: `Invitación a ${email} en ${companyName}`,
+      description: `Invitación enviada a ${email}`,
+      metadata: {
+        company_name: companyName,
+        role_name: role.name,
+        invited_email: email,
+        invitation_method: 'email',
+        expires_at: expiresAt
+      }
+    });
     
     await transaction.commit();
     
@@ -385,6 +403,23 @@ async verificInvitation(req, res) {
       ip_address: ip,
       user_agent: userAgent,
       status: 'success'
+    });
+
+    await AuditEventService.safeRecord({
+      actor_type: AuditEventService.ACTOR_TYPES.USER,
+      actor_id: String(user.id),
+      actor_name: user.name || user.email || 'Usuario',
+      company_id: company.id,
+      module: 'user',
+      action: 'user.invite.accept',
+      result: 'success',
+      resource_type: 'user_company',
+      resource_label: `Usuario ${user.name || user.email || 'sin nombre'} en ${company.name}`,
+      description: `Invitación aceptada por ${user.name || user.email || 'usuario'}`,
+      metadata: {
+        company_name: company.name,
+        role_name: role.name
+      }
     });
     
     await transaction.commit();

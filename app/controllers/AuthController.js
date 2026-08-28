@@ -19,6 +19,8 @@ const {
   RolePermissionRepository,
   UserMarketplaceCredentialRepository,
 } = require("../repositories");
+const AuditEventService = require("../services/AuditEventService");
+const { detectChanges } = require("../util/auditUtils");
 const { sendEmail } = require("../services/EmailService");
 
 // 📨 Plantilla de correo de invitación (consistente en toda la app)
@@ -182,6 +184,62 @@ function parseMarketplaceCredentialAssignments(rawValue) {
   });
 
   return { provided: true, items: Array.from(map.values()) };
+}
+
+function toPlain(record) {
+  if (!record) return null;
+  return typeof record.get === 'function' ? record.get({ plain: true }) : record;
+}
+
+function getUserAuditLabel(user) {
+  const plain = toPlain(user) || {};
+  return [plain.name || null, plain.user || null, plain.email || null].filter(Boolean).join(' / ') || 'Usuario sin nombre';
+}
+
+function getCompanyAuditLabel(company) {
+  const plain = toPlain(company) || {};
+  return plain.name || 'Empresa sin nombre';
+}
+
+function getRoleAuditLabel(role) {
+  const plain = toPlain(role) || {};
+  return plain.name || 'Rol sin nombre';
+}
+
+function buildUserAuditPayload(user, data = {}) {
+  const plain = toPlain(user) || {};
+  return {
+    company_id: data.company_id || plain.company_id || null,
+    module: 'user',
+    resource_type: data.resource_type || 'user',
+    resource_id: plain.id,
+    resource_label: data.resource_label || getUserAuditLabel(plain),
+    ...data
+  };
+}
+
+function buildMembershipAuditPayload(membership, data = {}) {
+  const plain = toPlain(membership) || {};
+  const userName = data.user_name || plain.user?.name || plain.user?.email || plain.user?.user || null;
+  const companyName = data.company_name || plain.company?.name || null;
+  return {
+    company_id: data.company_id || plain.company_id || null,
+    module: 'user',
+    resource_type: 'user_company',
+    resource_id: plain.id,
+    resource_label: data.resource_label || [
+      userName ? `Usuario ${userName}` : null,
+      companyName ? `Empresa ${companyName}` : null
+    ].filter(Boolean).join(' / ') || 'Membresía de usuario',
+    ...data
+  };
+}
+
+function changesToValueSnapshot(changes, valueKey) {
+  return (changes || []).reduce((snapshot, change) => {
+    snapshot[change.field] = change[valueKey];
+    return snapshot;
+  }, {});
 }
 const AuthController = {
 
@@ -526,6 +584,8 @@ const AuthController = {
   try {
     // 1. Verificar que la membresía exista
     const membership = await UserCompanyRepository.findByUserIdAndCompanyId(userId, company_id);
+    const targetUser = membership ? await UserRepository.findById(userId) : null;
+    const targetCompany = await CompanyRepository.findById(company_id);
     if (!membership) {
       await LogRepository.create({
         user_id: requesterId,
@@ -582,6 +642,25 @@ const AuthController = {
       user_agent: userAgent,
       status: "success",
     });
+
+    await AuditEventService.safeRecordFromRequest(req, buildMembershipAuditPayload(membership, {
+      action: 'user.destroy',
+      result: 'success',
+      previous_value: { status: membership.status },
+      new_value: { status },
+      changes: [{
+        field: 'status',
+        old_value: membership.status,
+        new_value: status
+      }],
+      resource_label: `Usuario ${getUserAuditLabel(targetUser || { id: userId })} / Empresa ${getCompanyAuditLabel(targetCompany || { id: company_id })}`,
+      description: `Usuario desasociado de ${getCompanyAuditLabel(targetCompany || { id: company_id })}`,
+      metadata: {
+        company_name: getCompanyAuditLabel(targetCompany || { id: company_id }),
+        user_name: getUserAuditLabel(targetUser || { id: userId }),
+        action_text: actionText
+      }
+    }));
 
     // 6. Responder
     return res.status(200).json({
@@ -641,6 +720,21 @@ const AuthController = {
 
     try {
       const users = await UserRepository.findAll(filters);
+      await AuditEventService.safeRecordFromRequest(req, {
+        company_id: company_id || null,
+        module: 'user',
+        action: 'user.list',
+        result: 'success',
+        resource_type: 'user',
+        resource_label: 'Listado de usuarios',
+        description: 'Listado de usuarios consultado',
+        metadata: {
+          company_name: company?.name || null,
+          role_name: role_id ? `Rol ${role_id}` : null,
+          status: status ?? null,
+          total_users: users.length
+        }
+      });
       return res.status(200).json({
         success: true,
         users: users, // ya están en formato plano
@@ -1206,6 +1300,44 @@ const AuthController = {
       count: users.length,
     };
 
+    await AuditEventService.safeRecordFromRequest(req, (isNewUser ? buildUserAuditPayload(userBd, {
+      action: 'user.created',
+      result: 'success',
+      new_value: {
+        name: userBd.name || null,
+        email: userBd.email || null,
+        user: userBd.user || null,
+        status: userBd.status
+      },
+      description: `Usuario creado y asociado a ${getCompanyAuditLabel(company)}`,
+      metadata: {
+        company_name: getCompanyAuditLabel(company),
+        role_name: getRoleAuditLabel(role),
+        invitation_method: invitation_method || null,
+        warehouses_count: warehouses.length,
+        pools_count: pools.length,
+        marketplace_credentials_count: marketplaceCredentialsInput.items.length
+      }
+    }) : buildMembershipAuditPayload(membership, {
+      action: 'user.associated',
+      result: 'success',
+      new_value: {
+        status: membership.status,
+        role_id: membership.role_id
+      },
+      description: `Usuario asociado a ${getCompanyAuditLabel(company)}`,
+      metadata: {
+        company_name: getCompanyAuditLabel(company),
+        user_name: getUserAuditLabel(userBd),
+        role_name: getRoleAuditLabel(role),
+        invitation_method: invitation_method || null,
+        warehouses_count: warehouses.length,
+        pools_count: pools.length,
+        marketplace_credentials_count: marketplaceCredentialsInput.items.length,
+        is_new_user: isNewUser
+      }
+    })));
+
     // 👈 ¡Enviamos la respuesta AHORA!
     res.status(200).json(responsePayload);
 
@@ -1308,6 +1440,13 @@ const AuthController = {
         .json({ success: false, message: "Usuario no encontrado" });
     }
 
+    const company = await CompanyRepository.findById(company_id);
+    if (!company) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Empresa no encontrada" });
+    }
+
     // Parsear warehouses y pools solo si vienen
     let warehouses = [];
     let pools = [];
@@ -1397,6 +1536,19 @@ const AuthController = {
 
     const transaction = await sequelize.transaction();
     try {
+      const previousUserSnapshot = {
+        name: userBd.name || null,
+        email: userBd.email || null,
+        user: userBd.user || null,
+        image: userBd.image || null
+      };
+      const previousRoleId = membership.role_id;
+      const previousRole = await RoleRepository.findById(previousRoleId);
+      const previousMembershipSnapshot = {
+        role_id: membership.role_id,
+        status: membership.status
+      };
+
       // 2. Actualizar datos del usuario (solo campos presentes)
       const userUpdateData = {};
       if ("name" in req.body) userUpdateData.name = name;
@@ -1479,9 +1631,77 @@ const AuthController = {
 
       await transaction.commit();
 
+      const refreshedUser = await UserRepository.findById(userId);
+      const userChanges = detectChanges(previousUserSnapshot, {
+        name: refreshedUser?.name || null,
+        email: refreshedUser?.email || null,
+        user: refreshedUser?.user || null,
+        image: refreshedUser?.image || null
+      }, ['name', 'email', 'user', 'image']);
+
+      if (userChanges.length > 0 || Object.keys(userUpdateData).length > 0) {
+        await AuditEventService.safeRecordFromRequest(req, buildUserAuditPayload(refreshedUser || userBd, {
+          action: 'user.updated',
+          result: 'success',
+          previous_value: changesToValueSnapshot(userChanges, 'old_value'),
+          new_value: changesToValueSnapshot(userChanges, 'new_value'),
+          changes: userChanges,
+          description: `Usuario actualizado: ${getUserAuditLabel(refreshedUser || userBd)}`,
+          metadata: {
+            company_name: getCompanyAuditLabel(company),
+            role_name: getRoleAuditLabel(await RoleRepository.findById(finalRoleId)),
+            warehouses_count: warehouses.length,
+            pools_count: pools.length,
+            marketplace_credentials_count: marketplaceCredentialsInput.items.length
+          }
+        }));
+      }
+
+      if (finalRoleId !== previousRoleId || hasWarehouses || hasPools || marketplaceCredentialsInput.provided) {
+        const roleChanges = detectChanges(previousMembershipSnapshot, {
+          role_id: finalRoleId,
+          status: membership.status
+        }, ['role_id', 'status']);
+
+        await AuditEventService.safeRecordFromRequest(req, buildMembershipAuditPayload(membership, {
+          action: 'user.company_role_updated',
+          result: 'success',
+          previous_value: changesToValueSnapshot(roleChanges, 'old_value'),
+          new_value: changesToValueSnapshot(roleChanges, 'new_value'),
+          changes: roleChanges,
+          description: `Rol de usuario actualizado en ${getCompanyAuditLabel(company)}`,
+          metadata: {
+            company_name: getCompanyAuditLabel(company),
+            user_name: getUserAuditLabel(refreshedUser || userBd),
+            role_name: getRoleAuditLabel(await RoleRepository.findById(finalRoleId)),
+            previous_role_name: getRoleAuditLabel(previousRole),
+            warehouses_count: warehouses.length,
+            pools_count: pools.length,
+            marketplace_credentials_count: marketplaceCredentialsInput.items.length
+          }
+        }));
+      }
+
       const filters = {};
       filters.company_id = company_id;
       const users = await UserRepository.findAll(filters);
+      await AuditEventService.safeRecordFromRequest(req, {
+        company_id,
+        module: 'user',
+        action: 'user.updated',
+        result: 'success',
+        resource_type: 'user',
+        resource_label: getUserAuditLabel(userBd),
+        description: `Usuario actualizado: ${getUserAuditLabel(userBd)}`,
+        metadata: {
+          company_name: getCompanyAuditLabel(company),
+          role_name: getRoleAuditLabel(await RoleRepository.findById(finalRoleId)),
+          warehouses_count: warehouses.length,
+          pools_count: pools.length,
+          marketplace_credentials_count: marketplaceCredentialsInput.items.length,
+          user_name: getUserAuditLabel(userBd)
+        }
+      });
       return res.status(200).json({
         success: true,
         message: "Usuario actualizado correctamente",
@@ -1555,6 +1775,23 @@ const AuthController = {
       : roles.filter((role) => Number(role.visible_to_companies) === 1);
 
     try {
+    await AuditEventService.safeRecordFromRequest(req, {
+      company_id: company_id || null,
+      module: 'user',
+      action: 'user.pool_warehouse_roles',
+      result: 'success',
+      resource_type: 'user',
+      resource_label: 'Datos para alta de usuario',
+      description: 'Roles, almacenes, pools y credenciales consultados',
+      metadata: {
+        company_name: company_id ? (await CompanyRepository.findById(company_id))?.name || null : null,
+        branch_name: branch_id ? (await BranchRepository.findById(branch_id))?.name || null : null,
+        credentials_count: credentials.length,
+        warehouses_count: warehouses.length,
+        pools_count: pools.length,
+        roles_count: filteredRoles.length
+      }
+    });
     return res.status(200).json({
       success: true,
       roles: filteredRoles, // ya están en formato plano

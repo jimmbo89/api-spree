@@ -4,6 +4,7 @@ const logger = require('../../config/logger');
 const { UserRepository, CompanyRepository, RoleRepository } = require('../repositories');
 const UserCompanyRepository = require('../repositories/UserCompanyRepository');
 const { sendEmail } = require('../services/EmailService');
+const AuditEventService = require('../services/AuditEventService');
 
 const UserCompanyController = {
   async create(req, res) {
@@ -53,7 +54,7 @@ const UserCompanyController = {
     }
   },
 
-    async updateRole(req, res) {
+  async updateRole(req, res) {
         logger.info(
       `${req.user?.name || "Unknown"} - Actualiza rol del usuario en la company ${req.body.id}`
     );
@@ -72,6 +73,37 @@ const UserCompanyController = {
 
     try {
       const updated = await UserCompanyRepository.updateRole(record, role_id);
+      const [user, company, previousRole] = await Promise.all([
+        UserRepository.findById(updated.user_id),
+        CompanyRepository.findById(updated.company_id),
+        RoleRepository.findById(record.role_id)
+      ]);
+
+      await AuditEventService.safeRecord({
+        actor_type: req.user?.id ? AuditEventService.ACTOR_TYPES.USER : AuditEventService.ACTOR_TYPES.SYSTEM,
+        actor_id: req.user?.id ? String(req.user.id) : null,
+        actor_name: req.user?.name || req.user?.email || 'Spree',
+        company_id: updated.company_id,
+        module: 'user',
+        action: 'user.company_role_updated',
+        result: 'success',
+        resource_type: 'user_company',
+        resource_label: `${user?.name || user?.email || 'Usuario'} en ${company?.name || 'Empresa'}`,
+        previous_value: { role_id: record.role_id },
+        new_value: { role_id },
+        changes: [{
+          field: 'role_id',
+          old_value: record.role_id,
+          new_value: role_id
+        }],
+        description: `Rol de usuario actualizado en ${company?.name || 'empresa'}`,
+        metadata: {
+          user_name: user?.name || user?.email || null,
+          company_name: company?.name || null,
+          role_name: role?.name || null,
+          previous_role_name: previousRole?.name || null
+        }
+      });
       return res.status(200).json({ success: true, membership: updated, message: "Rol del usario actualizado correctamente" });
     } catch (error) {
       logger.error("UserCompanyController->updateStatus:", error.message);
