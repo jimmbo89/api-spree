@@ -63,6 +63,59 @@ function getProductAuditLabel(product) {
   return [plain.sku, plain.name].filter(Boolean).join(" / ") || "Producto sin nombre";
 }
 
+function getProductStateLabel(state) {
+  const labels = {
+    "-1": "Archivado",
+    0: "Inactivo",
+    1: "Activo",
+    2: "Archivado"
+  };
+  return labels[Number(state)] || "Estado desconocido";
+}
+
+function getProductStateAudit(previousState, newState, productName) {
+  const previousLabel = getProductStateLabel(previousState);
+  const newLabel = getProductStateLabel(newState);
+
+  if (Number(newState) === 2) {
+    return {
+      action: "product.archived",
+      title: "Producto archivado",
+      description: `Producto archivado: ${productName}`
+    };
+  }
+
+  if ([-1, 2].includes(Number(previousState)) && Number(newState) === 1) {
+    return {
+      action: "product.unarchived",
+      title: "Producto desarchivado",
+      description: `Producto desarchivado: ${productName}`
+    };
+  }
+
+  if (Number(newState) === 0) {
+    return {
+      action: "product.inactivated",
+      title: "Producto inactivado",
+      description: `Producto inactivado: ${productName}`
+    };
+  }
+
+  if (Number(newState) === 1) {
+    return {
+      action: "product.activated",
+      title: "Producto activado",
+      description: `Producto activado: ${productName}`
+    };
+  }
+
+  return {
+    action: "product.state_changed",
+    title: "Estado del producto modificado",
+    description: `Estado del producto modificado: ${productName} (${previousLabel} a ${newLabel})`
+  };
+}
+
 function buildProductAuditPayload(product, data = {}) {
   const plain = toPlain(product) || {};
   return {
@@ -1469,27 +1522,32 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
       const product = await ProductRepository.findById(req.body.id);
       if (!product) return res.status(404).json({ msg: "ProductNotFound" });
       const previousState = product.state;
+      const stateAudit = getProductStateAudit(previousState, state, product.name);
+      const previousStateLabel = getProductStateLabel(previousState);
+      const newStateLabel = getProductStateLabel(state);
 
       await ProductRepository.changeState(product, state);
       await AuditEventService.safeRecordFromRequest(req, buildProductAuditPayload(product, {
-        action: "product.state_changed",
+        action: stateAudit.action,
         result: "success",
-        previous_value: { state: previousState },
-        new_value: { state },
+        previous_value: { state: previousStateLabel },
+        new_value: { state: newStateLabel },
         changes: [{
           field: "state",
-          old_value: previousState,
-          new_value: state
+          old_value: previousStateLabel,
+          new_value: newStateLabel
         }],
-        description: `Estado del producto actualizado: ${product.name}`,
+        description: stateAudit.description,
         metadata: {
-          sku: product.sku
+          sku: product.sku,
+          previous_status: previousStateLabel,
+          new_status: newStateLabel
         }
       }));
       await LogRepository.create({
         user_id: metadata.user_id,
         action: "product.state",
-        description: `Producto Actualizado: ID ${product.id}, nombre: "${product.name}", SKU: "${product.sku}"`,
+        description: `${stateAudit.title}: ID ${product.id}, nombre: "${product.name}", SKU: "${product.sku}"`,
         ip_address: metadata.ip_address,
         user_agent: metadata.user_agent,
         status: "success",
@@ -1500,7 +1558,7 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
       });
       res
         .status(200)
-        .json({ status: "success", message: "“Producto archivado correctamente. Su historial se conserva.”", products });
+        .json({ status: "success", message: stateAudit.description, products });
     } catch (error) {
       await LogRepository.create({
         user_id: metadata?.user_id,
