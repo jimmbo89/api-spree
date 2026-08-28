@@ -1252,7 +1252,7 @@ async function persistMercadoLibreItemState({
           previous_value: { [change.field]: change.old_value },
           new_value: { [change.field]: change.new_value },
           changes: [change],
-          description: `Marketplace informó cambio en publicación ${itemId}`,
+          description: 'Marketplace informó cambios en la publicación',
           metadata: {
             topic: payload?.topic || null,
             resource: payload?.resource || null,
@@ -2671,7 +2671,7 @@ async function processFalabellaProductWebhook(payload, options = {}) {
               previous_value: { [change.field]: change.old_value },
               new_value: { [change.field]: change.new_value },
               changes: [change],
-              description: `Marketplace informó cambio en publicación ${task.external_id}`,
+          description: 'Marketplace informó cambios en la publicación',
               metadata: {
                 topic: normalizedTopic || topic,
                 external_id: task.external_id,

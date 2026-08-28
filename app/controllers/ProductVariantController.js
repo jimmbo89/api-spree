@@ -15,7 +15,7 @@ function toPlain(record) {
 
 function getProductAuditLabel(product) {
   const plain = toPlain(product) || {};
-  return [plain.sku, plain.name].filter(Boolean).join(" / ") || `Producto ${plain.id}`;
+  return [plain.sku, plain.name].filter(Boolean).join(" / ") || "Producto sin nombre";
 }
 
 function buildVariantAuditPayload(product, variant, data = {}) {

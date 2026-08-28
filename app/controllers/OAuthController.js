@@ -1108,7 +1108,7 @@ const sanitizeMarketplaceCredentialForAudit = (credential) => {
 
 const getMarketplaceCredentialAuditLabel = (credential) => {
   const marketplaceName = credential?.marketplace?.name || credential?.marketplace?.domain;
-  return [marketplaceName, credential?.name].filter(Boolean).join(" / ") || `Credencial marketplace ${credential?.id}`;
+  return [marketplaceName, credential?.name].filter(Boolean).join(" / ") || "Credencial marketplace";
 };
 
 const getExternalAccountAuditSnapshot = (credential) => {
@@ -1132,6 +1132,7 @@ const recordMarketplaceCredentialOAuthAudit = async (req, credential, userId, da
 
   const metadata = getRequestMetadata(req);
   const actorName = req.user?.name || req.user?.email || (userId ? `Usuario ${userId}` : 'Usuario OAuth');
+  const { metadata: eventMetadata, ...eventData } = data;
 
   return AuditEventService.safeRecord({
     actor_type: AuditEventService.ACTOR_TYPES.USER,
@@ -1146,7 +1147,12 @@ const recordMarketplaceCredentialOAuthAudit = async (req, credential, userId, da
     resource_label: getMarketplaceCredentialAuditLabel(credential),
     marketplace_id: credential.marketplace_id,
     marketplace_credential_id: credential.id,
-    ...data
+    ...eventData,
+    metadata: {
+      credential_name: credential.name || null,
+      authenticated_by_user_name: actorName,
+      ...eventMetadata
+    }
   });
 };
 
@@ -2599,13 +2605,12 @@ async mercadoLibreCallback(req, res) {
         previous_value: changesToValueSnapshot(authChanges, "old_value"),
         new_value: changesToValueSnapshot(authChanges, "new_value"),
         changes: authChanges,
-        description: `Conexion autenticada por usuario ${userId}`,
+        description: `Conexión autenticada por ${req.user?.name || req.user?.email || 'usuario OAuth'}`,
         metadata: {
           auth_type: "oauth",
           reconnected: true,
           authenticated_by_user_id: userId,
           authenticated_by_user_name: req.user?.name || req.user?.email || null,
-          temporary_credential_id: credential.id,
           ml_user_id: mlUserId
         }
       });
@@ -2623,7 +2628,7 @@ async mercadoLibreCallback(req, res) {
           previous_value: changesToValueSnapshot(externalAccountChanges, "old_value"),
           new_value: changesToValueSnapshot(externalAccountChanges, "new_value"),
           changes: externalAccountChanges,
-          description: `Cuenta externa autenticada para ML user ${mlUserId}`,
+          description: 'Cuenta externa autenticada en Mercado Libre',
           metadata: {
             auth_type: "oauth",
             ml_user_id: mlUserId,
@@ -2717,7 +2722,7 @@ async mercadoLibreCallback(req, res) {
       previous_value: changesToValueSnapshot(authChanges, "old_value"),
       new_value: changesToValueSnapshot(authChanges, "new_value"),
       changes: authChanges,
-      description: `Conexion autenticada por usuario ${userId}`,
+        description: `Conexión autenticada por ${req.user?.name || req.user?.email || 'usuario OAuth'}`,
       metadata: {
         auth_type: "oauth",
         authenticated_by_user_id: userId,
@@ -2740,7 +2745,7 @@ async mercadoLibreCallback(req, res) {
         previous_value: changesToValueSnapshot(externalAccountChanges, "old_value"),
         new_value: changesToValueSnapshot(externalAccountChanges, "new_value"),
         changes: externalAccountChanges,
-        description: `Cuenta externa autenticada para ML user ${mlUserId}`,
+        description: 'Cuenta externa autenticada en Mercado Libre',
         metadata: {
           auth_type: "oauth",
           ml_user_id: mlUserId

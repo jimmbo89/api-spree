@@ -57,11 +57,11 @@ function getMarketplaceName(order, marketplace = null) {
 function buildOrderLabel(order) {
   const plain = toPlain(order) || {};
   const marketplaceName = getMarketplaceName(plain);
-  if (marketplaceName && plain.marketplace_order_id) {
-    return `Venta en ${marketplaceName} / ${plain.marketplace_order_id}`;
+  if (marketplaceName && plain.buyer_name) {
+    return `Venta en ${marketplaceName} / ${plain.buyer_name}`;
   }
 
-  return marketplaceName || `Venta ${plain.id}`;
+  return marketplaceName ? `Venta en ${marketplaceName}` : 'Venta marketplace';
 }
 
 function buildOrderSnapshot(order) {
@@ -77,6 +77,22 @@ function buildOrderSnapshot(order) {
     marketplace_credential_id: plain.marketplace_credential_id,
     company_id: plain.company_id,
     branch_id: plain.branch_id
+  };
+}
+
+function buildOrderMetadata(order, source, marketplace = null, extra = {}) {
+  const plain = toPlain(order) || {};
+  return {
+    source,
+    marketplace_name: getMarketplaceName(plain, marketplace),
+    credential_name: plain.credential?.name || null,
+    order_status: plain.order_status || null,
+    payment_status: plain.payment_status || null,
+    total_amount: plain.total_amount || null,
+    currency: plain.currency || null,
+    buyer_name: plain.buyer_name || null,
+    seller_name: plain.credential?.name || null,
+    ...redactSensitive(extra || {})
   };
 }
 
@@ -108,10 +124,7 @@ const SalesAuditService = {
         result: data.result || 'success',
         marketplace_id: data.marketplace_id || marketplace?.id || order?.credential?.marketplace_id || null,
         metadata: {
-          source: 'marketplace',
-          marketplace_name: getMarketplaceName(order, marketplace),
-          marketplace_order_id: order?.marketplace_order_id,
-          ...redactSensitive(data.metadata || {})
+          ...buildOrderMetadata(order, 'marketplace', marketplace, data.metadata)
         },
         previous_value: redactSensitive(data.previous_value),
         new_value: redactSensitive(data.new_value),
@@ -128,9 +141,7 @@ const SalesAuditService = {
         action,
         result: data.result || 'success',
         metadata: {
-          source: 'spree',
-          marketplace_order_id: order?.marketplace_order_id,
-          ...redactSensitive(data.metadata || {})
+          ...buildOrderMetadata(order, 'spree', null, data.metadata)
         },
         previous_value: redactSensitive(data.previous_value),
         new_value: redactSensitive(data.new_value),
@@ -145,9 +156,7 @@ const SalesAuditService = {
       action,
       result: data.result || 'success',
       metadata: {
-        source: 'spree',
-        marketplace_order_id: order?.marketplace_order_id,
-        ...redactSensitive(data.metadata || {})
+        ...buildOrderMetadata(order, 'spree', null, data.metadata)
       },
       previous_value: redactSensitive(data.previous_value),
       new_value: redactSensitive(data.new_value),

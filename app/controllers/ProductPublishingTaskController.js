@@ -3683,10 +3683,13 @@ async publishedProducts(req, res) {
             previous_value: { [change.field]: change.old_value },
             new_value: { [change.field]: change.new_value },
             changes: [change],
-            description: `Publicacion ${externalId} actualizada desde Spree`,
+            description: 'Publicación actualizada desde Spree',
             metadata: {
               source: 'spree_marketplace_edit',
               external_id: externalId,
+              marketplace_name: credential.name || marketplace.name || null,
+              marketplace_domain: marketplace.domain || null,
+              credential_name: credential.name || null,
               changed_fields: Object.keys(result.requested_changes || {})
             }
           })
@@ -4203,10 +4206,13 @@ async publishedProducts(req, res) {
             previous_value: { [change.field]: change.old_value },
             new_value: { [change.field]: change.new_value },
             changes: [change],
-            description: `Publicacion ${externalId} actualizada desde Spree`,
+            description: 'Publicación actualizada desde Spree',
             metadata: {
               source: 'spree_marketplace_edit',
               external_id: externalId,
+              marketplace_name: credential.name || marketplace.name || null,
+              marketplace_domain: marketplace.domain || null,
+              credential_name: credential.name || null,
               changed_fields: changedFields,
               feed_confirmed: feedFinishedSuccessfully
             }

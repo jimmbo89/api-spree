@@ -26,6 +26,8 @@ const MODULE_LABELS = {
   process: 'Procesos',
   published_product: 'Productos publicados',
   sales: 'Ventas',
+  user: 'Usuarios',
+  membership: 'Membresías',
   sii: 'SII'
 };
 
@@ -57,7 +59,9 @@ const RESOURCE_TYPE_LABELS = {
   marketplace_order: 'Venta',
   marketplace_order_note: 'Nota de venta',
   marketplace_order_message: 'Mensaje de venta',
-  job: 'Proceso'
+  job: 'Proceso',
+  user: 'Usuario',
+  user_company: 'Membresía'
 };
 
 const ACTION_LABELS = {
@@ -130,7 +134,13 @@ const ACTION_LABELS = {
   'sales.status_changed': 'Estado de venta modificado',
   'sales.refreshed': 'Venta actualizada manualmente',
   'sales.note_added': 'Nota interna agregada',
-  'sales.message_sent': 'Mensaje enviado'
+  'sales.message_sent': 'Mensaje enviado',
+
+  'user.invited': 'Usuario invitado',
+  'user.updated': 'Usuario actualizado',
+  'user.status_changed': 'Estado del usuario modificado',
+  'membership.updated': 'Membresía actualizada',
+  'membership.status_changed': 'Estado de membresía modificado'
 };
 
 const FIELD_LABELS = {
@@ -165,6 +175,10 @@ const FIELD_LABELS = {
   title: 'Título',
   description: 'Descripción',
   seller_email: 'Correo de cuenta externa',
+  seller_id: 'Cuenta externa',
+  user_name: 'Usuario',
+  user_email: 'Correo del usuario',
+  authenticated_by_user_name: 'Autenticado por',
   external_account: 'Cuenta externa',
   external_status: 'Estado externo',
   marketplace_status: 'Estado del marketplace',
@@ -183,12 +197,28 @@ const FIELD_LABELS = {
   movement_type: 'Tipo de movimiento',
   transfer_side: 'Lado de transferencia',
   reference_type: 'Tipo de referencia',
+  operation: 'Operación',
+  row_number: 'Fila',
+  warnings: 'Advertencias',
   total_value: 'Valor total',
+  unit_price: 'Precio unitario',
+  purchase_price: 'Precio de compra',
   stock_before: 'Stock anterior',
   stock_after: 'Stock posterior',
+  initial_stock_total: 'Stock inicial total',
   attributes_updated: 'Atributos modificados',
   images_updated: 'Imágenes modificadas',
   variants_updated: 'Variantes modificadas',
+  variants_count: 'Cantidad de variantes',
+  variants_configured: 'Variantes configuradas',
+  attributes_count: 'Cantidad de atributos',
+  warehouses_count: 'Cantidad de almacenes',
+  product_label: 'Producto',
+  products: 'Productos',
+  marketplaces: 'Marketplaces',
+  warehouse_label: 'Almacén',
+  source_warehouse_label: 'Almacén origen',
+  destination_warehouse_label: 'Almacén destino',
   source_type: 'Tipo de origen',
   source: 'Origen',
   publication_step: 'Paso de publicación',
@@ -199,9 +229,8 @@ const FIELD_LABELS = {
   products_count: 'Cantidad de productos',
   marketplaces_count: 'Cantidad de marketplaces',
   stock_total: 'Stock total',
-  marketplace_order_id: 'ID de la venta en marketplace',
-  task_id: 'ID de la tarea',
   notes_count: 'Cantidad de notas',
+  messages_count: 'Cantidad de mensajes',
   text_length: 'Longitud del texto',
   refresh_source: 'Fuente de actualización',
   fallback_error: 'Error alternativo',
@@ -210,12 +239,38 @@ const FIELD_LABELS = {
   origin_job_id: 'ID del proceso origen',
   reprocessed_tasks_count: 'Cantidad de tareas reprocesadas',
   total_total: 'Total',
-  draft_name: 'Nombre del borrador',
-  external_id: 'ID externo',
   external_url: 'URL externa',
-  item_id: 'ID del ítem',
-  order_id: 'ID de la venta',
-  publication_id: 'ID de la publicación',
+  order_status: 'Estado de la venta',
+  payment_status: 'Estado del pago',
+  total_amount: 'Total de la venta',
+  currency: 'Moneda',
+  buyer_name: 'Comprador',
+  seller_name: 'Vendedor',
+  shipping_status: 'Estado del envío',
+  payment_method: 'Método de pago',
+  shipping_city: 'Ciudad de envío',
+  shipping_region: 'Región de envío',
+  auth_type: 'Tipo de autenticación',
+  auth_required: 'Requiere autenticación',
+  triggered_by: 'Activado por',
+  connection_valid: 'Conexión válida',
+  updated_fields: 'Campos modificados',
+  access_token_configured: 'Token de acceso configurado',
+  refresh_token_configured: 'Token de renovación configurado',
+  api_key_configured: 'Clave API configurada',
+  expires_at: 'Expira el',
+  expires_in: 'Expira en',
+  country: 'País',
+  feed_confirmed: 'Confirmación del marketplace',
+  topic: 'Tipo de notificación',
+  seller_sku: 'SKU del vendedor',
+  elapsed_minutes: 'Minutos transcurridos',
+  stage: 'Etapa',
+  error: 'Error',
+  successful: 'Exitosos',
+  errors_count: 'Errores',
+  processed: 'Procesados',
+  percentage: 'Porcentaje',
   batch: 'Lote',
   total: 'Total',
   created: 'Creados',
@@ -341,12 +396,37 @@ const HUMANIZE_TOKEN_LABELS = {
   change: 'cambio',
   changes: 'cambios',
   field: 'campo',
-  fields: 'campos'
+  fields: 'campos',
+  configured: 'configurado',
+  configuration: 'configuración',
+  valid: 'válido',
+  required: 'requerido',
+  import: 'importación',
+  bulk_import: 'importación masiva',
+  product_creation: 'creación de producto',
+  marketplace_credential_create: 'creación de credencial marketplace',
+  marketplace_credential_refresh: 'renovación de credencial marketplace',
+  marketplace_credential_update: 'actualización de credencial marketplace',
+  marketplace_token_refresh: 'renovación de token marketplace',
+  spree_marketplace_edit: 'edición desde Spree hacia marketplace',
+  adapter: 'adaptador',
+  automatic: 'automático',
+  manual_update: 'actualización manual',
+  user_requested: 'solicitado por usuario',
+  timeout: 'tiempo agotado',
+  job_process: 'procesamiento de proceso',
+  entry: 'entrada',
+  exit: 'salida',
+  fifo: 'FIFO',
+  lot: 'lote',
+  matched: 'coincidente'
 };
 
 const VALUE_LABELS = {
   origin: 'Origen',
   destination: 'Destino',
+  entry: 'Entrada',
+  exit: 'Salida',
   transfer: 'Transferencia',
   transfer_exit: 'Salida de transferencia',
   transfer_entry: 'Entrada de transferencia',
@@ -364,15 +444,72 @@ const VALUE_LABELS = {
   draft_payload_edit: 'Edición de borrador',
   manual_refresh: 'Actualización manual',
   refresh: 'Actualización',
+  spree_marketplace_edit: 'Edición desde Spree hacia marketplace',
+  bulk_import: 'Importación masiva',
+  product_creation: 'Creación de producto',
+  warehouse_product_update: 'Actualización de producto en almacén',
+  warehouse_product_create: 'Producto agregado al almacén',
+  warehouse_product_delete: 'Producto eliminado del almacén',
+  marketplace_credential_create: 'Creación de credencial marketplace',
+  marketplace_credential_refresh: 'Renovación de credencial marketplace',
+  marketplace_credential_update: 'Actualización de credencial marketplace',
+  marketplace_token_refresh: 'Renovación de token marketplace',
+  manual_update: 'Actualización manual',
+  adapter: 'Adaptador',
+  automatic: 'Automático',
+  user_requested: 'Solicitado por usuario',
+  timeout: 'Tiempo agotado',
+  job_process: 'Procesamiento de proceso',
   bulk: 'Masivo',
   notes: 'Notas',
   stock: 'Existencias',
+  created: 'Creado',
+  updated: 'Actualizado',
   movement: 'Movimiento',
   value: 'Valor',
   price: 'Precio',
   quantity: 'Cantidad',
+  status: 'Estado',
+  name: 'Nombre',
+  brand: 'Marca',
+  model: 'Modelo',
+  condition: 'Condición',
+  description: 'Descripción',
+  title: 'Título',
+  attributes: 'Atributos',
+  images: 'Imágenes',
+  variants: 'Variantes',
+  available_quantity: 'Cantidad disponible',
+  published_stock: 'Existencias publicadas',
+  external_url: 'URL externa',
+  seller_email: 'Correo de cuenta externa',
+  seller_id: 'Cuenta externa',
+  country: 'País',
+  expires_at: 'Fecha de expiración',
   active: 'Activo',
   inactive: 'Inactivo',
+  connected: 'Conectado',
+  disconnected: 'Desconectado',
+  paid: 'Pagado',
+  unpaid: 'Sin pagar',
+  approved: 'Aprobado',
+  rejected: 'Rechazado',
+  confirmed: 'Confirmado',
+  cancelled: 'Cancelado',
+  canceled: 'Cancelado',
+  closed: 'Cerrado',
+  deleted: 'Eliminado',
+  pending: 'Pendiente',
+  completed: 'Completado',
+  completed_with_errors: 'Completado con errores',
+  published: 'Publicado',
+  published_with_warnings: 'Publicado con advertencias',
+  not_published: 'No publicado',
+  under_review: 'En revisión',
+  failed: 'Fallido',
+  error: 'Error',
+  oauth: 'OAuth',
+  fifo: 'FIFO',
   true: 'Sí',
   false: 'No'
 };
@@ -414,7 +551,12 @@ function getValueLabel(value) {
   const normalized = String(value).trim();
   if (!normalized) return value;
 
-  return VALUE_LABELS[normalized.toLowerCase()] || value;
+  const directLabel = VALUE_LABELS[normalized.toLowerCase()];
+  if (directLabel) return directLabel;
+
+  if (!/[._-]/.test(normalized)) return value;
+
+  return humanizeCode(normalized);
 }
 
 function toOptions(labels) {
@@ -889,7 +1031,9 @@ async function buildFilterOptions({ companyId, req, scopeWhere }) {
 }
 
 function isSensitiveDisplayKey(key) {
-  return /token|secret|password|authorization|credential|access_token|refresh_token/i.test(String(key));
+  const normalized = String(key).toLowerCase();
+  if (['credential_name', 'marketplace_credential_name'].includes(normalized)) return false;
+  return /token|secret|password|authorization|api_key|access_token|refresh_token/i.test(normalized);
 }
 
 function isInternalIdDisplayKey(key) {
@@ -897,7 +1041,7 @@ function isInternalIdDisplayKey(key) {
 }
 
 function shouldHideDisplayKey(key) {
-  return isSensitiveDisplayKey(key) || isInternalIdDisplayKey(key) || key === 'draft_name';
+  return isSensitiveDisplayKey(key) || isInternalIdDisplayKey(key) || ['draft_name', 'resource', 'audit_key'].includes(key);
 }
 
 function normalizePlainValue(value) {

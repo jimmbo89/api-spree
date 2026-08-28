@@ -1289,7 +1289,10 @@ class PublishingService {
               job_id,
               batch_id,
               has_warnings: hasWarnings,
-              marketplace_domain: marketplace.domain || null
+              product_label: [productData.sku, productData.name].filter(Boolean).join(' / ') || null,
+              marketplace_name: marketplace.name || null,
+              marketplace_domain: marketplace.domain || null,
+              credential_name: credential?.name || null
             },
             job_id: job_id || null
           });
@@ -1760,7 +1763,10 @@ static async republishProduct(task, marketplace, credential, userId) {
         description: `Publicacion reprocesada en ${marketplace.name || marketplace.domain || 'marketplace'}`,
         metadata: {
           source: 'spree_reprocess',
+          product_label: [task.product?.sku, task.product?.name].filter(Boolean).join(' / ') || null,
+          marketplace_name: marketplace.name || null,
           marketplace_domain: marketplace.domain || null,
+          credential_name: task.credential?.name || null,
           has_warnings: hasWarnings
         }
       });

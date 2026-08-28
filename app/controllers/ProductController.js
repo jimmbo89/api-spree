@@ -60,7 +60,7 @@ function toPlain(record) {
 
 function getProductAuditLabel(product) {
   const plain = toPlain(product) || {};
-  return [plain.sku, plain.name].filter(Boolean).join(" / ") || `Producto ${plain.id}`;
+  return [plain.sku, plain.name].filter(Boolean).join(" / ") || "Producto sin nombre";
 }
 
 function buildProductAuditPayload(product, data = {}) {
@@ -769,7 +769,7 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
           result: "success",
           resource_type: "product",
           resource_id: row.product_id,
-          resource_label: [row.sku, row.name].filter(Boolean).join(" / ") || `Producto ${row.product_id}`,
+          resource_label: [row.sku, row.name].filter(Boolean).join(" / ") || "Producto sin nombre",
           description: `Producto importado masivamente: ${row.name || row.sku}`,
           metadata: {
             row_number: row.row_number,

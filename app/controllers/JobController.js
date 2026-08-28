@@ -1133,30 +1133,45 @@ async republishFromJob(req, res) {
 
     await JobProduct.bulkCreate(jobProductsData);
 
+    const auditProducts = tasksToRepublish.map((task) => ({
+      sku: task.product?.sku || null,
+      name: task.product?.name || null,
+      stock: task.payload?.publishStock ?? task.payload?.stock ?? task.payload?.available_quantity ?? null
+    }));
+    const auditMarketplaces = tasksToRepublish.map((task) => ({
+      name: task.marketplace?.name || null,
+      domain: task.marketplace?.domain || null,
+      credential_name: task.credential?.name || null
+    }));
+
     await PublicationAuditService.recordProcessEvent(req, originalJob.get ? originalJob.get({ plain: true }) : originalJob, 'process.reprocessed', {
       description: `Proceso #${originalJob.id} reprocesado mediante proceso #${newJob.id}`,
       related_resource_type: 'job',
       related_resource_id: newJob.id,
+      products: auditProducts,
+      marketplaces: auditMarketplaces,
       new_value: {
         reprocess_job_id: newJob.id,
         tasks_count: tasksToRepublish.length
       },
       metadata: {
         reprocess_job_id: newJob.id,
-        reprocessed_tasks: task_ids
+        reprocessed_tasks_count: tasksToRepublish.length
       }
     });
 
     await PublicationAuditService.recordProcessEvent(req, newJob.get ? newJob.get({ plain: true }) : newJob, 'process.created', {
       description: `Proceso #${newJob.id} originado desde proceso #${originalJob.id}`,
       origin_job_id: originalJob.id,
+      products: auditProducts,
+      marketplaces: auditMarketplaces,
       new_value: {
         status: newJob.status,
         total_products: newJob.total_products
       },
       metadata: {
         origin_job_id: originalJob.id,
-        reprocessed_tasks: task_ids
+        reprocessed_tasks_count: tasksToRepublish.length
       }
     });
 

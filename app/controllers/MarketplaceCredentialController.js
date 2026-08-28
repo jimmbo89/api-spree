@@ -91,7 +91,7 @@ function sanitizeAdditionalData(value) {
 function getMarketplaceCredentialAuditLabel(credential) {
   const plain = toPlain(credential) || {};
   const marketplaceName = plain.marketplace?.name || plain.marketplace?.domain;
-  return [marketplaceName, plain.name].filter(Boolean).join(' / ') || `Credencial marketplace ${plain.id}`;
+  return [marketplaceName, plain.name].filter(Boolean).join(' / ') || 'Credencial marketplace';
 }
 
 function sanitizeCredentialForAudit(credential) {
@@ -386,11 +386,13 @@ const MarketplaceCredentialController = {
         action: 'marketplace.connection_created',
         result: 'success',
         new_value: sanitizeCredentialForAudit(newCredential),
-        description: `Conexion creada para marketplace ${marketplace.name || marketplace_id}`,
+        description: `Conexión creada para marketplace ${marketplace.name || 'sin nombre'}`,
         metadata: {
           auth_type: 'manual',
           authenticated_by_user_id: userId,
-          marketplace_name: marketplace.name || null
+          authenticated_by_user_name: req.user?.name || req.user?.email || null,
+          marketplace_name: marketplace.name || null,
+          credential_name: newCredential.name || null
         }
       }));
 
@@ -453,11 +455,13 @@ const MarketplaceCredentialController = {
           action: 'marketplace.connection_created',
           result: 'success',
           new_value: sanitizeCredentialForAudit(connectedCredential || newCredential),
-          description: `Conexion OAuth creada para marketplace ${marketplace.name || marketplace_id}`,
+          description: `Conexión OAuth creada para marketplace ${marketplace.name || 'sin nombre'}`,
           metadata: {
             auth_type: 'oauth',
             authenticated_by_user_id: userId,
-            marketplace_name: marketplace.name || null
+            authenticated_by_user_name: req.user?.name || req.user?.email || null,
+            marketplace_name: marketplace.name || null,
+            credential_name: (connectedCredential || newCredential).name || null
           }
         }));
 
@@ -472,11 +476,13 @@ const MarketplaceCredentialController = {
           action: 'marketplace.connection_created',
           result: 'pending',
           new_value: sanitizeCredentialForAudit(newCredential),
-          description: `Conexion OAuth creada pendiente de autenticacion para marketplace ${marketplace.name || marketplace_id}`,
+          description: `Conexión OAuth creada pendiente de autenticación para marketplace ${marketplace.name || 'sin nombre'}`,
           metadata: {
             auth_type: 'oauth',
             auth_required: true,
-            marketplace_name: marketplace.name || null
+            authenticated_by_user_name: req.user?.name || req.user?.email || null,
+            marketplace_name: marketplace.name || null,
+            credential_name: newCredential.name || null
           }
         }));
 
@@ -764,12 +770,13 @@ const MarketplaceCredentialController = {
           previous_value: changesToValueSnapshot(configurationChanges, 'old_value'),
           new_value: changesToValueSnapshot(configurationChanges, 'new_value'),
           changes: configurationChanges,
-          description: `Configuracion modificada para la conexion ${credential.name || credential.id}`,
+          description: `Configuración modificada para la conexión ${credential.name || 'sin nombre'}`,
           metadata: {
             updated_fields: configurationChanges.map((change) => change.field),
             connection_valid: connectionStatus.valid,
             auth_required: !!connectionStatus.auth_required,
-            marketplace_name: marketplace.name || null
+            marketplace_name: marketplace.name || null,
+            credential_name: credential.name || null
           }
         }));
       }
@@ -781,9 +788,10 @@ const MarketplaceCredentialController = {
           previous_value: changesToValueSnapshot(externalAccountChanges, 'old_value'),
           new_value: changesToValueSnapshot(externalAccountChanges, 'new_value'),
           changes: externalAccountChanges,
-          description: `Cuenta externa modificada para la conexion ${credential.name || credential.id}`,
+          description: `Cuenta externa modificada para la conexión ${credential.name || 'sin nombre'}`,
           metadata: {
-            marketplace_name: marketplace.name || null
+            marketplace_name: marketplace.name || null,
+            credential_name: credential.name || null
           }
         }));
       }
@@ -795,10 +803,11 @@ const MarketplaceCredentialController = {
           previous_value: { active: true },
           new_value: { active: false },
           changes: [{ field: 'active', old_value: true, new_value: false }],
-          description: `Conexion desconectada para marketplace ${marketplace.name || credential.marketplace_id}`,
+          description: `Conexión desconectada para marketplace ${marketplace.name || 'sin nombre'}`,
           metadata: {
             reason: 'manual_update',
-            marketplace_name: marketplace.name || null
+            marketplace_name: marketplace.name || null,
+            credential_name: credential.name || null
           }
         }));
       }
@@ -914,11 +923,12 @@ const MarketplaceCredentialController = {
             sanitizeCredentialForAudit(disconnectedCredential || credential),
             MARKETPLACE_CREDENTIAL_AUDIT_FIELDS
           ),
-          description: `Conexion desconectada para preservar historial de ${credential.marketplace?.name || credential.marketplace_id}`,
+          description: `Conexión desconectada para preservar historial de ${credential.marketplace?.name || 'marketplace sin nombre'}`,
           metadata: {
             reason: 'user_requested',
             history_usage: historyUsage,
-            marketplace_name: credential.marketplace?.name || null
+            marketplace_name: credential.marketplace?.name || null,
+            credential_name: credential.name || null
           }
         }));
 
@@ -935,9 +945,10 @@ const MarketplaceCredentialController = {
         action: 'marketplace.connection_deleted',
         result: 'success',
         previous_value: sanitizeCredentialForAudit(credential),
-        description: `Conexion eliminada para marketplace ${credential.marketplace?.name || credential.marketplace_id}`,
+        description: `Conexión eliminada para marketplace ${credential.marketplace?.name || 'marketplace sin nombre'}`,
         metadata: {
-          marketplace_name: credential.marketplace?.name || null
+          marketplace_name: credential.marketplace?.name || null,
+          credential_name: credential.name || null
         }
       }));
 

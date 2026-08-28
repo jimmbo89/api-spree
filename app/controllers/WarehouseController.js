@@ -18,7 +18,7 @@ function toPlain(record) {
 
 function getWarehouseAuditLabel(warehouse) {
   const plain = toPlain(warehouse) || {};
-  return [plain.code, plain.name].filter(Boolean).join(' / ') || `Almacen ${plain.id}`;
+  return [plain.code, plain.name].filter(Boolean).join(' / ') || 'Almacén sin nombre';
 }
 
 function buildWarehouseAuditPayload(warehouse, data = {}) {

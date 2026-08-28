@@ -2821,19 +2821,20 @@ class MercadoLibreAdapter extends BaseAdapter {
       resource_label: [
         updatedCredential.marketplace?.name || updatedCredential.marketplace?.domain,
         updatedCredential.name
-      ].filter(Boolean).join(' / ') || `Credencial marketplace ${updatedCredential.id}`,
+      ].filter(Boolean).join(' / ') || 'Credencial marketplace',
       marketplace_id: updatedCredential.marketplace_id || previousCredential?.marketplace_id || this.marketplaceId,
       marketplace_credential_id: updatedCredential.id,
       previous_value: changesToValueSnapshot(changes, 'old_value'),
       new_value: changesToValueSnapshot(changes, 'new_value'),
       changes,
-      description: `Token renovado para la conexion ${updatedCredential.name || updatedCredential.id}`,
+      description: `Token renovado para la conexión ${updatedCredential.name || 'sin nombre'}`,
       metadata: {
         auth_type: 'oauth',
         source: context.source || 'adapter',
         triggered_by: context.triggered_by || 'automatic',
         expires_in: expiresIn,
-        marketplace_name: updatedCredential.marketplace?.name || updatedCredential.marketplace?.domain || null
+        marketplace_name: updatedCredential.marketplace?.name || updatedCredential.marketplace?.domain || null,
+        credential_name: updatedCredential.name || null
       },
       job_id: context.job_id || null,
       correlation_id: context.correlation_id || null,

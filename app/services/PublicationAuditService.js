@@ -123,7 +123,6 @@ function normalizeProcessProducts(products = []) {
       const stockValue = plain.stock ?? plain.available_quantity ?? plain.quantity ?? plain.publishStock ?? null;
       const marketplaceCount = Array.isArray(plain.marketplaces) ? plain.marketplaces.length : plain.marketplace_count ?? null;
       return {
-        id: plain.id ?? plain.product_id ?? null,
         sku: plain.sku || null,
         name: plain.name || plain.title || plain.product_name || null,
         stock: stockValue != null ? Number(stockValue) || stockValue : null,
@@ -131,7 +130,7 @@ function normalizeProcessProducts(products = []) {
         marketplaces_count: marketplaceCount
       };
     })
-    .filter((product) => product.id != null || product.sku || product.name);
+    .filter((product) => product.sku || product.name);
 }
 
 function normalizeProcessMarketplaces(marketplaces = []) {
@@ -139,13 +138,12 @@ function normalizeProcessMarketplaces(marketplaces = []) {
     .map((marketplace) => {
       const plain = parseJsonMaybe(marketplace) || {};
       return {
-        id: plain.id ?? plain.marketplace_id ?? plain.credential_id ?? null,
         name: plain.name || plain.marketplace_name || plain.marketplace?.name || null,
         domain: plain.domain || plain.marketplace?.domain || null,
         credential_name: plain.credential_name || plain.credential?.name || null
       };
     })
-    .filter((marketplace) => marketplace.id != null || marketplace.name || marketplace.domain);
+    .filter((marketplace) => marketplace.name || marketplace.domain || marketplace.credential_name);
 }
 
 function buildProcessMetadata(job, data = {}) {
@@ -218,16 +216,17 @@ function buildJobAuditPayload(job, data = {}) {
 
 function buildTaskAuditPayload(task, data = {}) {
   const plain = toPlain(task) || {};
+  const productLabel = [
+    plain.product?.sku || null,
+    plain.product?.name || plain.product_name || null
+  ].filter(Boolean).join(' / ');
+  const marketplaceLabel = plain.marketplace?.name || plain.marketplace_name || plain.credential?.name || null;
   return {
     company_id: data.company_id || plain.company_id,
     module: data.module || 'published_product',
     resource_type: data.resource_type || 'product_marketplace_publication',
     resource_id: data.resource_id || plain.id,
-    resource_label: data.resource_label || [
-      plain.product?.sku || plain.product_id,
-      plain.marketplace?.name || plain.marketplace_id,
-      plain.external_id
-    ].filter(Boolean).join(' / '),
+    resource_label: data.resource_label || [productLabel, marketplaceLabel].filter(Boolean).join(' / ') || 'Publicación de producto',
     related_resource_type: data.related_resource_type || 'product',
     related_resource_id: data.related_resource_id || plain.product_id,
     marketplace_id: data.marketplace_id || plain.marketplace_id,
@@ -241,16 +240,17 @@ function buildTaskAuditPayload(task, data = {}) {
 
 function buildLinkAuditPayload(link, data = {}) {
   const plain = toPlain(link) || {};
+  const productLabel = [
+    plain.product?.sku || null,
+    plain.product?.name || plain.product_name || null
+  ].filter(Boolean).join(' / ');
+  const marketplaceLabel = plain.marketplace?.name || plain.marketplace_name || plain.credential?.name || null;
   return {
     company_id: data.company_id || plain.company_id,
     module: data.module || 'published_product',
     resource_type: 'product_marketplace_publication',
     resource_id: data.resource_id || plain.id,
-    resource_label: data.resource_label || [
-      plain.product_id,
-      plain.marketplace_id,
-      plain.external_id
-    ].filter(Boolean).join(' / '),
+    resource_label: data.resource_label || [productLabel, marketplaceLabel].filter(Boolean).join(' / ') || 'Publicación de producto',
     related_resource_type: 'product',
     related_resource_id: plain.product_id,
     marketplace_id: plain.marketplace_id,
@@ -408,21 +408,24 @@ const PublicationAuditService = {
   },
 
   async recordProcessEvent(req, job, action, data = {}) {
+    const { metadata, ...eventData } = data;
     return AuditEventService.safeRecordFromRequest(req, buildJobAuditPayload(job, {
+      ...eventData,
       module: 'process',
       action,
-      result: 'success',
+      result: data.result || 'success',
       description: data.description || `Proceso #${job.id}`,
-      metadata: buildProcessMetadata(job, data),
-      ...data
+      metadata: buildProcessMetadata(job, { ...eventData, metadata })
     }));
   },
 
   async recordProcessSystemEvent(job, action, data = {}) {
     const actor = AuditEventService.automaticProcessActor(job);
+    const { metadata, ...eventData } = data;
     return AuditEventService.safeRecord({
       ...actor,
       ...buildJobAuditPayload(job, {
+        ...eventData,
         module: 'process',
         action,
         result: data.result || 'success',
@@ -430,57 +433,59 @@ const PublicationAuditService = {
         previous_value: data.previous_value,
         new_value: data.new_value,
         changes: data.changes,
-        metadata: buildProcessMetadata(job, data),
+        metadata: buildProcessMetadata(job, { ...eventData, metadata }),
         origin_job_id: data.origin_job_id || null,
-        ...data
       })
     });
   },
 
   async recordPublishedProductFromRequest(req, task, action, data = {}) {
+    const { metadata, ...eventData } = data;
     return AuditEventService.safeRecordFromRequest(req, buildTaskAuditPayload(task, {
+      ...eventData,
       action,
-      result: 'success',
+      result: data.result || 'success',
       metadata: {
         source: 'spree',
         external_id: task.external_id,
-        ...data.metadata
-      },
-      ...data
+        ...metadata
+      }
     }));
   },
 
   async recordPublishedProductByUser(userId, task, action, data = {}) {
+    const { metadata, ...eventData } = data;
     return AuditEventService.safeRecord({
       actor_type: userId ? AuditEventService.ACTOR_TYPES.USER : AuditEventService.ACTOR_TYPES.SYSTEM,
       actor_id: userId ? String(userId) : null,
       actor_name: userId ? `Usuario ${userId}` : 'Spree',
       ...buildTaskAuditPayload(task, {
+        ...eventData,
         action,
         result: data.result || 'success',
         metadata: {
           source: 'spree',
           external_id: task.external_id,
-          ...data.metadata
-        },
-        ...data
+          ...metadata
+        }
       })
     });
   },
 
   async recordPublishedProductFromMarketplace(marketplace, publication, action, data = {}) {
     const actor = AuditEventService.marketplaceActor(marketplace);
+    const { metadata, ...eventData } = data;
     return AuditEventService.safeRecord({
       ...actor,
       ...buildLinkAuditPayload(publication, {
+        ...eventData,
         action,
         result: data.result || 'success',
         metadata: {
           source: 'marketplace_webhook',
           external_id: publication?.external_id,
-          ...data.metadata
-        },
-        ...data
+          ...metadata
+        }
       })
     });
   },

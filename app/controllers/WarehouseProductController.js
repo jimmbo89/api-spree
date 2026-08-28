@@ -27,12 +27,12 @@ function toPlain(record) {
 
 function getWarehouseAuditLabel(warehouse) {
   const plain = toPlain(warehouse) || {};
-  return [plain.code, plain.name].filter(Boolean).join(" / ") || `Almacen ${plain.id}`;
+  return [plain.code, plain.name].filter(Boolean).join(" / ") || "Almacén sin nombre";
 }
 
 function getProductAuditLabel(product) {
   const plain = toPlain(product) || {};
-  return [plain.sku, plain.name].filter(Boolean).join(" / ") || `Producto ${plain.id}`;
+  return [plain.sku, plain.name].filter(Boolean).join(" / ") || "Producto sin nombre";
 }
 
 function buildWarehouseAuditPayload(warehouse, data = {}) {
@@ -85,9 +85,15 @@ async function recordMovementAuditEvents(req, referenceId, { isBulk = false } = 
   const movements = await InventoryMovementRepository.findByReferenceId(referenceId);
 
   await Promise.all(movements.map(async (movement) => {
-    const warehouse = await WarehouseRepository.findById(movement.warehouse_id);
+    const [warehouse, productRecord, originWarehouse, destinationWarehouse] = await Promise.all([
+      WarehouseRepository.findById(movement.warehouse_id),
+      movement.product_id ? ProductRepository.findById(movement.product_id) : null,
+      movement.origin_warehouse_id ? WarehouseRepository.findById(movement.origin_warehouse_id) : null,
+      movement.destination_warehouse_id ? WarehouseRepository.findById(movement.destination_warehouse_id) : null
+    ]);
     if (!warehouse) return null;
     const companyId = warehouse.company_id || await _resolveCompanyFromWarehouse(warehouse.id);
+    const productLabel = productRecord ? getProductAuditLabel(productRecord) : null;
 
     return AuditEventService.safeRecordFromRequest(req, buildWarehouseAuditPayload(warehouse, {
       company_id: companyId,
@@ -106,15 +112,13 @@ async function recordMovementAuditEvents(req, referenceId, { isBulk = false } = 
       description: getMovementDescription(movement),
       correlation_id: referenceId,
       metadata: {
-        movement_id: movement.id,
         movement_type: movement.movement_type,
-        product_id: movement.product_id,
-        variant_id: movement.variant_id,
+        product_label: productLabel,
+        warehouse_label: getWarehouseAuditLabel(warehouse),
+        source_warehouse_label: originWarehouse ? getWarehouseAuditLabel(originWarehouse) : null,
+        destination_warehouse_label: destinationWarehouse ? getWarehouseAuditLabel(destinationWarehouse) : null,
         quantity: movement.quantity,
         reference_type: movement.reference_type,
-        reference_id: movement.reference_id,
-        origin_warehouse_id: movement.origin_warehouse_id,
-        destination_warehouse_id: movement.destination_warehouse_id,
         reason: movement.reason,
         notes: movement.notes,
         total_value: movement.total_value,
