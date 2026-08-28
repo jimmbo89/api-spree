@@ -35,6 +35,26 @@ function getProductAuditLabel(product) {
   return [plain.sku, plain.name].filter(Boolean).join(" / ") || "Producto sin nombre";
 }
 
+function getVariantAuditLabel(variant, variantData = {}) {
+  const plain = toPlain(variant) || {};
+  return [plain.sku, plain.internal_code || variantData.local_sku]
+    .filter(Boolean)
+    .join(" / ") || "Variante sin identificador";
+}
+
+function buildAddedWarehouseVariantAuditDetail(variant, variantData = {}) {
+  return {
+    variante: getVariantAuditLabel(variant, variantData),
+    sku_local: variantData.local_sku || null,
+    existencias_iniciales: Number(variantData.stock) || 0,
+    precio_venta: Number(variantData.price) || 0,
+    precio_compra: Number(variantData.purchase_price) || 0,
+    precio_promocional: variantData.promotional_price ?? null,
+    estado: variantData.active === false ? "Inactivo" : "Activo",
+    publicar: variantData.published ? "Sí" : "No"
+  };
+}
+
 function buildWarehouseAuditPayload(warehouse, data = {}) {
   const plain = toPlain(warehouse) || {};
   const companyId = data.company_id || plain.company_id;
@@ -387,6 +407,20 @@ const WarehouseProductController = {
         });
       }
       const variantsData = normalizedVariants.variants.map(normalizeWarehouseProductVariantPayload);
+      const productVariants = await ProductVariantRepository.findByProductId(productRecord.id);
+      const productVariantsById = new Map(
+        productVariants.map((variant) => [Number(variant.id), variant])
+      );
+      const variantsAuditDetail = variantsData.map((variantData) =>
+        buildAddedWarehouseVariantAuditDetail(
+          productVariantsById.get(Number(variantData.variant_id)),
+          variantData
+        )
+      );
+      const initialStockTotal = variantsAuditDetail.reduce(
+        (total, variant) => total + variant.existencias_iniciales,
+        0
+      );
 
       if (variantsData.length > 0) {
         logger.info(`Procesando ${variantsData.length} variantes...`);
@@ -427,16 +461,18 @@ const WarehouseProductController = {
         related_resource_type: "product",
         related_resource_id: productRecord.id,
         new_value: {
-          warehouse_product_id: wp.id,
-          product_id: productRecord.id,
-          active: wp.active,
-          code: wp.code,
-          minimum_stock: wp.minimum_stock
+          estado: wp.active ? "Activo" : "Inactivo",
+          codigo_local: wp.code || null,
+          stock_minimo: wp.minimum_stock
         },
         description: `Producto agregado al almacen: ${getProductAuditLabel(productRecord)}`,
         metadata: {
           product_label: getProductAuditLabel(productRecord),
-          variants_count: variantsData.length
+          warehouse_label: getWarehouseAuditLabel(warehouse),
+          warehouse_code: warehouse.code || null,
+          variants_count: variantsData.length,
+          initial_stock_total: initialStockTotal,
+          variants_detail: variantsAuditDetail
         }
       }));
       await LogRepository.create({

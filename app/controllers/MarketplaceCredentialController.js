@@ -20,13 +20,17 @@ const MARKETPLACE_CREDENTIAL_AUDIT_FIELDS = [
   'country',
   'active',
   'expires_at',
-  'additional_data',
   'access_token_configured',
   'refresh_token_configured',
   'api_key_configured'
 ];
 
 const EXTERNAL_ACCOUNT_AUDIT_FIELDS = ['seller_email', 'seller_id', 'ml_user_id'];
+const SECRET_CREDENTIAL_AUDIT_FIELDS = [
+  'access_token',
+  'refresh_token',
+  'api_key'
+];
 
 function formatSequelizeValidationError(error) {
   if (error.name === 'SequelizeValidationError' && error.errors?.length) {
@@ -77,7 +81,7 @@ function sanitizeAdditionalData(value) {
     return Object.keys(plainValue).reduce((safe, key) => {
       const normalizedKey = key.toLowerCase();
       if (normalizedKey.includes('token') || normalizedKey.includes('secret') || normalizedKey.includes('api_key')) {
-        safe[key] = '[REDACTED]';
+        safe[key] = '[PROTEGIDO]';
       } else {
         safe[key] = sanitizeAdditionalData(plainValue[key]);
       }
@@ -142,6 +146,16 @@ function changesToValueSnapshot(changes, valueKey) {
     snapshot[change.field] = change[valueKey];
     return snapshot;
   }, {});
+}
+
+function getSecretCredentialChanges(existing, updatePayload) {
+  return SECRET_CREDENTIAL_AUDIT_FIELDS
+    .filter((field) => updatePayload[field] !== undefined)
+    .map((field) => ({
+      field,
+      old_value: existing[field] ? 'Configurada' : 'Sin configurar',
+      new_value: updatePayload[field] ? 'Actualizada' : 'Eliminada'
+    }));
 }
 
 const MarketplaceCredentialController = {
@@ -635,7 +649,19 @@ const MarketplaceCredentialController = {
     logger.info(`${req.user?.name || 'Unknown'} - Actualiza credenciales de marketplace`);
     logger.info(JSON.stringify(req.body));
 
-    const { id, name, country, seller_email, seller_id, api_key, active } = req.body;
+      const {
+        id,
+        name,
+        country,
+        seller_email,
+        seller_id,
+        access_token,
+        refresh_token,
+        api_key,
+        expires_at,
+        additional_data,
+        active
+      } = req.body;
     const metadata = getRequestMetadata(req);
 
     try {
@@ -691,7 +717,11 @@ const MarketplaceCredentialController = {
       if (country !== undefined) updatePayload.country = country;
       if (seller_email !== undefined) updatePayload.seller_email = seller_email;
       if (seller_id !== undefined) updatePayload.seller_id = seller_id;
+      if (access_token !== undefined) updatePayload.access_token = access_token;
+      if (refresh_token !== undefined) updatePayload.refresh_token = refresh_token;
       if (api_key !== undefined) updatePayload.api_key = api_key;
+      if (expires_at !== undefined) updatePayload.expires_at = expires_at;
+      if (additional_data !== undefined) updatePayload.additional_data = additional_data;
       if (active !== undefined) updatePayload.active = active;
 
       // 5. Ejecutar actualizacion parcial
@@ -701,6 +731,14 @@ const MarketplaceCredentialController = {
         sanitizeCredentialForAudit(credential),
         MARKETPLACE_CREDENTIAL_AUDIT_FIELDS
       );
+      const secretCredentialChanges = getSecretCredentialChanges(existing, updatePayload);
+      if (additional_data !== undefined) {
+        fieldChanges.push({
+          field: 'additional_data',
+          old_value: existing.additional_data ? 'Configurados' : 'Sin configurar',
+          new_value: additional_data ? 'Actualizados' : 'Eliminados'
+        });
+      }
       const externalAccountChanges = detectChanges(
         getExternalAccountSnapshot(existing),
         getExternalAccountSnapshot(credential),
@@ -759,9 +797,12 @@ const MarketplaceCredentialController = {
       });
 
       const isDisconnecting = existing.active !== false && Number(existing.active) !== 0 && (credential.active === false || Number(credential.active) === 0);
-      const configurationChanges = isDisconnecting
-        ? fieldChanges.filter((change) => change.field !== 'active')
-        : fieldChanges;
+      const configurationChanges = [
+        ...(isDisconnecting
+          ? fieldChanges.filter((change) => change.field !== 'active')
+          : fieldChanges),
+        ...secretCredentialChanges
+      ];
 
       if (configurationChanges.length > 0) {
         await AuditEventService.safeRecordFromRequest(req, buildMarketplaceCredentialAuditPayload(credential, {
@@ -776,7 +817,14 @@ const MarketplaceCredentialController = {
             connection_valid: connectionStatus.valid,
             auth_required: !!connectionStatus.auth_required,
             marketplace_name: marketplace.name || null,
-            credential_name: credential.name || null
+            credential_name: credential.name || null,
+            country: credential.country || null,
+            active: credential.active ? 'Activa' : 'Inactiva',
+            expires_at: credential.expires_at || null,
+            access_token_configured: !!credential.access_token,
+            refresh_token_configured: !!credential.refresh_token,
+            api_key_configured: !!credential.api_key,
+            additional_data_configured: !!credential.additional_data
           }
         }));
       }
@@ -791,7 +839,9 @@ const MarketplaceCredentialController = {
           description: `Cuenta externa modificada para la conexión ${credential.name || 'sin nombre'}`,
           metadata: {
             marketplace_name: marketplace.name || null,
-            credential_name: credential.name || null
+            credential_name: credential.name || null,
+            country: credential.country || null,
+            active: credential.active ? 'Activa' : 'Inactiva'
           }
         }));
       }

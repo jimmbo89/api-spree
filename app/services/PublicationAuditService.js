@@ -34,7 +34,7 @@ function redactSensitive(value) {
         normalizedKey.includes('api_key') ||
         normalizedKey.includes('password')
       ) {
-        safe[key] = '[REDACTED]';
+        safe[key] = '[PROTEGIDO]';
       } else {
         safe[key] = redactSensitive(parsed[key]);
       }
@@ -146,6 +146,43 @@ function normalizeProcessMarketplaces(marketplaces = []) {
     .filter((marketplace) => marketplace.name || marketplace.domain || marketplace.credential_name);
 }
 
+function buildProductDetail(product = {}) {
+  return {
+    producto: [product.sku, product.name].filter(Boolean).join(' / ') || 'Producto sin identificar',
+    stock_preparado: product.stock ?? null,
+    stock_total: product.total_stock ?? null,
+    marketplaces_asignados: product.marketplaces_count ?? null
+  };
+}
+
+function buildMarketplaceDetail(marketplace = {}) {
+  return {
+    marketplace: marketplace.name || marketplace.domain || 'Marketplace sin identificar',
+    dominio: marketplace.domain || null,
+    credencial: marketplace.credential_name || null
+  };
+}
+
+function buildDraftMetadata(job, { products = [], marketplaces = [] } = {}) {
+  const normalizedProducts = normalizeProcessProducts(products);
+  const normalizedMarketplaces = normalizeProcessMarketplaces(marketplaces);
+  const stockTotal = normalizedProducts.reduce((total, product) => {
+    const stock = Number(product.stock);
+    return Number.isFinite(stock) ? total + stock : total;
+  }, 0);
+
+  return {
+    lote: job.batch_id || null,
+    modalidad: job.mode || null,
+    paso_de_publicacion: job.publication_step ?? null,
+    cantidad_de_productos: normalizedProducts.length,
+    cantidad_de_marketplaces: normalizedMarketplaces.length,
+    stock_total_preparado: stockTotal,
+    productos: normalizedProducts.map(buildProductDetail),
+    marketplaces: normalizedMarketplaces.map(buildMarketplaceDetail)
+  };
+}
+
 function buildProcessMetadata(job, data = {}) {
   const plain = toPlain(job) || {};
   const config = parseJsonMaybe(plain.config || {}) || {};
@@ -158,20 +195,20 @@ function buildProcessMetadata(job, data = {}) {
   }, 0);
 
   return {
-    batch_id: plain.batch_id || null,
-    job_type: plain.job_type || null,
-    mode: plain.mode || null,
-    publication_step: plain.publication_step ?? null,
-    total_products: plain.total_products ?? null,
-    total_expected: config._total_expected ?? data.total_expected ?? null,
-    products_count: products.length,
-    marketplaces_count: marketplaces.length,
-    stock_total: stockTotal,
-    products,
-    marketplaces,
-    origin_job_id: data.origin_job_id || null,
-    reprocess_job_id: data.reprocess_job_id || null,
-    reprocessed_tasks_count: Array.isArray(data.reprocessed_tasks)
+    lote: plain.batch_id || null,
+    tipo_de_proceso: plain.job_type || null,
+    modalidad: plain.mode || null,
+    paso_de_publicacion: plain.publication_step ?? null,
+    cantidad_de_productos: plain.total_products ?? products.length,
+    total_esperado: config._total_expected ?? data.total_expected ?? null,
+    productos_configurados: products.length,
+    marketplaces_configurados: marketplaces.length,
+    stock_total_preparado: stockTotal,
+    productos: products.map(buildProductDetail),
+    marketplaces: marketplaces.map(buildMarketplaceDetail),
+    proceso_origen: data.origin_job_id ? `Proceso #${data.origin_job_id}` : null,
+    proceso_reproceso: data.reprocess_job_id ? `Proceso #${data.reprocess_job_id}` : null,
+    tareas_reprocesadas: Array.isArray(data.reprocessed_tasks)
       ? data.reprocessed_tasks.length
       : (data.reprocessed_tasks_count ?? null),
     ...data.metadata
@@ -260,27 +297,51 @@ function buildLinkAuditPayload(link, data = {}) {
   };
 }
 
+function buildPublishedProductMetadata(task, metadata = {}) {
+  const plain = toPlain(task) || {};
+  const payload = parseJsonMaybe(plain.payload || plain.published_payload || {}) || {};
+  const productLabel = [
+    plain.product?.sku || payload.sku || null,
+    plain.product?.name || payload.name || payload.title || null
+  ].filter(Boolean).join(' / ');
+  const marketplaceLabel = plain.marketplace?.name || plain.marketplace_name || metadata.marketplace_name || null;
+  const credentialLabel = plain.credential?.name || metadata.credential_name || null;
+  const preparedStock = getPayloadValue(payload, ['publishStock', 'stock', 'available_quantity', 'quantity']);
+  const price = getPayloadValue(payload, ['price', 'sale_price', 'regular_price']);
+
+  return {
+    origen: metadata.source || 'spree',
+    producto: productLabel || metadata.product_label || null,
+    marketplace: marketplaceLabel,
+    credencial: credentialLabel,
+    estado_de_publicacion: plain.status || metadata.status || null,
+    precio_publicado: price ?? metadata.price ?? null,
+    stock_publicado: plain.published_stock ?? preparedStock ?? metadata.published_stock ?? null,
+    tiene_advertencias: metadata.has_warnings ?? null,
+    sincronizado_desde: metadata.source === 'marketplace_webhook'
+      ? 'Notificación del marketplace'
+      : 'Spree',
+    ...metadata
+  };
+}
+
 const PublicationAuditService = {
   redactSensitive,
   buildPreparedPayloadSnapshot,
 
   async recordDraftCreated(req, job, { products = [], marketplaces = [] } = {}) {
+    const draftMetadata = buildDraftMetadata(job, { products, marketplaces });
     await AuditEventService.safeRecordFromRequest(req, buildJobAuditPayload(job, {
       module: 'publication_draft',
       action: 'publication_draft.created',
       result: 'success',
       new_value: {
-        products_count: products.length,
-        marketplaces_count: marketplaces.length,
-        products: redactSensitive(products),
-        marketplaces: redactSensitive(marketplaces)
+        cantidad_de_productos: draftMetadata.cantidad_de_productos,
+        cantidad_de_marketplaces: draftMetadata.cantidad_de_marketplaces,
+        stock_total_preparado: draftMetadata.stock_total_preparado
       },
       description: `Borrador creado: ${buildDraftLabel(job)}`,
-      metadata: {
-        batch_id: job.batch_id,
-        mode: job.mode,
-        publication_step: job.publication_step
-      }
+      metadata: draftMetadata
     }));
   },
 
@@ -301,28 +362,28 @@ const PublicationAuditService = {
       events.push({
         action: 'publication_draft.products_added',
         description: `${productDiff.added.length} productos agregados al borrador`,
-        new_value: { products: productDiff.added, count: productDiff.added.length }
+        new_value: { productos: productDiff.added.map(buildProductDetail), cantidad: productDiff.added.length }
       });
     }
     if (productDiff.removed.length > 0) {
       events.push({
         action: 'publication_draft.products_removed',
         description: `${productDiff.removed.length} productos eliminados del borrador`,
-        previous_value: { products: productDiff.removed, count: productDiff.removed.length }
+        previous_value: { productos: productDiff.removed.map(buildProductDetail), cantidad: productDiff.removed.length }
       });
     }
     if (marketplaceDiff.added.length > 0) {
       events.push({
         action: 'publication_draft.marketplaces_added',
         description: `${marketplaceDiff.added.length} marketplaces agregados al borrador`,
-        new_value: { marketplaces: marketplaceDiff.added, count: marketplaceDiff.added.length }
+        new_value: { marketplaces: marketplaceDiff.added.map(buildMarketplaceDetail), cantidad: marketplaceDiff.added.length }
       });
     }
     if (marketplaceDiff.removed.length > 0) {
       events.push({
         action: 'publication_draft.marketplaces_removed',
         description: `${marketplaceDiff.removed.length} marketplaces eliminados del borrador`,
-        previous_value: { marketplaces: marketplaceDiff.removed, count: marketplaceDiff.removed.length }
+        previous_value: { marketplaces: marketplaceDiff.removed.map(buildMarketplaceDetail), cantidad: marketplaceDiff.removed.length }
       });
     }
 
@@ -346,7 +407,10 @@ const PublicationAuditService = {
         module: 'publication_draft',
         result: 'success',
         metadata: {
-          batch_id: nextJob.batch_id
+          ...buildDraftMetadata(nextJob, {
+            products: nextProducts,
+            marketplaces: nextMarketplaces
+          })
         },
         ...event
       }))
@@ -360,8 +424,8 @@ const PublicationAuditService = {
       result: 'success',
       description: `Publicación ejecutada desde ${buildDraftLabel(job)}`,
       metadata: {
-        batch_id: job.batch_id,
-        total_products: job.total_products
+        ...buildDraftMetadata(job, { products: parseJsonMaybe(job.config)?.products || [], marketplaces: parseJsonMaybe(job.config)?.marketplaces || [] }),
+        total_de_productos_publicados: job.total_products
       }
     }));
   },
@@ -374,7 +438,8 @@ const PublicationAuditService = {
       previous_value: { status: job.status },
       description: `Borrador eliminado: ${buildDraftLabel(job)}`,
       metadata: {
-        batch_id: job.batch_id
+        ...buildDraftMetadata(job, { products: parseJsonMaybe(job.config)?.products || [], marketplaces: parseJsonMaybe(job.config)?.marketplaces || [] }),
+        estado_anterior: job.status
       }
     }));
   },
@@ -397,11 +462,17 @@ const PublicationAuditService = {
         previous_value: { [change.field]: change.old_value },
         new_value: { [change.field]: change.new_value },
         changes: [change],
-        description: `Cambio de ${change.field} en preparación de publicación`,
+        description: `Cambio de ${{
+          price: 'precio',
+          prepared_stock: 'stock preparado',
+          attributes: 'atributos'
+        }[change.field] || 'atributos'} en preparación de publicación`,
         metadata: {
-          source: 'draft_payload_edit',
-          task_id: task.id,
-          batch_id: task.batch_id
+          origen: 'Edición de borrador',
+          lote: task.batch_id || null,
+          producto: [task.product?.sku, task.product?.name].filter(Boolean).join(' / ') || null,
+          marketplace: task.marketplace?.name || task.marketplace_name || null,
+          credencial: task.credential?.name || null
         }
       }))
     ));
@@ -445,11 +516,10 @@ const PublicationAuditService = {
       ...eventData,
       action,
       result: data.result || 'success',
-      metadata: {
+      metadata: buildPublishedProductMetadata(task, {
         source: 'spree',
-        external_id: task.external_id,
         ...metadata
-      }
+      })
     }));
   },
 
@@ -458,16 +528,15 @@ const PublicationAuditService = {
     return AuditEventService.safeRecord({
       actor_type: userId ? AuditEventService.ACTOR_TYPES.USER : AuditEventService.ACTOR_TYPES.SYSTEM,
       actor_id: userId ? String(userId) : null,
-      actor_name: userId ? `Usuario ${userId}` : 'Spree',
+      actor_name: data.actor_name || (userId ? 'Usuario' : 'Spree'),
       ...buildTaskAuditPayload(task, {
         ...eventData,
         action,
         result: data.result || 'success',
-        metadata: {
+        metadata: buildPublishedProductMetadata(task, {
           source: 'spree',
-          external_id: task.external_id,
           ...metadata
-        }
+        })
       })
     });
   },
@@ -481,11 +550,11 @@ const PublicationAuditService = {
         ...eventData,
         action,
         result: data.result || 'success',
-        metadata: {
+        metadata: buildPublishedProductMetadata(publication, {
           source: 'marketplace_webhook',
-          external_id: publication?.external_id,
+          marketplace: marketplace?.name || marketplace?.domain || null,
           ...metadata
-        }
+        })
       })
     });
   },

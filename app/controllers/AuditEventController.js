@@ -201,7 +201,17 @@ const FIELD_LABELS = {
   product_sku: 'SKU del producto',
   local_sku: 'SKU local',
   local_code: 'Código local',
+  codigo_local: 'Código local',
   minimum_stock: 'Stock mínimo',
+  stock_minimo: 'Stock mínimo',
+  existencias_iniciales: 'Existencias iniciales',
+  precio_venta: 'Precio de venta',
+  precio_compra: 'Precio de compra',
+  precio_promocional: 'Precio promocional',
+  estado: 'Estado',
+  publicar: 'Publicar',
+  variante: 'Variante',
+  variants_detail: 'Detalle de variantes',
   previous_stock: 'Stock anterior',
   previous_sale_price: 'Precio de venta anterior',
   previous_purchase_price: 'Precio de compra anterior',
@@ -271,6 +281,14 @@ const FIELD_LABELS = {
   marketplaces_count: 'Cantidad de marketplaces',
   stock_total: 'Stock total',
   notes_count: 'Cantidad de notas',
+  cantidad_de_notas: 'Cantidad de notas',
+  notas: 'Notas',
+  texto: 'Texto',
+  creado_por: 'Creado por',
+  fecha: 'Fecha',
+  longitud_del_mensaje: 'Longitud del mensaje',
+  destinatario: 'Destinatario',
+  canal: 'Canal',
   messages_count: 'Cantidad de mensajes',
   text_length: 'Longitud del texto',
   refresh_source: 'Fuente de actualización',
@@ -291,6 +309,37 @@ const FIELD_LABELS = {
   payment_method: 'Método de pago',
   shipping_city: 'Ciudad de envío',
   shipping_region: 'Región de envío',
+  subtotal: 'Subtotal',
+  shipping_total: 'Costo de envío',
+  discount_total: 'Descuento total',
+  tax_total: 'Impuestos',
+  invoice_type: 'Tipo de documento',
+  lote: 'Lote',
+  modalidad: 'Modalidad',
+  paso_de_publicacion: 'Paso de publicación',
+  cantidad_de_productos: 'Cantidad de productos',
+  cantidad_de_marketplaces: 'Cantidad de marketplaces',
+  stock_total_preparado: 'Stock total preparado',
+  productos: 'Productos',
+  productos_configurados: 'Productos configurados',
+  marketplaces_configurados: 'Marketplaces configurados',
+  marketplaces_asignados: 'Marketplaces asignados',
+  producto: 'Producto',
+  credencial: 'Credencial',
+  dominio: 'Dominio',
+  tipo_de_proceso: 'Tipo de proceso',
+  total_esperado: 'Total esperado',
+  proceso_origen: 'Proceso origen',
+  proceso_reproceso: 'Proceso de reproceso',
+  tareas_reprocesadas: 'Tareas reprocesadas',
+  estado_anterior: 'Estado anterior',
+  total_de_productos_publicados: 'Total de productos publicados',
+  estado_de_publicacion: 'Estado de publicación',
+  precio_publicado: 'Precio publicado',
+  stock_publicado: 'Stock publicado',
+  tiene_advertencias: 'Tiene advertencias',
+  sincronizado_desde: 'Sincronizado desde',
+  origen: 'Origen',
   auth_type: 'Tipo de autenticación',
   auth_required: 'Requiere autenticación',
   triggered_by: 'Activado por',
@@ -299,6 +348,11 @@ const FIELD_LABELS = {
   access_token_configured: 'Token de acceso configurado',
   refresh_token_configured: 'Token de renovación configurado',
   api_key_configured: 'Clave API configurada',
+  access_token: 'Token de acceso',
+  refresh_token: 'Token de renovación',
+  api_key: 'Clave API',
+  additional_data: 'Datos adicionales',
+  additional_data_configured: 'Datos adicionales configurados',
   expires_at: 'Expira el',
   expires_in: 'Expira en',
   country: 'País',
@@ -535,6 +589,16 @@ const VALUE_LABELS = {
   unpaid: 'Sin pagar',
   approved: 'Aprobado',
   rejected: 'Rechazado',
+  returned: 'Devuelto',
+  refunded: 'Reembolsado',
+  in_progress: 'En preparación',
+  shipped: 'Enviado',
+  delivered: 'Entregado',
+  ready_to_ship: 'Listo para enviar',
+  not_delivered: 'No entregado',
+  partially_paid: 'Pago parcial',
+  payment_required: 'Pago pendiente',
+  cancelled_by_marketplace: 'Cancelado por el marketplace',
   confirmed: 'Confirmado',
   cancelled: 'Cancelado',
   canceled: 'Cancelado',
@@ -1082,7 +1146,14 @@ function isInternalIdDisplayKey(key) {
 }
 
 function shouldHideDisplayKey(key) {
-  return isSensitiveDisplayKey(key) || isInternalIdDisplayKey(key) || ['draft_name', 'resource', 'audit_key'].includes(key);
+  return isSensitiveDisplayKey(key) || isInternalIdDisplayKey(key) || [
+    'draft_name',
+    'resource',
+    'audit_key',
+    'raw_payload',
+    'api_response',
+    'error_details'
+  ].includes(key);
 }
 
 function normalizePlainValue(value) {
@@ -1132,13 +1203,26 @@ const LITERAL_DISPLAY_VALUE_KEYS = new Set([
   'product_sku',
   'local_sku',
   'local_code',
+  'codigo_local',
   'warehouse_code',
   'warehouse_name',
   'product_label',
+  'producto',
+  'marketplace',
+  'credencial',
+  'dominio',
+  'sincronizado_desde',
+  'texto',
+  'destinatario',
+  'canal',
   'variant',
+  'variante',
   'name',
   'title',
-  'description'
+  'description',
+  'seller_email',
+  'seller_id',
+  'ml_user_id'
 ]);
 
 function formatDisplayValue(value, key = null) {
@@ -1147,6 +1231,27 @@ function formatDisplayValue(value, key = null) {
   if (normalized == null || normalized === '') return 'Sin valor';
   if (typeof normalized === 'boolean') return normalized ? 'Sí' : 'No';
   if (normalized instanceof Date) return normalized.toISOString();
+  if (key === 'country') {
+    const countries = { CL: 'Chile', PE: 'Perú', CO: 'Colombia', MX: 'México', AR: 'Argentina', BR: 'Brasil' };
+    return countries[String(normalized).toUpperCase()] || String(normalized);
+  }
+  if (key === 'topic') {
+    const topic = String(normalized).toLowerCase();
+    if (topic.includes('order')) return 'Actualización de venta';
+    if (topic.includes('shipment') || topic.includes('shipping')) return 'Actualización de envío';
+    if (topic.includes('item') || topic.includes('product')) return 'Actualización de publicación';
+    if (topic.includes('credential') || topic.includes('token')) return 'Actualización de conexión';
+    return 'Notificación recibida';
+  }
+  if (key === 'expires_at' || /(?:_at|fecha)$/.test(String(key || ''))) {
+    const date = new Date(normalized);
+    if (!Number.isNaN(date.getTime())) {
+      return new Intl.DateTimeFormat('es-CL', {
+        dateStyle: 'medium',
+        timeStyle: 'short'
+      }).format(date);
+    }
+  }
   if (LITERAL_DISPLAY_VALUE_KEYS.has(key)) return String(normalized);
   if (key === 'state') {
     const stateLabel = getProductStateDisplayLabel(normalized);

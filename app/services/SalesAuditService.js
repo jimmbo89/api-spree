@@ -33,13 +33,13 @@ function redactSensitive(value) {
         normalizedKey.includes('password') ||
         normalizedKey.includes('authorization')
       ) {
-        safe[key] = '[REDACTED]';
+        safe[key] = '[PROTEGIDO]';
       } else if (
         normalizedKey.includes('document') ||
         normalizedKey.includes('email') ||
         normalizedKey.includes('address')
       ) {
-        safe[key] = parsed[key] ? '[PROTECTED]' : parsed[key];
+        safe[key] = parsed[key] ? '[PROTEGIDO]' : parsed[key];
       } else {
         safe[key] = redactSensitive(parsed[key]);
       }
@@ -74,6 +74,14 @@ function buildOrderSnapshot(order) {
     payment_status: plain.payment_status,
     total_amount: plain.total_amount,
     currency: plain.currency,
+    subtotal: plain.subtotal,
+    shipping_total: plain.shipping_total,
+    discount_total: plain.discount_total,
+    tax_total: plain.tax_total,
+    payment_method: plain.payment_method,
+    shipping_city: plain.shipping_city,
+    shipping_region: plain.shipping_region,
+    invoice_type: plain.invoice_type,
     marketplace_credential_id: plain.marketplace_credential_id,
     company_id: plain.company_id,
     branch_id: plain.branch_id
@@ -92,6 +100,14 @@ function buildOrderMetadata(order, source, marketplace = null, extra = {}) {
     currency: plain.currency || null,
     buyer_name: plain.buyer_name || null,
     seller_name: plain.credential?.name || null,
+    subtotal: plain.subtotal ?? null,
+    shipping_total: plain.shipping_total ?? null,
+    discount_total: plain.discount_total ?? null,
+    tax_total: plain.tax_total ?? null,
+    payment_method: plain.payment_method || null,
+    shipping_city: plain.shipping_city || null,
+    shipping_region: plain.shipping_region || null,
+    invoice_type: plain.invoice_type || null,
     ...redactSensitive(extra || {})
   };
 }
@@ -168,7 +184,20 @@ const SalesAuditService = {
     return detectChanges(
       buildOrderSnapshot(previousOrder),
       buildOrderSnapshot(nextOrder),
-      ['order_status', 'payment_status', 'total_amount', 'currency']
+      [
+        'order_status',
+        'payment_status',
+        'total_amount',
+        'currency',
+        'subtotal',
+        'shipping_total',
+        'discount_total',
+        'tax_total',
+        'payment_method',
+        'shipping_city',
+        'shipping_region',
+        'invoice_type'
+      ]
     );
   },
 

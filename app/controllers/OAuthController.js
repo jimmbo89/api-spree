@@ -1074,7 +1074,7 @@ const sanitizeAuditMetadata = (value) => {
     return Object.keys(value).reduce((safe, key) => {
       const normalizedKey = key.toLowerCase();
       if (normalizedKey.includes("token") || normalizedKey.includes("secret") || normalizedKey.includes("api_key")) {
-        safe[key] = "[REDACTED]";
+        safe[key] = "[PROTEGIDO]";
       } else {
         safe[key] = sanitizeAuditMetadata(value[key]);
       }

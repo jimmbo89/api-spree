@@ -95,14 +95,20 @@ const MarketplaceOrderController = {
         .filter((note) => note.note_id && !previousNoteIds.has(String(note.note_id)));
 
       if (addedNotes.length > 0) {
+        const auditNotes = addedNotes.map((note) => ({
+          texto: note.text,
+          creado_por: note.created_by_user_name || 'Usuario',
+          fecha: note.created_at
+        }));
         await SalesAuditService.recordFromRequest(req, order || existingOrder, 'sales.note_added', {
           new_value: {
             notes_count: addedNotes.length,
-            notes: addedNotes
+            notas: auditNotes
           },
           description: `${addedNotes.length} nota(s) interna(s) agregada(s) a la venta`,
           metadata: {
-            notes_count: addedNotes.length
+            cantidad_de_notas: addedNotes.length,
+            notas: auditNotes
           }
         });
       }
@@ -144,14 +150,17 @@ const MarketplaceOrderController = {
       const result = await MarketplaceOrderMessageService.sendByOrderId(id, text, req.user);
       const order = await MarketplaceOrderRepository.findById(id);
       if (order) {
+        const messageText = typeof text === 'string' ? text.trim() : '';
         await SalesAuditService.recordFromRequest(req, order, 'sales.message_sent', {
           new_value: {
-            text_length: typeof text === 'string' ? text.trim().length : 0
+            texto: messageText,
+            longitud_del_mensaje: messageText.length
           },
           description: 'Mensaje enviado al comprador desde Spree',
           metadata: {
-            marketplace: order.marketplace,
-            refresh_source: result?.source || null
+            destinatario: order.buyer_name || 'Comprador',
+            canal: order.marketplace || null,
+            origen: result?.source || 'Spree'
           }
         });
       }
