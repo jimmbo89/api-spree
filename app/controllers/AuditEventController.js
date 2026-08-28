@@ -73,6 +73,10 @@ const ACTION_LABELS = {
   'product.bulk_imported': 'Productos importados',
   'product.deleted': 'Producto eliminado',
   'product.state_changed': 'Estado del producto modificado',
+  'product.archived': 'Producto archivado',
+  'product.unarchived': 'Producto desarchivado',
+  'product.activated': 'Producto activado',
+  'product.inactivated': 'Producto inactivado',
   'product.variant_created': 'Variante creada',
   'product.variant_updated': 'Variante modificada',
   'product.variant_deleted': 'Variante eliminada',
@@ -180,6 +184,7 @@ const FIELD_LABELS = {
   target_user_name: 'Usuario objetivo',
   source: 'Origen',
   status: 'Estado',
+  state: 'Estado del producto',
   previous_status: 'Estado anterior',
   new_status: 'Estado nuevo',
   price: 'Precio',
@@ -1098,12 +1103,27 @@ function parseDisplayValue(value) {
   }
 }
 
-function formatDisplayValue(value) {
+function getProductStateDisplayLabel(value) {
+  const labels = {
+    "-1": 'Archivado',
+    0: 'Inactivo',
+    1: 'Activo',
+    2: 'Archivado'
+  };
+  return labels[Number(value)] || null;
+}
+
+function formatDisplayValue(value, key = null) {
   const normalized = parseDisplayValue(value);
 
   if (normalized == null || normalized === '') return 'Sin valor';
   if (typeof normalized === 'boolean') return normalized ? 'Sí' : 'No';
   if (normalized instanceof Date) return normalized.toISOString();
+  if (['sku', 'gtin', 'mpn', 'code'].includes(key)) return String(normalized);
+  if (key === 'state') {
+    const stateLabel = getProductStateDisplayLabel(normalized);
+    if (stateLabel) return stateLabel;
+  }
   if (Array.isArray(normalized)) {
     if (normalized.length === 0) return 'Sin elementos';
     return normalized
@@ -1132,7 +1152,7 @@ function objectToDisplayRows(value) {
     .map(([key, entryValue]) => ({
       key,
       label: getFieldLabel(key),
-      value: formatDisplayValue(entryValue)
+      value: formatDisplayValue(entryValue, key)
     }))
     .filter(row => row.value !== 'Sin datos visibles');
 }
@@ -1164,8 +1184,8 @@ function buildDisplayChanges(changes) {
       return {
         field,
         field_label: getFieldLabel(field),
-        previous: formatDisplayValue(change.old_value ?? change.previous_value ?? change.before),
-        current: formatDisplayValue(change.new_value ?? change.current_value ?? change.after)
+        previous: formatDisplayValue(change.old_value ?? change.previous_value ?? change.before, field),
+        current: formatDisplayValue(change.new_value ?? change.current_value ?? change.after, field)
       };
     });
 }
