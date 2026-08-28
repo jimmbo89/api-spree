@@ -244,10 +244,13 @@ const MarketplaceCredentialController = {
 
       credentials = await ProductPublishingTaskController.refreshExpiredTokens(
         credentials,
-        userId || req.user?.id || null
+        req.user || userId || null
       );
 
       const safeCredentials = credentials.map(cred => {
+        const additionalData = cred.additional_data && typeof cred.additional_data === 'object'
+          ? cred.additional_data
+          : null;
         const item = {
           id: cred.id,
           user_id: cred.user_id,
@@ -268,6 +271,8 @@ const MarketplaceCredentialController = {
           user_name: cred.user?.name || null,
           user_email: cred.user?.email || null,
           user_avatar: cred.user?.image || null,
+          authenticated_by_user_id: additionalData?.authenticated_by_user_id || null,
+          authenticated_by_user_name: additionalData?.authenticated_by_user_name || null,
           company_name: cred.company?.name || null
         };
         return item;

@@ -30,6 +30,20 @@ const PublishingAdapterFactory = require('../services/adapters/PublishingAdapter
 const MercadoLibreCapabilitiesService = require('../services/MercadoLibreCapabilitiesService');
 const PublicationAuditService = require('../services/PublicationAuditService');
 
+function resolveRefreshActor(actor) {
+  if (actor && typeof actor === 'object') {
+    const id = actor.id ?? actor.user_id ?? null;
+    const name = actor.name || actor.email || (id != null ? `Usuario ${id}` : null);
+    return { id, name };
+  }
+
+  const id = actor != null ? Number(actor) : null;
+  return {
+    id: Number.isFinite(id) ? id : null,
+    name: Number.isFinite(id) ? `Usuario ${id}` : null
+  };
+}
+
 function normalizeWarningEntry(warning) {
   if (typeof warning === 'string') {
     const message = warning.trim();
@@ -1311,10 +1325,11 @@ async warehouseMarketplacesWithProduct(req, res) {
 /**
  * Verifica y renueva automáticamente tokens expirados para marketplaces que lo requieran
  * @param {Array} credentials - Lista de credenciales con marketplace incluido
- * @param {number} userId - ID del usuario propietario
+ * @param {number|object} actor - ID o usuario que dispara el refresh
  * @returns {Promise<Array>} - Lista de credenciales (algunas con tokens renovados)
  */
-async refreshExpiredTokens(credentials, userId) {
+async refreshExpiredTokens(credentials, actor) {
+  const refreshActor = resolveRefreshActor(actor);
   // Marketplaces que requieren validación de token (no API key como Falabella)
   
   const refreshPromises = credentials.map(async (credential) => {
@@ -1346,7 +1361,7 @@ async refreshExpiredTokens(credentials, userId) {
         const refreshed = await ProductPublishingTaskController.refreshSingleCredential(
           credential,
           mp,
-          userId,
+          refreshActor,
           true
         );
 
@@ -1378,8 +1393,10 @@ async refreshExpiredTokens(credentials, userId) {
  * @param {number} userId - ID del usuario
  * @returns {Promise<Object>} - Credencial actualizada o original
  */
-  async refreshSingleCredential(credential, marketplace, userId, forceRefresh = false) {
+  async refreshSingleCredential(credential, marketplace, actor, forceRefresh = false) {
     try {
+      const refreshActor = resolveRefreshActor(actor);
+
       if (credential?.active === false || Number(credential?.active) === 0) {
         logger.debug(`[refreshSingleCredential] Credential ${credential.id} inactiva; se omite refresh automatico`);
         return credential;
@@ -1409,25 +1426,25 @@ async refreshExpiredTokens(credentials, userId) {
     // ✅ Crear adapter y renovar
     credential.marketplace = credential.marketplace || marketplace;
 
-    const adapter = PublishingAdapterFactory.getAdapter(
-      marketplace,
-      null, // companyId
-      null, // branchId
-      userId,
-      credential
-    );
+      const adapter = PublishingAdapterFactory.getAdapter(
+        marketplace,
+        null, // companyId
+        null, // branchId
+        refreshActor.id,
+        credential
+      );
     
     if (!adapter || typeof adapter.ensureValidCredentials !== 'function') {
       logger.warn(`[refreshSingleCredential] Adapter no soporta refresh para ${mpName}`);
       return credential;
     }
-    adapter.auditContext = {
-      actor_type: 'user',
-      actor_id: userId,
-      actor_name: `Usuario ${userId}`,
-      source: 'product_publishing',
-      triggered_by: 'user'
-    };
+      adapter.auditContext = {
+        actor_type: 'user',
+        actor_id: refreshActor.id,
+        actor_name: refreshActor.name || `Usuario ${refreshActor.id}`,
+        source: 'product_publishing',
+        triggered_by: 'user'
+      };
     
     if (forceRefresh && credential.refresh_token && typeof adapter.refreshAccessToken === 'function') {
       adapter.credential = credential;

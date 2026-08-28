@@ -1131,11 +1131,12 @@ const recordMarketplaceCredentialOAuthAudit = async (req, credential, userId, da
   if (!credential?.id || !credential?.company_id) return null;
 
   const metadata = getRequestMetadata(req);
+  const actorName = req.user?.name || req.user?.email || (userId ? `Usuario ${userId}` : 'Usuario OAuth');
 
   return AuditEventService.safeRecord({
     actor_type: AuditEventService.ACTOR_TYPES.USER,
     actor_id: userId ? String(userId) : null,
-    actor_name: userId ? `Usuario ${userId}` : "Usuario OAuth",
+    actor_name: actorName,
     ip_address: metadata.ip_address,
     user_agent: metadata.user_agent,
     company_id: credential.company_id,
@@ -2548,6 +2549,8 @@ async mercadoLibreCallback(req, res) {
         original_name: reconnectedName,
         ml_user_id: mlUserId,
         connection_status: 'connected',
+        authenticated_by_user_id: userId,
+        authenticated_by_user_name: req.user?.name || req.user?.email || null,
         reconnected_at: new Date().toISOString()
       };
 
@@ -2601,6 +2604,7 @@ async mercadoLibreCallback(req, res) {
           auth_type: "oauth",
           reconnected: true,
           authenticated_by_user_id: userId,
+          authenticated_by_user_name: req.user?.name || req.user?.email || null,
           temporary_credential_id: credential.id,
           ml_user_id: mlUserId
         }
@@ -2675,7 +2679,9 @@ async mercadoLibreCallback(req, res) {
     const previousExternalAccount = getExternalAccountAuditSnapshot(credential);
     const updatedAdditionalData = {
       ...normalizeMarketplaceCredentialAdditionalData(credential.additional_data),
-      ml_user_id: mlUserId  // ← Guardar ID de usuario de ML
+      ml_user_id: mlUserId,  // ← Guardar ID de usuario de ML
+      authenticated_by_user_id: userId,
+      authenticated_by_user_name: req.user?.name || req.user?.email || null
     };
 
     await MarketplaceCredentialRepository.updatePartial(credential.id, {
@@ -2715,6 +2721,7 @@ async mercadoLibreCallback(req, res) {
       metadata: {
         auth_type: "oauth",
         authenticated_by_user_id: userId,
+        authenticated_by_user_name: req.user?.name || req.user?.email || null,
         ml_user_id: mlUserId,
         expires_in: tokenRes.data.expires_in
       }
