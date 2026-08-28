@@ -580,6 +580,10 @@ const WarehouseProductController = {
       const previousRecord = toPlain(record);
       const warehouse = await WarehouseRepository.findById(record.warehouse_id);
       const productRecord = await ProductRepository.findById(record.product_id);
+      const variantAuditDetails = [];
+      let totalStockAdded = 0;
+      let createdLotsCount = 0;
+      let updatedLotsCount = 0;
 
       // 👉 2. Actualizar el registro principal (warehouse_products)
       record = await WarehouseProductRepository.update(record, req.body, {
@@ -596,6 +600,10 @@ const WarehouseProductController = {
             .json({ success: false, msg: normalizedVariants.message });
         }
         const variantsData = normalizedVariants.variants.map(normalizeWarehouseProductVariantPayload);
+        const productVariants = await ProductVariantRepository.findByProductId(record.product_id);
+        const productVariantsById = new Map(
+          productVariants.map((variant) => [Number(variant.id), variant])
+        );
         // 👉 4. Obtener variantes existentes en la BD para este warehouse_product
         const existingVariants =
           await WarehouseProductVariantRepository.findByWarehouseProductId(id);
@@ -719,14 +727,15 @@ const WarehouseProductController = {
             // ✅ MISMO PRECIO DE COMPRA: Incrementar stock al lote existente
             if (hasStock) {
               const oldStock = existingWithSamePrice.stock || 0;
-              const newStock = oldStock + (parseInt(stock) || 0);
+              const stockAdded = parseInt(stock) || 0;
+              const newStock = oldStock + stockAdded;
               await existingWithSamePrice.update({
                 ...variantToUpdate,
                 stock: newStock
               }, { transaction });
 
               // ⭐ REGISTRAR MOVIMIENTO DE INVENTARIO (entrada de stock)
-              if (parseInt(stock) > 0) {
+              if (stockAdded > 0) {
                 await InventoryMovementRepository.create({
                   warehouse_id: record.warehouse_id,
                   product_id: record.product_id,
@@ -734,16 +743,16 @@ const WarehouseProductController = {
                   company_id: record.company_id,
                   branch_id: record.branch_id,
                   movement_type: 'entry',
-                  quantity: parseInt(stock) || 0,
+                  quantity: stockAdded,
                   stock_before: oldStock,
                   stock_after: newStock,
                   unit_price: hasPrice ? (parseFloat(price) || 0) : (parseFloat(existingWithSamePrice.price) || 0),
                   purchase_price: hasPurchasePrice ? (parseFloat(purchase_price) || 0) : (parseFloat(existingWithSamePrice.purchase_price) || 0),
-                  total_value: (parseFloat(purchase_price) || 0) * (parseInt(stock) || 0),
+                  total_value: (parseFloat(purchase_price) || 0) * stockAdded,
                   reference_type: 'warehouse_product_update',
                   reference_id: referenceId,
                   user_id: metadata.user_id,
-                  notes: `Se agregaron ${parseInt(stock) || 0} unidades al stock existente.`,
+                  notes: `Se agregaron ${stockAdded} unidades al stock existente.`,
                   meta: {
                     operation: 'warehouse_product_update',
                     warehouse_product_id: id,
@@ -752,10 +761,36 @@ const WarehouseProductController = {
                   }
                 }, { transaction });
               }
+              totalStockAdded += Math.max(stockAdded, 0);
+              variantAuditDetails.push({
+                variante: getVariantAuditLabel(productVariantsById.get(Number(variant_id)), variantData),
+                operacion: stockAdded > 0 ? 'Stock agregado a lote existente' : 'Configuración de variante actualizada',
+                stock_anterior: oldStock,
+                cantidad_agregada: stockAdded,
+                stock_nuevo: newStock,
+                sku_local: hasLocalSku ? (local_sku || null) : (existingWithSamePrice.local_sku || null),
+                precio_de_venta: hasPrice ? normalizedPrice : normalizeMoneyValue(existingWithSamePrice.price),
+                precio_de_compra: hasPurchasePrice ? normalizedPurchasePrice : normalizeMoneyValue(existingWithSamePrice.purchase_price),
+                precio_promocional: hasPromotionalPrice ? normalizedPromotionalPrice : existingWithSamePrice.promotional_price,
+                estado: hasActive ? (activeVariant !== false ? 'Activo' : 'Inactivo') : (existingWithSamePrice.active !== false ? 'Activo' : 'Inactivo'),
+                publicar: hasPublished ? (published ? 'Sí' : 'No') : (existingWithSamePrice.published ? 'Sí' : 'No')
+              });
             } else {
               await existingWithSamePrice.update(variantToUpdate, { transaction });
+              variantAuditDetails.push({
+                variante: getVariantAuditLabel(productVariantsById.get(Number(variant_id)), variantData),
+                operacion: 'Configuración de variante actualizada',
+                stock_anterior: existingWithSamePrice.stock || 0,
+                stock_nuevo: existingWithSamePrice.stock || 0,
+                sku_local: hasLocalSku ? (local_sku || null) : (existingWithSamePrice.local_sku || null),
+                precio_de_venta: hasPrice ? normalizedPrice : normalizeMoneyValue(existingWithSamePrice.price),
+                precio_de_compra: hasPurchasePrice ? normalizedPurchasePrice : normalizeMoneyValue(existingWithSamePrice.purchase_price),
+                precio_promocional: hasPromotionalPrice ? normalizedPromotionalPrice : existingWithSamePrice.promotional_price,
+                estado: hasActive ? (activeVariant !== false ? 'Activo' : 'Inactivo') : (existingWithSamePrice.active !== false ? 'Activo' : 'Inactivo'),
+                publicar: hasPublished ? (published ? 'Sí' : 'No') : (existingWithSamePrice.published ? 'Sí' : 'No')
+              });
             }
-            
+            updatedLotsCount += 1;
             processedIds.add(existingWithSamePrice.id);
           } else {
             // ⭐ DIFERENTE PRECIO DE COMPRA: Crear nuevo lote (FIFO)
@@ -806,6 +841,22 @@ const WarehouseProductController = {
                 }
               }, { transaction });
             }
+            const initialStock = hasStock ? (parseInt(stock) || 0) : 0;
+            totalStockAdded += Math.max(initialStock, 0);
+            createdLotsCount += 1;
+            variantAuditDetails.push({
+              variante: getVariantAuditLabel(productVariantsById.get(Number(variant_id)), variantData),
+              operacion: 'Nuevo lote configurado',
+              stock_anterior: 0,
+              cantidad_agregada: initialStock,
+              stock_nuevo: initialStock,
+              sku_local: createData.local_sku,
+              precio_de_venta: createData.price,
+              precio_de_compra: createData.purchase_price,
+              precio_promocional: createData.promotional_price,
+              estado: createData.active ? 'Activo' : 'Inactivo',
+              publicar: createData.published ? 'Sí' : 'No'
+            });
             
             processedIds.add(newVariant.id);
           }
@@ -818,6 +869,11 @@ const WarehouseProductController = {
       await transaction.commit();
 
       const recordChanges = detectChanges(previousRecord, toPlain(record), ["active", "code", "minimum_stock"]);
+      const auditNewValue = changesToValueSnapshot(recordChanges, "new_value");
+      if (variantAuditDetails.length > 0) {
+        auditNewValue.variantes_procesadas = variantAuditDetails.length;
+        auditNewValue.total_stock_agregado = totalStockAdded;
+      }
       if (warehouse) {
         await AuditEventService.safeRecordFromRequest(req, buildWarehouseAuditPayload(warehouse, {
           action: "warehouse.product_config_updated",
@@ -825,13 +881,19 @@ const WarehouseProductController = {
           related_resource_type: "product",
           related_resource_id: record.product_id,
           previous_value: changesToValueSnapshot(recordChanges, "old_value"),
-          new_value: changesToValueSnapshot(recordChanges, "new_value"),
+          new_value: auditNewValue,
           changes: recordChanges,
-          description: `Configuracion de producto modificada en almacen: ${productRecord ? getProductAuditLabel(productRecord) : record.product_id}`,
+          description: totalStockAdded > 0
+            ? `Stock y configuración de producto actualizados en almacén: ${productRecord ? getProductAuditLabel(productRecord) : 'Producto'}`
+            : `Configuración de producto modificada en almacén: ${productRecord ? getProductAuditLabel(productRecord) : 'Producto'}`,
           metadata: {
-            warehouse_product_id: record.id,
-            product_label: productRecord ? getProductAuditLabel(productRecord) : null,
-            variants_updated: variantsString !== undefined && variantsString !== null && variantsString !== ""
+            producto: productRecord ? getProductAuditLabel(productRecord) : null,
+            almacen: getWarehouseAuditLabel(warehouse),
+            variantes_procesadas: variantAuditDetails.length,
+            total_stock_agregado: totalStockAdded,
+            lotes_creados: createdLotsCount,
+            lotes_actualizados: updatedLotsCount,
+            detalle_de_variantes: variantAuditDetails
           }
         }));
       }
