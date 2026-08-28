@@ -72,11 +72,12 @@ const UserCompanyController = {
     }
 
     try {
+      const previousRoleId = record.role_id;
       const updated = await UserCompanyRepository.updateRole(record, role_id);
       const [user, company, previousRole] = await Promise.all([
         UserRepository.findById(updated.user_id),
         CompanyRepository.findById(updated.company_id),
-        RoleRepository.findById(record.role_id)
+        RoleRepository.findById(previousRoleId)
       ]);
 
       await AuditEventService.safeRecord({
@@ -90,12 +91,12 @@ const UserCompanyController = {
         resource_type: 'user_company',
         resource_id: updated.id,
         resource_label: `${user?.name || user?.email || 'Usuario'} en ${company?.name || 'Empresa'}`,
-        previous_value: { role_id: record.role_id },
-        new_value: { role_id },
+        previous_value: { role_name: previousRole?.name || null },
+        new_value: { role_name: role?.name || null },
         changes: [{
-          field: 'role_id',
-          old_value: record.role_id,
-          new_value: role_id
+          field: 'role_name',
+          old_value: previousRole?.name || null,
+          new_value: role?.name || null
         }],
         description: `Rol de usuario actualizado en ${company?.name || 'empresa'}`,
         metadata: {

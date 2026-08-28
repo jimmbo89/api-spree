@@ -242,6 +242,80 @@ function changesToValueSnapshot(changes, valueKey) {
     return snapshot;
   }, {});
 }
+
+function uniqueNumericIds(values = []) {
+  return [...new Set((Array.isArray(values) ? values : [])
+    .map(Number)
+    .filter((id) => Number.isInteger(id) && id > 0))];
+}
+
+function mapWarehouseAuditItem(warehouse) {
+  const plain = toPlain(warehouse) || {};
+  return {
+    name: [plain.code || null, plain.name || null].filter(Boolean).join(' / ') || 'Almacén sin nombre'
+  };
+}
+
+function mapPoolAuditItem(pool) {
+  const plain = toPlain(pool) || {};
+  return {
+    name: plain.name || 'Pool sin nombre'
+  };
+}
+
+function mapCredentialAuditItem(credential, status = null) {
+  const plain = toPlain(credential) || {};
+  return {
+    name: plain.name || 'Credencial sin nombre',
+    marketplace_name: plain.marketplace?.name || plain.marketplace?.domain || 'Marketplace',
+    status: status === null || status === undefined ? undefined : Number(status) === 1 ? 'Activo' : 'Inactivo'
+  };
+}
+
+function sortAuditItems(items = []) {
+  return [...items].sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'es'));
+}
+
+async function getWarehouseAuditItems(ids = []) {
+  const records = await Promise.all(uniqueNumericIds(ids).map((id) => WarehouseRepository.findById(id)));
+  return sortAuditItems(records.filter(Boolean).map(mapWarehouseAuditItem));
+}
+
+async function getPoolAuditItems(ids = []) {
+  const records = await Promise.all(uniqueNumericIds(ids).map((id) => PoolRepository.findById(id, false)));
+  return sortAuditItems(records.filter(Boolean).map(mapPoolAuditItem));
+}
+
+async function getCredentialAuditItems(items = []) {
+  const normalized = Array.isArray(items) ? items : [];
+  const statusById = new Map(normalized.map((item) => [Number(item.marketplace_credential_id), item.status]));
+  const records = await MarketplaceCredentialRepository.findByIds([...statusById.keys()]);
+  return sortAuditItems(records.map((record) => mapCredentialAuditItem(record, statusById.get(Number(record.id)))));
+}
+
+async function getCurrentUserAccessSnapshot(userId, companyId) {
+  const [scopes, credentialAccess] = await Promise.all([
+    UserAclScopeRepository.findByUserAndCompany(userId, companyId),
+    UserMarketplaceCredentialRepository.findByUserAndCompany(userId, companyId)
+  ]);
+
+  return {
+    warehouses: sortAuditItems(scopes.filter((scope) => scope.warehouse).map((scope) => mapWarehouseAuditItem(scope.warehouse))),
+    pools: sortAuditItems(scopes.filter((scope) => scope.pool).map((scope) => mapPoolAuditItem(scope.pool))),
+    marketplace_credentials: sortAuditItems(credentialAccess.map((access) => mapCredentialAuditItem(
+      access.marketplaceCredential,
+      access.status
+    )))
+  };
+}
+
+function accessSnapshotCounts(snapshot = {}) {
+  return {
+    warehouses_count: snapshot.warehouses?.length || 0,
+    pools_count: snapshot.pools?.length || 0,
+    marketplace_credentials_count: snapshot.marketplace_credentials?.length || 0
+  };
+}
 const AuthController = {
 
   async register(req, res) {
@@ -722,22 +796,6 @@ const AuthController = {
 
     try {
       const users = await UserRepository.findAll(filters);
-    await AuditEventService.safeRecordFromRequest(req, {
-      company_id: company_id || null,
-      module: 'user',
-      action: 'user.list',
-      result: 'success',
-      resource_type: 'company',
-      resource_id: company_id,
-      resource_label: `Usuarios de ${company?.name || 'empresa'}`,
-      description: 'Listado de usuarios consultado',
-      metadata: {
-        company_name: company?.name || null,
-        role_name: role_id ? `Rol ${role_id}` : null,
-          status: status ?? null,
-          total_users: users.length
-        }
-      });
       return res.status(200).json({
         success: true,
         users: users, // ya están en formato plano
@@ -1303,46 +1361,49 @@ const AuthController = {
       count: users.length,
     };
 
-    await AuditEventService.safeRecordFromRequest(req, (isNewUser ? buildUserAuditPayload(userBd, {
-      company_id,
-      action: 'user.created',
-      result: 'success',
-      resource_id: userBd.id,
-      new_value: {
-        name: userBd.name || null,
-        email: userBd.email || null,
-        user: userBd.user || null,
-        status: userBd.status
-      },
-      description: `Usuario creado y asociado a ${getCompanyAuditLabel(company)}`,
-      metadata: {
-        company_name: getCompanyAuditLabel(company),
-        role_name: getRoleAuditLabel(role),
-        invitation_method: invitation_method || null,
-        warehouses_count: warehouses.length,
-        pools_count: pools.length,
-        marketplace_credentials_count: marketplaceCredentialsInput.items.length
-      }
-    }) : buildMembershipAuditPayload(membership, {
-      company_id,
-      action: 'user.associated',
-      result: 'success',
-      new_value: {
-        status: membership.status,
-        role_id: membership.role_id
-      },
-      description: `Usuario asociado a ${getCompanyAuditLabel(company)}`,
-      metadata: {
+    try {
+      const currentAccess = await getCurrentUserAccessSnapshot(userBd.id, company_id);
+      const baseMetadata = {
         company_name: getCompanyAuditLabel(company),
         user_name: getUserAuditLabel(userBd),
         role_name: getRoleAuditLabel(role),
         invitation_method: invitation_method || null,
-        warehouses_count: warehouses.length,
-        pools_count: pools.length,
-        marketplace_credentials_count: marketplaceCredentialsInput.items.length,
-        is_new_user: isNewUser
-      }
-    })));
+        warehouses: currentAccess.warehouses,
+        pools: currentAccess.pools,
+        marketplace_credentials: currentAccess.marketplace_credentials,
+        ...accessSnapshotCounts(currentAccess)
+      };
+
+      await AuditEventService.safeRecordFromRequest(req, (isNewUser ? buildUserAuditPayload(userBd, {
+        company_id,
+        action: 'user.created',
+        result: 'success',
+        resource_id: userBd.id,
+        new_value: {
+          name: userBd.name || null,
+          email: userBd.email || null,
+          user: userBd.user || null,
+          status: userBd.status
+        },
+        description: `Usuario creado y asociado a ${getCompanyAuditLabel(company)}`,
+        metadata: baseMetadata
+      }) : buildMembershipAuditPayload(membership, {
+        company_id,
+        action: 'user.associated',
+        result: 'success',
+        new_value: {
+          status: membership.status,
+          role_id: membership.role_id
+        },
+        description: `Usuario asociado a ${getCompanyAuditLabel(company)}`,
+        metadata: {
+          ...baseMetadata,
+          is_new_user: isNewUser
+        }
+      })));
+    } catch (auditError) {
+      logger.error(`[AuthController->associateUserToCompany audit] ${auditError.message}`);
+    }
 
     // 👈 ¡Enviamos la respuesta AHORA!
     res.status(200).json(responsePayload);
@@ -1554,6 +1615,16 @@ const AuthController = {
         role_id: membership.role_id,
         status: membership.status
       };
+      let previousAccessSnapshot = {
+        warehouses: [],
+        pools: [],
+        marketplace_credentials: []
+      };
+      try {
+        previousAccessSnapshot = await getCurrentUserAccessSnapshot(userId, company_id);
+      } catch (auditSnapshotError) {
+        logger.error(`[AuthController->updateUserInCompany previous access audit snapshot] ${auditSnapshotError.message}`);
+      }
 
       // 2. Actualizar datos del usuario (solo campos presentes)
       const userUpdateData = {};
@@ -1637,82 +1708,116 @@ const AuthController = {
 
       await transaction.commit();
 
-      const refreshedUser = await UserRepository.findById(userId);
-      const userChanges = detectChanges(previousUserSnapshot, {
-        name: refreshedUser?.name || null,
-        email: refreshedUser?.email || null,
-        user: refreshedUser?.user || null,
-        image: refreshedUser?.image || null
-      }, ['name', 'email', 'user', 'image']);
-
-      if (userChanges.length > 0 || Object.keys(userUpdateData).length > 0) {
-        await AuditEventService.safeRecordFromRequest(req, buildUserAuditPayload(refreshedUser || userBd, {
-          company_id,
-          action: 'user.updated',
-          result: 'success',
-          resource_id: userId,
-          previous_value: changesToValueSnapshot(userChanges, 'old_value'),
-          new_value: changesToValueSnapshot(userChanges, 'new_value'),
-          changes: userChanges,
-          description: `Usuario actualizado: ${getUserAuditLabel(refreshedUser || userBd)}`,
-          metadata: {
-            company_name: getCompanyAuditLabel(company),
-            role_name: getRoleAuditLabel(await RoleRepository.findById(finalRoleId)),
-            warehouses_count: warehouses.length,
-            pools_count: pools.length,
-            marketplace_credentials_count: marketplaceCredentialsInput.items.length
-          }
-        }));
-      }
-
-      if (finalRoleId !== previousRoleId || hasWarehouses || hasPools || marketplaceCredentialsInput.provided) {
-        const roleChanges = detectChanges(previousMembershipSnapshot, {
-          role_id: finalRoleId,
-          status: membership.status
-        }, ['role_id', 'status']);
-
-        await AuditEventService.safeRecordFromRequest(req, buildMembershipAuditPayload(membership, {
-          company_id,
-          action: 'user.company_role_updated',
-          result: 'success',
-          resource_id: membership.id,
-          previous_value: changesToValueSnapshot(roleChanges, 'old_value'),
-          new_value: changesToValueSnapshot(roleChanges, 'new_value'),
-          changes: roleChanges,
-          description: `Rol de usuario actualizado en ${getCompanyAuditLabel(company)}`,
-          metadata: {
-            company_name: getCompanyAuditLabel(company),
-            user_name: getUserAuditLabel(refreshedUser || userBd),
-            role_name: getRoleAuditLabel(await RoleRepository.findById(finalRoleId)),
-            previous_role_name: getRoleAuditLabel(previousRole),
-            warehouses_count: warehouses.length,
-            pools_count: pools.length,
-            marketplace_credentials_count: marketplaceCredentialsInput.items.length
-          }
-        }));
-      }
-
       const filters = {};
       filters.company_id = company_id;
       const users = await UserRepository.findAll(filters);
-      await AuditEventService.safeRecordFromRequest(req, {
-        company_id,
-        module: 'user',
-        action: 'user.updated',
-        result: 'success',
-        resource_type: 'user',
-        resource_id: userId,
-        resource_label: getUserAuditLabel(userBd),
-        description: `Usuario actualizado: ${getUserAuditLabel(userBd)}`,
-        metadata: {
+
+      try {
+        const refreshedUser = await UserRepository.findById(userId);
+        const currentAccessSnapshot = await getCurrentUserAccessSnapshot(userId, company_id);
+        const finalRoleForAudit = await RoleRepository.findById(finalRoleId);
+        const userLabel = getUserAuditLabel(refreshedUser || userBd);
+        const baseMetadata = {
           company_name: getCompanyAuditLabel(company),
-          role_name: getRoleAuditLabel(await RoleRepository.findById(finalRoleId)),
-          warehouses_count: warehouses.length,
-          pools_count: pools.length,
-          marketplace_credentials_count: marketplaceCredentialsInput.items.length,
-          user_name: getUserAuditLabel(userBd)
+          user_name: userLabel,
+          role_name: getRoleAuditLabel(finalRoleForAudit),
+          previous_role_name: getRoleAuditLabel(previousRole),
+          warehouses: currentAccessSnapshot.warehouses,
+          pools: currentAccessSnapshot.pools,
+          marketplace_credentials: currentAccessSnapshot.marketplace_credentials,
+          ...accessSnapshotCounts(currentAccessSnapshot)
+        };
+
+        const userChanges = detectChanges(previousUserSnapshot, {
+          name: refreshedUser?.name || null,
+          email: refreshedUser?.email || null,
+          user: refreshedUser?.user || null,
+          image: refreshedUser?.image || null
+        }, ['name', 'email', 'user', 'image']);
+
+        if (userChanges.length > 0 || Object.keys(userUpdateData).length > 0 || req.file) {
+          await AuditEventService.safeRecordFromRequest(req, buildUserAuditPayload(refreshedUser || userBd, {
+            company_id,
+            action: 'user.updated',
+            result: 'success',
+            resource_id: userId,
+            previous_value: changesToValueSnapshot(userChanges, 'old_value'),
+            new_value: changesToValueSnapshot(userChanges, 'new_value'),
+            changes: userChanges,
+            description: `Usuario actualizado: ${userLabel}`,
+            metadata: baseMetadata
+          }));
         }
-      });
+
+        if (finalRoleId !== previousRoleId) {
+          const roleNameChanges = [{
+            field: 'role_name',
+            old_value: getRoleAuditLabel(previousRole),
+            new_value: getRoleAuditLabel(finalRoleForAudit)
+          }];
+
+          await AuditEventService.safeRecordFromRequest(req, buildMembershipAuditPayload(membership, {
+            company_id,
+            action: 'user.company_role_updated',
+            result: 'success',
+            resource_id: membership.id,
+            previous_value: {
+              role_name: getRoleAuditLabel(previousRole)
+            },
+            new_value: {
+              role_name: getRoleAuditLabel(finalRoleForAudit)
+            },
+            changes: roleNameChanges,
+            description: `Rol de ${userLabel} actualizado en ${getCompanyAuditLabel(company)}`,
+            metadata: baseMetadata
+          }));
+        }
+
+        if (hasWarehouses || hasPools || marketplaceCredentialsInput.provided) {
+          const accessChanges = [];
+          if (hasWarehouses) {
+            accessChanges.push({
+              field: 'warehouses',
+              old_value: previousAccessSnapshot.warehouses,
+              new_value: currentAccessSnapshot.warehouses
+            });
+          }
+          if (hasPools) {
+            accessChanges.push({
+              field: 'pools',
+              old_value: previousAccessSnapshot.pools,
+              new_value: currentAccessSnapshot.pools
+            });
+          }
+          if (marketplaceCredentialsInput.provided) {
+            accessChanges.push({
+              field: 'marketplace_credentials',
+              old_value: previousAccessSnapshot.marketplace_credentials,
+              new_value: currentAccessSnapshot.marketplace_credentials
+            });
+          }
+
+          await AuditEventService.safeRecordFromRequest(req, buildMembershipAuditPayload(membership, {
+            company_id,
+            action: 'user.access_updated',
+            result: 'success',
+            resource_id: membership.id,
+            previous_value: previousAccessSnapshot,
+            new_value: currentAccessSnapshot,
+            changes: accessChanges,
+            description: `Accesos de ${userLabel} actualizados en ${getCompanyAuditLabel(company)}`,
+            metadata: {
+              ...baseMetadata,
+              previous_warehouses: previousAccessSnapshot.warehouses,
+              previous_pools: previousAccessSnapshot.pools,
+              previous_marketplace_credentials: previousAccessSnapshot.marketplace_credentials
+            }
+          }));
+        }
+      } catch (auditError) {
+        logger.error(`[AuthController->updateUserInCompany audit] ${auditError.message}`);
+      }
+
       return res.status(200).json({
         success: true,
         message: "Usuario actualizado correctamente",
@@ -1786,24 +1891,6 @@ const AuthController = {
       : roles.filter((role) => Number(role.visible_to_companies) === 1);
 
     try {
-    await AuditEventService.safeRecordFromRequest(req, {
-      company_id: company_id || null,
-      module: 'user',
-      action: 'user.pool_warehouse_roles',
-      result: 'success',
-      resource_type: 'company',
-      resource_id: company_id,
-      resource_label: `Datos para alta de usuario de ${company_id ? (await CompanyRepository.findById(company_id))?.name || 'empresa' : 'empresa'}`,
-      description: 'Roles, almacenes, pools y credenciales consultados',
-      metadata: {
-        company_name: company_id ? (await CompanyRepository.findById(company_id))?.name || null : null,
-        branch_name: branch_id ? (await BranchRepository.findById(branch_id))?.name || null : null,
-        credentials_count: credentials.length,
-        warehouses_count: warehouses.length,
-        pools_count: pools.length,
-        roles_count: filteredRoles.length
-      }
-    });
     return res.status(200).json({
       success: true,
       roles: filteredRoles, // ya están en formato plano
