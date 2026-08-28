@@ -253,6 +253,7 @@ async sendInvitation(req, res) {
       action: 'user.invite',
       result: 'success',
       resource_type: 'user_company',
+      resource_id: membership.id,
       resource_label: `Invitación a ${email} en ${companyName}`,
       description: `Invitación enviada a ${email}`,
       metadata: {
@@ -414,6 +415,7 @@ async verificInvitation(req, res) {
       action: 'user.invite.accept',
       result: 'success',
       resource_type: 'user_company',
+      resource_id: validMembership.id,
       resource_label: `Usuario ${user.name || user.email || 'sin nombre'} en ${company.name}`,
       description: `Invitación aceptada por ${user.name || user.email || 'usuario'}`,
       metadata: {

@@ -52,6 +52,7 @@ const RESOURCE_TYPE_LABELS = {
   product_variant: 'Variante de producto',
   warehouse: 'Almacén',
   warehouse_product: 'Producto en almacén',
+  company: 'Empresa',
   marketplace_credential: 'Conexión marketplace',
   publication_draft: 'Borrador de publicación',
   process: 'Proceso',

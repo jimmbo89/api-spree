@@ -88,6 +88,7 @@ const UserCompanyController = {
         action: 'user.company_role_updated',
         result: 'success',
         resource_type: 'user_company',
+        resource_id: updated.id,
         resource_label: `${user?.name || user?.email || 'Usuario'} en ${company?.name || 'Empresa'}`,
         previous_value: { role_id: record.role_id },
         new_value: { role_id },

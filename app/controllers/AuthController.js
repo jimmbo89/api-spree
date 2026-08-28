@@ -209,29 +209,30 @@ function getRoleAuditLabel(role) {
 function buildUserAuditPayload(user, data = {}) {
   const plain = toPlain(user) || {};
   return {
-    company_id: data.company_id || plain.company_id || null,
+    ...data,
+    company_id: data.company_id ?? plain.company_id ?? data.resource_id ?? null,
     module: 'user',
     resource_type: data.resource_type || 'user',
-    resource_id: plain.id,
+    resource_id: data.resource_id ?? plain.id ?? data.company_id ?? null,
     resource_label: data.resource_label || getUserAuditLabel(plain),
-    ...data
   };
 }
 
 function buildMembershipAuditPayload(membership, data = {}) {
   const plain = toPlain(membership) || {};
+  const companyId = data.company_id ?? plain.company_id ?? data.resource_id ?? null;
   const userName = data.user_name || plain.user?.name || plain.user?.email || plain.user?.user || null;
   const companyName = data.company_name || plain.company?.name || null;
   return {
-    company_id: data.company_id || plain.company_id || null,
+    ...data,
+    company_id: companyId,
     module: 'user',
     resource_type: 'user_company',
-    resource_id: plain.id,
+    resource_id: data.resource_id ?? plain.id ?? companyId ?? null,
     resource_label: data.resource_label || [
       userName ? `Usuario ${userName}` : null,
       companyName ? `Empresa ${companyName}` : null
     ].filter(Boolean).join(' / ') || 'Membresía de usuario',
-    ...data
   };
 }
 
@@ -646,6 +647,7 @@ const AuthController = {
     await AuditEventService.safeRecordFromRequest(req, buildMembershipAuditPayload(membership, {
       action: 'user.destroy',
       result: 'success',
+      company_id,
       previous_value: { status: membership.status },
       new_value: { status },
       changes: [{
@@ -720,17 +722,18 @@ const AuthController = {
 
     try {
       const users = await UserRepository.findAll(filters);
-      await AuditEventService.safeRecordFromRequest(req, {
-        company_id: company_id || null,
-        module: 'user',
-        action: 'user.list',
-        result: 'success',
-        resource_type: 'user',
-        resource_label: 'Listado de usuarios',
-        description: 'Listado de usuarios consultado',
-        metadata: {
-          company_name: company?.name || null,
-          role_name: role_id ? `Rol ${role_id}` : null,
+    await AuditEventService.safeRecordFromRequest(req, {
+      company_id: company_id || null,
+      module: 'user',
+      action: 'user.list',
+      result: 'success',
+      resource_type: 'company',
+      resource_id: company_id,
+      resource_label: `Usuarios de ${company?.name || 'empresa'}`,
+      description: 'Listado de usuarios consultado',
+      metadata: {
+        company_name: company?.name || null,
+        role_name: role_id ? `Rol ${role_id}` : null,
           status: status ?? null,
           total_users: users.length
         }
@@ -1301,8 +1304,10 @@ const AuthController = {
     };
 
     await AuditEventService.safeRecordFromRequest(req, (isNewUser ? buildUserAuditPayload(userBd, {
+      company_id,
       action: 'user.created',
       result: 'success',
+      resource_id: userBd.id,
       new_value: {
         name: userBd.name || null,
         email: userBd.email || null,
@@ -1319,6 +1324,7 @@ const AuthController = {
         marketplace_credentials_count: marketplaceCredentialsInput.items.length
       }
     }) : buildMembershipAuditPayload(membership, {
+      company_id,
       action: 'user.associated',
       result: 'success',
       new_value: {
@@ -1641,8 +1647,10 @@ const AuthController = {
 
       if (userChanges.length > 0 || Object.keys(userUpdateData).length > 0) {
         await AuditEventService.safeRecordFromRequest(req, buildUserAuditPayload(refreshedUser || userBd, {
+          company_id,
           action: 'user.updated',
           result: 'success',
+          resource_id: userId,
           previous_value: changesToValueSnapshot(userChanges, 'old_value'),
           new_value: changesToValueSnapshot(userChanges, 'new_value'),
           changes: userChanges,
@@ -1664,8 +1672,10 @@ const AuthController = {
         }, ['role_id', 'status']);
 
         await AuditEventService.safeRecordFromRequest(req, buildMembershipAuditPayload(membership, {
+          company_id,
           action: 'user.company_role_updated',
           result: 'success',
+          resource_id: membership.id,
           previous_value: changesToValueSnapshot(roleChanges, 'old_value'),
           new_value: changesToValueSnapshot(roleChanges, 'new_value'),
           changes: roleChanges,
@@ -1691,6 +1701,7 @@ const AuthController = {
         action: 'user.updated',
         result: 'success',
         resource_type: 'user',
+        resource_id: userId,
         resource_label: getUserAuditLabel(userBd),
         description: `Usuario actualizado: ${getUserAuditLabel(userBd)}`,
         metadata: {
@@ -1780,8 +1791,9 @@ const AuthController = {
       module: 'user',
       action: 'user.pool_warehouse_roles',
       result: 'success',
-      resource_type: 'user',
-      resource_label: 'Datos para alta de usuario',
+      resource_type: 'company',
+      resource_id: company_id,
+      resource_label: `Datos para alta de usuario de ${company_id ? (await CompanyRepository.findById(company_id))?.name || 'empresa' : 'empresa'}`,
       description: 'Roles, almacenes, pools y credenciales consultados',
       metadata: {
         company_name: company_id ? (await CompanyRepository.findById(company_id))?.name || null : null,
