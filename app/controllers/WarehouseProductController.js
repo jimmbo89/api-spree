@@ -90,9 +90,9 @@ function getMovementAuditAction(movementType, isBulk = false) {
   return "warehouse.stock_adjustment";
 }
 
-function getMovementDescription(movement) {
+function getMovementDescription(movement, productLabel = null) {
   const type = movement.movement_type;
-  const productName = movement.product?.name || `producto ${movement.product_id}`;
+  const productName = productLabel || movement.product?.name || 'Producto sin identificar';
 
   if (type === "entry") return `Entrada de stock: ${productName}`;
   if (type === "exit") return `Salida de stock: ${productName}`;
@@ -129,7 +129,7 @@ async function recordMovementAuditEvents(req, referenceId, { isBulk = false } = 
         old_value: movement.stock_before,
         new_value: movement.stock_after
       }],
-      description: getMovementDescription(movement),
+      description: getMovementDescription(movement, productLabel),
       correlation_id: referenceId,
       metadata: {
         movement_type: movement.movement_type,
