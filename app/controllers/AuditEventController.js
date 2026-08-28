@@ -168,6 +168,7 @@ const FIELD_LABELS = {
   gtin: 'GTIN',
   mpn: 'MPN',
   warehouse_name: 'Almacén',
+  warehouse_code: 'Código del almacén',
   source_warehouse_name: 'Almacén origen',
   destination_warehouse_name: 'Almacén destino',
   branch_name: 'Sucursal',
@@ -184,6 +185,7 @@ const FIELD_LABELS = {
   target_user_name: 'Usuario objetivo',
   source: 'Origen',
   status: 'Estado',
+  active: 'Estado',
   state: 'Estado del producto',
   previous_status: 'Estado anterior',
   new_status: 'Estado nuevo',
@@ -195,6 +197,15 @@ const FIELD_LABELS = {
   published_stock: 'Existencias publicadas',
   quantity: 'Cantidad',
   sku: 'SKU',
+  code: 'Código',
+  product_sku: 'SKU del producto',
+  local_sku: 'SKU local',
+  local_code: 'Código local',
+  minimum_stock: 'Stock mínimo',
+  previous_stock: 'Stock anterior',
+  previous_sale_price: 'Precio de venta anterior',
+  previous_purchase_price: 'Precio de compra anterior',
+  variant: 'Variante',
   name: 'Nombre',
   title: 'Título',
   description: 'Descripción',
@@ -1113,13 +1124,30 @@ function getProductStateDisplayLabel(value) {
   return labels[Number(value)] || null;
 }
 
+const LITERAL_DISPLAY_VALUE_KEYS = new Set([
+  'sku',
+  'gtin',
+  'mpn',
+  'code',
+  'product_sku',
+  'local_sku',
+  'local_code',
+  'warehouse_code',
+  'warehouse_name',
+  'product_label',
+  'variant',
+  'name',
+  'title',
+  'description'
+]);
+
 function formatDisplayValue(value, key = null) {
   const normalized = parseDisplayValue(value);
 
   if (normalized == null || normalized === '') return 'Sin valor';
   if (typeof normalized === 'boolean') return normalized ? 'Sí' : 'No';
   if (normalized instanceof Date) return normalized.toISOString();
-  if (['sku', 'gtin', 'mpn', 'code'].includes(key)) return String(normalized);
+  if (LITERAL_DISPLAY_VALUE_KEYS.has(key)) return String(normalized);
   if (key === 'state') {
     const stateLabel = getProductStateDisplayLabel(normalized);
     if (stateLabel) return stateLabel;

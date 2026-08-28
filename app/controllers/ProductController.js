@@ -73,6 +73,30 @@ function getProductStateLabel(state) {
   return labels[Number(state)] || "Estado desconocido";
 }
 
+function getWarehouseProductOperationLabel(operation) {
+  return operation === "created" ? "Creado" : "Actualizado";
+}
+
+function getVariantAuditLabel(variant) {
+  const plain = toPlain(variant) || {};
+  return [plain.sku || null, plain.internal_code || null].filter(Boolean).join(" / ") || "Variante sin SKU";
+}
+
+function mapWarehouseVariantAuditItem(productVariant, variantData, operation, previousVariant = null) {
+  return {
+    variant: getVariantAuditLabel(productVariant),
+    operation: getWarehouseProductOperationLabel(operation),
+    local_sku: variantData.local_sku || getVariantAuditLabel(productVariant),
+    stock: Number(variantData.stock) || 0,
+    sale_price: Number(variantData.price) || 0,
+    purchase_price: Number(variantData.purchase_price) || 0,
+    active: variantData.active ? "Activo" : "Inactivo",
+    previous_stock: previousVariant ? Number(previousVariant.stock) || 0 : null,
+    previous_sale_price: previousVariant ? Number(previousVariant.price) || 0 : null,
+    previous_purchase_price: previousVariant ? Number(previousVariant.purchase_price) || 0 : null
+  };
+}
+
 function getProductStateAudit(previousState, newState, productName) {
   const previousLabel = getProductStateLabel(previousState);
   const newLabel = getProductStateLabel(newState);
@@ -1333,6 +1357,8 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
         : [];
       // Procesar variantes (sin eliminar las existentes)
       let variantsConfigured = 0;
+      let stockTotal = 0;
+      const variantsAuditDetails = [];
       if (whConfig.variants && Array.isArray(whConfig.variants)) {
         for (let i = 0; i < whConfig.variants.length; i++) {
           const variantConfig = whConfig.variants[i];
@@ -1343,6 +1369,8 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
             wp.id,
             productVariant.id
           );
+          const previousVariant = toPlain(wpv);
+          const variantOperation = wpv ? "updated" : "created";
 
           // Usar precios del producto como fallback si la variante no tiene precios
           const salePrice = variantConfig.price !== undefined && variantConfig.price !== null 
@@ -1361,6 +1389,7 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
             purchase_price: purchasePriceVal,
             stock: parseInt(variantConfig.stock) || 0,
           };
+          stockTotal += variantData.stock;
 
           if (wpv) {
             // 🔄 Actualizar
@@ -1369,6 +1398,12 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
             // ➕ Crear
             await WarehouseProductVariantRepository.create(variantData, { transaction });
           }
+          variantsAuditDetails.push(mapWarehouseVariantAuditItem(
+            productVariant,
+            variantData,
+            variantOperation,
+            previousVariant
+          ));
           variantsConfigured += 1;
         }
       }
@@ -1376,13 +1411,16 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
         warehouse,
         operation,
         variantsConfigured,
+        stockTotal,
+        warehouseProduct: toPlain(wp),
+        variantsAuditDetails,
         changes: warehouseProductChanges
       });
     }
 
     await transaction.commit();
 
-    await Promise.all(warehouseAuditEvents.map(({ warehouse, operation, variantsConfigured, changes }) => (
+    await Promise.all(warehouseAuditEvents.map(({ warehouse, operation, variantsConfigured, stockTotal, warehouseProduct, variantsAuditDetails, changes }) => (
       AuditEventService.safeRecordFromRequest(req, buildProductAuditPayload(product, {
         action: "product.warehouse_configured",
         result: "success",
@@ -1393,9 +1431,17 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
         changes,
         description: `Producto configurado en almacen: ${warehouse.name}`,
         metadata: {
-          operation,
+          operation: getWarehouseProductOperationLabel(operation),
           warehouse_name: warehouse.name,
-          variants_configured: variantsConfigured
+          warehouse_code: warehouse.code || null,
+          product_label: getProductAuditLabel(product),
+          product_sku: product.sku || null,
+          local_code: warehouseProduct?.code || null,
+          minimum_stock: warehouseProduct?.minimum_stock ?? null,
+          active: warehouseProduct?.active ? "Activo" : "Inactivo",
+          variants_configured: variantsConfigured,
+          stock_total: stockTotal,
+          variants: variantsAuditDetails
         }
       }))
     )));
