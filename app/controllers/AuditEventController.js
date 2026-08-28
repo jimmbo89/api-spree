@@ -1219,6 +1219,9 @@ const LITERAL_DISPLAY_VALUE_KEYS = new Set([
   'codigo_local',
   'warehouse_code',
   'warehouse_name',
+  'warehouse_label',
+  'source_warehouse_label',
+  'destination_warehouse_label',
   'product_label',
   'producto',
   'marketplace',
@@ -1337,13 +1340,25 @@ function buildDisplayChanges(changes) {
     });
 }
 
+function getDisplayDescription(event, fallback) {
+  const description = event.description || fallback;
+  const metadata = parseDisplayValue(event.metadata) || {};
+  const productLabel = metadata.product_label || metadata.producto || null;
+
+  if (productLabel && /\bproducto\s+\d+\b/i.test(description)) {
+    return description.replace(/\bproducto\s+\d+\b/i, productLabel);
+  }
+
+  return description;
+}
+
 function buildDisplay(event, labels) {
   return {
     summary: {
       title: labels.action_label,
       module: labels.module_label,
       result: labels.result_label,
-      description: event.description || labels.action_label,
+      description: getDisplayDescription(event, labels.action_label),
       occurred_at: event.occurred_at
     },
     actor: {
