@@ -1358,7 +1358,6 @@ async function persistMercadoLibreItemState({
     if (jobProduct) {
       const isActive = String(snapshot.status || '').toLowerCase() === 'active';
       const isDeleted = isMercadoLibreDeletedState(snapshot.status, snapshot.sub_status);
-      const subStatusLabel = snapshot.sub_status_text ? ` (${snapshot.sub_status_text})` : '';
       const currentJobDetails = normalizeFalabellaDetailObject(jobProduct.error_details);
       const mergedJobDetails = {
         ...currentJobDetails,
@@ -1374,7 +1373,9 @@ async function persistMercadoLibreItemState({
           ? null
           : (isDeleted
             ? 'ML item eliminado en Mercado Libre'
-            : `Advertencias: ML item status ${snapshot.status}${subStatusLabel}`),
+            : (Array.isArray(snapshot.sub_status) && snapshot.sub_status.includes('paused_by_seller')
+              ? 'La publicación quedó pausada en Mercado Libre por configuración del vendedor.'
+              : 'La publicación presenta una advertencia de estado en Mercado Libre.')),
         error_details: isActive ? null : mergedJobDetails
       });
 

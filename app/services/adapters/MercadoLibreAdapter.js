@@ -723,6 +723,35 @@ class MercadoLibreAdapter extends BaseAdapter {
       throw new Error('No se encontró configuración de MercadoLibre para la credencial seleccionada');
     }
 
+    const selectedCategoryAttributeValue = (names = []) => {
+      const normalizedNames = new Set(names.map((name) => String(name).replace(/[^a-z0-9]/gi, '').toLowerCase()));
+      const read = (attributes = []) => (Array.isArray(attributes) ? attributes : []).find((attribute) => {
+        const keys = [attribute?.id, attribute?.name, attribute?.label, attribute?.feed_name, attribute?.FeedName];
+        return keys.some((key) => normalizedNames.has(String(key || '').replace(/[^a-z0-9]/gi, '').toLowerCase()));
+      });
+      const selected = read(mlData.attributes);
+      const value = selected?.value_name ?? selected?.value ?? selected?.plain_text ?? null;
+      return value !== null && value !== undefined && String(value).trim() ? String(value).trim() : null;
+    };
+    const selectedSharedCategoryAttributeValue = (names = []) => {
+      const configs = Object.values(productData?.falabella || {}).filter((config) => config && typeof config === 'object');
+      for (const config of configs) {
+        const attributes = Array.isArray(config.attributes)
+          ? config.attributes
+          : (Array.isArray(config.category?.attributes) ? config.category.attributes : []);
+        const normalizedNames = new Set(names.map((name) => String(name).replace(/[^a-z0-9]/gi, '').toLowerCase()));
+        const selected = attributes.find((attribute) => [attribute?.id, attribute?.name, attribute?.label, attribute?.feed_name, attribute?.FeedName]
+          .some((key) => normalizedNames.has(String(key || '').replace(/[^a-z0-9]/gi, '').toLowerCase())));
+        const value = selected?.value_name ?? selected?.value ?? selected?.plain_text ?? null;
+        if (value !== null && value !== undefined && String(value).trim()) return String(value).trim();
+      }
+      return null;
+    };
+    const selectedDescription = selectedCategoryAttributeValue(['description', 'descripcion'])
+      || selectedSharedCategoryAttributeValue(['description', 'descripcion']);
+    const selectedName = selectedCategoryAttributeValue(['name', 'title', 'titulo'])
+      || selectedSharedCategoryAttributeValue(['name', 'title', 'titulo']);
+
     const shippingEffective = mlData?.shipping?.effective || {};
     const shippingRequested = mlData?.shipping?.requested || {};
     const listingTypeOverride = normalizeListingTypeId(mlData?.listing_type_id || null);
@@ -801,7 +830,7 @@ class MercadoLibreAdapter extends BaseAdapter {
       attributes: [],
       pictures: productData.images || [],
       description: {
-        plain_text: productData.description?.trim() || ''
+        plain_text: selectedDescription || productData.description?.trim() || ''
       },
       category_settings: categoryInfo.category || categoryInfo.settings || {},
       __ml_has_variation_attributes: hasVariationAttributes,
@@ -875,15 +904,15 @@ class MercadoLibreAdapter extends BaseAdapter {
         .toString()
         .trim();
       prepared.family_name = familyName;
-      prepared.name = productData.name?.trim() || familyName;
-      prepared.title = productData.title?.trim() || familyName;
+      prepared.name = selectedName || productData.name?.trim() || familyName;
+      prepared.title = selectedName || productData.title?.trim() || familyName;
       logger.info(`[ML Adapter] 📦 Producto de catálogo o con variaciones → family_name: "${prepared.family_name}"`);
     } else {
-      const title = (productData.title || productData.name || productData.family_name || 'Producto sin título')
+      const title = (selectedName || productData.title || productData.name || productData.family_name || 'Producto sin título')
         .toString()
         .trim();
       prepared.title = title;
-      prepared.name = productData.name?.trim() || title;
+      prepared.name = selectedName || productData.name?.trim() || title;
       logger.info(`[ML Adapter] 📦 Producto simple → title: "${prepared.title}"`);
     }
 

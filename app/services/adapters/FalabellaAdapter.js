@@ -1180,7 +1180,7 @@ _transformImages(images = []) {
         name: attr.name,
         value_id: attr.value_id,
         value_name: attr.value_name,
-        value: attr.value_name || attr.value_id,
+        value: attr.value_name ?? attr.value ?? attr.value_id,
         example_value: attr.example_value || null
       }));
     }
@@ -1190,7 +1190,7 @@ _transformImages(images = []) {
         name: attr.name,
         value_id: attr.value_id,
         value_name: attr.value_name,
-        value: attr.value_name || attr.value_id,
+        value: attr.value_name ?? attr.value ?? attr.value_id,
         example_value: attr.example_value || null
       }));
     }
@@ -1240,35 +1240,32 @@ _transformImages(images = []) {
       package_length: packageMeasurementsFromAttributes.package_length ?? packageMeasurementsFromPayload.package_length,
       package_weight: packageMeasurementsFromAttributes.package_weight ?? packageMeasurementsFromPayload.package_weight
     };
+    // Valores elegidos en atributos marketplace mandan sobre ficha Spree.
+    const selectedBrand = this.getFalabellaAttributeValueByNames({ attributes }, ['Brand']);
+    const selectedName = this.getFalabellaAttributeValueByNames({ attributes }, ['Name']);
+    const selectedDescription = this.getFalabellaAttributeValueByNames({ attributes }, ['Description', 'description']);
+    const selectedSku = this.getFalabellaAttributeValueByNames({ attributes }, ['SellerSku']);
+    const selectedPrice = this.getFalabellaAttributeValueByNames({ attributes }, ['Price', 'PriceFalabella']);
+    const selectedStock = this.getFalabellaAttributeValueByNames({ attributes }, ['Quantity', 'Stock', 'StockFalabella']);
+
     const resolvedBrand = String(
-      productData.brand ??
-      productData.Brand ??
-      attributes.find((a) => this.normalizeFalabellaText(a.id) === 'brand')?.value_name ??
-      attributes.find((a) => this.normalizeFalabellaText(a.id) === 'brand')?.value ??
-      ''
+      selectedBrand ?? productData.brand ?? productData.Brand ?? ''
     ).trim() || null;
 
     const resolvedName = String(
-      productData.productName ??
-      productData.name ??
-      productData.title ??
-      attributes.find((a) => this.normalizeFalabellaText(a.id) === 'name')?.value_name ??
-      attributes.find((a) => this.normalizeFalabellaText(a.id) === 'name')?.value ??
+      selectedName ?? productData.productName ?? productData.name ?? productData.title ??
       ''
     ).trim() || null;
 
     const resolvedDescription = String(
-      productData.description ??
-      productData.Description ??
-      attributes.find((a) => this.normalizeFalabellaText(a.id) === 'description')?.value_name ??
-      attributes.find((a) => this.normalizeFalabellaText(a.id) === 'description')?.value ??
+      selectedDescription ?? productData.description ?? productData.Description ??
       ''
     ).trim() || null;
 
-    const resolvedSku = String(productData.sku || productData.SellerSku || '').trim() || null;
-    const resolvedPrice = this.normalizeFalabellaFloat(validVariant?.price ?? productData.price ?? productData.Price);
+    const resolvedSku = String(selectedSku ?? productData.sku ?? productData.SellerSku ?? '').trim() || null;
+    const resolvedPrice = this.normalizeFalabellaFloat(selectedPrice ?? validVariant?.price ?? productData.price ?? productData.Price);
     const resolvedStock = this.normalizeFalabellaInteger(
-      productData.totalPublishingStock ??
+      selectedStock ?? productData.totalPublishingStock ??
       productData.stock ??
       productData.totalStock ??
       validVariant?.publishStock ??

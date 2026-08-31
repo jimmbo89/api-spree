@@ -40,6 +40,56 @@ function parseJsonMaybe(value) {
   }
 }
 
+function translatePublicationDetail(detail) {
+  const text = String(detail || '').trim();
+  const normalized = text.toLowerCase();
+  if (!text) return null;
+  if (normalized.includes('campo requerido ausente: description')) return 'Falta completar la descripción.';
+  if (normalized.includes('el precio debe ser mayor a 0')) return 'El precio debe ser mayor que $0.';
+  if (normalized === 'validation_failed') return 'Hay datos obligatorios incompletos.';
+  return text;
+}
+
+function humanizeJobPublicationError(error = {}) {
+  const details = parseJsonMaybe(error.error_details);
+  const code = String(details?.error_code || error.error_message || '').trim().toLowerCase();
+  const itemState = normalizeMarketplaceItemState(details);
+
+  if (code === 'falabella_publication_failed' || Array.isArray(details?.failed_items)) {
+    const affected = (Array.isArray(details?.failed_items) ? details.failed_items : [])
+      .map((item) => {
+        const messages = (Array.isArray(item?.details) ? item.details : [item?.error])
+          .map(translatePublicationDetail)
+          .filter(Boolean);
+        return messages.length ? `${item?.sku ? `Variante ${item.sku}: ` : ''}${messages.join(' ')}` : null;
+      })
+      .filter(Boolean);
+    return {
+      message: affected.length
+        ? `No se pudo publicar en Falabella. ${affected.join(' ')}`
+        : 'No se pudo publicar en Falabella. Revise los datos requeridos del producto.',
+      details: affected.join(' ') || 'Falabella rechazó la publicación por datos requeridos incompletos.'
+    };
+  }
+
+  if (itemState?.status === 'paused') {
+    const isSellerPause = itemState.sub_status.includes('paused_by_seller');
+    return {
+      message: isSellerPause
+        ? 'La publicación quedó pausada en Mercado Libre por configuración del vendedor.'
+        : 'La publicación quedó pausada en Mercado Libre.',
+      details: isSellerPause
+        ? 'Puedes activarla desde la cuenta de Mercado Libre cuando esté lista para vender.'
+        : 'Revisa el estado de la publicación en Mercado Libre.'
+    };
+  }
+
+  return {
+    message: error.error_message || 'No se pudo completar la publicación.',
+    details: typeof error.error_details === 'string' ? error.error_details : null
+  };
+}
+
 function normalizeMarketplaceItemState(details) {
   const parsedDetails = parseJsonMaybe(details);
   if (!parsedDetails || typeof parsedDetails !== 'object') return null;
@@ -236,7 +286,9 @@ async function refreshPausedMarketplaceItemStateForJob(job) {
       const isActive = snapshot.status === 'active';
       const shouldKeepWarning = snapshot.status && !isActive;
       const errorMessage = shouldKeepWarning
-        ? `Advertencias: ML item status ${snapshot.status}${snapshot.sub_status_text ? ` (${snapshot.sub_status_text})` : ''}`
+        ? (Array.isArray(snapshot.sub_status) && snapshot.sub_status.includes('paused_by_seller')
+          ? 'La publicación quedó pausada en Mercado Libre por configuración del vendedor.'
+          : 'La publicación presenta una advertencia de estado en Mercado Libre.')
         : null;
 
       const taskUpdateData = {
@@ -951,8 +1003,9 @@ async getJobDetail(req, res) {
       marketplace_id: error.marketplace_id,
       credential_id: error.credential_id,
       marketplace_name: error.marketplace_name,
-      error_message: error.error_message,
-      error_details: error.error_details,  // ✅ Incluye warnings array
+      error_message: humanizeJobPublicationError(error).message,
+      // Vista usuario: sin códigos internos, JSON crudo ni mensajes en inglés.
+      error_details: humanizeJobPublicationError(error).details,
       payload: error.payload,              // ✅ Payload desde ProductPublishingTask
       is_fixed: error.is_fixed || false,
       fixed_payload: error.fixed_payload || null,
