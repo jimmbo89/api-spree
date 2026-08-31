@@ -1,5 +1,5 @@
 const { Op } = require('sequelize');
-const { Company, BusinessType, Plan } = require('../models');
+const { Company, BusinessType, Plan, UserCompany } = require('../models');
 const ImageService = require('../services/ImageService');
 const logger = require('../../config/logger');
 
@@ -24,8 +24,26 @@ const CompanyRepository = {
   },
 
  async getMappedCompaniesByUserId(userId) {
+    const activeMemberships = await UserCompany.findAll({
+      where: {
+        user_id: userId,
+        status: 1
+      },
+      attributes: ['company_id'],
+      raw: true
+    });
+    const activeMembershipCompanyIds = activeMemberships.map(({ company_id }) => company_id);
+    const companyWhere = activeMembershipCompanyIds.length > 0
+      ? {
+          [Op.or]: [
+            { user_id: userId },
+            { id: { [Op.in]: activeMembershipCompanyIds } }
+          ]
+        }
+      : { user_id: userId };
+
     const companies = await Company.findAll({
-      where: { user_id: userId },
+      where: companyWhere,
       attributes: ['id', 'name', 'description', 'address', 'city', 'country', 'image', 'rut', 'phone', 'business_type_id', 'email', 'plan_id', 'currency'],
       include: [
       { model: BusinessType, as: 'businessType', attributes: ['id', 'name'], required: false },

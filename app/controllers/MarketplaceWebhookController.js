@@ -1129,6 +1129,55 @@ async function recalculateJobProgressFromTask(task) {
   }
 }
 
+function resolveFalabellaJobProductStatus(taskStatus) {
+  const normalizedStatus = String(taskStatus || '').trim().toLowerCase();
+
+  if (['published', 'published_with_warnings'].includes(normalizedStatus)) return 'success';
+  if (normalizedStatus === 'failed') return 'error';
+  if (normalizedStatus === 'deleted') return 'deleted';
+  if (normalizedStatus === 'pending') return 'pending';
+  return 'processing';
+}
+
+async function recalculateFalabellaJobProgressFromTask(task) {
+  if (!task?.batch_id || !task?.product_id || !task?.marketplace_id) {
+    await recalculateJobProgressFromTask(task);
+    return;
+  }
+
+  const job = task.job || await JobRepository.findByBatchId(task.batch_id, task.company_id || null);
+  if (!job?.id) return;
+
+  const jobProduct = await JobProductRepository.findByProductAndMarketplace(
+    job.id,
+    task.product_id,
+    task.marketplace_id,
+    task.credential_id || null
+  );
+
+  if (jobProduct) {
+    const jobProductStatus = resolveFalabellaJobProductStatus(task.status);
+    const updateData = {
+      status: jobProductStatus,
+      task_id: task.id,
+      external_id: task.external_id || jobProduct.external_id || null,
+      external_url: task.external_url || jobProduct.external_url || null
+    };
+
+    if (jobProductStatus === 'error') {
+      updateData.error_message = task.error_message || jobProduct.error_message || 'Error de publicación en Falabella';
+      updateData.error_details = task.error_details || jobProduct.error_details || null;
+    } else {
+      updateData.error_message = null;
+      updateData.error_details = null;
+    }
+
+    await JobProductRepository.update(jobProduct, updateData);
+  }
+
+  await JobRepository.recalculateProgress(job.id);
+}
+
 function buildMercadoLibreDeletedItemSnapshot(itemId, verification, payload) {
   return buildMercadoLibreItemStateSnapshot({
     item: {
@@ -1835,6 +1884,8 @@ async function persistFalabellaFeedReconciliationState({ task, feedId, feedStatu
       feed: feedStatus
     }
   });
+
+  await recalculateFalabellaJobProgressFromTask(task);
 }
 
 async function finalizeFalabellaTaskFromFeedError({ task, credential, feedId, feedStatus, topic, marketplaceError = null }) {
@@ -1887,7 +1938,7 @@ async function finalizeFalabellaTaskFromFeedError({ task, credential, feedId, fe
     }
   }
 
-  await recalculateJobProgressFromTask(task);
+  await recalculateFalabellaJobProgressFromTask(task);
 
   if (task.external_id) {
     let link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
@@ -2050,7 +2101,6 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
       },
       api_response: feedStatus
     });
-    await recalculateJobProgressFromTask(task);
 
     if (task.external_id) {
       let link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
@@ -2060,32 +2110,6 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
         task.branch_id,
         task.credential_id || credential?.id || null,
         task.user_id || null
-      );
-
-      const existingPublishedPayloadForLink = firstNonEmptyFalabellaPayload(
-        link?.published_payload,
-        task.payload
-      );
-      const mergedPublishedPayload = mergeFalabellaPublishedPayload(
-        existingPublishedPayloadForLink,
-        productStatus.raw || null
-      );
-      const mergedNumericState = extractFalabellaPublishedNumericState(mergedPublishedPayload);
-      const confirmedPublishedStock = resolveFalabellaPersistedNumericValue(
-        productStatus.stock,
-        link?.published_stock ?? mergedNumericState.stock
-      );
-      const confirmedPublishedPrice = resolveFalabellaPersistedNumericValue(
-        productStatus.price,
-        mergedNumericState.price,
-        { allowZero: false }
-      );
-      const persistedPublishedPayload = applyFalabellaNumericState(
-        mergedPublishedPayload || existingPublishedPayloadForLink || productStatus.raw || null,
-        {
-          stock: confirmedPublishedStock,
-          price: confirmedPublishedPrice
-        }
       );
 
       if (!link && (task.company_id != null || task.branch_id != null)) {
@@ -2116,6 +2140,8 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
         });
       }
     }
+
+    await recalculateFalabellaJobProgressFromTask(task);
 
     return;
   }
@@ -2225,7 +2251,6 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
     }
 
     await ProductPublishingTaskRepository.updateTask(task, updateData);
-    await recalculateJobProgressFromTask(task);
 
     if (task.external_id) {
       let link = await ProductMarketplaceLinkRepository.findByMarketplaceExternalId(
@@ -2235,6 +2260,32 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
         task.branch_id,
         task.credential_id || credential?.id || null,
         task.user_id || null
+      );
+
+      const existingPublishedPayloadForLink = firstNonEmptyFalabellaPayload(
+        link?.published_payload,
+        task.payload
+      );
+      const mergedPublishedPayload = mergeFalabellaPublishedPayload(
+        existingPublishedPayloadForLink,
+        productStatus.raw || null
+      );
+      const mergedNumericState = extractFalabellaPublishedNumericState(mergedPublishedPayload);
+      const confirmedPublishedStock = resolveFalabellaPersistedNumericValue(
+        productStatus.stock,
+        link?.published_stock ?? mergedNumericState.stock
+      );
+      const confirmedPublishedPrice = resolveFalabellaPersistedNumericValue(
+        productStatus.price,
+        mergedNumericState.price,
+        { allowZero: false }
+      );
+      const persistedPublishedPayload = applyFalabellaNumericState(
+        mergedPublishedPayload || existingPublishedPayloadForLink || productStatus.raw || null,
+        {
+          stock: confirmedPublishedStock,
+          price: confirmedPublishedPrice
+        }
       );
 
       if (!link && (task.company_id != null || task.branch_id != null)) {
@@ -2268,6 +2319,8 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
         });
       }
     }
+
+    await recalculateFalabellaJobProgressFromTask(task);
 
     logger.info(`[FB Webhook] ✅ Tarea ${task.id} actualizada: ${finalStatus} - ${realErrorMessage || 'Sin errores'}`);
   }
@@ -2388,7 +2441,16 @@ async function processFalabellaProductWebhook(payload, options = {}) {
       : FB_WEBHOOK_TIMEOUT_MS;
 
   try {
-    let credential = await resolveFalabellaCredential(payload);
+    let taskForSku = await ProductPublishingTaskRepository.findLatestByExternalIdAndMarketplaceDomain(
+      String(sellerSku),
+      FB_MARKETPLACE_KEY
+    );
+    let credential = await resolveFalabellaCredentialForTask(taskForSku);
+
+    if (!credential || !credential.seller_email || !credential.api_key) {
+      credential = await resolveFalabellaCredential(payload);
+    }
+
     if (!credential || !credential.seller_email || !credential.api_key) {
       await MarketplaceWebhookEventRepository.updateById(event.id, {
         status: "error",
@@ -2399,7 +2461,7 @@ async function processFalabellaProductWebhook(payload, options = {}) {
       return;
     }
 
-    const taskForSku = await ProductPublishingTaskRepository.findLatestByExternalIdAndContext({
+    taskForSku = taskForSku || await ProductPublishingTaskRepository.findLatestByExternalIdAndContext({
       marketplaceId: credential.marketplace_id || null,
       externalId: String(sellerSku),
       credentialId: credential.id || null,
@@ -3382,7 +3444,7 @@ function buildFalabellaProductStateSnapshot({ product, payload, source = "webhoo
     qc_status: qcStatus,
     qc_status_text: qcStatus,
     is_published: parseBoolean(
-      product?.IsPublished || product?.is_published || businessUnit?.IsPublished || businessUnit?.is_published || null
+      product?.IsPublished ?? product?.is_published ?? businessUnit?.IsPublished ?? businessUnit?.is_published ?? null
     ),
     has_image: hasImage,
     stock,
@@ -3728,15 +3790,12 @@ function isFalabellaConfirmedPublishedState(productStatus) {
   }
 
   const status = String(productStatus.status || '').trim().toLowerCase();
-  const qcStatus = String(productStatus.qc_status || '').trim().toLowerCase();
   const isPublished = productStatus.is_published;
   const productErrors = Array.isArray(productStatus.product_errors) ? productStatus.product_errors : [];
-  const hasPublicUrl = typeof productStatus.url === 'string' && productStatus.url.trim().length > 0;
-  const hasShopSku = typeof productStatus.shop_sku === 'string' && productStatus.shop_sku.trim().length > 0;
 
   return ['active', 'live'].includes(status)
     && productErrors.length === 0
-    && (hasPublicUrl || hasShopSku || isPublished === true || qcStatus === 'pending' || qcStatus === 'approved' || qcStatus === 'active' || qcStatus === 'live' || qcStatus === null || qcStatus === '');
+    && isPublished === true;
 }
 
 function resolveFalabellaMarketplaceDisplayStatus(productStatus, { taskStatus = null } = {}) {
@@ -3753,12 +3812,8 @@ function resolveFalabellaMarketplaceDisplayStatus(productStatus, { taskStatus = 
   const isPublished = productStatus.is_published;
   const productErrors = Array.isArray(productStatus.product_errors) ? productStatus.product_errors : [];
 
-  if (['active', 'live'].includes(status) && productErrors.length === 0) {
-    return 'active';
-  }
-
-  if (qcStatus === 'pending') {
-    return 'under_review';
+  if (isPublished === false || qcStatus === 'pending') {
+    return 'pending';
   }
 
   if (qcStatus === 'rejected') {
@@ -3769,8 +3824,8 @@ function resolveFalabellaMarketplaceDisplayStatus(productStatus, { taskStatus = 
     return status;
   }
 
-  if (status === 'active' && isPublished === false) {
-    return 'not_published';
+  if (['active', 'live'].includes(status) && productErrors.length === 0 && isPublished === true) {
+    return 'active';
   }
 
   if (taskStatus === 'pending') {
@@ -3787,6 +3842,7 @@ function resolveFalabellaMarketplaceDisplayStatus(productStatus, { taskStatus = 
 function determineFalabellaTaskLifecycle(productStatus, { realErrors = [], hasImage = true } = {}) {
   const status = String(productStatus?.status || '').trim().toLowerCase();
   const qcStatus = String(productStatus?.qc_status || '').trim().toLowerCase();
+  const isPublished = productStatus?.is_published;
 
   if (!productStatus || productStatus.found === false) {
     return { status: 'pending', isFinal: false, errorMessage: null };
@@ -3818,7 +3874,15 @@ function determineFalabellaTaskLifecycle(productStatus, { realErrors = [], hasIm
       return { status: 'processing', isFinal: false, errorMessage: null };
     }
 
-    return { status: 'published', isFinal: true, errorMessage: null };
+    if (isPublished === true) {
+      return { status: 'published', isFinal: true, errorMessage: null };
+    }
+
+    return {
+      status: isPublished === false ? 'pending' : 'processing',
+      isFinal: false,
+      errorMessage: null
+    };
   }
 
   return { status: 'processing', isFinal: false, errorMessage: null };
@@ -4121,8 +4185,8 @@ async function persistFalabellaProductState({ credential, sellerSku, product, pa
       taskUpdate.error_details = lifecycle.status === 'published' ? null : mergedDetails;
     }
 
-    await latestTask.update(taskUpdate);
-    await recalculateJobProgressFromTask(latestTask);
+    await ProductPublishingTaskRepository.updateTask(latestTask, taskUpdate);
+    await recalculateFalabellaJobProgressFromTask(latestTask);
   }
 
   return {
@@ -6116,3 +6180,5 @@ module.exports = MarketplaceWebhookController;
 MarketplaceWebhookController._processFalabellaEvent = processFalabellaEvent;
 MarketplaceWebhookController._fetchFalabellaOrdersV2 = fetchFalabellaOrdersV2;
 MarketplaceWebhookController._parseFalabellaOrderIds = parseFalabellaOrderIds;
+MarketplaceWebhookController._determineFalabellaTaskLifecycle = determineFalabellaTaskLifecycle;
+MarketplaceWebhookController._resolveFalabellaMarketplaceDisplayStatus = resolveFalabellaMarketplaceDisplayStatus;

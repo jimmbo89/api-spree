@@ -8,7 +8,7 @@
     "simulate:mercadolibre-webhook-purchase": "node scripts/simulateMercadoLibreWebhookPurchase.js",
     "simulate:mercadolibre-flow": "node scripts/simulateMercadoLibreFullFlow.js",
     "test:mercadolibre": "node scripts/runMercadoLibreSuite.js",
-    "test:falabella": "node --test test/falabella-adapter.test.js"
+    "test:falabella": "node --test test/falabella-*.test.js"
   },
   "keywords": [],
   "author": "",
