@@ -1291,9 +1291,9 @@ _transformImages(images = []) {
       package_length: packageMeasurements.package_length,
       package_weight: packageMeasurements.package_weight,
       attributes: attributes,
-      SpecialPrice: validVariant?.SpecialPrice ?? validVariant?.special_price ?? validVariant?.sale_price ?? validVariant?.promotional_price ?? productData.SpecialPrice ?? productData.special_price ?? productData.sale_price ?? productData.promotional_price ?? null,
-      SpecialFromDate: validVariant?.SpecialFromDate ?? validVariant?.special_from_date ?? validVariant?.sale_start_date ?? productData.SpecialFromDate ?? productData.special_from_date ?? productData.sale_start_date ?? null,
-      SpecialToDate: validVariant?.SpecialToDate ?? validVariant?.special_to_date ?? validVariant?.sale_end_date ?? productData.SpecialToDate ?? productData.special_to_date ?? productData.sale_end_date ?? null,
+      SpecialPrice: validVariant?.SpecialPrice ?? validVariant?.special_price ?? validVariant?.sale_price ?? validVariant?.promotional_price ?? productData.SpecialPrice ?? productData.special_price ?? productData.sale_price ?? productData.promotional_price ?? this.getFalabellaAttributeValueByNames({ attributes }, ['SpecialPrice', 'SalePriceFalabella']) ?? null,
+      SpecialFromDate: validVariant?.SpecialFromDate ?? validVariant?.special_from_date ?? validVariant?.sale_start_date ?? productData.SpecialFromDate ?? productData.special_from_date ?? productData.sale_start_date ?? this.getFalabellaAttributeValueByNames({ attributes }, ['SpecialFromDate', 'SaleStartDateFalabella']) ?? null,
+      SpecialToDate: validVariant?.SpecialToDate ?? validVariant?.special_to_date ?? validVariant?.sale_end_date ?? productData.SpecialToDate ?? productData.special_to_date ?? productData.sale_end_date ?? this.getFalabellaAttributeValueByNames({ attributes }, ['SpecialToDate', 'SaleEndDateFalabella']) ?? null,
       images: this._transformImages(productData.images || productData.pictures || []),
       productIdentifier: attributeProductId || productData.productIdentifier || productData.gtin || productData.ean || productData.upc || productData.isbn || null,
       gtin: productData.gtin || null,
@@ -1374,7 +1374,7 @@ _transformImages(images = []) {
       }
     }
 
-    logger.info(`[FalabellaAdapter] Producto preparado para publicación:\n ${JSON.stringify(prepared)}`);
+    //logger.info(`[FalabellaAdapter] Producto preparado para publicación:\n ${JSON.stringify(prepared)}`);
 
     return prepared;
   }

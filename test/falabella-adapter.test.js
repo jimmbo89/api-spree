@@ -194,6 +194,44 @@ test('FalabellaAdapter: oferta valida queda como SpecialPrice y fechas DateTime 
   assert.equal(node.ProductData.SaleEndDateFalabella, undefined);
 });
 
+test('FalabellaAdapter: prepareProduct conserva oferta recibida como atributos Falabella', async () => {
+  const adapter = createAdapter();
+  adapter.getFalabellaCategory = () => ({ id: 1234, name: 'Categoria' });
+  adapter.getFalabellaConfig = () => ({
+    attributes: [
+      { id: 'ConditionType', name: 'Condicion', value_name: 'Nuevo' },
+      { id: 'PackageHeight', name: 'Alto empaque', value_name: 10 },
+      { id: 'PackageWidth', name: 'Ancho empaque', value_name: 10 },
+      { id: 'PackageLength', name: 'Largo empaque', value_name: 10 },
+      { id: 'PackageWeight', name: 'Peso empaque', value_name: 1 },
+      { id: 'SalePriceFalabella', name: 'Precio oferta', value_name: 2500 },
+      { id: 'SaleStartDateFalabella', name: 'Inicio oferta', value_name: '2026-08-28' },
+      { id: 'SaleEndDateFalabella', name: 'Fin oferta', value_name: '2030-08-28' }
+    ]
+  });
+  adapter.loadCategoryMetadata = async () => ({ success: true, category: { id: 1234 }, attributes: [] });
+
+  const prepared = await adapter.prepareProduct({
+    id: 1,
+    sku: 'SKU-1',
+    name: 'Producto',
+    brand: 'Marca',
+    price: 19990,
+    stock: 1,
+    condition: 'new',
+    variants: [{ price: 19990, publish: true, publishStock: 1 }]
+  });
+  const node = adapter.buildFalabellaProductNodeXml(prepared);
+
+  assert.equal(prepared.SpecialPrice, '2500');
+  assert.equal(prepared.SpecialFromDate, '2026-08-28');
+  assert.equal(prepared.SpecialToDate, '2030-08-28');
+  assert.equal(node.BusinessUnits.BusinessUnit.SpecialPrice, '2500.00');
+  assert.equal(node.BusinessUnits.BusinessUnit.SpecialFromDate, '2026-08-28 00:00:00');
+  assert.equal(node.BusinessUnits.BusinessUnit.SpecialToDate, '2030-08-28 23:59:59');
+  assert.equal(node.ProductData.SalePriceFalabella, undefined);
+});
+
 test('FalabellaAdapter: ConditionType se normaliza al contrato oficial', () => {
   const adapter = createAdapter();
   assert.equal(adapter.normalizeFalabellaConditionType('new'), 'Nuevo');
