@@ -3,6 +3,11 @@ const { UserRepository } = require('../repositories');
 const { getCalendarWindow, formatDateOnly } = require('../utils/dateRange');
 const logger = require('../../config/logger');
 
+const DASHBOARD_RANGE_DAYS = {
+  '7d': 7,
+  '30d': 30
+};
+
 const DashboardController = {
   /**
    * Endpoint POST /api/dashboard
@@ -12,7 +17,16 @@ const DashboardController = {
     try {
       const rawCompanyId = req.headers['x-company-id'] || req.body.company_id || null;
       const companyId = rawCompanyId ? Number(rawCompanyId) : null;
+      const range = req.body?.range || '7d';
+      const rangeDays = DASHBOARD_RANGE_DAYS[range];
       const isGlobalUser = await UserRepository.hasGlobalRole(req.user?.id);
+
+      if (!rangeDays) {
+        return res.status(400).json({
+          success: false,
+          message: 'range debe ser 7d o 30d'
+        });
+      }
 
       if (!companyId && !isGlobalUser) {
         return res.status(400).json({
@@ -44,10 +58,10 @@ const DashboardController = {
       }
 
       // Períodos para comparación
-      const currentPeriod = getCalendarWindow(7);
+      const currentPeriod = getCalendarWindow(rangeDays);
       const previousReferenceDate = new Date(currentPeriod.start);
       previousReferenceDate.setDate(previousReferenceDate.getDate() - 1);
-      const previousPeriod = getCalendarWindow(7, previousReferenceDate);
+      const previousPeriod = getCalendarWindow(rangeDays, previousReferenceDate);
 
       // === 1. KPIs ===
       const kpis = await calculateKPIs(

@@ -22,7 +22,7 @@ function parseDateOnly(value) {
   return date;
 }
 
-function getDateOnlyRange(from, to) {
+function getDateOnlyBounds(from, to) {
   const start = parseDateOnly(from);
   const end = parseDateOnly(to);
 
@@ -30,16 +30,32 @@ function getDateOnlyRange(from, to) {
     throw new Error('La fecha inicial no puede ser posterior a la fecha final.');
   }
 
+  let endExclusive = null;
+  if (end) {
+    endExclusive = new Date(end);
+    endExclusive.setDate(endExclusive.getDate() + 1);
+  }
+
+  return { start, endExclusive };
+}
+
+function getDateOnlyRange(from, to) {
+  const { start, endExclusive } = getDateOnlyBounds(from, to);
   const range = {};
   if (start) range[Op.gte] = start;
 
-  if (end) {
-    const endExclusive = new Date(end);
-    endExclusive.setDate(endExclusive.getDate() + 1);
-    range[Op.lt] = endExclusive;
-  }
+  if (endExclusive) range[Op.lt] = endExclusive;
 
   return range;
+}
+
+function formatLocalSqlDateTime(date) {
+  if (!date) return null;
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day} 00:00:00`;
 }
 
 function getCalendarWindow(days, referenceDate = new Date()) {
@@ -61,6 +77,8 @@ function formatDateOnly(value) {
 
 module.exports = {
   getCalendarWindow,
+  getDateOnlyBounds,
   getDateOnlyRange,
+  formatLocalSqlDateTime,
   formatDateOnly
 };

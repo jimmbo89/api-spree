@@ -5,6 +5,7 @@ const {
 } = require('../repositories');
 
 const { sequelize } = require('../models');
+const { getDateOnlyBounds, formatLocalSqlDateTime } = require('../utils/dateRange');
 const logger = require('../../config/logger');
 
 /**
@@ -14,22 +15,16 @@ function buildDateRange(from, to, alias = null) {
   const conditions = [];
   const replacements = {};
   const field = alias ? `${alias}.createdAt` : 'createdAt';
+  const { start, endExclusive } = getDateOnlyBounds(from, to);
 
-  if (from) {
+  if (start) {
     conditions.push(`${field} >= :from`);
-    replacements.from = `${from} 00:00:00`;
+    replacements.from = formatLocalSqlDateTime(start);
   }
 
-  if (to) {
-    const nextDay = new Date(to);
-    nextDay.setDate(nextDay.getDate() + 1);
-
-    const yyyy = nextDay.getFullYear();
-    const mm = String(nextDay.getMonth() + 1).padStart(2, '0');
-    const dd = String(nextDay.getDate()).padStart(2, '0');
-
+  if (endExclusive) {
     conditions.push(`${field} < :to`);
-    replacements.to = `${yyyy}-${mm}-${dd} 00:00:00`;
+    replacements.to = formatLocalSqlDateTime(endExclusive);
   }
 
   return { conditions, replacements };

@@ -1,7 +1,13 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { Op } = require('sequelize');
-const { getCalendarWindow, getDateOnlyRange, formatDateOnly } = require('../app/utils/dateRange');
+const {
+  getCalendarWindow,
+  getDateOnlyRange,
+  getDateOnlyBounds,
+  formatDateOnly,
+  formatLocalSqlDateTime
+} = require('../app/utils/dateRange');
 
 test('getDateOnlyRange incluye día final completo mediante límite exclusivo', () => {
   const range = getDateOnlyRange('2026-08-01', '2026-08-31');
@@ -33,6 +39,24 @@ test('getCalendarWindow usa días calendario completos', () => {
   assert.equal(previousRange.endExclusive.getDate(), 25);
 });
 
+test('getCalendarWindow entrega treinta días calendario completos', () => {
+  const range = getCalendarWindow(30, new Date(2026, 7, 31, 11, 43, 0));
+
+  assert.equal(range.start.getFullYear(), 2026);
+  assert.equal(range.start.getMonth(), 7);
+  assert.equal(range.start.getDate(), 2);
+  assert.equal(range.endExclusive.getFullYear(), 2026);
+  assert.equal(range.endExclusive.getMonth(), 8);
+  assert.equal(range.endExclusive.getDate(), 1);
+});
+
 test('formatDateOnly conserva día SQL sin conversión de zona horaria', () => {
   assert.equal(formatDateOnly('2026-08-31'), '31/08');
+});
+
+test('rango SQL conserva último día completo sin parseo UTC', () => {
+  const { start, endExclusive } = getDateOnlyBounds('2026-08-01', '2026-08-31');
+
+  assert.equal(formatLocalSqlDateTime(start), '2026-08-01 00:00:00');
+  assert.equal(formatLocalSqlDateTime(endExclusive), '2026-09-01 00:00:00');
 });
