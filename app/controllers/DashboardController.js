@@ -1,5 +1,6 @@
 const DashboardRepository = require('../repositories/DashboardRepository');
 const { UserRepository } = require('../repositories');
+const { getCalendarWindow, formatDateOnly } = require('../utils/dateRange');
 const logger = require('../../config/logger');
 
 const DashboardController = {
@@ -43,18 +44,21 @@ const DashboardController = {
       }
 
       // Períodos para comparación
-      const now = new Date();
-      const currentPeriodStart = new Date(now);
-      currentPeriodStart.setDate(now.getDate() - 7);
-      
-      const previousPeriodStart = new Date(currentPeriodStart);
-      previousPeriodStart.setDate(previousPeriodStart.getDate() - 7);
+      const currentPeriod = getCalendarWindow(7);
+      const previousReferenceDate = new Date(currentPeriod.start);
+      previousReferenceDate.setDate(previousReferenceDate.getDate() - 1);
+      const previousPeriod = getCalendarWindow(7, previousReferenceDate);
 
       // === 1. KPIs ===
-      const kpis = await calculateKPIs(companyId, currentPeriodStart, previousPeriodStart, now);
+      const kpis = await calculateKPIs(
+        companyId,
+        currentPeriod.start,
+        previousPeriod.start,
+        currentPeriod.endExclusive
+      );
 
       // === 2. Ventas por día (gráfico) ===
-      const sales = await calculateSalesChart(companyId, currentPeriodStart, now);
+      const sales = await calculateSalesChart(companyId, currentPeriod.start, currentPeriod.endExclusive);
 
       // === 3. Alertas ===
       const alerts = await calculateAlerts(companyId);
@@ -64,7 +68,7 @@ const DashboardController = {
       const marketplaces = await calculateMarketplaces(companyId, marketplacesUserId);
 
       // === 5. Productos ===
-      const products = await calculateProducts(companyId, currentPeriodStart, now);
+      const products = await calculateProducts(companyId, currentPeriod.start, currentPeriod.endExclusive);
 
       // === 6. Actividad reciente ===
       // const activities = await calculateActivities(companyId);
@@ -99,10 +103,10 @@ const DashboardController = {
 /**
  * Calcula los KPIs con delta y trend
  */
-async function calculateKPIs(companyId, currentPeriodStart, previousPeriodStart, now) {
+async function calculateKPIs(companyId, currentPeriodStart, previousPeriodStart, currentPeriodEndExclusive) {
   // Período actual
-  const currentSales = await DashboardRepository.getSalesStats(companyId, currentPeriodStart, now);
-  const currentIssues = await DashboardRepository.getPublishingIssuesCount(companyId, currentPeriodStart, now);
+  const currentSales = await DashboardRepository.getSalesStats(companyId, currentPeriodStart, currentPeriodEndExclusive);
+  const currentIssues = await DashboardRepository.getPublishingIssuesCount(companyId, currentPeriodStart, currentPeriodEndExclusive);
   const currentCriticalStock = await DashboardRepository.getCriticalStockCount(companyId);
 
   // Período anterior
@@ -139,13 +143,10 @@ function calculateKPI(current, previous) {
 async function calculateSalesChart(companyId, fromDate, toDate) {
   const salesByDay = await DashboardRepository.getSalesByDay(companyId, fromDate, toDate);
   
-  // Formatear fechas a "DD/MM"
+  // DATE(createdAt) llega como fecha SQL, no como instante UTC.
   return salesByDay.map(sale => {
-    const date = new Date(sale.date);
-    const day = String(date.getDate()).padStart(2, '0');
-    const month = String(date.getMonth() + 1).padStart(2, '0');
     return {
-      date: `${day}/${month}`,
+      date: formatDateOnly(sale.date),
       value: Math.round(sale.value * 100) / 100
     };
   });

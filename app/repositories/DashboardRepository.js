@@ -31,7 +31,7 @@ const DashboardRepository = {
         order_status: 'paid',
         createdAt: {
           [Op.gte]: fromDate,
-          [Op.lte]: toDate
+          [Op.lt]: toDate
         }
       };
       if (companyId) where.company_id = companyId;
@@ -68,7 +68,7 @@ const DashboardRepository = {
         order_status: 'paid',
         createdAt: {
           [Op.gte]: fromDate,
-          [Op.lte]: toDate
+          [Op.lt]: toDate
         }
       };
       if (companyId) where.company_id = companyId;
@@ -205,7 +205,7 @@ async getOutOfStockCount(companyId) {
         },
         createdAt: {
           [Op.gte]: fromDate,
-          [Op.lte]: toDate
+          [Op.lt]: toDate
         }
       };
       if (companyId) where.company_id = companyId;
@@ -233,7 +233,7 @@ async getOutOfStockCount(companyId) {
         order_status: 'paid',
         createdAt: {
           [Op.gte]: fromDate,
-          [Op.lte]: toDate
+          [Op.lt]: toDate
         }
       };
       if (companyId) orderWhere.company_id = companyId;

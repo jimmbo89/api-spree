@@ -1,5 +1,5 @@
 const { MarketplaceOrder } = require('../models');
-const { Op } = require('sequelize');
+const { getDateOnlyRange } = require('../utils/dateRange');
 const logger = require('../../config/logger');
 
 const MarketplaceOrderRepository = {
@@ -12,21 +12,26 @@ const MarketplaceOrderRepository = {
   async upsert(data, options = {}) {
     try {
       const { marketplace, marketplace_order_id, ...updateData } = data;
-      
-      const [record, created] = await MarketplaceOrder.findOrCreate({
-        where: {
-          marketplace,
-          marketplace_order_id
-        },
-        defaults: updateData,
-        ...options
-      });
+      const where = { marketplace, marketplace_order_id };
+      let record = await MarketplaceOrder.findOne({ where, ...options });
 
-      if (!created) {
+      if (record) {
         await record.update(updateData, options);
+        return { record, created: false };
       }
 
-      return { record, created };
+      try {
+        record = await MarketplaceOrder.create(data, options);
+        return { record, created: true };
+      } catch (error) {
+        if (error?.name !== 'SequelizeUniqueConstraintError') throw error;
+
+        record = await MarketplaceOrder.findOne({ where, ...options });
+        if (!record) throw error;
+
+        await record.update(updateData, options);
+        return { record, created: false };
+      }
     } catch (error) {
       logger.error('[MarketplaceOrderRepository] Error en upsert:', error.message);
       throw error;
@@ -131,9 +136,7 @@ const MarketplaceOrderRepository = {
       if (company_id) where.company_id = company_id;
       if (user_id) where.user_id = user_id;
       if (from || to) {
-        where.createdAt = {};
-        if (from) where.createdAt[Op.gte] = new Date(from);
-        if (to) where.createdAt[Op.lte] = new Date(to);
+        where.createdAt = getDateOnlyRange(from, to);
       }
 
       const result = await MarketplaceOrder.findAndCountAll({
@@ -184,9 +187,7 @@ const MarketplaceOrderRepository = {
       if (company_id) where.company_id = company_id;
       if (user_id) where.user_id = user_id;
       if (from || to) {
-        where.createdAt = {};
-        if (from) where.createdAt[Op.gte] = new Date(from);
-        if (to) where.createdAt[Op.lte] = new Date(to);
+        where.createdAt = getDateOnlyRange(from, to);
       }
 
       const result = await MarketplaceOrder.findOne({
