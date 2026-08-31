@@ -62,6 +62,43 @@ const normalizeFalabellaString = (value) => {
   return text || null;
 };
 
+const isFalabellaPricingForProductPrice = (pricing, productPrice) => {
+  if (productPrice === null || productPrice === undefined) return true;
+  return Number.isFinite(Number(pricing?.input_price))
+    && Number(pricing.input_price) === Number(productPrice);
+};
+
+const normalizeFalabellaSuggestedPricing = (pricing, productPrice) => {
+  if (!pricing || !Number.isFinite(Number(productPrice))) return pricing;
+
+  const saleFee = Number(pricing.sale_fee_amount);
+  const listingFee = Number(pricing.listing_fee_amount || 0);
+  const suppliedTotalFee = Number(pricing.total_fee_amount);
+  const totalFee = Number.isFinite(suppliedTotalFee)
+    ? suppliedTotalFee
+    : (Number.isFinite(saleFee) ? saleFee + listingFee : null);
+
+  if (!Number.isFinite(totalFee)) {
+    return { ...pricing, input_price: Number(productPrice) };
+  }
+
+  const sellerShippingCost = Number.isFinite(Number(pricing.seller_shipping_cost))
+    ? Number(pricing.seller_shipping_cost)
+    : 0;
+  const netAmountBeforeShipping = Number(productPrice) - totalFee;
+  const netAmountAfterShipping = netAmountBeforeShipping - sellerShippingCost;
+
+  return {
+    ...pricing,
+    input_price: Number(productPrice),
+    total_fee_amount: totalFee,
+    seller_shipping_cost: sellerShippingCost,
+    net_amount_before_shipping: netAmountBeforeShipping,
+    net_amount_after_shipping: netAmountAfterShipping,
+    net_amount: netAmountAfterShipping
+  };
+};
+
 const normalizeFalabellaAttributeKey = (value) =>
   String(value || '')
     .normalize('NFD')
@@ -6305,9 +6342,20 @@ async falabellaSuggestedCategoriesWithAttributes(req, res) {
 
       // === Cache de producto ===
       const cachedProductResult = getFromCache(`credential_${credential_id}`, FALABELLA_PRODUCT_SUGGESTION_CACHE_TYPE, nameFixed);
-      if (Array.isArray(cachedProductResult) && cachedProductResult.length > 0) {
+      const cachedProductMatchesPrice = Array.isArray(cachedProductResult)
+        && cachedProductResult.length > 0
+        && cachedProductResult.every(category => isFalabellaPricingForProductPrice(category?.pricing, productPrice));
+      if (cachedProductMatchesPrice) {
         cacheHits++;
-        suggestions.push({ product_id: product.id, credential_id, marketplace_id, categories: cachedProductResult });
+        suggestions.push({
+          product_id: product.id,
+          credential_id,
+          marketplace_id,
+          categories: cachedProductResult.map(category => ({
+            ...category,
+            pricing: normalizeFalabellaSuggestedPricing(category.pricing, productPrice)
+          }))
+        });
         continue;
       }
 
@@ -6350,8 +6398,11 @@ async falabellaSuggestedCategoriesWithAttributes(req, res) {
 
         // === Cache de categoría ===
         const cachedCategory = getFromCache(`credential_${credential_id}`, FALABELLA_CATEGORY_ATTRIBUTES_CACHE_TYPE, categoryId);
-        if (cachedCategory) {
-          categories.push(cachedCategory);
+        if (cachedCategory && isFalabellaPricingForProductPrice(cachedCategory.pricing, productPrice)) {
+          categories.push({
+            ...cachedCategory,
+            pricing: normalizeFalabellaSuggestedPricing(cachedCategory.pricing, productPrice)
+          });
           continue;
         }
 
@@ -6499,6 +6550,7 @@ logger.info(`comisión encontrada en la bd: \n ${JSON.stringify(commissionByPath
                   listing_fee_amount: 0,
                   total_fee_amount: null,
                   fee_percentage: null,
+                  input_price: productPrice,
                   net_amount: null,
                   currency: 'CLP',
                   warning: `Comisión no configurada para "${item.CategoryName}"`,
@@ -6524,7 +6576,7 @@ logger.info(`comisión encontrada en la bd: \n ${JSON.stringify(commissionByPath
           path: item.SuggestedCategory || "",
           search_term: item.Name || "",
           attributes,
-          ...(productPrice !== null && { pricing })
+          ...(productPrice !== null && { pricing: normalizeFalabellaSuggestedPricing(pricing, productPrice) })
         };
 
         saveToCache(`credential_${credential_id}`, FALABELLA_CATEGORY_ATTRIBUTES_CACHE_TYPE, categoryId, categoryData);

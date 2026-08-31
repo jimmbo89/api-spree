@@ -1,5 +1,5 @@
 // src/services/JobBackgroundProcessor.js
-const { JobRepository, JobProductRepository, MarketplaceRepository, MarketplaceCredentialRepository } = require('../repositories');
+const { JobRepository, JobProductRepository, MarketplaceRepository, MarketplaceCredentialRepository, NotificationRepository } = require('../repositories');
 const MarketplaceStockSyncService = require('./MarketplaceStockSyncService');
 const PublishingService = require('./PublishingService');
 const logger = require('../../config/logger');
@@ -215,6 +215,11 @@ const JobBackgroundProcessor = {
           error: error.message,
           stage: 'job_process'
         }
+      });
+      await this._notifyPublicationFinished(failedJob, {
+        total: failedJob.total_products || 0,
+        successful: failedJob.successful || 0,
+        errors: Math.max(1, failedJob.errors_count || 0)
       });
     }
   },
@@ -593,6 +598,7 @@ async _processProduct(jobProduct, parentJobId) {
           ? `Proceso #${jobId} finalizado con errores`
           : `Proceso #${jobId} finalizado correctamente`
       });
+      await this._notifyPublicationFinished(completedJob, stats);
       logger.info(`[JobProcessor] 🏁 Job ${jobId} completado: ${stats.successful}/${stats.total}`);
       return true;
     }
@@ -613,6 +619,57 @@ async _processProduct(jobProduct, parentJobId) {
 
     // Verificar si completó
     await this._checkJobCompletion(jobId);
+  },
+
+  /**
+   * Crea una sola notificación para el dueño cuando un job de publicación termina.
+   * Un fallo de notificación nunca debe alterar el resultado de la publicación.
+   */
+  async _notifyPublicationFinished(job, stats = {}) {
+    if (job?.job_type !== 'publish' || !job.user_id || !job.company_id || !job.id) {
+      return;
+    }
+
+    try {
+      if (await JobRepository.checkIfJobNotified(job.id, job.user_id)) {
+        return;
+      }
+
+      const total = Number(stats.total ?? job.total_products ?? 0);
+      const successful = Number(stats.successful ?? job.successful ?? 0);
+      const errors = Number(stats.errors ?? stats.errors_count ?? job.errors_count ?? 0);
+      const failed = job.status === 'failed';
+      const completedWithErrors = failed || errors > 0 || job.status === 'completed_with_errors';
+      const title = failed
+        ? '❌ Publicación fallida'
+        : (completedWithErrors ? '⚠️ Publicación finalizada con errores' : '✅ Publicación exitosa');
+      const description = failed
+        ? `La publicación no pudo completarse${job.error_summary?.message ? `: ${job.error_summary.message}` : '.'}`
+        : `${successful}/${total} producto${total === 1 ? '' : 's'} publicado${successful === 1 ? '' : 's'}${errors > 0 ? `; ${errors} con error` : ''}.`;
+
+      await NotificationRepository.create({
+        user_id: job.user_id,
+        company_id: job.company_id,
+        title,
+        description,
+        type: 'publication_completed',
+        data: {
+          job_id: job.id,
+          batch_id: job.batch_id,
+          total,
+          successful,
+          errors,
+          job_status: job.status,
+          completed_at: job.completed_at || new Date().toISOString()
+        },
+        status: 0
+      });
+
+      await JobRepository.markJobNotified(job.id, job.user_id);
+      logger.info(`[JobProcessor] Notificación creada para job ${job.id}, usuario ${job.user_id}`);
+    } catch (error) {
+      logger.error(`[JobProcessor] No se pudo notificar job ${job?.id}: ${error.message}`);
+    }
   },
 
   /**
