@@ -1913,7 +1913,11 @@ const normalizeShippingScenarios = ({
     shippingMode,
     logisticType
   });
-  const buyerCost = toNumberOrZero(buyerPays?.cost);
+  // ML solo entrega el costo final del comprador en shipping_options del ítem
+  // para un destino. No convertir una cotización ausente en $0.
+  const buyerCost = buyerPays?.cost === null || buyerPays?.cost === undefined
+    ? null
+    : toNumberOrNull(buyerPays.cost);
   const sellerCost = toNumberOrZero(sellerPays?.cost);
   const subsidy = Math.max(0, extractCoverageSubsidy(sellerPays));
 
@@ -2059,6 +2063,9 @@ const buildSellerShippingView = (shippingSummary) => {
     scenario: shippingSummary.scenario || null,
     free_shipping: Boolean(shippingSummary.free_shipping),
     mandatory_free_shipping: Boolean(shippingSummary.mandatory_free_shipping),
+    buyer_shipping_cost: shippingSummary.buyer_shipping_cost === null || shippingSummary.buyer_shipping_cost === undefined
+      ? null
+      : toNumberOrNull(shippingSummary.buyer_shipping_cost),
     seller_shipping_cost: toNumberOrZero(shippingSummary.seller_shipping_cost),
     shipping_subsidy: toNumberOrZero(shippingSummary.shipping_subsidy),
     seller_pays_shipping: toNumberOrZero(shippingSummary.seller_shipping_cost) > 0,
@@ -3450,8 +3457,8 @@ async calculateMercadoLibreShippingCosts(credential, product, categoryId, siteId
     const errMsg = 'No se pudo determinar el ml_user_id para calcular shipping (falta additional_data.ml_user_id).';
     logger.error(errMsg, { site_id: siteId, category_id: categoryId, credential_id: credential?.id });
     const fallback = {
-      buyer_pays: { cost: 0, currency_id: currencyId, paid_by: 'buyer', error: errMsg },
-      seller_pays: { cost: 0, currency_id: currencyId, paid_by: 'seller', error: errMsg }
+      buyer_pays: { cost: null, currency_id: currencyId, paid_by: 'buyer', error: errMsg },
+      seller_pays: { cost: null, currency_id: currencyId, paid_by: 'seller', error: errMsg }
     };
     const normalized = normalizeShippingScenarios({
       shippingMode: baseParams.mode,
@@ -3468,8 +3475,8 @@ async calculateMercadoLibreShippingCosts(credential, product, categoryId, siteId
     const currencyId = getCurrencyIdFromSite(siteId);
     const errMsg = 'No se puede calcular shipping: faltan dimensions o item_id.';
     const fallback = {
-      buyer_pays: { cost: 0, currency_id: currencyId, paid_by: 'buyer', error: errMsg },
-      seller_pays: { cost: 0, currency_id: currencyId, paid_by: 'seller', error: errMsg }
+      buyer_pays: { cost: null, currency_id: currencyId, paid_by: 'buyer', error: errMsg },
+      seller_pays: { cost: null, currency_id: currencyId, paid_by: 'seller', error: errMsg }
     };
     const normalized = normalizeShippingScenarios({
       shippingMode: baseParams.mode,
@@ -3508,9 +3515,14 @@ async calculateMercadoLibreShippingCosts(credential, product, categoryId, siteId
           category_id: categoryId,
           response: shippingOptionsResponse.data
         });*/
-        actualItemShippingOption = Array.isArray(shippingOptionsResponse.data?.options)
-          ? shippingOptionsResponse.data.options[0] || null
-          : null;
+        const itemShippingOptions = Array.isArray(shippingOptionsResponse.data?.options)
+          ? shippingOptionsResponse.data.options
+          : [];
+        // ML marca la alternativa recomendada para el destino consultado.
+        actualItemShippingOption = itemShippingOptions.find(option => option?.display === 'recommended')
+          || itemShippingOptions.find(option => option?.display === 'always')
+          || itemShippingOptions[0]
+          || null;
       } catch (shippingOptionsErr) {
         logger.warn(`[ML] No se pudo obtener shipping_options para item ${itemId} y zip ${zipCode}: ${shippingOptionsErr.message}`);
       }
@@ -3620,16 +3632,24 @@ async calculateMercadoLibreShippingCosts(credential, product, categoryId, siteId
 
     const buyerCoverageCost = extractCoverageCostDetails(buyerCoverage);
     const sellerCoverageCost = extractCoverageCostDetails(sellerCoverage);
+    const hasExactBuyerCost = actualItemShippingOption?.cost !== null
+      && actualItemShippingOption?.cost !== undefined
+      && Number.isFinite(Number(actualItemShippingOption.cost));
+    const buyerQuoteWarning = hasExactBuyerCost
+      ? null
+      : itemId && zipCode
+        ? "item_shipping_options_cost_unavailable"
+        : "item_shipping_options_requires_item_id_and_zip_code";
     const shippingCostSource = {
-      buyer: actualItemShippingOption
-        ? "item.shipping_options.list_cost"
-        : buyerCoverageCost.source,
+      buyer: hasExactBuyerCost
+        ? "item.shipping_options.cost"
+        : "unavailable",
       seller: actualItemShippingOption
         ? "item.shipping_options.cost"
         : sellerCoverageCost.source
     };
     const shippingCostFallbacks = {
-      buyer_used_list_cost_fallback: !actualItemShippingOption && buyerCoverageCost.used_fallback,
+      buyer_used_list_cost_fallback: false,
       seller_used_list_cost_fallback: !actualItemShippingOption && sellerCoverageCost.used_fallback
     };
 
@@ -3677,12 +3697,8 @@ async calculateMercadoLibreShippingCosts(credential, product, categoryId, siteId
 
     const result = {
       buyer_pays: {
-        cost: actualItemShippingOption
-          ? toNumberOrZero(actualItemShippingOption.list_cost)
-          : buyerCoverageCost.cost,
-        list_cost: actualItemShippingOption
-          ? toNumberOrZero(actualItemShippingOption.list_cost)
-          : toNumberOrZero(buyerCoverage.list_cost),
+        cost: hasExactBuyerCost ? toNumberOrNull(actualItemShippingOption.cost) : null,
+        list_cost: actualItemShippingOption?.list_cost ?? null,
         currency_id: buyerCoverage.currency_id || getCurrencyIdFromSite(siteId),
         billable_weight: buyerCoverage.billable_weight,
         discount: actualItemShippingOption?.discount || buyerCoverage.discount,
@@ -3725,7 +3741,8 @@ async calculateMercadoLibreShippingCosts(credential, product, categoryId, siteId
       requested_free_shipping: effectiveRequestedFreeShipping,
       mandatory_free_shipping_detected: mandatoryFreeShipping,
       zip_code_used: zipCode,
-      item_shipping_option_used: actualItemShippingOption
+      item_shipping_option_used: actualItemShippingOption,
+      warning: buyerQuoteWarning
     };
   } catch (error) {
     logger.error(`Error calculando envío para categoría ${categoryId}: ${error.message}`, {
@@ -3740,8 +3757,8 @@ async calculateMercadoLibreShippingCosts(credential, product, categoryId, siteId
       ? `${error.message}: ${error.response.data.message}`
       : error.message;
     const fallback = {
-      buyer_pays: { cost: 0, currency_id: currencyId, paid_by: 'buyer', error: errMsg },
-      seller_pays: { cost: 0, currency_id: currencyId, paid_by: 'seller', error: errMsg }
+      buyer_pays: { cost: null, currency_id: currencyId, paid_by: 'buyer', error: errMsg },
+      seller_pays: { cost: null, currency_id: currencyId, paid_by: 'seller', error: errMsg }
     };
     const normalized = normalizeShippingScenarios({
       shippingMode: baseParams.mode,
@@ -5275,7 +5292,7 @@ async mercadoLibreShippingCosts(req, res) {
         const sellerShippingCost = shippingSummary?.seller_shipping_cost ?? null;
         if (pricing && !pricing.error) {
           pricing.shipping_requested = shippingRequested;
-          if (shippingRequested && Number.isFinite(Number(sellerShippingCost))) {
+          if (shippingRequested && sellerShippingCost !== null && sellerShippingCost !== undefined && Number.isFinite(Number(sellerShippingCost))) {
             pricing.seller_shipping_cost = Number(sellerShippingCost);
             pricing.net_amount_after_shipping = parseFloat(
               (Number(pricing.net_amount || 0) - Number(sellerShippingCost || 0)).toFixed(2)
@@ -5284,9 +5301,9 @@ async mercadoLibreShippingCosts(req, res) {
             pricing.shipping_subsidy = toNumberOrZero(shippingSummary?.shipping_subsidy);
             pricing.seller_shipping = sellerShippingView;
             if (pricing.warning) delete pricing.warning;
-          } else if (shippingRequested && (!shipping || shipping.error)) {
+          } else if (shippingRequested && (!shipping || shipping.error || shipping.warning)) {
             categoryWarnings.push("pricing_incomplete_shipping_not_calculated");
-            pricing.warning = "Estimación incompleta: no se pudo calcular shipping.";
+            pricing.warning = shipping?.warning || "Estimación incompleta: no se pudo calcular shipping.";
           } else if (!shippingRequested) {
             categoryWarnings.push("pricing_incomplete_shipping_not_requested");
             pricing.warning = "Estimación incompleta: falta cálculo de shipping para neto final.";
@@ -5517,27 +5534,35 @@ async mercadoLibreShippingCosts(req, res) {
           product_id: suggestion.product_id,
           credential_id: suggestion.credential_id,
           marketplace_id: suggestion.marketplace_id,
+          id: category?.category_id || null,
+          price: category?.quote?.price ?? null,
           selection: category ? {
             category_id: category.category_id,
             category_name: category.category_name,
             listing_type_id: category.resolved?.listing_type_id || null,
             shipping_mode: category.resolved?.shipping_mode || null,
             logistic_type: category.resolved?.logistic_type || null,
+            free_shipping: category.quote?.shipping?.selected_summary?.free_shipping ?? false,
+            mandatory_free_shipping: category.quote?.shipping?.selected_summary?.mandatory_free_shipping ?? false,
             shipping_ui: category.resolved?.shipping_ui || null,
             strategy: category.resolved?.strategy || selectedStrategy
           } : null,
           pricing: category?.quote?.pricing ? {
-            sale_fee_amount: category.quote.pricing.sale_fee_amount,
-            listing_fee_amount: category.quote.pricing.listing_fee_amount,
-            total_fee_amount: category.quote.pricing.total_fee_amount,
-            fee_percentage: category.quote.pricing.fee_percentage,
-            net_amount_before_shipping: category.quote.pricing.net_amount_before_shipping,
-            net_amount_after_shipping: category.quote.pricing.net_amount_after_shipping
+            ...category.quote.pricing,
+            // Alias históricos v1, consumidos por la pantalla de confirmación.
+            price: category.quote.price ?? category.quote.pricing.input_price ?? null,
+            net_amount: category.quote.pricing.net_amount_before_shipping,
+            buyer_shipping_cost: category.quote.shipping?.selected_summary?.buyer_shipping_cost ?? null,
+            seller_shipping_cost: category.quote.shipping?.selected_summary?.seller_shipping_cost ?? 0,
+            shipping_subsidy: category.quote.shipping?.selected_summary?.shipping_subsidy ?? 0
           } : null,
           shipping: category?.quote?.shipping?.selected_summary ? {
+            ...category.quote.shipping,
+            ...category.quote.shipping.selected_summary,
             scenario: category.quote.shipping.selected_summary.scenario,
             free_shipping: category.quote.shipping.selected_summary.free_shipping,
             mandatory_free_shipping: category.quote.shipping.selected_summary.mandatory_free_shipping,
+            buyer_shipping_cost: category.quote.shipping.selected_summary.buyer_shipping_cost,
             seller_shipping_cost: category.quote.shipping.selected_summary.seller_shipping_cost,
             shipping_subsidy: category.quote.shipping.selected_summary.shipping_subsidy,
             shipping_mode: category.quote.shipping.selected_summary.shipping_mode,
@@ -5558,7 +5583,10 @@ async mercadoLibreShippingCosts(req, res) {
           } : null,
           warnings: [
             ...(suggestion.selection_context?.warnings || []),
-            ...(category?.selection_warnings || [])
+            ...(category?.selection_warnings || []),
+            ...(category?.quote?.shipping?.warning
+              ? [`shipping_quote_unavailable:${category.quote.shipping.warning}`]
+              : [])
           ]
         };
       });
