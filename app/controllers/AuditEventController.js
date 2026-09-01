@@ -1304,6 +1304,8 @@ const LITERAL_DISPLAY_VALUE_KEYS = new Set([
   'description',
   'email',
   'total_amount',
+  'productos',
+  'marketplaces',
   'seller_email',
   'seller_id',
   'ml_user_id'
