@@ -1039,6 +1039,63 @@ async function notifyMercadoLibreSaleRegistered({
   }
 }
 
+async function notifyFalabellaSaleRegistered({
+  userId,
+  companyId,
+  orderId,
+  savedOrder,
+  items = [],
+  savedItems = [],
+  totalAmount = 0
+}) {
+  if (!userId || !savedOrder?.id || !Array.isArray(savedItems) || savedItems.length === 0) {
+    return null;
+  }
+
+  const itemTitles = items
+    .map((item) => item?.title || item?.name || item?.product_name || item?.sku || getListingId(item))
+    .filter(Boolean);
+  const firstTitle = itemTitles[0] || `orden ${orderId}`;
+  const itemCount = savedItems.length;
+  const description = itemCount === 1
+    ? `Se registro una venta de ${firstTitle} en Falabella.`
+    : `Se registro una venta de ${itemCount} productos en Falabella.`;
+
+  try {
+    const notification = await NotificationRepository.create({
+      user_id: userId,
+      company_id: companyId,
+      title: "Nueva venta Falabella",
+      description,
+      type: "marketplace_sale_registered",
+      data: {
+        marketplace: FB_MARKETPLACE_KEY,
+        marketplace_order_id: String(orderId),
+        order_id: savedOrder.id,
+        item_count: itemCount,
+        total_amount: Number(totalAmount || 0),
+        items: savedItems.map((item) => ({
+          order_item_id: item.id,
+          product_id: item.product_id,
+          variant_id: item.variant_id,
+          listing_id: item.listing_id,
+          sku: item.sku,
+          quantity: item.quantity,
+          total_price: item.total_price
+        })),
+        created_at: new Date().toISOString()
+      },
+      status: 0
+    });
+
+    logger.info(`[FB Webhook] Notificacion de venta creada order=${orderId} user_id=${userId} notification_id=${notification?.id}`);
+    return notification;
+  } catch (error) {
+    logger.warn(`[FB Webhook] Error creando notificacion de venta order=${orderId}: ${error.message}`);
+    return null;
+  }
+}
+
 function getMercadoLibreSellerId(credential, order) {
   return (
     credential?.seller_id ||
@@ -3057,6 +3114,16 @@ async function processFalabellaEvent({ event, payload, orderId }) {
         webhook_event_id: event.id,
         items_count: savedItems.length
       }
+    });
+
+    await notifyFalabellaSaleRegistered({
+      userId: publicationUserId,
+      companyId,
+      orderId,
+      savedOrder,
+      items,
+      savedItems,
+      totalAmount: orderInfo.totalAmount || 0
     });
   }
 
