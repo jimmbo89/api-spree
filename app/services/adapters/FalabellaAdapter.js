@@ -1179,8 +1179,8 @@ _transformImages(images = []) {
         id: attr.id,
         name: attr.name,
         value_id: attr.value_id,
-        value_name: attr.value_name,
-        value: attr.value_name ?? attr.value ?? attr.value_id,
+        value_name: attr.value_name ?? attr.value ?? attr.userValue ?? attr.user_value ?? attr.plain_text ?? attr.value_id,
+        value: attr.value_name ?? attr.value ?? attr.userValue ?? attr.user_value ?? attr.plain_text ?? attr.value_id,
         example_value: attr.example_value || null
       }));
     }
@@ -1189,8 +1189,8 @@ _transformImages(images = []) {
         id: attr.id,
         name: attr.name,
         value_id: attr.value_id,
-        value_name: attr.value_name,
-        value: attr.value_name ?? attr.value ?? attr.value_id,
+        value_name: attr.value_name ?? attr.value ?? attr.userValue ?? attr.user_value ?? attr.plain_text ?? attr.value_id,
+        value: attr.value_name ?? attr.value ?? attr.userValue ?? attr.user_value ?? attr.plain_text ?? attr.value_id,
         example_value: attr.example_value || null
       }));
     }

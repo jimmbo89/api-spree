@@ -729,8 +729,8 @@ class MercadoLibreAdapter extends BaseAdapter {
         const keys = [attribute?.id, attribute?.name, attribute?.label, attribute?.feed_name, attribute?.FeedName];
         return keys.some((key) => normalizedNames.has(String(key || '').replace(/[^a-z0-9]/gi, '').toLowerCase()));
       });
-      const selected = read(mlData.attributes);
-      const value = selected?.value_name ?? selected?.value ?? selected?.plain_text ?? null;
+      const selected = read(mlData.category?.attributes) || read(mlData.attributes);
+      const value = selected?.value_name ?? selected?.value ?? selected?.userValue ?? selected?.user_value ?? selected?.plain_text ?? selected?.value_id ?? null;
       return value !== null && value !== undefined && String(value).trim() ? String(value).trim() : null;
     };
     const selectedSharedCategoryAttributeValue = (names = []) => {
@@ -742,7 +742,7 @@ class MercadoLibreAdapter extends BaseAdapter {
         const normalizedNames = new Set(names.map((name) => String(name).replace(/[^a-z0-9]/gi, '').toLowerCase()));
         const selected = attributes.find((attribute) => [attribute?.id, attribute?.name, attribute?.label, attribute?.feed_name, attribute?.FeedName]
           .some((key) => normalizedNames.has(String(key || '').replace(/[^a-z0-9]/gi, '').toLowerCase())));
-        const value = selected?.value_name ?? selected?.value ?? selected?.plain_text ?? null;
+        const value = selected?.value_name ?? selected?.value ?? selected?.userValue ?? selected?.user_value ?? selected?.plain_text ?? selected?.value_id ?? null;
         if (value !== null && value !== undefined && String(value).trim()) return String(value).trim();
       }
       return null;
@@ -917,8 +917,22 @@ class MercadoLibreAdapter extends BaseAdapter {
     }
 
     // ✅ PASO 5: INCLUIR atributos del frontend + FILTRAR read_only/hidden/ITEM_CONDITION
-    if (Array.isArray(mlData.attributes) && mlData.attributes.length > 0) {
-      prepared.attributes = this.buildMercadoLibreAttributes(mlData.attributes, categoryInfo.attributes);
+    const categoryValueAttributes = (Array.isArray(mlData.category?.attributes) ? mlData.category.attributes : [])
+      .filter((attr) => attr && (attr.userValue !== undefined || attr.user_value !== undefined || attr.value_name !== undefined || attr.value !== undefined || attr.plain_text !== undefined || attr.value_id !== undefined))
+      .map((attr) => ({
+        ...attr,
+        value_name: attr.value_name ?? attr.value ?? attr.userValue ?? attr.user_value ?? attr.plain_text ?? attr.value_id,
+        value: attr.value ?? attr.value_name ?? attr.userValue ?? attr.user_value ?? attr.plain_text ?? attr.value_id
+      }));
+    const configuredAttributesById = new Map();
+    for (const attr of (Array.isArray(mlData.attributes) ? mlData.attributes : [])) {
+      if (attr?.id) configuredAttributesById.set(String(attr.id), attr);
+    }
+    for (const attr of categoryValueAttributes) {
+      if (attr?.id) configuredAttributesById.set(String(attr.id), attr);
+    }
+    if (configuredAttributesById.size > 0) {
+      prepared.attributes = this.buildMercadoLibreAttributes(Array.from(configuredAttributesById.values()), categoryInfo.attributes);
     }
 
     // ✅ PASO 6: Asegurar que GTIN esté incluido (requerido para esta categoría)
@@ -2577,8 +2591,22 @@ class MercadoLibreAdapter extends BaseAdapter {
       logger.info(`[ML Adapter] 📦 Producto simple → title: "${prepared.title}"`);
     }
 
+    const categoryValueAttributes = (Array.isArray(mlData.category?.attributes) ? mlData.category.attributes : [])
+      .filter((attr) => attr && (attr.userValue !== undefined || attr.user_value !== undefined || attr.value_name !== undefined || attr.value !== undefined || attr.plain_text !== undefined || attr.value_id !== undefined))
+      .map((attr) => ({
+        ...attr,
+        value_name: attr.value_name ?? attr.value ?? attr.userValue ?? attr.user_value ?? attr.plain_text ?? attr.value_id,
+        value: attr.value ?? attr.value_name ?? attr.userValue ?? attr.user_value ?? attr.plain_text ?? attr.value_id
+      }));
+    const configuredAttributesById = new Map();
+    for (const attr of (Array.isArray(mlData.attributes) ? mlData.attributes : [])) {
+      if (attr?.id) configuredAttributesById.set(String(attr.id), attr);
+    }
+    for (const attr of categoryValueAttributes) {
+      if (attr?.id) configuredAttributesById.set(String(attr.id), attr);
+    }
     const rawAttributes = this.enrichMercadoLibreParentAttributes(
-      Array.isArray(mlData.attributes) ? mlData.attributes : [],
+      Array.from(configuredAttributesById.values()),
       productData,
       categoryInfo.attributes
     );
