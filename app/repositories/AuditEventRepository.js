@@ -1,4 +1,4 @@
-const { AuditEvent } = require('../models');
+const { AuditEvent, UserCompany } = require('../models');
 const { Op } = require('sequelize');
 const logger = require('../../config/logger');
 
@@ -108,6 +108,49 @@ const AuditEventRepository = {
         origin_job_id,
         correlation_id
       });
+
+      // El historial individual usa contrato existente actor_type/actor_id.
+      // Solo se amplía cuando no hay filtro de recurso explícito.
+      const normalizedActorId = actor_id != null && actor_id !== ''
+        ? String(actor_id)
+        : null;
+      const isUserHistoryQuery = actor_type === 'user'
+        && normalizedActorId
+        && [resource_type, resource_id, related_resource_type, related_resource_id]
+          .every(value => value == null || value === '');
+
+      if (isUserHistoryQuery) {
+        const memberships = await UserCompany.findAll({
+          where: {
+            company_id,
+            user_id: normalizedActorId
+          },
+          attributes: ['id'],
+          raw: true
+        });
+        const membershipIds = memberships.map(membership => String(membership.id));
+
+        where[Op.or] = [
+          {
+            actor_type: 'user',
+            actor_id: normalizedActorId
+          },
+          {
+            resource_type: 'user',
+            resource_id: normalizedActorId
+          },
+          {
+            related_resource_type: 'user',
+            related_resource_id: normalizedActorId
+          },
+          ...(membershipIds.length > 0 ? [{
+            resource_type: 'user_company',
+            resource_id: { [Op.in]: membershipIds }
+          }] : [])
+        ];
+        delete where.actor_type;
+        delete where.actor_id;
+      }
 
       const startDate = normalizeDateBoundary(start || date_from, 'start');
       const endDate = normalizeDateBoundary(end || date_to, 'end');
