@@ -1303,6 +1303,7 @@ const LITERAL_DISPLAY_VALUE_KEYS = new Set([
   'title',
   'description',
   'email',
+  'total_amount',
   'seller_email',
   'seller_id',
   'ml_user_id'
@@ -1407,11 +1408,80 @@ function buildFunctionalContext(event) {
   const metadata = parseDisplayValue(event.metadata) || {};
   const action = String(event.action || '');
   const rows = [];
-  const add = (key, label, value) => {
+  const newValue = parseDisplayValue(event.new_value) || {};
+  const add = (key, label, value, formatterKey = key) => {
     if (value !== undefined && value !== null && value !== '') {
-      rows.push({ key, label, value: formatDisplayValue(value, key) });
+      rows.push({ key, label, value: formatDisplayValue(value, formatterKey) });
     }
   };
+
+  if (event.module === 'sales') {
+    add('buyer_name', 'Comprador', metadata.buyer_name);
+    add('marketplace_name', 'Marketplace', metadata.marketplace_name);
+    if (metadata.total_quantity != null && metadata.total_quantity !== '') {
+      add('total_quantity', 'Cantidad vendida', `${metadata.total_quantity} artículo(s)`);
+    }
+    if (metadata.total_amount != null && metadata.total_amount !== '') {
+      add('total_amount', 'Total de la venta', formatSaleAmount(metadata.total_amount, metadata.currency));
+    }
+    if (action !== 'sales.status_changed') {
+      add('payment_status', 'Estado del pago', metadata.payment_status);
+      add('order_status', 'Estado de la venta', metadata.order_status);
+    }
+
+    if (action === 'sales.note_added' && Array.isArray(newValue.notas)) {
+      newValue.notas.forEach((note, index) => {
+        add(`nota_${index + 1}`, 'Nota', note?.texto);
+      });
+    }
+    if (action === 'sales.message_sent') {
+      add('destinatario', 'Destinatario', metadata.destinatario);
+      add('canal', 'Canal', metadata.canal);
+      add('texto', 'Mensaje', newValue.texto);
+    }
+  }
+
+  if (event.module === 'publication_draft') {
+    const products = Array.isArray(metadata.productos) ? metadata.productos : [];
+    const marketplaces = Array.isArray(metadata.marketplaces) ? metadata.marketplaces : [];
+    if (products.length > 0) {
+      add('productos', 'Productos', products.map(product => product.producto).filter(Boolean).join(', '));
+    }
+    if (marketplaces.length > 0) {
+      add('marketplaces', 'Marketplaces', marketplaces.map(marketplace => marketplace.marketplace).filter(Boolean).join(', '));
+    }
+    if (metadata.cantidad_de_productos != null) add('cantidad_de_productos', 'Cantidad de productos', metadata.cantidad_de_productos);
+    if (metadata.cantidad_de_marketplaces != null) add('cantidad_de_marketplaces', 'Cantidad de marketplaces', metadata.cantidad_de_marketplaces);
+    if (metadata.stock_total_preparado != null && ['publication_draft.created', 'publication_draft.executed'].includes(action)) {
+      add('stock_total_preparado', 'Existencias preparadas', metadata.stock_total_preparado);
+    }
+  }
+
+  if (event.module === 'published_product') {
+    add('producto', 'Producto', metadata.producto);
+    add('marketplace', 'Marketplace', metadata.marketplace);
+    if (['published_product.created', 'published_product.price_changed'].includes(action)) {
+      add(
+        'precio_publicado',
+        'Precio publicado',
+        formatSaleAmount(metadata.precio_publicado, metadata.currency),
+        'total_amount'
+      );
+    }
+    if (['published_product.created', 'published_product.stock_changed'].includes(action)) {
+      add('stock_publicado', 'Existencias publicadas', metadata.stock_publicado);
+    }
+    if (action === 'published_product.marketplace_status_changed') {
+      add('estado_de_publicacion', 'Estado de la publicación', metadata.estado_de_publicacion);
+    }
+  }
+
+  if (event.module === 'process') {
+    add('tipo_de_proceso', 'Tipo de proceso', metadata.tipo_de_proceso);
+    add('cantidad_de_productos', 'Cantidad de productos', metadata.cantidad_de_productos);
+    add('cantidad_de_marketplaces', 'Cantidad de marketplaces', metadata.marketplaces_configurados);
+    if (metadata.total_esperado != null) add('total_esperado', 'Total esperado', metadata.total_esperado);
+  }
 
   if (event.module === 'warehouse') {
     add('product_label', 'Producto', metadata.product_label || metadata.producto);
@@ -1423,6 +1493,19 @@ function buildFunctionalContext(event) {
   }
 
   return rows;
+}
+
+function formatSaleAmount(value, currency) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return String(value);
+  if (String(currency || '').toUpperCase() === 'CLP') {
+    return new Intl.NumberFormat('es-CL', {
+      style: 'currency',
+      currency: 'CLP',
+      maximumFractionDigits: 0
+    }).format(amount);
+  }
+  return currency ? `${amount} ${currency}` : String(value);
 }
 
 function buildDisplayChanges(changes) {
