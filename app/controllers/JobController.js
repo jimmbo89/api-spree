@@ -34,20 +34,121 @@ function parseJsonMaybe(value) {
   if (typeof value !== 'string') return null;
 
   try {
-    return JSON.parse(value);
+    const parsed = JSON.parse(value);
+    // Algunas tareas antiguas guardaron JSON serializado dos veces.
+    return typeof parsed === 'string' ? parseJsonMaybe(parsed) : parsed;
   } catch (error) {
     return null;
   }
 }
 
-function translatePublicationDetail(detail) {
+const PUBLICATION_FIELD_LABELS = {
+  description: 'descripción',
+  plain_text: 'descripción',
+  title: 'título',
+  name: 'nombre',
+  price: 'precio',
+  available_quantity: 'cantidad disponible',
+  category_id: 'categoría',
+  primarycategory: 'categoría',
+  listing_type_id: 'tipo de publicación',
+  condition: 'condición',
+  pictures: 'imágenes',
+  attributes: 'atributos',
+  brand: 'marca',
+  model: 'modelo',
+  sellersku: 'SKU',
+  sku: 'SKU',
+  packageheight: 'alto del paquete',
+  packagelength: 'largo del paquete',
+  packagewidth: 'ancho del paquete',
+  packageweight: 'peso del paquete',
+  stock: 'stock'
+};
+
+function publicationFieldLabel(value) {
+  const key = String(value || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
+  return PUBLICATION_FIELD_LABELS[key]
+    || PUBLICATION_FIELD_LABELS[key.replace(/^(item|body)/, '')]
+    || null;
+}
+
+function uniqueMessages(messages) {
+  return [...new Set(messages.filter(Boolean).map((message) => String(message).trim()).filter(Boolean))];
+}
+
+function publicationFieldText(field) {
+  return field ? `el campo «${field}»` : 'un dato obligatorio';
+}
+
+function translateFalabellaDetail(detail) {
   const text = String(detail || '').trim();
   const normalized = text.toLowerCase();
-  if (!text) return null;
-  if (normalized.includes('campo requerido ausente: description')) return 'Falta completar la descripción.';
-  if (normalized.includes('el precio debe ser mayor a 0')) return 'El precio debe ser mayor que $0.';
-  if (normalized === 'validation_failed') return 'Hay datos obligatorios incompletos.';
-  return text;
+  if (!text || normalized === 'validation_failed') return null;
+
+  // En “Campo requerido ausente: description” el nombre viene tras “:”.
+  // Debe evaluarse antes del patrón genérico, que capturaría “requerido”.
+  const fieldMatch = text.match(/(?:campo requerido ausente|missing required field)\s*:\s*([a-z0-9_ -]+)/i)
+    || text.match(/(?:campo|required field|field)\s+['"]?([a-z0-9_ -]+?)['"]?(?:\s+(?:ausente|is|required|with|no))/i);
+  const field = publicationFieldLabel(fieldMatch?.[1]);
+  if (normalized.includes('campo requerido ausente') || normalized.includes('required') || normalized.includes('missing')) {
+    return `Falta completar ${publicationFieldText(field)}.`;
+  }
+  if (normalized.includes('precio debe ser mayor a 0') || (field === 'precio' && normalized.includes('greater than'))) {
+    return 'El precio debe ser mayor que $0.';
+  }
+  if (normalized.includes('invalid') || normalized.includes('no válido') || normalized.includes('not valid')) {
+    return `Valor no válido para ${publicationFieldText(field)}.`;
+  }
+  if (normalized.includes('does not exist') || normalized.includes('no existe')) {
+    return `Valor de ${publicationFieldText(field)} no disponible en Falabella.`;
+  }
+  if (normalized.includes('format error') || normalized.includes('formato')) {
+    return `Formato no válido${field ? ` para ${publicationFieldText(field)}` : ' en datos de publicación'}.`;
+  }
+  if (normalized.includes('already') || normalized.includes('duplicate') || normalized.includes('duplicad')) {
+    return 'Falabella ya está procesando una publicación igual. Intenta nuevamente en unos minutos.';
+  }
+  return 'Falabella rechazó un dato de publicación. Revisa campos obligatorios y valores permitidos de categoría.';
+}
+
+function humanizeMercadoLibreCause(cause = {}) {
+  const code = String(cause.code || cause.error || '').toLowerCase();
+  const references = Array.isArray(cause.references) ? cause.references : [];
+  const field = publicationFieldLabel(references[0] || cause.field);
+
+  if (code === 'item.description.type.invalid') return 'La descripción debe contener solo texto plano.';
+  if (code === 'body.required_fields' || code === 'body.required_fileds') {
+    return `Falta completar ${publicationFieldText(field)}.`;
+  }
+  if (code === 'body.invalid_field_types') return `Formato no válido${field ? ` para ${publicationFieldText(field)}` : ' en un dato de publicación'}.`;
+  if (code === 'item.price.invalid') return 'El precio no cumple requisitos de la categoría.';
+  if (code === 'item.category_id.invalid') return 'La categoría seleccionada no permite esta publicación.';
+  if (code === 'item.official_store_id.invalid' || code === 'body.invalid_official_store_id') {
+    return 'La cuenta no está autorizada para la tienda oficial indicada.';
+  }
+  if (code === 'validation_error') return 'Mercado Libre rechazó datos de la publicación. Revisa requisitos de categoría.';
+  return `Mercado Libre rechazó ${field ? publicationFieldText(field) : 'un dato de la publicación'}. Revisa requisitos de categoría.`;
+}
+
+function humanizeMercadoLibreError(details, error) {
+  const validation = details?.validation || details || {};
+  const causes = [
+    ...(Array.isArray(details?.marketplace_errors) ? details.marketplace_errors : []),
+    ...(Array.isArray(validation?.errors) ? validation.errors : []),
+    ...(Array.isArray(details?.cause) ? details.cause : [])
+  ];
+  const messages = uniqueMessages(causes.map(humanizeMercadoLibreCause));
+  const status = Number(validation?.status || details?.status || error?.status_code || 0);
+
+  if (messages.length) return { message: messages[0], details: messages.join(' ') };
+  if (status === 401) return { message: 'La conexión con Mercado Libre expiró.', details: 'Vuelve a conectar la cuenta de Mercado Libre e intenta nuevamente.' };
+  if (status === 403) return { message: 'La cuenta no tiene permisos para publicar en Mercado Libre.', details: 'Revisa permisos y configuración de la cuenta.' };
+  if (status === 404) return { message: 'Mercado Libre no encontró un recurso requerido para publicar.', details: 'Revisa categoría, tipo de publicación y configuración seleccionada.' };
+  if (status === 409) return { message: 'Mercado Libre detectó un conflicto al publicar.', details: 'Revisa si producto ya fue publicado e intenta nuevamente.' };
+  if (status === 429) return { message: 'Mercado Libre limitó temporalmente las solicitudes.', details: 'Intenta nuevamente en unos minutos.' };
+  if (status >= 500) return { message: 'Mercado Libre no pudo procesar la publicación temporalmente.', details: 'Intenta nuevamente en unos minutos.' };
+  return { message: 'Mercado Libre no pudo publicar el producto.', details: 'Revisa datos obligatorios y requisitos de categoría.' };
 }
 
 function humanizeJobPublicationError(error = {}) {
@@ -59,7 +160,7 @@ function humanizeJobPublicationError(error = {}) {
     const affected = (Array.isArray(details?.failed_items) ? details.failed_items : [])
       .map((item) => {
         const messages = (Array.isArray(item?.details) ? item.details : [item?.error])
-          .map(translatePublicationDetail)
+          .map(translateFalabellaDetail)
           .filter(Boolean);
         return messages.length ? `${item?.sku ? `Variante ${item.sku}: ` : ''}${messages.join(' ')}` : null;
       })
@@ -84,9 +185,25 @@ function humanizeJobPublicationError(error = {}) {
     };
   }
 
+  const marketplace = String(error.marketplace_name || error.marketplace_domain || details?.marketplace || '').toLowerCase();
+  const isMercadoLibre = marketplace.includes('mercado')
+    || code.includes('mercadolibre')
+    || details?.marketplace_errors
+    || details?.marketplace_primary_error
+    || details?.validation;
+  if (isMercadoLibre) return humanizeMercadoLibreError(details || {}, error);
+
+  const isFalabella = marketplace.includes('falabella') || code.includes('falabella') || details?.feed || details?.feed_id;
+  if (isFalabella) {
+    return {
+      message: 'Falabella no pudo publicar el producto.',
+      details: translateFalabellaDetail(details?.marketplace_error?.error_message || error.error_message)
+    };
+  }
+
   return {
-    message: error.error_message || 'No se pudo completar la publicación.',
-    details: typeof error.error_details === 'string' ? error.error_details : null
+    message: 'No se pudo completar la publicación.',
+    details: 'El marketplace rechazó la publicación. Revisa datos obligatorios antes de reintentar.'
   };
 }
 
@@ -1003,9 +1120,14 @@ async getJobDetail(req, res) {
       marketplace_id: error.marketplace_id,
       credential_id: error.credential_id,
       marketplace_name: error.marketplace_name,
-      error_message: humanizeJobPublicationError(error).message,
-      // Vista usuario: sin códigos internos, JSON crudo ni mensajes en inglés.
-      error_details: humanizeJobPublicationError(error).details,
+      ...(() => {
+        const presentation = humanizeJobPublicationError(error);
+        return {
+          error_message: presentation.message,
+          // Vista usuario: sin códigos internos, JSON crudo ni mensajes en inglés.
+          error_details: presentation.details
+        };
+      })(),
       payload: error.payload,              // ✅ Payload desde ProductPublishingTask
       is_fixed: error.is_fixed || false,
       fixed_payload: error.fixed_payload || null,
