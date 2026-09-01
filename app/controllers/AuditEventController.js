@@ -1461,12 +1461,14 @@ function buildFunctionalContext(event) {
     add('producto', 'Producto', metadata.producto);
     add('marketplace', 'Marketplace', metadata.marketplace);
     if (['published_product.created', 'published_product.price_changed'].includes(action)) {
-      add(
-        'precio_publicado',
-        'Precio publicado',
-        formatSaleAmount(metadata.precio_publicado, metadata.currency),
-        'total_amount'
-      );
+      if (metadata.precio_publicado != null && metadata.precio_publicado !== '') {
+        add(
+          'precio_publicado',
+          'Precio publicado',
+          formatSaleAmount(metadata.precio_publicado, metadata.currency),
+          'total_amount'
+        );
+      }
     }
     if (['published_product.created', 'published_product.stock_changed'].includes(action)) {
       add('stock_publicado', 'Existencias publicadas', metadata.stock_publicado);
@@ -1477,10 +1479,25 @@ function buildFunctionalContext(event) {
   }
 
   if (event.module === 'process') {
+    const products = Array.isArray(metadata.productos) ? metadata.productos : [];
+    const marketplaces = Array.isArray(metadata.marketplaces) ? metadata.marketplaces : [];
     add('tipo_de_proceso', 'Tipo de proceso', metadata.tipo_de_proceso);
     add('cantidad_de_productos', 'Cantidad de productos', metadata.cantidad_de_productos);
     add('cantidad_de_marketplaces', 'Cantidad de marketplaces', metadata.marketplaces_configurados);
-    if (metadata.total_esperado != null) add('total_esperado', 'Total esperado', metadata.total_esperado);
+    if (products.length > 0) {
+      add('productos', 'Productos', products.map(product => product.producto).filter(Boolean).join(', '));
+    }
+    if (marketplaces.length > 0) {
+      add(
+        'marketplaces',
+        'Marketplaces y credenciales',
+        marketplaces.map(marketplace => [marketplace.marketplace, marketplace.credencial]
+          .filter(Boolean)
+          .join(' / '))
+          .filter(Boolean)
+          .join(', ')
+      );
+    }
   }
 
   if (event.module === 'warehouse') {
