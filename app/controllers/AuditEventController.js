@@ -12,6 +12,7 @@ const {
 } = require('../repositories');
 const {
   AuditEvent,
+  InventoryMovement,
   MarketplaceCredential,
   Product,
   User,
@@ -219,6 +220,21 @@ const FIELD_LABELS = {
   name: 'Nombre',
   title: 'Título',
   description: 'Descripción',
+  email: 'Correo electrónico',
+  product_measurements: 'Medidas del producto',
+  packaging_measurements: 'Medidas del embalaje',
+  type: 'Tipo',
+  address: 'Dirección',
+  city: 'Ciudad',
+  region: 'Región',
+  latitude: 'Latitud',
+  longitude: 'Longitud',
+  capacity_max_units: 'Capacidad máxima (unidades)',
+  allow_mermas: 'Permitir mermas',
+  rotation_policy: 'Política de rotación',
+  company_id: 'Empresa',
+  branch_id: 'Sucursal',
+  user_id: 'Usuario',
   seller_email: 'Correo de cuenta externa',
   seller_id: 'Cuenta externa',
   user_name: 'Usuario',
@@ -659,8 +675,56 @@ function humanizeCode(value) {
     .join(' ');
 }
 
+const FIELD_TOKEN_LABELS = {
+  product: 'Producto',
+  measurements: 'Medidas del producto',
+  packaging: 'Embalaje',
+  weight: 'Peso',
+  unit: 'Unidad',
+  dimensions: 'Dimensiones',
+  length: 'Longitud',
+  width: 'Ancho',
+  height: 'Altura',
+  depth: 'Profundidad',
+  volumetric: 'Volumétrico',
+  total: 'Total',
+  with: 'Con',
+  value: 'Valor',
+  warranty: 'Garantía',
+  months: 'Meses',
+  text: 'Texto',
+  grams: 'Gramos',
+  cm: 'Centímetros',
+  condition: 'Condición',
+  capacity: 'Capacidad',
+  max: 'Máxima',
+  units: 'Unidades',
+  allow: 'Permitir',
+  rotation: 'Rotación',
+  policy: 'Política',
+  minimum: 'Mínimo',
+  active: 'Activo',
+  status: 'Estado',
+  image: 'Imagen',
+  images: 'Imágenes',
+  variant: 'Variante',
+  variants: 'Variantes'
+};
+
+function humanizeFieldName(key) {
+  const parts = String(key || '').split(/[._-]+/).filter(Boolean);
+  if (parts.length === 0) return 'Campo';
+
+  return parts
+    .map(part => FIELD_TOKEN_LABELS[part.toLowerCase()]
+      || HUMANIZE_TOKEN_LABELS[part.toLowerCase()]
+      || part)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
 function getFieldLabel(key) {
-  return FIELD_LABELS[key] || humanizeCode(key);
+  return FIELD_LABELS[key] || humanizeFieldName(key);
 }
 
 function getValueLabel(value) {
@@ -1165,7 +1229,8 @@ function shouldHideDisplayKey(key) {
     'audit_key',
     'raw_payload',
     'api_response',
-    'error_details'
+    'error_details',
+    'sync_meta'
   ].includes(key);
 }
 
@@ -1237,6 +1302,7 @@ const LITERAL_DISPLAY_VALUE_KEYS = new Set([
   'name',
   'title',
   'description',
+  'email',
   'seller_email',
   'seller_id',
   'ml_user_id'
@@ -1248,6 +1314,20 @@ function formatDisplayValue(value, key = null) {
   if (normalized == null || normalized === '') return 'Sin valor';
   if (typeof normalized === 'boolean') return normalized ? 'Sí' : 'No';
   if (normalized instanceof Date) return normalized.toISOString();
+  if (['state', 'status', 'membership_status'].includes(String(key || '').toLowerCase())) {
+    const statusLabels = {
+      '-1': 'Archivado',
+      0: 'Inactivo',
+      1: 'Activo',
+      2: 'Archivado'
+    };
+    if (Object.prototype.hasOwnProperty.call(statusLabels, String(normalized))) {
+      return statusLabels[String(normalized)];
+    }
+  }
+  if (String(key || '').toLowerCase() === 'active' && ['0', '1'].includes(String(normalized))) {
+    return String(normalized) === '1' ? 'Sí' : 'No';
+  }
   if (key === 'country') {
     const countries = { CL: 'Chile', PE: 'Perú', CO: 'Colombia', MX: 'México', AR: 'Argentina', BR: 'Brasil' };
     return countries[String(normalized).toUpperCase()] || String(normalized);
@@ -1323,6 +1403,28 @@ function buildDisplayContext(event) {
   return context.filter(row => row.value);
 }
 
+function buildFunctionalContext(event) {
+  const metadata = parseDisplayValue(event.metadata) || {};
+  const action = String(event.action || '');
+  const rows = [];
+  const add = (key, label, value) => {
+    if (value !== undefined && value !== null && value !== '') {
+      rows.push({ key, label, value: formatDisplayValue(value, key) });
+    }
+  };
+
+  if (event.module === 'warehouse') {
+    add('product_label', 'Producto', metadata.product_label || metadata.producto);
+    if (action.includes('transfer') || action === 'warehouse.stock_entry' || action === 'warehouse.stock_exit') {
+      add('source_warehouse_label', 'Almacén origen', metadata.source_warehouse_label);
+      add('destination_warehouse_label', 'Almacén destino', metadata.destination_warehouse_label);
+      add('quantity', 'Cantidad', metadata.quantity);
+    }
+  }
+
+  return rows;
+}
+
 function buildDisplayChanges(changes) {
   const normalized = parseDisplayValue(changes);
   if (!Array.isArray(normalized)) return [];
@@ -1352,7 +1454,45 @@ function getDisplayDescription(event, fallback) {
   return description;
 }
 
-function buildDisplay(event, labels) {
+function buildDisplay(event, labels, { compact = false } = {}) {
+  const changes = buildDisplayChanges(event.changes);
+
+  if (compact) {
+    return {
+      summary: {
+        title: labels.action_label,
+        module: labels.module_label,
+        result: labels.result_label,
+        description: getDisplayDescription(event, labels.action_label),
+        occurred_at: event.occurred_at
+      },
+      actor: {
+        name: event.actor_name || labels.actor_type_label,
+        type: labels.actor_type_label
+      },
+      resource: {
+        label: event.resource_label || labels.resource_type_label,
+        type: labels.resource_type_label
+      },
+      related_resource: null,
+      context: buildFunctionalContext(event),
+      changes,
+      details: {
+        previous_value: changes.map(change => ({
+          key: change.field,
+          label: change.field_label,
+          value: change.previous
+        })),
+        new_value: changes.map(change => ({
+          key: change.field,
+          label: change.field_label,
+          value: change.current
+        })),
+        metadata: []
+      }
+    };
+  }
+
   return {
     summary: {
       title: labels.action_label,
@@ -1374,7 +1514,7 @@ function buildDisplay(event, labels) {
       type: labels.related_resource_type_label
     } : null,
     context: buildDisplayContext(event),
-    changes: buildDisplayChanges(event.changes),
+    changes,
     details: {
       previous_value: objectToDisplayRows(event.previous_value),
       new_value: objectToDisplayRows(event.new_value),
@@ -1383,7 +1523,7 @@ function buildDisplay(event, labels) {
   };
 }
 
-function mapEvent(event) {
+function mapEvent(event, options = {}) {
   const labels = {
     module_label: MODULE_LABELS[event.module] || humanizeCode(event.module),
     action_label: ACTION_LABELS[event.action] || humanizeCode(event.action),
@@ -1429,8 +1569,56 @@ function mapEvent(event) {
     metadata: event.metadata,
     correlation_id: event.correlation_id,
     created_at: event.createdAt,
-    display: buildDisplay(event, labels)
+    display: buildDisplay(event, labels, options)
   };
+}
+
+async function enrichWarehouseProductContext(events = []) {
+  const movementIds = events
+    .filter(event => event.related_resource_type === 'inventory_movement')
+    .map(event => Number(event.related_resource_id))
+    .filter(Number.isInteger);
+  const productIds = events
+    .filter(event => event.related_resource_type === 'product')
+    .map(event => Number(event.related_resource_id))
+    .filter(Number.isInteger);
+
+  const [movements, products] = await Promise.all([
+    movementIds.length > 0
+      ? InventoryMovement.findAll({ where: { id: { [Op.in]: movementIds } }, attributes: ['id', 'product_id'], raw: true })
+      : [],
+    productIds.length > 0
+      ? Product.findAll({ where: { id: { [Op.in]: productIds } }, attributes: ['id', 'sku', 'name'], raw: true })
+      : []
+  ]);
+  const movementProductIds = movements.map(movement => Number(movement.product_id)).filter(Number.isInteger);
+  const missingProductIds = movementProductIds.filter(id => !productIds.includes(id));
+  const movementProducts = missingProductIds.length > 0
+    ? await Product.findAll({ where: { id: { [Op.in]: missingProductIds } }, attributes: ['id', 'sku', 'name'], raw: true })
+    : [];
+  const productById = new Map([...products, ...movementProducts].map(product => [Number(product.id), product]));
+  const productIdByMovement = new Map(movements.map(movement => [Number(movement.id), Number(movement.product_id)]));
+
+  return events.map(event => {
+    const plain = typeof event.get === 'function' ? event.get({ plain: true }) : { ...event };
+    const productId = event.related_resource_type === 'product'
+      ? Number(event.related_resource_id)
+      : productIdByMovement.get(Number(event.related_resource_id));
+    const product = productById.get(productId);
+    const metadata = parseDisplayValue(plain.metadata);
+    const productLabel = product
+      ? [product.sku, product.name].filter(Boolean).join(' / ')
+      : (metadata?.product_label || metadata?.producto || null);
+
+    if (productLabel) {
+      plain.metadata = { ...(metadata && typeof metadata === 'object' ? metadata : {}), product_label: productLabel };
+      plain.description = String(plain.description || '').replace(/\bproducto\s+\d+\b/i, productLabel);
+    } else if (plain.module === 'warehouse' && plain.related_resource_type === 'inventory_movement') {
+      plain.description = String(plain.description || '').replace(/\bproducto\s+\d+\b/i, 'producto sin identificar');
+    }
+
+    return plain;
+  });
 }
 
 async function buildScopeWhere(req, companyId) {
@@ -1506,9 +1694,11 @@ const AuditEventController = {
         }
       });
 
+      const eventsForDisplay = await enrichWarehouseProductContext(result.events);
       const response = {
         success: true,
-        events: result.events.map(mapEvent),
+        // Presentación funcional uniforme: solo acción, actor y cambios reales.
+        events: eventsForDisplay.map(event => mapEvent(event, { compact: true })),
         pagination: result.pagination
       };
 
