@@ -66,8 +66,8 @@ const MarketplaceReportController = {
         status,
         company_id: company_id ? parseInt(company_id) : null,
         user_id: user_id ? parseInt(user_id) : null,
-        limit: limit ? parseInt(limit) : 50,
-        offset: offset ? parseInt(offset) : 0
+        limit: limit !== undefined && limit !== null && limit !== '' ? parseInt(limit) : undefined,
+        offset: offset !== undefined && offset !== null && offset !== '' ? parseInt(offset) : undefined
       };
 
       const report = await MarketplaceReportingService.getSalesReport(filters);

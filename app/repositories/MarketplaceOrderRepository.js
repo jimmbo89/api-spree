@@ -16,6 +16,10 @@ const MarketplaceOrderRepository = {
       let record = await MarketplaceOrder.findOne({ where, ...options });
 
       if (record) {
+        // No borrar empresa ya resuelta si re-proceso no pudo resolver listing.
+        if (updateData.company_id == null && record.company_id != null) {
+          delete updateData.company_id;
+        }
         await record.update(updateData, options);
         return { record, created: false };
       }
@@ -127,7 +131,7 @@ const MarketplaceOrderRepository = {
         to
       } = filters;
 
-      const { limit = 50, offset = 0 } = pagination;
+      const { limit, offset } = pagination;
 
       const where = {};
       if (marketplace) where.marketplace_credential_id = marketplace;
@@ -139,10 +143,8 @@ const MarketplaceOrderRepository = {
         where.createdAt = getDateOnlyRange(from, to);
       }
 
-      const result = await MarketplaceOrder.findAndCountAll({
+      const queryOptions = {
         where,
-        limit,
-        offset,
         order: [['createdAt', 'DESC']],
         include: [
           {
@@ -156,7 +158,12 @@ const MarketplaceOrderRepository = {
           { association: 'company' },
           { association: 'user', attributes: ['id', 'name', 'email'] }
         ]
-      });
+      };
+
+      if (limit !== undefined && limit !== null) queryOptions.limit = limit;
+      if (offset !== undefined && offset !== null) queryOptions.offset = offset;
+
+      const result = await MarketplaceOrder.findAndCountAll(queryOptions);
 
       return result;
     } catch (error) {

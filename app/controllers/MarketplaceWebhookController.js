@@ -454,7 +454,7 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
     listingId: firstListingId,
     credentialId: credential.id
   });
-  const companyId = companyInfo?.company_id || null;
+  const companyId = companyInfo?.company_id || credential.company_id || null;
   const branchId = companyInfo?.branch_id || null;
   const publicationUserId = companyInfo?.user_id || credential.user_id || null;
   const existingOrder = await MarketplaceOrderRepository.findByMarketplaceOrderId(
@@ -2838,7 +2838,7 @@ async function processFalabellaEvent({ event, payload, orderId }) {
     listingId: firstSku,
     credentialId: credential.id
   });
-  const companyId = companyInfo?.company_id || null;
+  const companyId = companyInfo?.company_id || credential.company_id || null;
   const branchId = companyInfo?.branch_id || null;
   const publicationUserId = companyInfo?.user_id || credential.user_id || null;
   const existingOrder = await MarketplaceOrderRepository.findByMarketplaceOrderId(

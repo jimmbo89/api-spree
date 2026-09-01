@@ -122,7 +122,7 @@ const MarketplaceReportingService = {
       const {
         from, to, marketplace, status,
         company_id, user_id,
-        limit = 50, offset = 0
+        limit, offset
       } = filters;
 
       const ordersResult = await MarketplaceOrderRepository.findAndCountAll({
