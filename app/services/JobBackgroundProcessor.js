@@ -641,8 +641,8 @@ async _processProduct(jobProduct, parentJobId) {
       const failed = job.status === 'failed';
       const completedWithErrors = failed || errors > 0 || job.status === 'completed_with_errors';
       const title = failed
-        ? '❌ Publicación fallida'
-        : (completedWithErrors ? '⚠️ Publicación finalizada con errores' : '✅ Publicación exitosa');
+        ? 'Publicación fallida'
+        : (completedWithErrors ? 'Publicación finalizada con errores' : 'Publicación exitosa');
       const description = failed
         ? `La publicación no pudo completarse${job.error_summary?.message ? `: ${job.error_summary.message}` : '.'}`
         : `${successful}/${total} producto${total === 1 ? '' : 's'} publicado${successful === 1 ? '' : 's'}${errors > 0 ? `; ${errors} con error` : ''}.`;

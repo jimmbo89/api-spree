@@ -732,15 +732,12 @@ async getActiveJobs(req, res) {
     const productsRequiringAttention = stats?.errors || 0;
     
     // 🔹 Construir título según estado general
-    let title, emoji;
+    let title;
     if (job.status === 'completed' && errorChannels === 0) {
-      emoji = '✅';
       title = 'Publicación exitosa';
     } else if (job.status === 'completed_with_errors' || errorChannels > 0) {
-      emoji = '⚠️';
       title = 'Publicación finalizada con errores';
     } else {
-      emoji = '❌';
       title = 'Publicación fallida';
     }
     
@@ -794,7 +791,7 @@ async getActiveJobs(req, res) {
     const notification = await NotificationRepository.create({
       user_id: userId,
       company_id: companyId,
-      title: `${emoji} ${title}`,                    // ✅ Formato: "✅ Publicación exitosa"
+      title,
       description: description,                      // ✅ Formato multilínea con \n
       type: 'publication_completed',
        notificationData,
@@ -830,13 +827,13 @@ async getActiveJobs(req, res) {
     let title, description;
     
     if (job.status === 'completed') {
-      title = '✅ Publicación exitosa';
+      title = 'Publicación exitosa';
       description = `Publicación completada en ${channels?.length || 1} marketplace${(channels?.length || 1) > 1 ? 's' : ''}`;
     } else if (job.status === 'completed_with_errors') {
-      title = '⚠️ Publicación con errores';
+      title = 'Publicación con errores';
       description = `${completedChannels} marketplace${completedChannels > 1 ? 's' : ''} completado${completedChannels > 1 ? 's' : ''}, ${errorChannels} con errores`;
     } else {
-      title = '❌ Publicación fallida';
+      title = 'Publicación fallida';
       description = `${stats?.errors || 0} producto${(stats?.errors || 0) !== 1 ? 's' : ''} requiere${(stats?.errors || 0) !== 1 ? 'n' : ''} atención`;
     }
     
