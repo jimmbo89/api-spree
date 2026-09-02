@@ -277,11 +277,13 @@ const MarketplaceCredentialRepository = {
   /**
    * Obtiene credenciales filtradas por usuario; si no se pasa userId devuelve todas.
    */
-  async findByUser(userId, marketplaceId = null, companyId = null) {
+  async findByUser(userId, marketplaceId = null, companyId = null, options = {}) {
+    const { onlyActive = false } = options;
     const directWhere = {};
     if (userId) directWhere.user_id = userId;
     if (marketplaceId) directWhere.marketplace_id = marketplaceId;
     if (companyId) directWhere.company_id = companyId;
+    if (onlyActive) directWhere.active = true;
 
     const accessibleIds = await getAccessibleCredentialIdsByUser(userId, companyId);
 
@@ -291,6 +293,7 @@ const MarketplaceCredentialRepository = {
         {
           model: Marketplace,
           as: 'marketplace',
+          ...(onlyActive ? { where: { active: true } } : {}),
         },
         {
           model: Company,
@@ -311,6 +314,7 @@ const MarketplaceCredentialRepository = {
     };
     if (marketplaceId) accessWhere.marketplace_id = marketplaceId;
     if (companyId) accessWhere.company_id = companyId;
+    if (onlyActive) accessWhere.active = true;
 
     const accessRecords = accessibleIds.length > 0
       ? await MarketplaceCredential.findAll({
@@ -319,6 +323,7 @@ const MarketplaceCredentialRepository = {
             {
               model: Marketplace,
               as: 'marketplace',
+              ...(onlyActive ? { where: { active: true } } : {}),
             },
             {
               model: Company,
