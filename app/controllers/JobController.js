@@ -89,9 +89,9 @@ function translateFalabellaDetail(detail) {
   // En “Campo requerido ausente: description” el nombre viene tras “:”.
   // Debe evaluarse antes del patrón genérico, que capturaría “requerido”.
   const fieldMatch = text.match(/(?:campo requerido ausente|missing required field)\s*:\s*([a-z0-9_ -]+)/i)
-    || text.match(/(?:campo|required field|field)\s+['"]?([a-z0-9_ -]+?)['"]?(?:\s+(?:ausente|is|required|with|no))/i);
+    || text.match(/(?:campo|required field|field)\s+['"]?([a-z0-9_ -]+?)['"]?(?:\s+(?:ausente|is|required|with|no|cannot\s+be\s+empty|can't\s+be\s+empty))/i);
   const field = publicationFieldLabel(fieldMatch?.[1]);
-  if (normalized.includes('campo requerido ausente') || normalized.includes('required') || normalized.includes('missing')) {
+  if (normalized.includes('campo requerido ausente') || normalized.includes('required') || normalized.includes('missing') || normalized.includes('cannot be empty') || normalized.includes("can't be empty")) {
     return `Falta completar ${publicationFieldText(field)}.`;
   }
   if (normalized.includes('precio debe ser mayor a 0') || (field === 'precio' && normalized.includes('greater than'))) {
@@ -156,6 +156,13 @@ function humanizeJobPublicationError(error = {}) {
   const code = String(details?.error_code || error.error_message || '').trim().toLowerCase();
   const itemState = normalizeMarketplaceItemState(details);
 
+  if (code.includes('credential is not defined')) {
+    return {
+      message: 'No se pudo completar la publicación.',
+      details: 'Error interno al resolver la credencial de publicación. Intenta nuevamente.'
+    };
+  }
+
   if (code === 'falabella_publication_failed' || Array.isArray(details?.failed_items)) {
     const affected = (Array.isArray(details?.failed_items) ? details.failed_items : [])
       .map((item) => {
@@ -204,6 +211,15 @@ function humanizeJobPublicationError(error = {}) {
   return {
     message: 'No se pudo completar la publicación.',
     details: 'El marketplace rechazó la publicación. Revisa datos obligatorios antes de reintentar.'
+  };
+}
+
+function presentJobPublicationError(error = {}) {
+  const presentation = humanizeJobPublicationError(error);
+  return {
+    ...error,
+    error_message: presentation.message,
+    error_details: presentation.details
   };
 }
 
@@ -575,8 +591,10 @@ if (['completed', 'completed_with_errors', 'failed'].includes(jobStatus) && incl
       percentage: ch.percentage,
       status: ch.status,
       // ✅ INCLUIR ERRORES DETALLADOS
-      errors: errorsByChannel[ch.credential_id] || [],
-      attention_items: attentionItemsByChannel[ch.credential_id] || []
+      errors: (errorsByChannel[ch.credential_id] || []).map(presentJobPublicationError),
+      attention_items: (attentionItemsByChannel[ch.credential_id] || []).map((item) => (
+        item.attention_type === 'error' ? presentJobPublicationError(item) : item
+      ))
     })),
     products: include_products === 'true' 
       ? await JobProductRepository.findAllByJob(jobId, { 
@@ -632,6 +650,20 @@ async getActiveJobs(req, res) {
       }
 
       const channels = await JobProductRepository.getStatsByJobAndMarketplace(job.id);
+      const attentionItems = await JobProductRepository.findAllErrorsByJob(job, {
+        includePayloads: false,
+        includeDetails: true,
+        includeTransientAttention: true,
+        limit: 200
+      });
+      const errorsByCredential = attentionItems
+        .filter((item) => item.attention_type === 'error')
+        .reduce((acc, item) => {
+          const key = item.credential_id;
+          if (!acc[key]) acc[key] = [];
+          acc[key].push(presentJobPublicationError(item));
+          return acc;
+        }, {});
 
       if (!Array.isArray(channels) || channels.length === 0) {
         const fallbackMarketplace = job.config?.marketplaces?.[0];
@@ -646,7 +678,8 @@ async getActiveJobs(req, res) {
           total_products: stats.total || job.total_products,
           successful: stats.successful ?? job.successful,
           errors_count: stats.errors ?? job.errors_count,
-          percentage: stats.total > 0 ? Math.round((stats.processed / stats.total) * 100) : (job.percentage || 0)
+          percentage: stats.total > 0 ? Math.round((stats.processed / stats.total) * 100) : (job.percentage || 0),
+          errors: errorsByCredential[fallbackMarketplace?.credential_id || fallbackMarketplace?.id] || []
         }];
       }
 
@@ -661,7 +694,8 @@ async getActiveJobs(req, res) {
         total_products: channel.total ?? stats.total ?? job.total_products,
         successful: channel.published ?? stats.successful ?? job.successful,
         errors_count: channel.failed ?? stats.errors ?? job.errors_count,
-        percentage: channel.percentage ?? (stats.total > 0 ? Math.round((stats.processed / stats.total) * 100) : job.percentage)
+        percentage: channel.percentage ?? (stats.total > 0 ? Math.round((stats.processed / stats.total) * 100) : job.percentage),
+        errors: errorsByCredential[channel.credential_id] || []
       }));
     }));
 

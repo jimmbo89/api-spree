@@ -133,6 +133,30 @@ test('FalabellaAdapter: buildFalabellaProductNodeXml no usa ProductId interno', 
   assert.equal(node.ProductId, undefined);
 });
 
+test('FalabellaAdapter: conserva PackageHeight positivo de 1 cm', () => {
+  const adapter = createAdapter();
+  const node = adapter.buildFalabellaProductNodeXml({
+    sku: 'SKU-1',
+    productName: 'Producto',
+    brand: 'Marca',
+    price: 1000,
+    stock: 1,
+    PrimaryCategory: '1234',
+    description: 'Descripción real',
+    attributes: [
+      { id: 'ConditionType', value_name: 'Nuevo', value: 'Nuevo' },
+      { id: 'PackageHeight', value_name: 1, value: 1 }
+    ],
+    package_height: 1,
+    package_width: 10,
+    package_length: 10,
+    package_weight: 1,
+    images: ['https://example.com/image.jpg']
+  });
+
+  assert.equal(node.ProductData.PackageHeight, 1);
+});
+
 test('FalabellaAdapter: oferta Falabella se envia en BusinessUnit con campos oficiales', () => {
   const adapter = createAdapter();
   const node = adapter.buildFalabellaProductNodeXml({

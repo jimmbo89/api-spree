@@ -1292,7 +1292,7 @@ class PublishingService {
               product_label: [productData.sku, productData.name].filter(Boolean).join(' / ') || null,
               marketplace_name: marketplace.name || null,
               marketplace_domain: marketplace.domain || null,
-              credential_name: credential?.name || null
+              credential_name: adapter?.credential?.name || null
             },
             job_id: job_id || null
           });

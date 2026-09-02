@@ -2532,7 +2532,7 @@ _transformImages(images = []) {
 
     const validateDimension = (value, fieldName) => {
       const numValue = Number(value);
-      if (!Number.isFinite(numValue) || numValue < 2) {
+      if (!Number.isFinite(numValue) || numValue <= 0) {
         logger.warn(`[FalabellaAdapter] ⚠️ ${fieldName} valor ${value} fuera de rango o ausente`);
         return null;
       }
