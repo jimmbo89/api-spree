@@ -698,7 +698,8 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
       savedOrder,
       items,
       savedItems,
-      totalAmount: order.total_amount || 0
+      totalAmount: order.total_amount || 0,
+      isSpreeManaged: items.length > 0 && savedItems.length === items.length
     });
   }
 
@@ -990,9 +991,10 @@ async function notifyMercadoLibreSaleRegistered({
   savedOrder,
   items = [],
   savedItems = [],
-  totalAmount = 0
+  totalAmount = 0,
+  isSpreeManaged = false
 }) {
-  if (!userId || !savedOrder?.id || !Array.isArray(savedItems) || savedItems.length === 0) {
+  if (!userId || !savedOrder?.id || !Array.isArray(savedItems)) {
     return null;
   }
 
@@ -1000,7 +1002,7 @@ async function notifyMercadoLibreSaleRegistered({
     .map((item) => item?.item?.title || item?.title || getListingId(item))
     .filter(Boolean);
   const firstTitle = itemTitles[0] || `orden ${orderId}`;
-  const itemCount = savedItems.length;
+  const itemCount = items.length || savedItems.length;
   const description = itemCount === 1
     ? `Se registro una venta de ${firstTitle} en Mercado Libre.`
     : `Se registro una venta de ${itemCount} productos en Mercado Libre.`;
@@ -1017,6 +1019,7 @@ async function notifyMercadoLibreSaleRegistered({
         marketplace_order_id: String(orderId),
         order_id: savedOrder.id,
         item_count: itemCount,
+        is_spree_managed: Boolean(isSpreeManaged),
         total_amount: Number(totalAmount || 0),
         items: savedItems.map((item) => ({
           order_item_id: item.id,
@@ -1047,9 +1050,10 @@ async function notifyFalabellaSaleRegistered({
   savedOrder,
   items = [],
   savedItems = [],
-  totalAmount = 0
+  totalAmount = 0,
+  isSpreeManaged = false
 }) {
-  if (!userId || !savedOrder?.id || !Array.isArray(savedItems) || savedItems.length === 0) {
+  if (!userId || !savedOrder?.id || !Array.isArray(savedItems)) {
     return null;
   }
 
@@ -1057,7 +1061,7 @@ async function notifyFalabellaSaleRegistered({
     .map((item) => item?.title || item?.name || item?.product_name || item?.sku || getListingId(item))
     .filter(Boolean);
   const firstTitle = itemTitles[0] || `orden ${orderId}`;
-  const itemCount = savedItems.length;
+  const itemCount = items.length || savedItems.length;
   const description = itemCount === 1
     ? `Se registro una venta de ${firstTitle} en Falabella.`
     : `Se registro una venta de ${itemCount} productos en Falabella.`;
@@ -1074,6 +1078,7 @@ async function notifyFalabellaSaleRegistered({
         marketplace_order_id: String(orderId),
         order_id: savedOrder.id,
         item_count: itemCount,
+        is_spree_managed: Boolean(isSpreeManaged),
         total_amount: Number(totalAmount || 0),
         items: savedItems.map((item) => ({
           order_item_id: item.id,
@@ -3125,7 +3130,8 @@ async function processFalabellaEvent({ event, payload, orderId }) {
       savedOrder,
       items,
       savedItems,
-      totalAmount: orderInfo.totalAmount || 0
+      totalAmount: orderInfo.totalAmount || 0,
+      isSpreeManaged: items.length > 0 && savedItems.length === items.length
     });
   }
 
