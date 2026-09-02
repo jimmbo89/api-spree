@@ -686,7 +686,8 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
         marketplace: ML_MARKETPLACE_KEY,
         webhook_event_id: event.id,
         items_count: savedItems.length,
-        total_quantity: totalQuantity
+        total_quantity: totalQuantity,
+        is_spree_managed: items.length > 0 && savedItems.length === items.length
       }
     });
 
@@ -3112,7 +3113,8 @@ async function processFalabellaEvent({ event, payload, orderId }) {
       metadata: {
         marketplace: FB_MARKETPLACE_KEY,
         webhook_event_id: event.id,
-        items_count: savedItems.length
+        items_count: savedItems.length,
+        is_spree_managed: items.length > 0 && savedItems.length === items.length
       }
     });
 

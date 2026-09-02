@@ -112,6 +112,20 @@ function buildSellerSummary(order) {
   };
 }
 
+function buildStockDisplay(order) {
+  const items = Array.isArray(order?.items) ? order.items : [];
+  const stockDeductedInSpree = items.length > 0 && items.every((item) => (
+    item?.product_id != null && item?.inventory_movement_id != null
+  ));
+
+  return {
+    descuentaStockEnSpree: stockDeductedInSpree,
+    mensajeStock: stockDeductedInSpree
+      ? null
+      : 'Esta venta no descuenta stock en Spree'
+  };
+}
+
 const MarketplaceReportingService = {
 
   // ========================
@@ -150,6 +164,7 @@ const MarketplaceReportingService = {
         orders: ordersResult.rows.map(order => {
           const buyer = buildBuyerSummary(order);
           const seller = buildSellerSummary(order);
+          const stockDisplay = buildStockDisplay(order);
 
           return {
           id: order.id,
@@ -169,6 +184,7 @@ const MarketplaceReportingService = {
           total: parseFloat(order.total_amount || 0),
           invoiceNumber: order.invoice_number,
           invoiceType: order.invoice_type,
+          ...stockDisplay,
           notes_snapshot: normalizeNotesSnapshot(order.notes_snapshot)
           };
         })
@@ -640,3 +656,4 @@ function normalizeNotesSnapshot(notesSnapshot) {
 }
 
 module.exports = MarketplaceReportingService;
+MarketplaceReportingService._buildStockDisplay = buildStockDisplay;

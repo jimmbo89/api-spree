@@ -163,6 +163,7 @@ const FIELD_LABELS = {
   marketplace_domain: 'Dominio del marketplace',
   marketplace: 'Marketplace',
   credential_name: 'Credencial',
+  gestionada_desde_spree: 'Gestionada desde Spree',
   brand: 'Marca',
   model: 'Modelo',
   condition: 'Condición',
@@ -1420,6 +1421,7 @@ function buildFunctionalContext(event) {
   if (event.module === 'sales') {
     add('buyer_name', 'Comprador', metadata.buyer_name);
     add('marketplace_name', 'Marketplace', metadata.marketplace_name);
+    add('gestionada_desde_spree', 'Gestionada desde Spree', metadata.gestionada_desde_spree);
     if (metadata.total_quantity != null && metadata.total_quantity !== '') {
       add('total_quantity', 'Cantidad vendida', `${metadata.total_quantity} artículo(s)`);
     }
@@ -1634,6 +1636,10 @@ function mapEvent(event, options = {}) {
     resource_type_label: RESOURCE_TYPE_LABELS[event.resource_type] || humanizeCode(event.resource_type),
     related_resource_type_label: RESOURCE_TYPE_LABELS[event.related_resource_type] || humanizeCode(event.related_resource_type)
   };
+  const metadata = localizeSalesMetadata(event.metadata, event.module);
+  const eventForDisplay = event.module === 'sales'
+    ? { ...event, metadata }
+    : event;
 
   return {
     id: event.id,
@@ -1668,11 +1674,29 @@ function mapEvent(event, options = {}) {
     new_value: event.new_value,
     changes: event.changes,
     description: event.description,
-    metadata: event.metadata,
+    metadata,
+    ...(event.module === 'sales'
+      ? { gestionada_desde_spree: metadata?.gestionada_desde_spree ?? null }
+      : {}),
     correlation_id: event.correlation_id,
     created_at: event.createdAt,
-    display: buildDisplay(event, labels, options)
+    display: buildDisplay(eventForDisplay, labels, options)
   };
+}
+
+function localizeSalesMetadata(value, module) {
+  const metadata = parseDisplayValue(value);
+  if (module !== 'sales' || !metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+    return metadata;
+  }
+
+  const localizedMetadata = { ...metadata };
+  if (Object.prototype.hasOwnProperty.call(localizedMetadata, 'is_spree_managed')) {
+    localizedMetadata.gestionada_desde_spree = localizedMetadata.is_spree_managed;
+    delete localizedMetadata.is_spree_managed;
+  }
+
+  return localizedMetadata;
 }
 
 async function enrichWarehouseProductContext(events = []) {
