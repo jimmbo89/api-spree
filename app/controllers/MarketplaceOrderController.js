@@ -14,16 +14,17 @@ const MarketplaceOrderController = {
 
       const report = await MarketplaceOrderSyncService.refreshById(id);
       const refreshedOrder = await MarketplaceOrderRepository.findById(id);
-      if (refreshedOrder) {
-        await SalesAuditService.recordFromRequest(req, refreshedOrder, 'sales.refreshed', {
-          new_value: SalesAuditService.buildOrderSnapshot(refreshedOrder),
-          description: 'Spree sincronizó la venta manualmente',
-          metadata: {
-            refresh_source: report?.source || null,
-            fallback_error: report?.error || null
-          }
-        });
-      }
+      // Se mantiene temporalmente comentado para no registrar cada consulta de una orden.
+      // if (refreshedOrder) {
+      //   await SalesAuditService.recordFromRequest(req, refreshedOrder, 'sales.refreshed', {
+      //     new_value: SalesAuditService.buildOrderSnapshot(refreshedOrder),
+      //     description: 'El usuario solicitó la sincronización manual de la venta',
+      //     metadata: {
+      //       refresh_source: report?.source || null,
+      //       fallback_error: report?.error || null
+      //     }
+      //   });
+      // }
 
       logger.info(`${req.user?.user || 'Unknown'} - Refresh de orden marketplace exitoso`);
       return res.json({
