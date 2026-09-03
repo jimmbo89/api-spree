@@ -114,6 +114,50 @@ const AuditEventRepository = {
       const normalizedActorId = actor_id != null && actor_id !== ''
         ? String(actor_id)
         : null;
+      const normalizedResourceId = resource_id != null && resource_id !== ''
+        ? String(resource_id)
+        : null;
+      const userHistoryId = normalizedResourceId || normalizedActorId;
+      const isUserResourceHistoryQuery = module === 'user'
+        && resource_type === 'user'
+        && userHistoryId;
+
+      if (isUserResourceHistoryQuery) {
+        const memberships = await UserCompany.findAll({
+          where: {
+            company_id,
+            user_id: userHistoryId
+          },
+          attributes: ['id'],
+          raw: true
+        });
+        const membershipIds = memberships.map(membership => String(membership.id));
+
+        where[Op.and] = [{
+          [Op.or]: [
+            {
+              resource_type: 'user',
+              resource_id: userHistoryId
+            },
+            ...(membershipIds.length > 0 ? [{
+              resource_type: 'user_company',
+              resource_id: { [Op.in]: membershipIds }
+            }] : []),
+            {
+              related_resource_type: 'user',
+              related_resource_id: userHistoryId
+            }
+          ]
+        }];
+
+        // Compatibilidad: actor identifica usuario consultado, no criterio de acciones.
+        delete where.actor_type;
+        delete where.actor_id;
+        delete where.resource_type;
+        delete where.resource_id;
+        delete where.related_resource_type;
+        delete where.related_resource_id;
+      }
       const isUserHistoryQuery = actor_type === 'user'
         && normalizedActorId
         && [resource_type, resource_id, related_resource_type, related_resource_id]
