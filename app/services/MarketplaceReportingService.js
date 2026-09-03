@@ -126,6 +126,23 @@ function buildStockDisplay(order) {
   };
 }
 
+function buildSalesSummary(orders = []) {
+  return orders.reduce((summary, order) => {
+    summary.totalOrders += 1;
+    summary.totalRevenue += parseFloat(order.total_amount || 0);
+    summary.totalSubtotal += parseFloat(order.subtotal || 0);
+    summary.totalShipping += parseFloat(order.shipping_total || 0);
+    summary.totalTax += parseFloat(order.tax_total || 0);
+    return summary;
+  }, {
+    totalOrders: 0,
+    totalRevenue: 0,
+    totalSubtotal: 0,
+    totalShipping: 0,
+    totalTax: 0
+  });
+}
+
 const MarketplaceReportingService = {
 
   // ========================
@@ -151,16 +168,20 @@ const MarketplaceReportingService = {
         pagination: { limit, offset }
       });
 
-      const stats = await this.getSalesStats(filters);
+      const summaryOrdersResult = await MarketplaceOrderRepository.findAndCountAll({
+        filters: {
+          from,
+          to,
+          marketplace,
+          order_status: 'paid',
+          company_id,
+          user_id
+        }
+      });
+      const summary = buildSalesSummary(summaryOrdersResult.rows);
 
       return {
-        summary: {
-          totalOrders: ordersResult.count,
-          totalRevenue: stats.total_revenue || 0,
-          totalSubtotal: stats.total_subtotal || 0,
-          totalShipping: stats.total_shipping || 0,
-          totalTax: stats.total_tax || 0
-        },
+        summary,
         orders: ordersResult.rows.map(order => {
           const buyer = buildBuyerSummary(order);
           const seller = buildSellerSummary(order);
@@ -200,7 +221,7 @@ const MarketplaceReportingService = {
     try {
       const { from, to, marketplace, company_id, user_id } = filters;
 
-      const conditions = [];
+      const conditions = ["order_status = 'paid'"];
       const replacements = {};
 
       const dateFilter = buildDateRange(from, to);
