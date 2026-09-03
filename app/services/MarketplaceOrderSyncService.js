@@ -103,7 +103,10 @@ const MarketplaceOrderSyncService = {
           ]) || buildShippingAddress(remoteOrder.shipping),
         shipping_city: customerSnapshot.shipping_city || remoteOrder?.shipping?.receiver_address?.city_name || null,
         shipping_region: customerSnapshot.shipping_state || remoteOrder?.shipping?.receiver_address?.state_name || null,
-        messages_snapshot: buildMercadoLibreMessagesSnapshot(messagesData),
+        messages_snapshot: mergeSpreeSenderMetadata(
+          order.messages_snapshot,
+          buildMercadoLibreMessagesSnapshot(messagesData)
+        ),
         raw_payload: {
           order: remoteOrder,
           shipment: shipmentData,
@@ -512,6 +515,50 @@ function buildMercadoLibreMessagesSnapshot(messagesData) {
     })
     .filter((message) => message.message_id || message.text)
     .sort((a, b) => (a.received_at ? new Date(a.received_at).getTime() : 0) - (b.received_at ? new Date(b.received_at).getTime() : 0));
+}
+
+function mergeSpreeSenderMetadata(previousSnapshot, nextSnapshot) {
+  const previousMessages = parseJsonMaybe(previousSnapshot);
+  const nextMessages = Array.isArray(nextSnapshot) ? nextSnapshot : [];
+  const previousByMessageId = new Map(
+    (Array.isArray(previousMessages) ? previousMessages : [])
+      .filter((message) => message?.message_id && message?.spree_sender)
+      .map((message) => [String(message.message_id), message.spree_sender])
+  );
+
+  const mergedMessages = nextMessages.map((message) => {
+    const spreeSender = message?.spree_sender || previousByMessageId.get(String(message?.message_id));
+    if (!spreeSender) return message;
+
+    const rawPayload = parseJsonMaybe(message.raw_payload) || {};
+    return {
+      ...message,
+      spree_sender: spreeSender,
+      raw_payload: {
+        ...rawPayload,
+        spree_sender: rawPayload.spree_sender || spreeSender
+      }
+    };
+  });
+
+  const nextMessageIds = new Set(
+    nextMessages
+      .map((message) => message?.message_id)
+      .filter(Boolean)
+      .map((messageId) => String(messageId))
+  );
+  const localMessagesMissingFromMarketplace = (Array.isArray(previousMessages) ? previousMessages : [])
+    .filter((message) => (
+      message?.message_id &&
+      message?.spree_sender &&
+      !nextMessageIds.has(String(message.message_id))
+    ));
+
+  return [...mergedMessages, ...localMessagesMissingFromMarketplace]
+    .sort((a, b) => (
+      (a.received_at ? new Date(a.received_at).getTime() : 0) -
+      (b.received_at ? new Date(b.received_at).getTime() : 0)
+    ));
 }
 
 function getMercadoLibreSellerId(credential, order) {

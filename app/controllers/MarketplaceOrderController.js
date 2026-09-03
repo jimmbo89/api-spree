@@ -144,7 +144,7 @@ const MarketplaceOrderController = {
 
   async sendMessage(req, res) {
     try {
-      logger.info(`${req.user?.user || 'Unknown'} - EnvÃ­a mensaje a orden marketplace`);
+      logger.info(`${req.user?.user || 'Unknown'} - Envía mensaje a orden marketplace`);
       logger.info(`Datos recibidos:\n ${JSON.stringify(req.body)}`);
 
       const { id, text } = req.body || {};
