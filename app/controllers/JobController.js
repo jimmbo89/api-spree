@@ -63,6 +63,10 @@ const PUBLICATION_FIELD_LABELS = {
   packagelength: 'largo del paquete',
   packagewidth: 'ancho del paquete',
   packageweight: 'peso del paquete',
+  sellerpackageheight: 'alto del paquete del vendedor',
+  sellerpackagelength: 'largo del paquete del vendedor',
+  sellerpackagewidth: 'ancho del paquete del vendedor',
+  sellerpackageweight: 'peso del paquete del vendedor',
   stock: 'stock'
 };
 
@@ -116,6 +120,16 @@ function humanizeMercadoLibreCause(cause = {}) {
   const code = String(cause.code || cause.error || '').toLowerCase();
   const references = Array.isArray(cause.references) ? cause.references : [];
   const field = publicationFieldLabel(references[0] || cause.field);
+
+  if (code === 'item.attribute.missing.seller.package.dimensions') {
+    return 'Faltan las dimensiones del paquete del vendedor: alto, largo, ancho y peso.';
+  }
+  if (code === 'item.attribute.invalid.format.seller.package.dimensions') {
+    return 'El formato de las dimensiones del paquete del vendedor no es válido. Use centímetros y gramos enteros.';
+  }
+  if (code === 'item.attribute.invalid.seller.package.dimensions') {
+    return 'Las dimensiones o el peso del paquete del vendedor no tienen valores válidos.';
+  }
 
   if (code === 'item.description.type.invalid') return 'La descripción debe contener solo texto plano.';
   if (code === 'body.required_fields' || code === 'body.required_fileds') {

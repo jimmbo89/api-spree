@@ -483,6 +483,42 @@ class MercadoLibreAdapter extends BaseAdapter {
     return normalizedUnit || defaultUnit || null;
   }
 
+  buildMercadoLibreSellerPackageAttributes(productData, configuredAttributes = []) {
+    const packaging = parseJsonObject(productData?.packaging_measurements);
+    const dimensions = packaging?.dimensions || {};
+    const byId = new Map(
+      (Array.isArray(configuredAttributes) ? configuredAttributes : [])
+        .filter((attr) => attr?.id)
+        .map((attr) => [String(attr.id), attr])
+    );
+
+    const readMeasurement = (source, targetUnit, factor = 1) => {
+      const value = this.extractNumericValue(source);
+      if (value === null) return null;
+      const unit = String(source?.unit || '').trim().toLowerCase();
+      const converted = unit === targetUnit ? value : value * (unit === 'm' && targetUnit === 'cm' ? 100
+        : unit === 'mm' && targetUnit === 'cm' ? 0.1
+          : unit === 'kg' && targetUnit === 'g' ? 1000
+            : factor);
+      return Number.isFinite(converted) ? Math.round(converted) : null;
+    };
+
+    const fallback = [
+      ['SELLER_PACKAGE_HEIGHT', readMeasurement(dimensions.height, 'cm')],
+      ['SELLER_PACKAGE_WIDTH', readMeasurement(dimensions.width, 'cm')],
+      ['SELLER_PACKAGE_LENGTH', readMeasurement(dimensions.length, 'cm')],
+      ['SELLER_PACKAGE_WEIGHT', readMeasurement(packaging.weight, 'g')]
+    ];
+
+    for (const [id, value] of fallback) {
+      if (byId.has(id) || value === null) continue;
+      byId.set(id, { id, value_name: value, unit: id.endsWith('WEIGHT') ? 'g' : 'cm' });
+      logger.info(`[ML Adapter] ✅ ${id} tomado desde packaging_measurements: ${value}${id.endsWith('WEIGHT') ? ' g' : ' cm'}`);
+    }
+
+    return Array.from(byId.values());
+  }
+
   formatMercadoLibreAttribute(attr, attrMeta = null) {
     if (!attr || !attr.id) return null;
 
@@ -931,9 +967,11 @@ class MercadoLibreAdapter extends BaseAdapter {
     for (const attr of categoryValueAttributes) {
       if (attr?.id) configuredAttributesById.set(String(attr.id), attr);
     }
-    if (configuredAttributesById.size > 0) {
-      prepared.attributes = this.buildMercadoLibreAttributes(Array.from(configuredAttributesById.values()), categoryInfo.attributes);
-    }
+    const configuredAttributes = this.buildMercadoLibreSellerPackageAttributes(
+      productData,
+      Array.from(configuredAttributesById.values())
+    );
+    prepared.attributes = this.buildMercadoLibreAttributes(configuredAttributes, categoryInfo.attributes);
 
     // ✅ PASO 6: Asegurar que GTIN esté incluido (requerido para esta categoría)
     const hasGTIN = prepared.attributes.some(attr => attr.id === 'GTIN');
@@ -990,13 +1028,25 @@ class MercadoLibreAdapter extends BaseAdapter {
         logger.info(`[ML Adapter] ✅ Variaciones construidas: ${variations.length}`);
       } else {
         logger.warn(`[ML Adapter] ⚠️ No se construyeron variaciones válidas. Restaurando atributos.`);
-        prepared.attributes = this.buildMercadoLibreAttributes(mlData.attributes, categoryInfo.attributes);
+        prepared.attributes = this.buildMercadoLibreAttributes(
+          this.buildMercadoLibreSellerPackageAttributes(productData, [
+            ...(Array.isArray(mlData.attributes) ? mlData.attributes : []),
+            ...categoryValueAttributes
+          ]),
+          categoryInfo.attributes
+        );
         prepared.variations = undefined;
       }
     } else if (hasSingleVariant) {
       // 1 variante → ML acepta atributos de variación en nivel base
       logger.info(`[ML Adapter] Producto con 1 variante. Permitiendo atributos de variación en nivel base.`);
-      prepared.attributes = this.buildMercadoLibreAttributes(mlData.attributes, categoryInfo.attributes);
+      prepared.attributes = this.buildMercadoLibreAttributes(
+        this.buildMercadoLibreSellerPackageAttributes(productData, [
+          ...(Array.isArray(mlData.attributes) ? mlData.attributes : []),
+          ...categoryValueAttributes
+        ]),
+        categoryInfo.attributes
+      );
       
       const singleVariant = publishableVariants[0];
       prepared.available_quantity = Number(singleVariant.publishStock ?? singleVariant.totalStock ?? productData.totalStock) || 0;

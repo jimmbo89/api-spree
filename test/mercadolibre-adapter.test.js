@@ -31,6 +31,31 @@ test('resolveExistingItemModel clasifica User Products por evidencia real', () =
   assert.equal(result.evidence.user_product_id, 'MLU999');
 });
 
+test('seller package usa categoría primero y packaging_measurements como fallback', () => {
+  const adapter = createAdapter();
+  const result = adapter.buildMercadoLibreSellerPackageAttributes(
+    {
+      packaging_measurements: JSON.stringify({
+        weight: { value: 2, unit: 'kg' },
+        dimensions: {
+          length: { value: 15, unit: 'cm' },
+          width: { value: 15, unit: 'cm' },
+          height: { value: 15, unit: 'cm' }
+        }
+      })
+    },
+    [
+      { id: 'SELLER_PACKAGE_HEIGHT', value_name: 12, unit: 'cm' }
+    ]
+  );
+
+  const values = Object.fromEntries(result.map((attr) => [attr.id, attr.value_name]));
+  assert.equal(values.SELLER_PACKAGE_HEIGHT, 12);
+  assert.equal(values.SELLER_PACKAGE_LENGTH, 15);
+  assert.equal(values.SELLER_PACKAGE_WIDTH, 15);
+  assert.equal(values.SELLER_PACKAGE_WEIGHT, 2000);
+});
+
 test('publish de User Products no depende de categoryInfo implícito y no envía title ni variations', async (t) => {
   const originalPost = axios.post;
   const calls = [];
