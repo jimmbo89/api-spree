@@ -110,6 +110,10 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: true,
       comment: 'SKU del producto'
     },
+    title: { type: DataTypes.STRING(500), allowNull: true },
+    user_product_id: { type: DataTypes.STRING(100), allowNull: true },
+    marketplace_attributes: { type: DataTypes.JSON, allowNull: true },
+    managed_by_spree: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
     
     // Vínculo con productos locales
     product_id: {

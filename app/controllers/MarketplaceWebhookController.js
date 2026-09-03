@@ -457,6 +457,15 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
   const companyId = companyInfo?.company_id || credential.company_id || null;
   const branchId = companyInfo?.branch_id || null;
   const publicationUserId = companyInfo?.user_id || credential.user_id || null;
+  const itemLinks = await Promise.all(items.map((item) => findOrderProductMarketplaceLink({
+    marketplaceId: credential.marketplace_id,
+    externalId: getListingId(item),
+    credentialId: credential.id,
+    companyId,
+    branchId
+  })));
+  const managedBySpree = items.length > 0 && itemLinks.every(Boolean);
+  const shippingSnapshot = normalizeMercadoLibreShipping(shipmentData);
   const existingOrder = await MarketplaceOrderRepository.findByMarketplaceOrderId(
     ML_MARKETPLACE_KEY,
     String(order.id)
@@ -484,6 +493,11 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
     buyer_document: customerSnapshot.document_number || null,
     payment_method: order?.payments?.[0]?.payment_type || null,
     payment_date: order?.payments?.[0]?.date_created || null,
+    sale_date: order?.date_created || null,
+    pack_id: order?.pack_id || null,
+    shipment_id: shipmentData?.id || order?.shipping?.id || null,
+    ...shippingSnapshot,
+    managed_by_spree: managedBySpree,
     shipping_address:
       buildAddressLine([
         customerSnapshot.shipping_address_line,
@@ -609,6 +623,37 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
   const errors = [];
   const savedItems = [];
 
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    const link = itemLinks[index];
+    const listingId = getListingId(item);
+    const existingItem = await MarketplaceOrderItemRepository.findByOrderAndMarketplaceItem(
+      savedOrder.id,
+      item?.id?.toString() || null,
+      listingId
+    );
+    if (!existingItem) {
+      const createdItem = await MarketplaceOrderItemRepository.create({
+        order_id: savedOrder.id,
+        marketplace_item_id: item?.id?.toString() || null,
+        listing_id: listingId,
+        sku: getSkuFromOrderItem(item),
+        title: item?.item?.title || item?.title || null,
+        user_product_id: item?.item?.user_product_id || item?.user_product_id || null,
+        marketplace_attributes: item?.item?.variation_attributes || item?.variation_attributes || item?.item?.attributes || null,
+        product_id: link?.product_id || null,
+        company_id: link?.company_id || companyId,
+        branch_id: link?.branch_id || branchId,
+        user_id: link?.user_id || publicationUserId,
+        quantity: Number(item?.quantity || 1),
+        unit_price: Number(item?.unit_price || 0),
+        total_price: Number(item?.unit_price || 0) * Number(item?.quantity || 1),
+        managed_by_spree: Boolean(link)
+      });
+      if (!link) savedItems.push(createdItem);
+    }
+  }
+
   if (shouldDeductStock) {
     // ✅ PROCESAR CADA ITEM SOLO EN PRIMERA VENTA PAGADA
     for (const orderItem of items) {
@@ -631,7 +676,12 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
           freeShipping: shippingData.freeShipping,
           shippingWhoPays: shippingData.whoPays,
           totalItems: items.length,
-          totalQuantity
+          totalQuantity,
+          existingItem: await MarketplaceOrderItemRepository.findByOrderAndMarketplaceItem(
+            savedOrder.id,
+            orderItem?.id?.toString() || null,
+            getListingId(orderItem)
+          )
         });
         
         if (itemResult) {
@@ -677,7 +727,7 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
       items,
       savedItems,
       totalAmount: order.total_amount || 0,
-      isSpreeManaged: items.length > 0 && savedItems.length === items.length
+      isSpreeManaged: managedBySpree
     });
   }
 
@@ -986,6 +1036,8 @@ async function notifyMercadoLibreSaleRegistered({
     : `Se registro una venta de ${itemCount} productos en Mercado Libre.`;
 
   try {
+    const shouldNotify = await MarketplaceOrderRepository.claimNewOrderNotification(savedOrder.id);
+    if (!shouldNotify) return null;
     const notification = await NotificationRepository.create({
       user_id: userId,
       company_id: companyId,
@@ -1016,6 +1068,7 @@ async function notifyMercadoLibreSaleRegistered({
     logger.info(`[ML Webhook] Notificacion de venta creada order=${orderId} user_id=${userId} notification_id=${notification?.id}`);
     return notification;
   } catch (error) {
+    await MarketplaceOrderRepository.updateById(savedOrder.id, { new_order_notified_at: null });
     logger.warn(`[ML Webhook] Error creando notificacion de venta order=${orderId}: ${error.message}`);
     return null;
   }
@@ -5139,11 +5192,15 @@ async function processOrderItem(orderItem, ctx) {
     try {
       const inventoryMovementId = exitResults[0]?.inventoryMovementId || null;
       
-      savedItem = await MarketplaceOrderItemRepository.create({
+      const itemData = {
         order_id: ctx.orderIdLocal,
         marketplace_item_id: orderItem.id?.toString() || null,
         listing_id: listingId,
         sku: sku,
+        title: orderItem?.item?.title || orderItem?.title || null,
+        user_product_id: orderItem?.item?.user_product_id || orderItem?.user_product_id || null,
+        marketplace_attributes: orderItem?.item?.variation_attributes || orderItem?.variation_attributes || orderItem?.item?.attributes || null,
+        managed_by_spree: true,
         product_id: productId,
         variant_id: variant.id,
         company_id: itemCompanyId,
@@ -5156,7 +5213,13 @@ async function processOrderItem(orderItem, ctx) {
         cost_price: costPrice,
         total_cost: totalCost,
         inventory_movement_id: inventoryMovementId
-      });
+      };
+      if (ctx.existingItem) {
+        await MarketplaceOrderItemRepository.updateById(ctx.existingItem.id, itemData);
+        savedItem = { ...ctx.existingItem.toJSON(), ...itemData, id: ctx.existingItem.id };
+      } else {
+        savedItem = await MarketplaceOrderItemRepository.create(itemData);
+      }
 
       // ✅ GUARDAR FEE DEL ITEM (commission)
       if (saleFee > 0) {
@@ -5889,6 +5952,24 @@ function mapMercadoLibreOrderStatus(mlStatus) {
   };
   
   return statusMap[mlStatus.toLowerCase()] || 'pending';
+}
+
+function normalizeMercadoLibreShipping(shipment) {
+  const history = Array.isArray(shipment?.status_history) ? shipment.status_history : [];
+  const events = history.map((entry) => ({
+    status: String(entry?.status || '').toLowerCase(),
+    date: entry?.date || entry?.date_created || null
+  }));
+  const dateFor = (statuses) => events.find((entry) => statuses.includes(entry.status))?.date || null;
+
+  return {
+    shipping_status: shipment?.status || null,
+    shipping_substatus: shipment?.substatus || null,
+    shipped_at: dateFor(['shipped', 'in_transit', 'ready_to_ship']),
+    delivered_at: dateFor(['delivered']),
+    cancelled_at: dateFor(['cancelled', 'not_delivered']),
+    returned_at: dateFor(['returned'])
+  };
 }
 
 function resolveMercadoLibreOrderStatus(order) {

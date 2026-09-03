@@ -121,6 +121,18 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: true,
       comment: 'paid, pending, cancelled, refunded'
     },
+
+    sale_date: { type: DataTypes.DATE, allowNull: true },
+    pack_id: { type: DataTypes.STRING(100), allowNull: true },
+    shipment_id: { type: DataTypes.STRING(100), allowNull: true },
+    shipping_status: { type: DataTypes.STRING(50), allowNull: true },
+    shipping_substatus: { type: DataTypes.STRING(100), allowNull: true },
+    shipped_at: { type: DataTypes.DATE, allowNull: true },
+    delivered_at: { type: DataTypes.DATE, allowNull: true },
+    cancelled_at: { type: DataTypes.DATE, allowNull: true },
+    returned_at: { type: DataTypes.DATE, allowNull: true },
+    managed_by_spree: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+    new_order_notified_at: { type: DataTypes.DATE, allowNull: true },
     
     // Totales de la orden
     subtotal: {

@@ -1,4 +1,5 @@
 const { MarketplaceOrder } = require('../models');
+const { Op } = require('sequelize');
 const { getDateOnlyRange } = require('../utils/dateRange');
 const logger = require('../../config/logger');
 
@@ -113,6 +114,14 @@ const MarketplaceOrderRepository = {
     }
   },
 
+  async claimNewOrderNotification(id, notifiedAt = new Date()) {
+    const [updatedCount] = await MarketplaceOrder.update(
+      { new_order_notified_at: notifiedAt },
+      { where: { id, new_order_notified_at: { [Op.is]: null } } }
+    );
+    return updatedCount === 1;
+  },
+
   /**
    * Lista órdenes con filtros
    * @param {Object} filters - Filtros de búsqueda
@@ -140,7 +149,7 @@ const MarketplaceOrderRepository = {
       if (company_id) where.company_id = company_id;
       if (user_id) where.user_id = user_id;
       if (from || to) {
-        where.createdAt = getDateOnlyRange(from, to);
+        where.sale_date = getDateOnlyRange(from, to);
       }
 
       const queryOptions = {
@@ -153,7 +162,7 @@ const MarketplaceOrderRepository = {
               { association: 'marketplace' }
             ]
           },
-          { association: 'items', limit: 10 },
+          { association: 'items' },
           { association: 'customerSnapshot' },
           { association: 'company' },
           { association: 'user', attributes: ['id', 'name', 'email'] }
@@ -194,7 +203,7 @@ const MarketplaceOrderRepository = {
       if (company_id) where.company_id = company_id;
       if (user_id) where.user_id = user_id;
       if (from || to) {
-        where.createdAt = getDateOnlyRange(from, to);
+        where.sale_date = getDateOnlyRange(from, to);
       }
 
       const result = await MarketplaceOrder.findOne({

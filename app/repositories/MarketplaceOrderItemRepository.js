@@ -50,6 +50,16 @@ const MarketplaceOrderItemRepository = {
     });
   },
 
+  async findByOrderAndMarketplaceItem(orderId, marketplaceItemId, listingId) {
+    return await MarketplaceOrderItem.findOne({
+      where: {
+        order_id: orderId,
+        marketplace_item_id: marketplaceItemId || null,
+        listing_id: listingId || null
+      }
+    });
+  },
+
   /**
    * Busca un item por ID
    * @param {Number} id - ID del item

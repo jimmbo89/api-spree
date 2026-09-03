@@ -143,6 +143,20 @@ function buildSalesSummary(orders = []) {
   });
 }
 
+function getSaleDisplayStatus(order) {
+  const payment = String(order?.payment_status || '').toLowerCase();
+  const shipping = String(order?.shipping_status || '').toLowerCase();
+  const orderStatus = String(order?.order_status || '').toLowerCase();
+  if (payment === 'refunded') return 'Reembolsada';
+  if (shipping === 'returned' || orderStatus === 'returned') return 'Devuelta';
+  if (shipping === 'cancelled' || orderStatus === 'cancelled') return 'Cancelada';
+  if (shipping === 'delivered') return 'Entregada';
+  if (['shipped', 'in_transit'].includes(shipping)) return 'Enviada';
+  if (['ready_to_ship', 'ready_for_ship'].includes(shipping)) return 'Lista para enviar';
+  if (payment === 'paid') return 'En preparación';
+  return 'Pagada';
+}
+
 const MarketplaceReportingService = {
 
   // ========================
@@ -192,12 +206,38 @@ const MarketplaceReportingService = {
           marketplace: order.marketplace_credential_id,
           ...getMarketplaceMetaFromCredential(order.credential),
           orderRef: order.marketplace_order_id,
-          date: order.createdAt,
+           date: order.sale_date || order.createdAt,
           customer: buyer.name || buyer.nickname || buyer.id || 'N/A',
           buyer,
           seller,
-          status: order.order_status,
-          paymentStatus: order.payment_status,
+           status: order.order_status,
+           displayStatus: getSaleDisplayStatus(order),
+           paymentStatus: order.payment_status,
+           shippingStatus: order.shipping_status,
+           shippingSubstatus: order.shipping_substatus,
+           shippedAt: order.shipped_at,
+           deliveredAt: order.delivered_at,
+           cancelledAt: order.cancelled_at,
+           returnedAt: order.returned_at,
+           managedBySpree: Boolean(order.managed_by_spree),
+           managementLabel: order.managed_by_spree
+             ? 'Gestionada por Spree'
+             : `Venta externa de ${getMarketplaceMetaFromCredential(order.credential).marketplace_name || 'Mercado Libre'}`,
+           items: (order.items || []).map((item) => ({
+             id: item.id,
+             listingId: item.listing_id,
+             marketplaceItemId: item.marketplace_item_id,
+             sku: item.sku,
+             title: item.title || item.product?.name || item.variant?.name || item.listing_id,
+             userProductId: item.user_product_id,
+             attributes: item.marketplace_attributes,
+             quantity: item.quantity,
+             unitPrice: parseFloat(item.unit_price || 0),
+             totalPrice: parseFloat(item.total_price || 0),
+             productId: item.product_id,
+             variantId: item.variant_id,
+             managedBySpree: Boolean(item.managed_by_spree)
+           })),
           itemsCount: order.items?.length || 0,
           subtotal: parseFloat(order.subtotal || 0),
           shipping: parseFloat(order.shipping_total || 0),

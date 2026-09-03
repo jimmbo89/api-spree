@@ -73,6 +73,7 @@ const MarketplaceOrderSyncService = {
         shipmentData
       );
       const discountFinancials = normalizeMercadoLibreOrderDiscounts(discountsData);
+      const shippingSnapshot = normalizeMercadoLibreShipping(shipmentData);
 
       const customerSnapshot = buildMercadoLibreCustomerSnapshot({
         order: remoteOrder,
@@ -95,6 +96,10 @@ const MarketplaceOrderSyncService = {
         buyer_document: customerSnapshot.document_number || null,
         payment_method: remoteOrder?.payments?.[0]?.payment_type || null,
         payment_date: remoteOrder?.payments?.[0]?.date_created || null,
+        sale_date: remoteOrder?.date_created || null,
+        pack_id: remoteOrder?.pack_id || null,
+        shipment_id: shipmentData?.id || remoteOrder?.shipping?.id || null,
+        ...shippingSnapshot,
         shipping_address:
           buildAddressLine([
             customerSnapshot.shipping_address_line,
@@ -410,6 +415,19 @@ async function fetchMercadoLibreResourceWithRetry({ resourcePath, accessToken, r
 
   logger.error(`[ML Refresh] Error obteniendo ${safeLabel} despues de ${ML_FETCH_RETRY_MAX} intentos: ${lastError?.message || 'unknown'}`);
   return null;
+}
+
+function normalizeMercadoLibreShipping(shipment) {
+  const history = Array.isArray(shipment?.status_history) ? shipment.status_history : [];
+  const dateFor = (statuses) => history.find((entry) => statuses.includes(String(entry?.status || '').toLowerCase()))?.date || null;
+  return {
+    shipping_status: shipment?.status || null,
+    shipping_substatus: shipment?.substatus || null,
+    shipped_at: dateFor(['shipped', 'in_transit', 'ready_to_ship']),
+    delivered_at: dateFor(['delivered']),
+    cancelled_at: dateFor(['cancelled', 'not_delivered']),
+    returned_at: dateFor(['returned'])
+  };
 }
 
 function normalizeMercadoLibreShipmentCosts(shipmentCosts, order, shipment) {
