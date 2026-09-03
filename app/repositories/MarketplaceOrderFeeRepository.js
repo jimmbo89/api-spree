@@ -1,5 +1,6 @@
 const { MarketplaceOrderFee } = require('../models');
 const { Op } = require('sequelize');
+const { getDateOnlyRange } = require('../utils/dateRange');
 const logger = require('../../config/logger');
 
 const MarketplaceOrderFeeRepository = {
@@ -54,6 +55,12 @@ const MarketplaceOrderFeeRepository = {
   async findByOrderItemId(orderItemId) {
     return await MarketplaceOrderFee.findAll({
       where: { order_item_id: orderItemId }
+    });
+  },
+
+  async findByOrderItemAndType(orderItemId, feeType) {
+    return await MarketplaceOrderFee.findOne({
+      where: { order_item_id: orderItemId, fee_type: feeType }
     });
   },
 
@@ -174,32 +181,33 @@ const MarketplaceOrderFeeRepository = {
       const {
         company_id,
         fee_type,
+        marketplace,
         status,
         from,
         to
       } = filters;
 
-      const { limit = 50, offset = 0 } = pagination;
+      const { limit, offset } = pagination;
 
       const where = {};
       if (company_id) where.company_id = company_id;
       if (fee_type) where.fee_type = fee_type;
       if (status) where.status = status;
+      const orderWhere = {};
+      if (status) where.status = status;
+      if (marketplace) orderWhere.marketplace_credential_id = marketplace;
       if (from || to) {
-        where.createdAt = {};
-        if (from) where.createdAt[Op.gte] = new Date(from);
-        if (to) where.createdAt[Op.lte] = new Date(to);
+        orderWhere.sale_date = getDateOnlyRange(from, to);
       }
 
-      const result = await MarketplaceOrderFee.findAndCountAll({
+      const queryOptions = {
         where,
-        limit,
-        offset,
         order: [['createdAt', 'DESC']],
         include: [
           {
             association: 'order',
-            attributes: ['id', 'marketplace', 'marketplace_order_id', 'marketplace_credential_id'],
+            where: orderWhere,
+            attributes: ['id', 'marketplace', 'marketplace_order_id', 'marketplace_credential_id', 'order_status', 'payment_status', 'total_amount', 'currency', 'sale_date', 'refunded_amount', 'createdAt'],
             include: [
               {
                 association: 'credential',
@@ -208,9 +216,17 @@ const MarketplaceOrderFeeRepository = {
                 ]
               }
             ]
+          },
+          {
+            association: 'orderItem',
+            attributes: ['id', 'sku', 'product_id', 'variant_id', 'quantity', 'unit_price', 'total_price', 'title']
           }
         ]
-      });
+      };
+
+      if (limit !== undefined && limit !== null) queryOptions.limit = limit;
+      if (offset !== undefined && offset !== null) queryOptions.offset = offset;
+      const result = await MarketplaceOrderFee.findAndCountAll(queryOptions);
 
       return result;
     } catch (error) {

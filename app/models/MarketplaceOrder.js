@@ -133,6 +133,7 @@ module.exports = (sequelize, DataTypes) => {
     returned_at: { type: DataTypes.DATE, allowNull: true },
     managed_by_spree: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
     new_order_notified_at: { type: DataTypes.DATE, allowNull: true },
+    refunded_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
     
     // Totales de la orden
     subtotal: {

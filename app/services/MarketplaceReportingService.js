@@ -323,17 +323,17 @@ const MarketplaceReportingService = {
   async getCommissionReport(filters = {}) {
     try {
       const {
-        from, to, company_id,
-        fee_type = 'commission',
-        limit = 50, offset = 0
+         from, to, marketplace, company_id, status,
+         fee_type = 'commission',
+         limit, offset
       } = filters;
 
       const feesResult = await MarketplaceOrderFeeRepository.findAndCountAll({
-        filters: { from, to, company_id, fee_type },
+        filters: { from, to, marketplace, company_id, status, fee_type },
         pagination: { limit, offset }
       });
 
-      const stats = await this.getCommissionStats(filters);
+      const stats = await this.getCommissionStats({ ...filters, marketplace, status });
 
       return {
         summary: {
@@ -344,10 +344,23 @@ const MarketplaceReportingService = {
         fees: feesResult.rows.map(fee => ({
           id: fee.id,
           orderId: fee.order_id,
-          orderRef: fee.order?.marketplace_order_id,
-          marketplace: fee.order?.marketplace_credential_id,
+           orderRef: fee.order?.marketplace_order_id,
+           marketplace: fee.order?.marketplace_credential_id,
           ...getMarketplaceMetaFromCredential(fee.order?.credential),
-          feeType: fee.fee_type,
+           feeType: fee.fee_type,
+           saleDate: fee.order?.sale_date || fee.order?.createdAt,
+           orderStatus: fee.order?.order_status,
+           paymentStatus: fee.order?.payment_status,
+           saleTotal: parseFloat(fee.order?.total_amount || 0),
+           refundedAmount: parseFloat(fee.order?.refunded_amount || 0),
+           currency: fee.order?.currency,
+           sku: fee.orderItem?.sku,
+           productId: fee.orderItem?.product_id,
+           variantId: fee.orderItem?.variant_id,
+           quantity: fee.orderItem?.quantity,
+           unitPrice: parseFloat(fee.orderItem?.unit_price || 0),
+           itemTotal: parseFloat(fee.orderItem?.total_price || 0),
+           title: fee.orderItem?.title || null,
           amount: parseFloat(fee.amount || 0),
           percentage: parseFloat(fee.percentage || 0),
           status: fee.status,
@@ -366,25 +379,34 @@ const MarketplaceReportingService = {
 
   async getCommissionStats(filters = {}) {
     try {
-      const { from, to, company_id, fee_type = 'commission' } = filters;
+      const { from, to, marketplace, company_id, status, fee_type = 'commission' } = filters;
 
-      const conditions = ['fee_type = :fee_type'];
+      const conditions = ['f.fee_type = :fee_type'];
       const replacements = { fee_type };
 
       const dateFilter = buildDateRange(from, to);
-      conditions.push(...dateFilter.conditions);
+      conditions.push(...dateFilter.conditions.map((condition) => condition.replace('createdAt', 'o.sale_date')));
       Object.assign(replacements, dateFilter.replacements);
 
       if (company_id) {
-        conditions.push(`company_id = :company_id`);
+        conditions.push(`f.company_id = :company_id`);
         replacements.company_id = company_id;
+      }
+      if (marketplace) {
+        conditions.push(`o.marketplace_credential_id = :marketplace`);
+        replacements.marketplace = marketplace;
+      }
+      if (status) {
+        conditions.push(`f.status = :status`);
+        replacements.status = status;
       }
 
       const whereClause = `WHERE ${conditions.join(' AND ')}`;
 
       const totalResult = await sequelize.query(`
         SELECT COALESCE(SUM(amount), 0) as total_amount
-        FROM marketplace_order_fees
+        FROM marketplace_order_fees f
+        INNER JOIN marketplace_orders o ON o.id = f.order_id
         ${whereClause}
       `, {
         type: sequelize.QueryTypes.SELECT,
@@ -392,8 +414,9 @@ const MarketplaceReportingService = {
       });
 
       const byStatusResult = await sequelize.query(`
-        SELECT status, SUM(amount) as total_amount, COUNT(*) as count
-        FROM marketplace_order_fees
+        SELECT f.status, SUM(f.amount) as total_amount, COUNT(*) as count
+        FROM marketplace_order_fees f
+        INNER JOIN marketplace_orders o ON o.id = f.order_id
         ${whereClause}
         GROUP BY status
       `, {

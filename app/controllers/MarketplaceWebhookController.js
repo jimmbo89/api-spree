@@ -493,6 +493,7 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
     buyer_document: customerSnapshot.document_number || null,
     payment_method: order?.payments?.[0]?.payment_type || null,
     payment_date: order?.payments?.[0]?.date_created || null,
+    refunded_amount: resolveMercadoLibreRefundedAmount(order),
     sale_date: order?.date_created || null,
     pack_id: order?.pack_id || null,
     shipment_id: shipmentData?.id || order?.shipping?.id || null,
@@ -632,6 +633,7 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
       item?.id?.toString() || null,
       listingId
     );
+    let persistedItem = existingItem;
     if (!existingItem) {
       const createdItem = await MarketplaceOrderItemRepository.create({
         order_id: savedOrder.id,
@@ -650,10 +652,19 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
         total_price: Number(item?.unit_price || 0) * Number(item?.quantity || 1),
         managed_by_spree: Boolean(link)
       });
+      persistedItem = createdItem;
       if (!link) savedItems.push(createdItem);
     }
+    await upsertMercadoLibreCommission({
+      orderId: savedOrder.id,
+      orderItemId: persistedItem?.id || null,
+      listingId,
+      saleFee: item?.sale_fee,
+      totalPrice: Number(item?.unit_price || 0) * Number(item?.quantity || 1),
+      companyId: persistedItem?.company_id || companyId,
+      order: order
+    });
   }
-
   if (shouldDeductStock) {
     // ✅ PROCESAR CADA ITEM SOLO EN PRIMERA VENTA PAGADA
     for (const orderItem of items) {
@@ -719,6 +730,16 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
       });
     }
 
+    const refundedAmount = resolveMercadoLibreRefundedAmount(order);
+    const fullyRefunded = Number(order.total_amount || 0) > 0 && refundedAmount >= Number(order.total_amount);
+    if (
+      ['cancelled', 'refunded'].includes(String(resolveMercadoLibreOrderStatus(order) || '').toLowerCase()) ||
+      ['cancelled', 'refunded', 'charged_back'].includes(String(resolveMercadoLibrePaymentStatus(order) || '').toLowerCase()) ||
+      fullyRefunded
+    ) {
+      await MarketplaceOrderFeeRepository.updateOrderFeesStatus(savedOrder.id, 'cancelled');
+    }
+
     await notifyMercadoLibreSaleRegistered({
       userId: publicationUserId,
       companyId,
@@ -729,6 +750,18 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
       totalAmount: order.total_amount || 0,
       isSpreeManaged: managedBySpree
     });
+  }
+
+  if (!shouldDeductStock) {
+    const refundedAmount = resolveMercadoLibreRefundedAmount(order);
+    const fullyRefunded = Number(order.total_amount || 0) > 0 && refundedAmount >= Number(order.total_amount);
+    if (
+      ['cancelled', 'refunded'].includes(String(resolveMercadoLibreOrderStatus(order) || '').toLowerCase()) ||
+      ['cancelled', 'refunded', 'charged_back'].includes(String(resolveMercadoLibrePaymentStatus(order) || '').toLowerCase()) ||
+      fullyRefunded
+    ) {
+      await MarketplaceOrderFeeRepository.updateOrderFeesStatus(savedOrder.id, 'cancelled');
+    }
   }
 
   if (shouldReverseStock) {
@@ -1010,6 +1043,39 @@ function buildMercadoLibreMessagesSnapshot(messagesData) {
       const bTime = b.received_at ? new Date(b.received_at).getTime() : 0;
       return aTime - bTime;
     });
+}
+
+async function upsertMercadoLibreCommission({
+  orderId,
+  orderItemId,
+  listingId,
+  saleFee,
+  totalPrice,
+  companyId,
+  order = null
+}) {
+  const amount = Number(saleFee || 0);
+  if (!orderId || !orderItemId || !Number.isFinite(amount) || amount <= 0) return null;
+  const data = {
+    order_id: orderId,
+    order_item_id: orderItemId,
+    company_id: companyId || null,
+    fee_type: 'commission',
+    amount,
+    percentage: Number(totalPrice || 0) > 0 ? (amount / Number(totalPrice)) * 100 : 0,
+    status: 'charged',
+    description: `Comisión ML - Item ${listingId || orderItemId}`,
+    raw_data: {
+      sale_fee: amount,
+      marketplace_fee: order?.payments?.reduce((sum, payment) => sum + Number(payment?.marketplace_fee || 0), 0) || null
+    }
+  };
+  const existing = await MarketplaceOrderFeeRepository.findByOrderItemAndType(orderItemId, 'commission');
+  if (existing) {
+    await MarketplaceOrderFeeRepository.updateById(existing.id, data);
+    return existing;
+  }
+  return await MarketplaceOrderFeeRepository.create(data);
 }
 
 async function notifyMercadoLibreSaleRegistered({
@@ -5221,20 +5287,15 @@ async function processOrderItem(orderItem, ctx) {
         savedItem = await MarketplaceOrderItemRepository.create(itemData);
       }
 
-      // ✅ GUARDAR FEE DEL ITEM (commission)
-      if (saleFee > 0) {
-        await MarketplaceOrderFeeRepository.create({
-          order_id: ctx.orderIdLocal,
-          order_item_id: savedItem.id,
-          company_id: itemCompanyId,
-          fee_type: 'commission',
-          amount: saleFee,
-          percentage: unitPrice > 0 ? (saleFee / unitPrice) * 100 : 0,
-          status: 'charged',
-          description: `Comisión ML - Item ${listingId}`,
-          raw_data: { sale_fee: saleFee }
-        });
-      }
+      await upsertMercadoLibreCommission({
+        orderId: ctx.orderIdLocal,
+        orderItemId: savedItem.id,
+        listingId,
+        saleFee,
+        totalPrice,
+        companyId: itemCompanyId,
+        order: ctx.order || null
+      });
     } catch (error) {
       logger.error(`[ML Webhook] Error guardando item ${listingId}: ${error.message}`);
     }
@@ -5985,6 +6046,14 @@ function resolveMercadoLibrePaymentStatus(order) {
   });
 
   return approved?.status || order?.payment_status || payments[0]?.status || null;
+}
+
+function resolveMercadoLibreRefundedAmount(order) {
+  const payments = Array.isArray(order?.payments) ? order.payments : [];
+  return payments.reduce((sum, payment) => {
+    const value = Number(payment?.transaction_amount_refunded || 0);
+    return sum + (Number.isFinite(value) ? value : 0);
+  }, 0);
 }
 
 /**

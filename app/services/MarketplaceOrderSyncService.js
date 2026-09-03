@@ -96,6 +96,7 @@ const MarketplaceOrderSyncService = {
         buyer_document: customerSnapshot.document_number || null,
         payment_method: remoteOrder?.payments?.[0]?.payment_type || null,
         payment_date: remoteOrder?.payments?.[0]?.date_created || null,
+        refunded_amount: resolveMercadoLibreRefundedAmount(remoteOrder),
         sale_date: remoteOrder?.date_created || null,
         pack_id: remoteOrder?.pack_id || null,
         shipment_id: shipmentData?.id || remoteOrder?.shipping?.id || null,
@@ -428,6 +429,14 @@ function normalizeMercadoLibreShipping(shipment) {
     cancelled_at: dateFor(['cancelled', 'not_delivered']),
     returned_at: dateFor(['returned'])
   };
+}
+
+function resolveMercadoLibreRefundedAmount(order) {
+  const payments = Array.isArray(order?.payments) ? order.payments : [];
+  return payments.reduce((sum, payment) => {
+    const value = Number(payment?.transaction_amount_refunded || 0);
+    return sum + (Number.isFinite(value) ? value : 0);
+  }, 0);
 }
 
 function normalizeMercadoLibreShipmentCosts(shipmentCosts, order, shipment) {

@@ -124,7 +124,8 @@ const MarketplaceReportController = {
       const credentials = await MarketplaceCredentialRepository.findByUser(
         req.user.id,
         null,
-        company_id ? parseInt(company_id) : (req.user.company_id || null)
+        company_id ? parseInt(company_id) : (req.user.company_id || null),
+        { onlyActive: true }
       );
       const availableMarketplaces = credentials.map(cred => ({
         id: cred.id,
@@ -139,8 +140,8 @@ const MarketplaceReportController = {
         status,
         company_id: company_id ? parseInt(company_id) : null,
         fee_type: fee_type || 'commission',
-        limit: limit ? parseInt(limit) : 50,
-        offset: offset ? parseInt(offset) : 0
+        ...(limit !== undefined && limit !== null && limit !== '' ? { limit: parseInt(limit) } : {}),
+        ...(offset !== undefined && offset !== null && offset !== '' ? { offset: parseInt(offset) } : {})
       };
 
       const report = await MarketplaceReportingService.getCommissionReport(filters);
