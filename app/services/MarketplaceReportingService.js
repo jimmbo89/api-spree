@@ -487,7 +487,9 @@ const MarketplaceReportingService = {
       const replacements = {};
 
       const dateFilter = buildDateRange(from, to, 'o');
-      conditions.push(...dateFilter.conditions);
+      conditions.push(...dateFilter.conditions.map((condition) => (
+        condition.replaceAll('o.createdAt', 'COALESCE(o.sale_date, o.createdAt)')
+      )));
       Object.assign(replacements, dateFilter.replacements);
 
       if (marketplace && marketplace !== 'all') {
@@ -505,18 +507,20 @@ const MarketplaceReportingService = {
         replacements.user_id = user_id;
       }
 
-      conditions.push("o.order_status = 'paid'");
+      conditions.push(buildValidProfitOrderCondition('o'));
 
       const whereClause = `WHERE ${conditions.join(' AND ')}`;
 
       const result = await sequelize.query(`
         SELECT
-          COALESCE(SUM(o.total_amount), 0) as total_revenue,
+          COALESCE(SUM(${netRevenueExpression('o')}), 0) as total_revenue,
           COALESCE(SUM(oi.total_cost), 0) as total_cost,
           COALESCE(SUM(f.total_fees), 0) as total_fees,
-          COALESCE(SUM(o.total_amount), 0)
+          COALESCE(SUM(${shippingCostExpression('o')}), 0) as total_shipping,
+          COALESCE(SUM(${netRevenueExpression('o')}), 0)
             - COALESCE(SUM(oi.total_cost), 0)
-            - COALESCE(SUM(f.total_fees), 0) as gross_profit
+            - COALESCE(SUM(f.total_fees), 0)
+            - COALESCE(SUM(${shippingCostExpression('o')}), 0) as gross_profit
         FROM marketplace_orders o
         LEFT JOIN (
           SELECT order_id, SUM(total_cost) as total_cost
@@ -524,8 +528,21 @@ const MarketplaceReportingService = {
           GROUP BY order_id
         ) oi ON o.id = oi.order_id
         LEFT JOIN (
-          SELECT order_id, SUM(amount) as total_fees
-          FROM marketplace_order_fees
+          SELECT f.order_id, SUM(f.amount) as total_fees
+          FROM marketplace_order_fees f
+          WHERE f.fee_type = 'commission'
+            AND LOWER(COALESCE(f.status, '')) NOT IN ('cancelled', 'refunded')
+            AND (
+              f.order_item_id IS NOT NULL
+              OR NOT EXISTS (
+                SELECT 1
+                FROM marketplace_order_fees item_fee
+                WHERE item_fee.order_id = f.order_id
+                  AND item_fee.order_item_id IS NOT NULL
+                  AND item_fee.fee_type = 'commission'
+                  AND LOWER(COALESCE(item_fee.status, '')) NOT IN ('cancelled', 'refunded')
+              )
+            )
           GROUP BY order_id
         ) f ON o.id = f.order_id
         ${whereClause}
@@ -539,6 +556,7 @@ const MarketplaceReportingService = {
       const totalRevenue = parseFloat(row.total_revenue || 0);
       const totalCost = parseFloat(row.total_cost || 0);
       const totalFees = parseFloat(row.total_fees || 0);
+      const totalShipping = parseFloat(row.total_shipping || 0);
       const grossProfit = parseFloat(row.gross_profit || 0);
 
       const marginPercentage =
@@ -548,6 +566,7 @@ const MarketplaceReportingService = {
         total_revenue: totalRevenue,
         total_cost: totalCost,
         total_fees: totalFees,
+        total_shipping: totalShipping,
         gross_profit: grossProfit,
         margin_percentage: Math.round(marginPercentage * 100) / 100
       };
@@ -560,33 +579,45 @@ const MarketplaceReportingService = {
 
   async getProfitByMarketplace(filters = {}) {
     try {
-      const { from, to, company_id } = filters;
+      const { from, to, marketplace, company_id, user_id } = filters;
 
       const conditions = [];
       const replacements = {};
 
       const dateFilter = buildDateRange(from, to, 'o');
-      conditions.push(...dateFilter.conditions);
+      conditions.push(...dateFilter.conditions.map((condition) => (
+        condition.replaceAll('o.createdAt', 'COALESCE(o.sale_date, o.createdAt)')
+      )));
       Object.assign(replacements, dateFilter.replacements);
 
       if (company_id) {
         conditions.push('o.company_id = :company_id');
         replacements.company_id = company_id;
       }
+      if (user_id) {
+        conditions.push('o.user_id = :user_id');
+        replacements.user_id = user_id;
+      }
+      if (marketplace && marketplace !== 'all') {
+        conditions.push('o.marketplace_credential_id = :marketplace');
+        replacements.marketplace = marketplace;
+      }
 
-      conditions.push("o.order_status = 'paid'");
+      conditions.push(buildValidProfitOrderCondition('o'));
 
       const whereClause = `WHERE ${conditions.join(' AND ')}`;
 
       const results = await sequelize.query(`
         SELECT
           o.marketplace_credential_id as marketplace,
-          COALESCE(SUM(o.total_amount), 0) as revenue,
+          COALESCE(SUM(${netRevenueExpression('o')}), 0) as revenue,
           COALESCE(SUM(oi.total_cost), 0) as cost,
           COALESCE(SUM(f.total_fees), 0) as fees,
-          COALESCE(SUM(o.total_amount), 0)
+          COALESCE(SUM(${shippingCostExpression('o')}), 0) as shipping,
+          COALESCE(SUM(${netRevenueExpression('o')}), 0)
             - COALESCE(SUM(oi.total_cost), 0)
-            - COALESCE(SUM(f.total_fees), 0) as profit
+            - COALESCE(SUM(f.total_fees), 0)
+            - COALESCE(SUM(${shippingCostExpression('o')}), 0) as profit
         FROM marketplace_orders o
         LEFT JOIN (
           SELECT order_id, SUM(total_cost) as total_cost
@@ -594,8 +625,21 @@ const MarketplaceReportingService = {
           GROUP BY order_id
         ) oi ON o.id = oi.order_id
         LEFT JOIN (
-          SELECT order_id, SUM(amount) as total_fees
-          FROM marketplace_order_fees
+          SELECT f.order_id, SUM(f.amount) as total_fees
+          FROM marketplace_order_fees f
+          WHERE f.fee_type = 'commission'
+            AND LOWER(COALESCE(f.status, '')) NOT IN ('cancelled', 'refunded')
+            AND (
+              f.order_item_id IS NOT NULL
+              OR NOT EXISTS (
+                SELECT 1
+                FROM marketplace_order_fees item_fee
+                WHERE item_fee.order_id = f.order_id
+                  AND item_fee.order_item_id IS NOT NULL
+                  AND item_fee.fee_type = 'commission'
+                  AND LOWER(COALESCE(item_fee.status, '')) NOT IN ('cancelled', 'refunded')
+              )
+            )
           GROUP BY order_id
         ) f ON o.id = f.order_id
         ${whereClause}
@@ -609,10 +653,12 @@ const MarketplaceReportingService = {
         marketplace: row.marketplace,
         revenue: parseFloat(row.revenue || 0),
         cost: parseFloat(row.cost || 0),
+        productCost: parseFloat(row.cost || 0),
+        shippingCost: parseFloat(row.shipping || 0),
         fees: parseFloat(row.fees || 0),
         profit: parseFloat(row.profit || 0),
-        margin: row.revenue > 0
-          ? Math.round((row.profit / row.revenue) * 100 * 100) / 100
+        margin: Number(row.revenue || 0) > 0
+          ? Math.round((Number(row.profit || 0) / Number(row.revenue)) * 100 * 100) / 100
           : 0
       }));
 
@@ -624,13 +670,15 @@ const MarketplaceReportingService = {
 
   async getProfitByProduct(filters = {}) {
     try {
-      const { from, to, marketplace, company_id, limit = 20 } = filters;
+      const { from, to, marketplace, company_id, user_id, limit = 20 } = filters;
 
       const conditions = [];
       const replacements = {};
 
       const dateFilter = buildDateRange(from, to, 'o');
-      conditions.push(...dateFilter.conditions);
+      conditions.push(...dateFilter.conditions.map((condition) => (
+        condition.replaceAll('o.createdAt', 'COALESCE(o.sale_date, o.createdAt)')
+      )));
       Object.assign(replacements, dateFilter.replacements);
 
       if (marketplace && marketplace !== 'all') {
@@ -642,29 +690,76 @@ const MarketplaceReportingService = {
         conditions.push('o.company_id = :company_id');
         replacements.company_id = company_id;
       }
+      if (user_id) {
+        conditions.push('o.user_id = :user_id');
+        replacements.user_id = user_id;
+      }
 
-      conditions.push("o.order_status = 'paid'");
+      conditions.push(buildValidProfitOrderCondition('o'));
 
       const whereClause = `WHERE ${conditions.join(' AND ')}`;
 
       const results = await sequelize.query(`
         SELECT
           p.id as product_id,
-          p.name as product_name,
-          p.sku as product_sku,
+          COALESCE(p.name, oi.title, oi.sku, oi.listing_id) as product_name,
+          COALESCE(p.sku, oi.sku) as product_sku,
+          oi.listing_id as listing_id,
           SUM(oi.quantity) as qty_sold,
-          COALESCE(SUM(oi.total_price), 0) as revenue,
+          COALESCE(SUM(oi.total_price - (oi.total_price * COALESCE(${refundAllocationExpression('o')}, 0))), 0) as revenue,
           COALESCE(SUM(oi.total_cost), 0) as cost,
-          COALESCE(SUM(f.amount), 0) as fees,
-          COALESCE(SUM(oi.total_price), 0)
+          COALESCE(SUM(
+            COALESCE(fi.item_fees, 0)
+            + CASE
+                WHEN COALESCE(ot.order_item_revenue, 0) > 0
+                THEN COALESCE(fo.order_fees, 0) * oi.total_price / ot.order_item_revenue
+                ELSE 0
+              END
+          ), 0) as fees,
+          COALESCE(SUM(oi.total_price - (oi.total_price * COALESCE(${refundAllocationExpression('o')}, 0))), 0)
             - COALESCE(SUM(oi.total_cost), 0)
-            - COALESCE(SUM(f.amount), 0) as profit
+            - COALESCE(SUM(
+                COALESCE(fi.item_fees, 0)
+                + CASE
+                    WHEN COALESCE(ot.order_item_revenue, 0) > 0
+                    THEN COALESCE(fo.order_fees, 0) * oi.total_price / ot.order_item_revenue
+                    ELSE 0
+                  END
+              ), 0) as profit
         FROM marketplace_orders o
         JOIN marketplace_order_items oi ON o.id = oi.order_id
         LEFT JOIN products p ON oi.product_id = p.id
-        LEFT JOIN marketplace_order_fees f ON oi.id = f.order_item_id
+        LEFT JOIN (
+          SELECT f.order_item_id, SUM(f.amount) AS item_fees
+          FROM marketplace_order_fees f
+          WHERE f.fee_type = 'commission'
+            AND f.order_item_id IS NOT NULL
+            AND LOWER(COALESCE(f.status, '')) NOT IN ('cancelled', 'refunded')
+          GROUP BY f.order_item_id
+        ) fi ON oi.id = fi.order_item_id
+        LEFT JOIN (
+          SELECT f.order_id, SUM(f.amount) AS order_fees
+          FROM marketplace_order_fees f
+          WHERE f.fee_type = 'commission'
+            AND f.order_item_id IS NULL
+            AND LOWER(COALESCE(f.status, '')) NOT IN ('cancelled', 'refunded')
+            AND NOT EXISTS (
+              SELECT 1
+              FROM marketplace_order_fees item_fee
+              WHERE item_fee.order_id = f.order_id
+                AND item_fee.order_item_id IS NOT NULL
+                AND item_fee.fee_type = 'commission'
+                AND LOWER(COALESCE(item_fee.status, '')) NOT IN ('cancelled', 'refunded')
+            )
+          GROUP BY f.order_id
+        ) fo ON o.id = fo.order_id
+        LEFT JOIN (
+          SELECT order_id, SUM(total_price) AS order_item_revenue
+          FROM marketplace_order_items
+          GROUP BY order_id
+        ) ot ON o.id = ot.order_id
         ${whereClause}
-        GROUP BY p.id, p.name, p.sku
+        GROUP BY p.id, p.name, p.sku, oi.title, oi.sku, oi.listing_id
         ORDER BY profit DESC
         LIMIT :limit
       `, {
@@ -676,6 +771,7 @@ const MarketplaceReportingService = {
         product_id: row.product_id,
         product_name: row.product_name,
         product_sku: row.product_sku,
+        listing_id: row.listing_id,
         qty_sold: parseInt(row.qty_sold || 0),
         revenue: parseFloat(row.revenue || 0),
         cost: parseFloat(row.cost || 0),
@@ -693,6 +789,52 @@ const MarketplaceReportingService = {
   }
 
 };
+
+function refundedAmountExpression(alias = 'o') {
+  return `COALESCE(${alias}.refunded_amount, (
+    SELECT COALESCE(SUM(CAST(JSON_UNQUOTE(JSON_EXTRACT(payment.value, '$.transaction_amount_refunded')) AS DECIMAL(12,2))), 0)
+    FROM JSON_TABLE(
+      JSON_EXTRACT(${alias}.raw_payload, '$.order.payments'),
+      '$[*]' COLUMNS (value JSON PATH '$')
+    ) payment
+  ), 0)`;
+}
+
+function netRevenueExpression(alias = 'o') {
+  return `GREATEST(COALESCE(${alias}.total_amount, 0) - (${refundedAmountExpression(alias)}), 0)`;
+}
+
+function shippingCostExpression(alias = 'o') {
+  const sellerCost = `COALESCE(${alias}.shipping_total, JSON_UNQUOTE(JSON_EXTRACT(${alias}.raw_payload, '$.shipping_financials.seller_cost')), 0)`;
+  return `CASE
+    WHEN ${alias}.shipment_id IS NULL THEN ${sellerCost}
+    WHEN ${alias}.id = (
+      SELECT MIN(shipment_order.id)
+      FROM marketplace_orders shipment_order
+      WHERE shipment_order.shipment_id = ${alias}.shipment_id
+    ) THEN ${sellerCost}
+    ELSE 0
+  END`;
+}
+
+function refundAllocationExpression(alias = 'o') {
+  return `CASE
+    WHEN COALESCE(${alias}.total_amount, 0) > 0
+    THEN LEAST(1, (${refundedAmountExpression(alias)}) / ${alias}.total_amount)
+    ELSE 0
+  END`;
+}
+
+function buildValidProfitOrderCondition(alias = 'o') {
+  return `(
+    LOWER(COALESCE(${alias}.order_status, '')) NOT IN ('cancelled', 'returned', 'refunded')
+    AND LOWER(COALESCE(${alias}.payment_status, '')) NOT IN ('cancelled', 'refunded', 'charged_back')
+    AND (
+      LOWER(COALESCE(${alias}.order_status, '')) IN ('paid', 'shipped', 'delivered')
+      OR LOWER(COALESCE(${alias}.payment_status, '')) IN ('paid', 'approved', 'authorized')
+    )
+  )`;
+}
 
 function normalizeNotesSnapshot(notesSnapshot) {
   if (Array.isArray(notesSnapshot)) {

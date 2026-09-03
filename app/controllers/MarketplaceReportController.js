@@ -206,7 +206,8 @@ const MarketplaceReportController = {
       const credentials = await MarketplaceCredentialRepository.findByUser(
         req.user.id,
         null,
-        company_id ? parseInt(company_id) : (req.user.company_id || null)
+        company_id ? parseInt(company_id) : (req.user.company_id || null),
+        { onlyActive: true }
       );
       const availableMarketplaces = credentials.map(cred => ({
         id: cred.id,
