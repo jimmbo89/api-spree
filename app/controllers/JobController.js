@@ -122,7 +122,16 @@ function humanizeMercadoLibreCause(cause = {}) {
   const field = publicationFieldLabel(references[0] || cause.field);
 
   if (code === 'item.attribute.missing.seller.package.dimensions') {
-    return 'Faltan las dimensiones del paquete del vendedor: alto, largo, ancho y peso.';
+    const rawFields = String(cause.message || '').match(/\[([^\]]+)\]/)?.[1]
+      || String(cause.message || '').match(/attributes?\s+(.+?)\s+are all required/i)?.[1]
+      || '';
+    const fields = rawFields
+      .split(/,\s*/)
+      .map((value) => publicationFieldLabel(value) || value.trim())
+      .filter(Boolean);
+    return fields.length
+      ? `Faltan atributos del paquete del vendedor: ${fields.join(', ')}.`
+      : 'Faltan atributos del paquete del vendedor.';
   }
   if (code === 'item.attribute.invalid.format.seller.package.dimensions') {
     return 'El formato de las dimensiones del paquete del vendedor no es válido. Use centímetros y gramos enteros.';
