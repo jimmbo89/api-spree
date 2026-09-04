@@ -485,7 +485,9 @@ class MercadoLibreAdapter extends BaseAdapter {
 
   buildMercadoLibreSellerPackageAttributes(productData, configuredAttributes = []) {
     const packaging = parseJsonObject(productData?.packaging_measurements);
-    const dimensions = packaging?.dimensions || {};
+    const productMeasurements = parseJsonObject(productData?.product_measurements) || {};
+    const packagingDimensions = packaging?.dimensions || {};
+    const productDimensions = productMeasurements?.dimensions || {};
     const byId = new Map(
       (Array.isArray(configuredAttributes) ? configuredAttributes : [])
         .filter((attr) => attr?.id && [attr.value_name, attr.value, attr.value_id, attr.userValue, attr.user_value, attr.plain_text]
@@ -505,10 +507,22 @@ class MercadoLibreAdapter extends BaseAdapter {
     };
 
     const fallback = [
-      ['SELLER_PACKAGE_HEIGHT', readMeasurement(dimensions.height, 'cm')],
-      ['SELLER_PACKAGE_WIDTH', readMeasurement(dimensions.width, 'cm')],
-      ['SELLER_PACKAGE_LENGTH', readMeasurement(dimensions.length, 'cm')],
-      ['SELLER_PACKAGE_WEIGHT', readMeasurement(packaging.weight, 'g')]
+      ['SELLER_PACKAGE_HEIGHT',
+        readMeasurement(packagingDimensions.height, 'cm')
+        || readMeasurement(productDimensions.height, 'cm')
+        || readMeasurement(productData.height_cm, 'cm')],
+      ['SELLER_PACKAGE_WIDTH',
+        readMeasurement(packagingDimensions.width, 'cm')
+        || readMeasurement(productDimensions.width, 'cm')
+        || readMeasurement(productData.width_cm, 'cm')],
+      ['SELLER_PACKAGE_LENGTH',
+        readMeasurement(packagingDimensions.length, 'cm')
+        || readMeasurement(productDimensions.length, 'cm')
+        || readMeasurement(productData.length_cm, 'cm')],
+      ['SELLER_PACKAGE_WEIGHT',
+        readMeasurement(packaging?.weight, 'g')
+        || readMeasurement(productMeasurements.weight, 'g')
+        || readMeasurement(productData.weight_grams, 'g')]
     ];
 
     for (const [id, value] of fallback) {
@@ -760,6 +774,47 @@ class MercadoLibreAdapter extends BaseAdapter {
       throw new Error('No se encontró configuración de MercadoLibre para la credencial seleccionada');
     }
 
+    // ✅ FALLBACK DEFENSIVO: estos campos pueden llegar en el producto o en la
+    // selección/cotización calculada para la credencial de Mercado Libre.
+    const firstPresentValue = (...values) => values.find((value) => (
+      value !== undefined && value !== null && String(value).trim() !== ''
+    ));
+
+    const buyingModeFallback = firstPresentValue(
+      productData.buying_mode,
+      mlData.buying_mode,
+      mlData.selection?.buying_mode,
+      mlData.category?.selection?.buying_mode,
+      mlData.quote?.selection?.buying_mode,
+      mlData.calculation_result?.selection?.buying_mode,
+      'buy_it_now'
+    );
+
+    const conditionFallback = firstPresentValue(
+      productData.condition,
+      mlData.condition,
+      mlData.selection?.condition,
+      mlData.category?.selection?.condition,
+      mlData.quote?.selection?.condition,
+      mlData.calculation_result?.selection?.condition,
+      'new'
+    );
+
+    const currencyFallback = firstPresentValue(
+      productData.currency_id,
+      productData.currency,
+      mlData.pricing?.currency_id,
+      mlData.currency_id,
+      null
+    );
+
+    // Aplicar al productData para que el validador comercial lo encuentre al nivel raíz.
+    productData.buying_mode = buyingModeFallback;
+    productData.condition = conditionFallback;
+    if (currencyFallback && !productData.currency_id) {
+      productData.currency_id = currencyFallback;
+    }
+
     const selectedCategoryAttributeValue = (names = []) => {
       const normalizedNames = new Set(names.map((name) => String(name).replace(/[^a-z0-9]/gi, '').toLowerCase()));
       const read = (attributes = []) => (Array.isArray(attributes) ? attributes : []).find((attribute) => {
@@ -929,7 +984,9 @@ class MercadoLibreAdapter extends BaseAdapter {
     });
 
     if (commercialFields.__blocked_error) {
-      throw new Error(commercialFields.__blocked_error.message);
+      const blockedError = new Error(commercialFields.__blocked_error.message);
+      blockedError.details = commercialFields.__blocked_error;
+      throw blockedError;
     }
 
     prepared.buying_mode = commercialFields.buying_mode;

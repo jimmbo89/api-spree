@@ -1497,9 +1497,14 @@ class PublishingService {
         status: 'failed',
         payload: productData ? JSON.parse(JSON.stringify(productData)) : null,
         error_message: error.message || 'Error interno al publicar',
-        error_details: { 
-          error_code: 'exception',
-          stack: error.stack 
+        error_details: {
+          ...(error.details && typeof error.details === 'object' ? error.details : {}),
+          error_code: error.details?.error_code || 'exception',
+          marketplace: String(marketplace?.domain || '').toLowerCase().includes('mercadolibre')
+            ? 'mercadolibre'
+            : marketplace?.name || null,
+          message: error.message || null,
+          stack: error.stack
         },
         batch_id: batch_id || null,
         attempt_count: 1

@@ -124,11 +124,17 @@ const listDraftsByUserSchema = Joi.object({
 });
 
 const retrySchema = Joi.object({
-  task_id: Joi.number().integer().positive().required(),
+  task_id: Joi.number().integer().positive().optional(),
   job_id: Joi.number().allow(null).empty('').optional(),
-  payload: Joi.object().optional()
-});
-
+  payload: Joi.object().optional(),
+  tasks: Joi.array().items(
+    Joi.object({
+      task_id: Joi.number().integer().positive().required(),
+      job_id: Joi.number().allow(null).empty('').optional(),
+      payload: Joi.object().optional()
+    })
+  ).optional()
+}).or('task_id', 'tasks');
 // ✅ Nuevo schema para publicar draft
 const publishDraftLegacySchema = Joi.object({
   task_id: Joi.number().integer().positive().required(),

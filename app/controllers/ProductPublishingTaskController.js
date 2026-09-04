@@ -2785,211 +2785,226 @@ async store(req, res) {
       });
     }
   },
-async retryBatch(req, res) {
-  logger.info(`${req.user?.name || 'Unknown'} - Republicando productos`);
-  logger.info(`Datos recibidos: \n ${JSON.stringify(req.body)}`);
-
-  const { tasks } = req.body;
-  const user_id = req.user.id;
-  const results = [];
-
-  const normalizeRetryPayload = (rawPayload) => {
-    if (!rawPayload) return null;
-    let parsed = rawPayload;
-
-    if (typeof parsed === 'string') {
-      try {
-        parsed = JSON.parse(parsed);
-      } catch (e) {
-        return null;
-      }
+  async retryBatch(req, res) {
+    logger.info(`${req.user?.name || 'Unknown'} - Republicando productos`);
+    logger.info(`Datos recibidos: \n ${JSON.stringify(req.body)}`);
+    
+    const { tasks, task_id, job_id, payload } = req.body;
+    const user_id = req.user.id;
+    const results = [];
+  
+    // 1. ✅ NORMALIZACIÓN: Unificar el formato a un array siempre
+    const tasksToProcess = Array.isArray(tasks) 
+      ? tasks 
+      : (task_id ? [{ task_id, job_id, payload }] : []);
+  
+    if (tasksToProcess.length === 0) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'invalid_payload', 
+        message: 'Se requiere "tasks" (array) o "task_id" (número)' 
+      });
     }
-
-    if (parsed && typeof parsed === 'object' && parsed.payload && typeof parsed.payload === 'object') {
-      parsed = parsed.payload;
-    }
-
-    return (parsed && typeof parsed === 'object') ? parsed : null;
-  };
-
-  for (const { task_id, job_id, payload: incomingPayload } of tasks) {
-    try {
-      // 1. Obtener task
-      const task = await ProductPublishingTaskRepository.findById(task_id);
-      if (!task) {
-        results.push({ task_id, success: false, error: 'task_not_found' });
-        continue;
+  
+    const normalizeRetryPayload = (rawPayload) => {
+      if (!rawPayload) return null;
+      let parsed = rawPayload;
+  
+      if (typeof parsed === 'string') {
+        try {
+          parsed = JSON.parse(parsed);
+        } catch (e) {
+          return null;
+        }
       }
-
-      // 2. Obtener marketplace y credential
-      const marketplace = await MarketplaceRepository.findById(task.marketplace_id);
-      let credential = await MarketplaceCredentialRepository.findById(task.credential_id);
-
-      if (!marketplace || !credential) {
-        results.push({ task_id, success: false, error: 'marketplace_or_credential_not_found' });
-        continue;
+  
+      if (parsed && typeof parsed === 'object' && parsed.payload && typeof parsed.payload === 'object') {
+        parsed = parsed.payload;
       }
-
-      // 3. ✅ RENOVAR TOKEN SI ES NECESARIO
+  
+      return (parsed && typeof parsed === 'object') ? parsed : null;
+    };
+  
+    // 2. ✅ ITERAR SOBRE tasksToProcess (no sobre tasks)
+    for (const item of tasksToProcess) {
+      // Usamos nombres distintos para evitar colisión con las variables del scope superior
+      const currentTaskId = item.task_id;
+      let currentJobId = item.job_id;
+      const incomingPayload = item.payload;
+  
       try {
-        credential = await ProductPublishingTaskController.refreshSingleCredential(
-          credential,
+        // 1. Obtener task
+        const task = await ProductPublishingTaskRepository.findById(currentTaskId);
+        if (!task) {
+          results.push({ task_id: currentTaskId, success: false, error: 'task_not_found' });
+          continue;
+        }
+        currentJobId = item.job_id ?? task.job_id ?? null;
+  
+        // 2. Obtener marketplace y credential
+        const marketplace = await MarketplaceRepository.findById(task.marketplace_id);
+        let credential = await MarketplaceCredentialRepository.findById(task.credential_id);
+  
+        if (!marketplace || !credential) {
+          results.push({ task_id: currentTaskId, success: false, error: 'marketplace_or_credential_not_found' });
+          continue;
+        }
+  
+        // 3. ✅ RENOVAR TOKEN SI ES NECESARIO
+        try {
+          credential = await ProductPublishingTaskController.refreshSingleCredential(
+            credential,
+            marketplace,
+            user_id
+          );
+        } catch (refreshError) {
+          logger.warn(`[retryBatch] No se pudo renovar token para task ${currentTaskId}: ${refreshError.message}`);
+          results.push({
+            task_id: currentTaskId,
+            success: false,
+            error: refreshError.message.startsWith('auth_required') ? 'auth_required' : refreshError.message,
+            error_details: refreshError.message.startsWith('auth_required')
+              ? { auth_url: refreshError.message.split(':')[1] }
+              : null
+          });
+          continue;
+        }
+  
+        // 4. ✅ Resolver payload efectivo para reintento
+        const effectivePayload = normalizeRetryPayload(incomingPayload) || normalizeRetryPayload(task.payload);
+        if (!effectivePayload) {
+          results.push({
+            task_id: currentTaskId,
+            success: false,
+            error: 'invalid_retry_payload',
+            error_details: ['payload inválido o vacío para reintento']
+          });
+          continue;
+        }
+  
+        // Persistir payload efectivo para trazabilidad del retry
+        if (normalizeRetryPayload(incomingPayload)) {
+          await ProductPublishingTaskRepository.updatePayload(task, effectivePayload);
+        }
+  
+        task.payload = effectivePayload;
+        logger.info(`[retryBatch] Task ${currentTaskId} payload keys: ${Object.keys(effectivePayload).join(', ')}`);
+  
+        // 5. ✅ REPUBLICAR con credencial actualizada
+        const result = await PublishingService.republishProduct(
+          task,
           marketplace,
+          credential,
           user_id
         );
-      } catch (refreshError) {
-        logger.warn(`[retryBatch] No se pudo renovar token para task ${task_id}: ${refreshError.message}`);
-        results.push({
-          task_id,
-          success: false,
-          error: refreshError.message.startsWith('auth_required') ? 'auth_required' : refreshError.message,
-          error_details: refreshError.message.startsWith('auth_required')
-            ? { auth_url: refreshError.message.split(':')[1] }
-            : null
-        });
-        continue; // Continuar con el siguiente task
-      }
-
-      // 4. ✅ Resolver payload efectivo para reintento
-      const effectivePayload = normalizeRetryPayload(incomingPayload) || normalizeRetryPayload(task.payload);
-      if (!effectivePayload) {
-        results.push({
-          task_id,
-          success: false,
-          error: 'invalid_retry_payload',
-          error_details: ['payload inválido o vacío para reintento']
-        });
-        continue;
-      }
-
-      // Persistir payload efectivo para trazabilidad del retry
-      if (normalizeRetryPayload(incomingPayload)) {
-        await ProductPublishingTaskRepository.updatePayload(task, effectivePayload);
-      }
-
-      task.payload = effectivePayload;
-
-      logger.info(`[retryBatch] Task ${task_id} payload keys: ${Object.keys(effectivePayload).join(', ')}`);
-
-      // 5. ✅ REPUBLICAR con credencial actualizada
-      const result = await PublishingService.republishProduct(
-        task,
-        marketplace,
-        credential,
-        user_id
-      );
-
-      // 6. ✅ Actualizar JobProduct si hay job_id
-      const warningArtifacts = buildWarningArtifacts(result);
-
-      if (job_id) {
-        try {
-          // Buscar JobProduct por job_id + product_id + marketplace_id + credential_id
-          const jobProduct = await JobProductRepository.findByProductAndMarketplace(
-            job_id,
-            task.product_id,
-            task.marketplace_id,
-            task.credential_id
-          );
-
-          if (jobProduct) {
-            // Determinar status para JobProduct (mapeo desde ProductPublishingTask)
-            const jobProductStatus = result.status === 'published' || result.status === 'published_with_warnings'
-              ? 'success'
-              : result.status === 'processing'
-                ? 'processing'
-                : result.status === 'failed'
-                  ? 'error'
-                  : jobProduct.status;
-
-            await JobProductRepository.update(jobProduct, {
-              status: jobProductStatus,
-              external_id: result.external_id || jobProduct.external_id,
-              external_url: result.external_url || jobProduct.external_url,
-              error_message: result.success ? warningArtifacts.warningMessage : (result.error || jobProduct.error_message),
-              error_details: result.success ? warningArtifacts.warningDetails : (result.error_details || result.details || jobProduct.error_details),
-              attempt_count: (jobProduct.attempt_count || 0) + 1,
-              last_attempt_at: new Date()
-            });
-
-            logger.info(`[retryBatch] JobProduct ${jobProduct.id} actualizado: ${jobProductStatus}`);
+  
+        // 6. ✅ Actualizar JobProduct si hay job_id
+        const warningArtifacts = buildWarningArtifacts(result);
+  
+        if (currentJobId) {
+          try {
+            const jobProduct = await JobProductRepository.findByProductAndMarketplace(
+              currentJobId,
+              task.product_id,
+              task.marketplace_id,
+              task.credential_id
+            );
+  
+            if (jobProduct) {
+              const jobProductStatus = result.status === 'published' || result.status === 'published_with_warnings'
+                ? 'success'
+                : result.status === 'processing'
+                  ? 'processing'
+                  : result.status === 'failed'
+                    ? 'error'
+                    : jobProduct.status;
+  
+              await JobProductRepository.update(jobProduct, {
+                status: jobProductStatus,
+                external_id: result.external_id || jobProduct.external_id,
+                external_url: result.external_url || jobProduct.external_url,
+                error_message: result.success ? warningArtifacts.warningMessage : (result.error || jobProduct.error_message),
+                error_details: result.success ? warningArtifacts.warningDetails : (result.error_details || result.details || jobProduct.error_details),
+                attempt_count: (jobProduct.attempt_count || 0) + 1,
+                last_attempt_at: new Date()
+              });
+  
+              logger.info(`[retryBatch] JobProduct ${jobProduct.id} actualizado: ${jobProductStatus}`);
+            }
+  
+            await JobRepository.recalculateProgress(currentJobId);
+  
+          } catch (jobError) {
+            logger.warn(`[retryBatch] Error actualizando Job/JobProduct: ${jobError.message}`);
           }
-
-          // 6. ✅ Actualizar progreso del Job
-          await JobRepository.recalculateProgress(job_id);
-
-        } catch (jobError) {
-          logger.warn(`[retryBatch] Error actualizando Job/JobProduct: ${jobError.message}`);
-          // No bloquear el flujo, continuar
         }
-      }
-
-      results.push({
-        task_id,
-        success: result.success,
-        external_id: result.external_id,
-        error: result.success ? warningArtifacts.warningMessage : result.error,
-        error_details: result.success ? warningArtifacts.warningDetails : (result.error_details || result.details),
-        has_warnings: warningArtifacts.hasWarnings,
-        warnings: warningArtifacts.warnings,
-        status: result.status  // ← ✅ Incluir status para que el front sepa el estado real
-      });
-
-    } catch (error) {
-      logger.error(`[retryBatch] Error republicando task ${task_id}:`, error);
-
-      const currentTask = await ProductPublishingTaskRepository.findById(task_id);
-      await ProductPublishingTaskRepository.updateTask(currentTask || { id: task_id }, {
-        status: 'failed',
-        error_message: error.message,
-        attempt_count: ((currentTask?.attempt_count) || 0) + 1,
-        last_attempt_at: new Date()
-      });
-
-      // ✅ Actualizar JobProduct en caso de error
-      if (job_id) {
-        try {
-          const jobProduct = await JobProductRepository.findByProductAndMarketplace(
-            job_id,
-            currentTask?.product_id || task.product_id,
-            currentTask?.marketplace_id || task.marketplace_id,
-            currentTask?.credential_id || task.credential_id
-          );
-
-          if (jobProduct) {
-            await JobProductRepository.update(jobProduct, {
-              status: 'error',
-              error_message: error.message,
-              attempt_count: (jobProduct.attempt_count || 0) + 1,
-              last_attempt_at: new Date()
-            });
-
-            await JobRepository.recalculateProgress(job_id);
+  
+        results.push({
+          task_id: currentTaskId,
+          success: result.success,
+          external_id: result.external_id,
+          error: result.success ? warningArtifacts.warningMessage : result.error,
+          error_details: result.success ? warningArtifacts.warningDetails : (result.error_details || result.details),
+          has_warnings: warningArtifacts.hasWarnings,
+          warnings: warningArtifacts.warnings,
+          status: result.status
+        });
+  
+      } catch (error) {
+        logger.error(`[retryBatch] Error republicando task ${currentTaskId}:`, error);
+  
+        const currentTask = await ProductPublishingTaskRepository.findById(currentTaskId);
+        await ProductPublishingTaskRepository.updateTask(currentTask || { id: currentTaskId }, {
+          status: 'failed',
+          error_message: error.message,
+          attempt_count: ((currentTask?.attempt_count) || 0) + 1,
+          last_attempt_at: new Date()
+        });
+  
+        if (currentJobId) {
+          try {
+            const jobProduct = await JobProductRepository.findByProductAndMarketplace(
+              currentJobId,
+              currentTask?.product_id || task.product_id,
+              currentTask?.marketplace_id || task.marketplace_id,
+              currentTask?.credential_id || task.credential_id
+            );
+  
+            if (jobProduct) {
+              await JobProductRepository.update(jobProduct, {
+                status: 'error',
+                error_message: error.message,
+                attempt_count: (jobProduct.attempt_count || 0) + 1,
+                last_attempt_at: new Date()
+              });
+  
+              await JobRepository.recalculateProgress(currentJobId);
+            }
+          } catch (jobError) {
+            logger.warn(`[retryBatch] Error actualizando JobProduct en error: ${jobError.message}`);
           }
-        } catch (jobError) {
-          logger.warn(`[retryBatch] Error actualizando JobProduct en error: ${jobError.message}`);
         }
+  
+        results.push({
+          task_id: currentTaskId,
+          success: false,
+          error: error.message,
+          error_details: error.response?.data || null
+        });
       }
-
-      results.push({
-        task_id,
-        success: false,
-        error: error.message,
-        error_details: error.response?.data || null
-      });
     }
-  }
-
-  const successCount = results.filter(r => r.success).length;
-
-  return res.json({
-    success: true,
-    total: results.length,
-    successful: successCount,
-    failed: results.length - successCount,
-    results
-  });
-},
+  
+    const successCount = results.filter(r => r.success).length;
+  
+    return res.json({
+      success: true,
+      total: results.length,
+      successful: successCount,
+      failed: results.length - successCount,
+      results
+    });
+  },
+  
 async publishedProducts(req, res) {
   logger.info(`${req.user?.name || 'Unknown'} - Lista productos publicados`);
   const metadata = getRequestMetadata(req);

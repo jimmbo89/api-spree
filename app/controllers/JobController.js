@@ -159,7 +159,8 @@ function humanizeMercadoLibreError(details, error) {
   const causes = [
     ...(Array.isArray(details?.marketplace_errors) ? details.marketplace_errors : []),
     ...(Array.isArray(validation?.errors) ? validation.errors : []),
-    ...(Array.isArray(details?.cause) ? details.cause : [])
+    ...(Array.isArray(details?.cause) ? details.cause : []),
+    ...(details?.error_code || details?.code ? [details] : [])
   ];
   const messages = uniqueMessages(causes.map(humanizeMercadoLibreCause));
   const status = Number(validation?.status || details?.status || error?.status_code || 0);
