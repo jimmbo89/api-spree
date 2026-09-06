@@ -56,6 +56,113 @@ test('seller package usa categoría primero y packaging_measurements como fallba
   assert.equal(values.SELLER_PACKAGE_WEIGHT, 2000);
 });
 
+test('seller package usa product_measurements cuando packaging_measurements llega vacío', () => {
+  const adapter = createAdapter();
+  const result = adapter.buildMercadoLibreSellerPackageAttributes({
+    packaging_measurements: JSON.stringify({
+      weight: { value: null, unit: 'kg' },
+      dimensions: {
+        length: { value: null, unit: 'cm' },
+        width: { value: null, unit: 'cm' },
+        height: { value: null, unit: 'cm' }
+      }
+    }),
+    product_measurements: {
+      weight: { value: 50, unit: 'g' },
+      dimensions: {
+        length: { value: 30, unit: 'cm' },
+        width: { value: 28, unit: 'cm' },
+        height: { value: 16, unit: 'cm' }
+      }
+    }
+  });
+
+  assert.deepEqual(
+    Object.fromEntries(result.map((attribute) => [attribute.id, attribute.value_name])),
+    {
+      SELLER_PACKAGE_HEIGHT: 16,
+      SELLER_PACKAGE_WIDTH: 28,
+      SELLER_PACKAGE_LENGTH: 30,
+      SELLER_PACKAGE_WEIGHT: 50
+    }
+  );
+});
+
+test('prepareProduct acepta el body de republicación sin buying_mode y genera seller package', async () => {
+  const adapter = createAdapter({
+    ensureValidCredentials: async () => ({ valid: true }),
+    getCategoryMetadata: async () => ({
+      category: { settings: { catalog_domain: 'MLC-SCREEN_PRINTERS' } },
+      settings: { catalog_domain: 'MLC-SCREEN_PRINTERS' },
+      attributes: [
+        { id: 'BRAND', value_type: 'string' },
+        { id: 'SELLER_PACKAGE_HEIGHT', value_type: 'number_unit', allowed_units: [{ id: 'cm' }] },
+        { id: 'SELLER_PACKAGE_WIDTH', value_type: 'number_unit', allowed_units: [{ id: 'cm' }] },
+        { id: 'SELLER_PACKAGE_LENGTH', value_type: 'number_unit', allowed_units: [{ id: 'cm' }] },
+        { id: 'SELLER_PACKAGE_WEIGHT', value_type: 'number_unit', allowed_units: [{ id: 'g' }] }
+      ],
+      hasVariationAttributes: false,
+      variationAttributeIds: [],
+      shippingPreferences: {}
+    }),
+    getAvailableListingTypeIdsForCategory: async () => ['gold_special']
+  });
+
+  const prepared = await adapter.prepareProduct({
+    id: 54,
+    name: 'Mini Plancha',
+    description: 'Descripción de prueba',
+    brand: 'Todok',
+    price: 39990,
+    totalStock: 1,
+    currency_id: 'CLP',
+    condition: 'new',
+    packaging_measurements: JSON.stringify({
+      weight: { value: 1, unit: 'kg' },
+      dimensions: {
+        length: { value: 7, unit: 'cm' },
+        width: { value: 15, unit: 'cm' },
+        height: { value: 15, unit: 'cm' }
+      }
+    }),
+    variants: [{ id: 163, price: 39990, publish: true, publishStock: 1 }],
+    mercado_libre: {
+      55: {
+        category: { category_id: 'MLC10087', attributes: [] },
+        attributes: [{ id: 'BRAND', value_name: 'Todok' }],
+        listing_type_id: 'gold_special'
+      }
+    }
+  });
+
+  assert.equal(prepared.category_id, 'MLC10087');
+  assert.equal(prepared.buying_mode, 'buy_it_now');
+  assert.deepEqual(
+    Object.fromEntries(prepared.attributes
+      .filter((attribute) => attribute.id.startsWith('SELLER_PACKAGE_'))
+      .map((attribute) => [attribute.id, attribute.value_name])),
+    {
+      SELLER_PACKAGE_HEIGHT: '15 cm',
+      SELLER_PACKAGE_WIDTH: '15 cm',
+      SELLER_PACKAGE_LENGTH: '7 cm',
+      SELLER_PACKAGE_WEIGHT: '1000 g'
+    }
+  );
+});
+
+test('User Products nunca envía PACKAGE_* dentro de attributes', () => {
+  const adapter = createAdapter();
+  const attributes = adapter.buildMercadoLibreUserProductAttributes([
+    { id: 'BRAND', value_name: 'Epson' },
+    { id: 'PACKAGE_HEIGHT', value_name: '16' },
+    { id: 'PACKAGE_WIDTH', value_name: '28' },
+    { id: 'PACKAGE_LENGTH', value_name: '30' },
+    { id: 'PACKAGE_WEIGHT', value_name: '50' }
+  ]);
+
+  assert.deepEqual(attributes.map((attribute) => attribute.id), ['BRAND']);
+});
+
 test('publish de User Products no depende de categoryInfo implícito y no envía title ni variations', async (t) => {
   const originalPost = axios.post;
   const calls = [];
@@ -94,7 +201,13 @@ test('publish de User Products no depende de categoryInfo implícito y no envía
     condition: 'new',
     available_quantity: 2,
     pictures: [{ source: 'https://example.com/1.jpg' }],
-    attributes: [],
+    attributes: [
+      { id: 'BRAND', value_name: 'Epson' },
+      { id: 'PACKAGE_HEIGHT', name: 'Altura del paquete', value_name: '16' },
+      { id: 'PACKAGE_WIDTH', name: 'Ancho del paquete', value_name: '28' },
+      { id: 'PACKAGE_LENGTH', name: 'Largo del paquete', value_name: '30' },
+      { id: 'PACKAGE_WEIGHT', name: 'Peso del paquete', value_name: '50' }
+    ],
     sale_terms: [],
     description: '',
     variations: [],
@@ -106,6 +219,14 @@ test('publish de User Products no depende de categoryInfo implícito y no envía
   assert.equal(calls[0].body.family_name, 'Familia de prueba');
   assert.equal(calls[0].body.title, undefined);
   assert.equal(calls[0].body.variations, undefined);
+  assert.deepEqual(calls[0].body.attributes.map((attribute) => attribute.id), [
+    'BRAND',
+    'SELLER_PACKAGE_HEIGHT',
+    'SELLER_PACKAGE_WIDTH',
+    'SELLER_PACKAGE_LENGTH',
+    'SELLER_PACKAGE_WEIGHT',
+    'SELLER_SKU'
+  ]);
 });
 
 test('buildMercadoLibreUserProductItemPayload normaliza family_name que excede max_title_length', () => {

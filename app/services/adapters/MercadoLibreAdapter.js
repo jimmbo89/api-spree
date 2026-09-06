@@ -505,24 +505,36 @@ class MercadoLibreAdapter extends BaseAdapter {
             : factor);
       return Number.isFinite(converted) ? Math.round(converted) : null;
     };
+    const readAttributeMeasurement = (attributeId, targetUnit) => {
+      const attribute = byId.get(attributeId);
+      if (!attribute) return null;
+      return readMeasurement({
+        value: attribute.value_name ?? attribute.value ?? attribute.value_id,
+        unit: attribute.unit || targetUnit
+      }, targetUnit);
+    };
 
     const fallback = [
       ['SELLER_PACKAGE_HEIGHT',
         readMeasurement(packagingDimensions.height, 'cm')
         || readMeasurement(productDimensions.height, 'cm')
-        || readMeasurement(productData.height_cm, 'cm')],
+        || readMeasurement(productData.height_cm, 'cm')
+        || readAttributeMeasurement('PACKAGE_HEIGHT', 'cm')],
       ['SELLER_PACKAGE_WIDTH',
         readMeasurement(packagingDimensions.width, 'cm')
         || readMeasurement(productDimensions.width, 'cm')
-        || readMeasurement(productData.width_cm, 'cm')],
+        || readMeasurement(productData.width_cm, 'cm')
+        || readAttributeMeasurement('PACKAGE_WIDTH', 'cm')],
       ['SELLER_PACKAGE_LENGTH',
         readMeasurement(packagingDimensions.length, 'cm')
         || readMeasurement(productDimensions.length, 'cm')
-        || readMeasurement(productData.length_cm, 'cm')],
+        || readMeasurement(productData.length_cm, 'cm')
+        || readAttributeMeasurement('PACKAGE_LENGTH', 'cm')],
       ['SELLER_PACKAGE_WEIGHT',
         readMeasurement(packaging?.weight, 'g')
         || readMeasurement(productMeasurements.weight, 'g')
-        || readMeasurement(productData.weight_grams, 'g')]
+        || readMeasurement(productData.weight_grams, 'g')
+        || readAttributeMeasurement('PACKAGE_WEIGHT', 'g')]
     ];
 
     for (const [id, value] of fallback) {
@@ -1972,7 +1984,14 @@ class MercadoLibreAdapter extends BaseAdapter {
       });
     }
 
-    return Array.from(byId.values()).filter((attr) => attr && attr.id);
+    return Array.from(byId.values())
+      .filter((attr) => attr && attr.id)
+      .filter((attr) => ![
+        'PACKAGE_HEIGHT',
+        'PACKAGE_WIDTH',
+        'PACKAGE_LENGTH',
+        'PACKAGE_WEIGHT'
+      ].includes(String(attr.id).trim()));
   }
 
   resolveMercadoLibreAttributeValueFromVariant(variant, mlAttr) {
@@ -3294,8 +3313,12 @@ class MercadoLibreAdapter extends BaseAdapter {
       const sourceMarketplaceAttributes = Array.isArray(transformedProduct.__ml_marketplace_attributes)
         ? transformedProduct.__ml_marketplace_attributes
         : (Array.isArray(transformedProduct.attributes) ? transformedProduct.attributes : []);
+      const normalizedMarketplaceAttributes = this.buildMercadoLibreSellerPackageAttributes(
+        transformedProduct,
+        sourceMarketplaceAttributes
+      );
       const sanitizedMarketplaceAttributes = this.enrichMercadoLibreParentAttributes(
-        sourceMarketplaceAttributes,
+        normalizedMarketplaceAttributes,
         transformedProduct,
         categoryInfo?.attributes || []
       );

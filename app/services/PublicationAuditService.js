@@ -1,4 +1,5 @@
 const AuditEventService = require('./AuditEventService');
+const UserRepository = require('../repositories/UserRepository');
 const { detectChanges, normalizeAuditValue } = require('../util/auditUtils');
 
 function toPlain(record) {
@@ -525,10 +526,21 @@ const PublicationAuditService = {
 
   async recordPublishedProductByUser(userId, task, action, data = {}) {
     const { metadata, ...eventData } = data;
+    let actorName = data.actor_name;
+
+    if (!actorName && userId) {
+      try {
+        const user = toPlain(await UserRepository.findById(userId));
+        actorName = user?.name || user?.email || user?.user;
+      } catch (error) {
+        // La auditoría no debe impedir ni alterar el resultado de la publicación.
+      }
+    }
+
     return AuditEventService.safeRecord({
       actor_type: userId ? AuditEventService.ACTOR_TYPES.USER : AuditEventService.ACTOR_TYPES.SYSTEM,
       actor_id: userId ? String(userId) : null,
-      actor_name: data.actor_name || (userId ? 'Usuario' : 'Spree'),
+      actor_name: actorName || (userId ? `Usuario ${userId}` : 'Spree'),
       ...buildTaskAuditPayload(task, {
         ...eventData,
         action,

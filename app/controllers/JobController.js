@@ -139,6 +139,21 @@ function humanizeMercadoLibreCause(cause = {}) {
   if (code === 'item.attribute.invalid.seller.package.dimensions') {
     return 'Las dimensiones o el peso del paquete del vendedor no tienen valores válidos.';
   }
+  if (code === 'item.attribute.number_invalid_format') {
+    const rawAttribute = String(cause.message || '').match(/["“]([^"”]+)["”]/)?.[1] || '';
+    const attributeLabels = {
+      'altura del paquete': 'alto del paquete',
+      'ancho del paquete': 'ancho del paquete',
+      'largo del paquete': 'largo del paquete',
+      'peso del paquete': 'peso del paquete'
+    };
+    const normalizedAttribute = attributeLabels[rawAttribute.trim().toLowerCase()]
+      || publicationFieldLabel(rawAttribute)
+      || rawAttribute.trim();
+    return normalizedAttribute
+      ? `El valor del atributo «${normalizedAttribute}» no tiene un formato válido.`
+      : 'Uno de los atributos de la publicación no tiene un formato válido.';
+  }
 
   if (code === 'item.description.type.invalid') return 'La descripción debe contener solo texto plano.';
   if (code === 'body.required_fields' || code === 'body.required_fileds') {
