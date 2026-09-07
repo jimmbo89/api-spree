@@ -447,7 +447,9 @@ class MercadoLibreAdapter extends BaseAdapter {
     if (typeof value === 'string') {
       const normalized = value.trim().replace(',', '.');
       if (!normalized) return null;
-      const parsed = Number(normalized);
+      const match = normalized.match(/^[-+]?\d+(?:\.\d+)?(?:\s*[a-zA-Z°µ]+)?$/);
+      if (!match) return null;
+      const parsed = Number(match[0].match(/^[-+]?\d+(?:\.\d+)?/)[0]);
       return Number.isFinite(parsed) ? parsed : null;
     }
     if (typeof value === 'object' && value !== null) {

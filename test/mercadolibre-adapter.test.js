@@ -180,7 +180,12 @@ test('publish de User Products no depende de categoryInfo implícito y no envía
     getMercadoLibreSellerProfile: async () => ({ user_product_seller: true, seller_id: 123 }),
     loadMercadoLibreMetadata: async () => ({
       category: { settings: { max_title_length: 120 } },
-      attributes: [],
+      attributes: [
+        { id: 'SELLER_PACKAGE_HEIGHT', value_type: 'number_unit', allowed_units: [{ id: 'cm' }] },
+        { id: 'SELLER_PACKAGE_WIDTH', value_type: 'number_unit', allowed_units: [{ id: 'cm' }] },
+        { id: 'SELLER_PACKAGE_LENGTH', value_type: 'number_unit', allowed_units: [{ id: 'cm' }] },
+        { id: 'SELLER_PACKAGE_WEIGHT', value_type: 'number_unit', allowed_units: [{ id: 'g' }] }
+      ],
       sale_term_ids: [],
       shippingPreferences: { user: { modes: ['me2'] }, category: { logistics: [] } }
     }),
@@ -224,8 +229,7 @@ test('publish de User Products no depende de categoryInfo implícito y no envía
     'SELLER_PACKAGE_HEIGHT',
     'SELLER_PACKAGE_WIDTH',
     'SELLER_PACKAGE_LENGTH',
-    'SELLER_PACKAGE_WEIGHT',
-    'SELLER_SKU'
+    'SELLER_PACKAGE_WEIGHT'
   ]);
 });
 
