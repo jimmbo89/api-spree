@@ -43,6 +43,12 @@ class MarketplaceTransformerMercadoLibre {
         transformed.family_name = product.family_name;
       }
 
+      // Propagar el SKU recibido desde Spree hasta el adaptador de Mercado Libre.
+      // Este campo se usa para construir el atributo SELLER_SKU.
+      if (product.sku !== undefined && product.sku !== null && String(product.sku).trim()) {
+        transformed.sku = String(product.sku).trim();
+      }
+
       // ✅ ATRIBUTOS PRIORITARIOS CON NORMALIZACIÓN DE IMÁGENES
       if (product.attributes) transformed.attributes = product.attributes;
       if (product.variations) transformed.variations = product.variations;

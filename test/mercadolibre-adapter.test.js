@@ -96,6 +96,7 @@ test('prepareProduct acepta el body de republicación sin buying_mode y genera s
       settings: { catalog_domain: 'MLC-SCREEN_PRINTERS' },
       attributes: [
         { id: 'BRAND', value_type: 'string' },
+        { id: 'SELLER_SKU', value_type: 'string' },
         { id: 'SELLER_PACKAGE_HEIGHT', value_type: 'number_unit', allowed_units: [{ id: 'cm' }] },
         { id: 'SELLER_PACKAGE_WIDTH', value_type: 'number_unit', allowed_units: [{ id: 'cm' }] },
         { id: 'SELLER_PACKAGE_LENGTH', value_type: 'number_unit', allowed_units: [{ id: 'cm' }] },
@@ -110,12 +111,19 @@ test('prepareProduct acepta el body de republicación sin buying_mode y genera s
 
   const prepared = await adapter.prepareProduct({
     id: 54,
+    sku: 'T-TEST-001',
     name: 'Mini Plancha',
     description: 'Descripción de prueba',
     brand: 'Todok',
     price: 39990,
     totalStock: 1,
     currency_id: 'CLP',
+    attributes: [
+      { id: 'PACKAGE_HEIGHT', value_name: '7', unit: 'cm' },
+      { id: 'PACKAGE_WIDTH', value_name: '15', unit: 'cm' },
+      { id: 'PACKAGE_LENGTH', value_name: '15', unit: 'cm' },
+      { id: 'PACKAGE_WEIGHT', value_name: '1000', unit: 'g' }
+    ],
     condition: 'new',
     packaging_measurements: JSON.stringify({
       weight: { value: 1, unit: 'kg' },
@@ -136,7 +144,12 @@ test('prepareProduct acepta el body de republicación sin buying_mode y genera s
   });
 
   assert.equal(prepared.category_id, 'MLC10087');
+  assert.equal(prepared.sku, 'T-TEST-001');
   assert.equal(prepared.buying_mode, 'buy_it_now');
+  assert.equal(
+    prepared.attributes.find((attribute) => attribute.id === 'SELLER_SKU')?.value_name,
+    'T-TEST-001'
+  );
   assert.deepEqual(
     Object.fromEntries(prepared.attributes
       .filter((attribute) => attribute.id.startsWith('SELLER_PACKAGE_'))
@@ -208,10 +221,13 @@ test('publish de User Products no depende de categoryInfo implícito y no envía
     pictures: [{ source: 'https://example.com/1.jpg' }],
     attributes: [
       { id: 'BRAND', value_name: 'Epson' },
-      { id: 'PACKAGE_HEIGHT', name: 'Altura del paquete', value_name: '16' },
-      { id: 'PACKAGE_WIDTH', name: 'Ancho del paquete', value_name: '28' },
-      { id: 'PACKAGE_LENGTH', name: 'Largo del paquete', value_name: '30' },
-      { id: 'PACKAGE_WEIGHT', name: 'Peso del paquete', value_name: '50' }
+      { id: 'SELLER_PACKAGE_WEIGHT', value_name: '50 g', unit: 'g' }
+    ],
+    __ml_marketplace_attributes: [
+      { id: 'PACKAGE_HEIGHT', name: 'Altura del paquete', value_name: '16', unit: 'cm' },
+      { id: 'PACKAGE_WIDTH', name: 'Ancho del paquete', value_name: '28', unit: 'cm' },
+      { id: 'PACKAGE_LENGTH', name: 'Largo del paquete', value_name: '30', unit: 'cm' },
+      { id: 'PACKAGE_WEIGHT', name: 'Peso del paquete', value_name: '50', unit: 'g' }
     ],
     sale_terms: [],
     description: '',
@@ -224,13 +240,31 @@ test('publish de User Products no depende de categoryInfo implícito y no envía
   assert.equal(calls[0].body.family_name, 'Familia de prueba');
   assert.equal(calls[0].body.title, undefined);
   assert.equal(calls[0].body.variations, undefined);
-  assert.deepEqual(calls[0].body.attributes.map((attribute) => attribute.id), [
+  assert.deepEqual(calls[0].body.attributes.map((attribute) => attribute.id).sort(), [
     'BRAND',
+    'SELLER_SKU',
     'SELLER_PACKAGE_HEIGHT',
     'SELLER_PACKAGE_WIDTH',
     'SELLER_PACKAGE_LENGTH',
     'SELLER_PACKAGE_WEIGHT'
-  ]);
+  ].sort());
+  assert.deepEqual(
+    Object.fromEntries(
+      calls[0].body.attributes
+        .filter((attribute) => attribute.id.startsWith('SELLER_PACKAGE_'))
+        .map((attribute) => [attribute.id, attribute.value_name])
+    ),
+    {
+      SELLER_PACKAGE_HEIGHT: '16 cm',
+      SELLER_PACKAGE_WIDTH: '28 cm',
+      SELLER_PACKAGE_LENGTH: '30 cm',
+      SELLER_PACKAGE_WEIGHT: '50 g'
+    }
+  );
+  assert.equal(
+    calls[0].body.attributes.find((attribute) => attribute.id === 'SELLER_SKU')?.value_name,
+    'SKU-001'
+  );
 });
 
 test('buildMercadoLibreUserProductItemPayload normaliza family_name que excede max_title_length', () => {

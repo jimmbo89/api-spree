@@ -497,6 +497,23 @@ class MercadoLibreAdapter extends BaseAdapter {
         .map((attr) => [String(attr.id), attr])
     );
 
+    // SELLER_SKU debe poder venir del producto de Spree aunque la selección
+    // de categoría no lo haya entregado como atributo configurable.
+    const sourceSku = [
+      productData?.sku,
+      ...(Array.isArray(productData?.variants)
+        ? productData.variants
+          .filter((variant) => variant?.publish !== false && variant?.sku)
+          .map((variant) => variant.sku)
+        : [])
+    ].find((value) => value !== undefined && value !== null && String(value).trim() !== '');
+    if (!byId.has('SELLER_SKU') && sourceSku) {
+      byId.set('SELLER_SKU', {
+        id: 'SELLER_SKU',
+        value_name: String(sourceSku).trim()
+      });
+    }
+
     const readMeasurement = (source, targetUnit, factor = 1) => {
       const value = this.extractNumericValue(source);
       if (value === null) return null;
@@ -920,10 +937,18 @@ class MercadoLibreAdapter extends BaseAdapter {
     const isCatalogProduct = !!catalogDomain && catalogDomain !== "MLC-UNCLASSIFIED_PRODUCTS";
     const hasVariationAttributes = categoryInfo.hasVariationAttributes;
     const currencyId = this.resolveCurrencyIdForPublish(productData, categoryInfo);
+    const sourceSku = firstPresentValue(
+      productData.sku,
+      (Array.isArray(productData.variants) ? productData.variants : [])
+        .find((variant) => variant?.publish !== false && variant?.sku)?.sku
+    );
 
     // ✅ PASO 3: Construir producto base
     const prepared = {
       category_id: mlData.category.category_id,
+      // El transformer recibe este objeto, no el producto original de Spree.
+      // Conservarlo aquí evita que SELLER_SKU se pierda antes del payload final.
+      sku: sourceSku || null,
       price: Number(productData.price) || 0,
       currency_id: currencyId,
       available_quantity: Number(productData.totalStock) || 0,
@@ -1034,6 +1059,9 @@ class MercadoLibreAdapter extends BaseAdapter {
         value: attr.value ?? attr.value_name ?? attr.userValue ?? attr.user_value ?? attr.plain_text ?? attr.value_id
       }));
     const configuredAttributesById = new Map();
+    for (const attr of (Array.isArray(productData.attributes) ? productData.attributes : [])) {
+      if (attr?.id) configuredAttributesById.set(String(attr.id), attr);
+    }
     for (const attr of (Array.isArray(mlData.attributes) ? mlData.attributes : [])) {
       if (attr?.id) configuredAttributesById.set(String(attr.id), attr);
     }
@@ -3312,9 +3340,12 @@ class MercadoLibreAdapter extends BaseAdapter {
       productToPublish.buying_mode = commercialFields.buying_mode;
       productToPublish.condition = commercialFields.condition;
 
-      const sourceMarketplaceAttributes = Array.isArray(transformedProduct.__ml_marketplace_attributes)
-        ? transformedProduct.__ml_marketplace_attributes
-        : (Array.isArray(transformedProduct.attributes) ? transformedProduct.attributes : []);
+      const sourceMarketplaceAttributes = [
+        ...(Array.isArray(transformedProduct.attributes) ? transformedProduct.attributes : []),
+        ...(Array.isArray(transformedProduct.__ml_marketplace_attributes)
+          ? transformedProduct.__ml_marketplace_attributes
+          : [])
+      ];
       const normalizedMarketplaceAttributes = this.buildMercadoLibreSellerPackageAttributes(
         transformedProduct,
         sourceMarketplaceAttributes
