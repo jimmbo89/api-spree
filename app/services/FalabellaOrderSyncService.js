@@ -7,6 +7,7 @@ const {
 } = require('../repositories');
 
 const FB_API_VERSION = process.env.FB_API_VERSION || '2.0';
+const FB_ORDER_ITEMS_API_VERSION = process.env.FB_ORDER_ITEMS_API_VERSION || '1.0';
 const FB_USER_AGENT = process.env.FB_USER_AGENT || 'Spree/1.0';
 const FB_FETCH_RETRY_MAX = 3;
 const FB_FETCH_RETRY_BASE_DELAY_MS = 1500;
@@ -41,7 +42,8 @@ const FalabellaOrderSyncService = {
         return fallbackOrder('order_fetch_failed');
       }
 
-      const orderInfo = parseFalabellaOrderInfo(remoteOrder);
+      const remoteOrderItems = await fetchFalabellaOrderItemsWithRetry(order.marketplace_order_id, credential);
+      const orderInfo = parseFalabellaOrderInfo(remoteOrder, remoteOrderItems);
       const customerSnapshot = buildFalabellaCustomerSnapshot(remoteOrder, orderInfo);
       const orderData = {
         order_status: mapFalabellaOrderStatus(orderInfo.status),
@@ -66,7 +68,10 @@ const FalabellaOrderSyncService = {
           ]) || orderInfo.shippingAddress || order.shipping_address || null,
         shipping_city: customerSnapshot.shipping_city || orderInfo.shippingCity || order.shipping_city || null,
         shipping_region: customerSnapshot.shipping_state || orderInfo.shippingRegion || order.shipping_region || null,
-        raw_payload: remoteOrder
+        raw_payload: {
+          get_order: remoteOrder,
+          get_order_items: remoteOrderItems
+        }
       };
 
       await MarketplaceOrderRepository.updateById(order.id, orderData);
@@ -164,6 +169,36 @@ async function fetchFalabellaOrderWithRetry(orderId, credential) {
   return null;
 }
 
+async function fetchFalabellaOrderItemsWithRetry(orderId, credential) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= FB_FETCH_RETRY_MAX; attempt++) {
+    try {
+      const response = await fetchFalabellaOrderItems(orderId, credential);
+      if (response) return response;
+      lastError = new Error('empty_response');
+    } catch (error) {
+      lastError = error;
+    }
+
+    if (attempt < FB_FETCH_RETRY_MAX) {
+      const delayMs = Math.min(
+        FB_FETCH_RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1),
+        FB_FETCH_RETRY_MAX_DELAY_MS
+      );
+      logger.warn(
+        `[FB Refresh] Intento ${attempt}/${FB_FETCH_RETRY_MAX} fallido para items de orden ${orderId}. Reintentando en ${delayMs}ms...`
+      );
+      await sleep(delayMs);
+    }
+  }
+
+  logger.error(
+    `[FB Refresh] Error obteniendo items de orden ${orderId} despues de ${FB_FETCH_RETRY_MAX} intentos: ${lastError?.message || 'unknown'}`
+  );
+  return null;
+}
+
 async function fetchFalabellaOrder(orderId, credential) {
   try {
     const timestamp = timestampMinus03();
@@ -182,44 +217,115 @@ async function fetchFalabellaOrder(orderId, credential) {
       headers: { 'User-Agent': FB_USER_AGENT }
     });
 
-    if (typeof response.data === 'string') {
-      try {
-        return JSON.parse(response.data);
-      } catch (error) {
-        logger.error(`[FB Refresh] Respuesta no JSON para OrderId ${orderId}`);
-        return null;
-      }
-    }
-
-    return response.data;
+    return parseFalabellaApiResponse(response.data, `GetOrder OrderId=${orderId}`);
   } catch (error) {
     logger.error(`[FB Refresh] Error obteniendo orden ${orderId}: ${error.message}`);
     return null;
   }
 }
 
-function parseFalabellaOrderInfo(orderData) {
+async function fetchFalabellaOrderItems(orderId, credential) {
+  try {
+    const timestamp = timestampMinus03();
+    const params = {
+      Action: 'GetOrderItems',
+      Format: 'JSON',
+      OrderId: String(orderId),
+      Timestamp: timestamp,
+      UserID: credential.seller_email.trim(),
+      Version: FB_ORDER_ITEMS_API_VERSION
+    };
+
+    const url = buildFalabellaSignedUrl(params, credential.api_key);
+    const response = await axios.get(url, {
+      timeout: 15000,
+      headers: { 'User-Agent': FB_USER_AGENT }
+    });
+
+    return parseFalabellaApiResponse(response.data, `GetOrderItems OrderId=${orderId}`);
+  } catch (error) {
+    logger.error(`[FB Refresh] Error obteniendo items de orden ${orderId}: ${error.message}`);
+    return null;
+  }
+}
+
+function parseFalabellaApiResponse(data, context) {
+  let parsed = data;
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch (error) {
+      logger.error(`[FB Refresh] Respuesta no JSON para ${context}`);
+      return null;
+    }
+  }
+
+  if (!parsed || typeof parsed !== 'object') return null;
+  if (parsed.ErrorResponse) {
+    logger.error(`[FB Refresh] Error Falabella en ${context}: ${extractFalabellaApiError(parsed.ErrorResponse)}`);
+    return null;
+  }
+  return parsed;
+}
+
+function extractFalabellaApiError(errorResponse) {
+  const errors = errorResponse?.Body?.Errors?.Error ||
+    errorResponse?.Body?.Error ||
+    errorResponse?.Head?.Errors?.Error ||
+    null;
+  const first = Array.isArray(errors) ? errors[0] : errors;
+  if (!first) return 'ErrorResponse';
+  if (typeof first === 'string') return first;
+  return [first.Code || first.code, first.Message || first.message]
+    .filter(Boolean)
+    .join(': ') || 'ErrorResponse';
+}
+
+function parseFalabellaOrderInfo(orderData, orderItemsData = null) {
   const order = extractFalabellaOrderRoot(orderData);
   if (!order) return {};
 
   const rawItems =
+    orderItemsData?.SuccessResponse?.Body?.OrderItems?.OrderItem ||
     order?.OrderItems?.OrderItem ||
     orderData?.SuccessResponse?.Body?.OrderItems?.OrderItem ||
     [];
 
-  const items = Array.isArray(rawItems) ? rawItems : rawItems ? [rawItems] : [];
+  const rawItemList = Array.isArray(rawItems) ? rawItems : rawItems ? [rawItems] : [];
+  const items = rawItemList.map((item) => {
+    const quantity = parsePositiveInteger(item?.Quantity || item?.quantity || item?.Qty, 1);
+    const itemPrice = parseFalabellaAmount(item?.ItemPrice || item?.item_price || item?.Price || item?.UnitPrice);
+    const paidPrice = parseFalabellaAmount(item?.PaidPrice || item?.paid_price || item?.TotalPrice || item?.Amount);
+    const totalPrice = paidPrice != null
+      ? paidPrice
+      : itemPrice != null
+        ? itemPrice * quantity
+        : 0;
+    const voucherAmount = parseFalabellaAmount(item?.VoucherAmount || item?.voucher_amount);
+    const discount = parseFalabellaAmount(item?.Discount || item?.discount) ??
+      (itemPrice != null && totalPrice < itemPrice ? itemPrice - totalPrice : 0);
 
-  const subtotal = items.reduce((sum, item) => {
-    const price = parseFloat(item?.Price || item?.UnitPrice || 0) || 0;
-    const qty = parseInt(item?.Quantity || item?.Qty || 1, 10) || 1;
-    return sum + (price * qty);
-  }, 0);
+    return {
+      totalPrice,
+      shippingFee: parseFalabellaAmount(
+        item?.ShippingAmount || item?.shipping_amount || item?.ShippingFee || item?.ShippingCost
+      ) || 0,
+      discount: discount || voucherAmount || 0,
+      commission: parseFalabellaAmount(item?.Commission || item?.commission) || 0,
+      tax: parseFalabellaAmount(item?.TaxAmount || item?.Tax || item?.tax) || 0,
+      status: item?.Status || item?.status || null
+    };
+  });
 
-  const shippingTotal = items.reduce((sum, item) => sum + (parseFloat(item?.ShippingFee || item?.ShippingCost || 0) || 0), 0);
-  const discountTotal = items.reduce((sum, item) => sum + (parseFloat(item?.Discount || 0) || 0), 0);
-  const commissionTotal = items.reduce((sum, item) => sum + (parseFloat(item?.Commission || 0) || 0), 0);
-  const taxTotal = items.reduce((sum, item) => sum + (parseFloat(item?.Tax || item?.TaxAmount || 0) || 0), 0);
-  const totalAmount = subtotal + shippingTotal - discountTotal + taxTotal;
+  const subtotal = items.reduce((sum, item) => sum + item.totalPrice, 0);
+  const shippingTotal = items.reduce((sum, item) => sum + item.shippingFee, 0);
+  const discountTotal = items.reduce((sum, item) => sum + item.discount, 0);
+  const commissionTotal = items.reduce((sum, item) => sum + item.commission, 0);
+  const taxTotal = items.reduce((sum, item) => sum + item.tax, 0);
+  const totalAmount = items.length > 0
+    ? subtotal + shippingTotal
+    : parseFalabellaAmount(order?.GrandTotal || order?.Price) || 0;
+  const statuses = extractFalabellaOrderStatuses(order, items);
 
   const customer = order?.Customer || order?.Buyer || {};
   const buyerName = buildFullName(
@@ -230,8 +336,11 @@ function parseFalabellaOrderInfo(orderData) {
   const shippingAddress = extractFalabellaShippingAddress(order);
 
   return {
-    status: order?.OrderStatus || order?.Status || 'pending',
+    status: statuses[0] || 'pending',
+    statuses,
     paymentMethod: order?.PaymentMethod || order?.payment_method || null,
+    invoiceRequired: toBoolean(order?.InvoiceRequired),
+    shippingType: order?.ShippingType || null,
     subtotal,
     shippingTotal,
     discountTotal,
@@ -252,6 +361,43 @@ function parseFalabellaOrderInfo(orderData) {
     updatedAt: order?.UpdatedAt || order?.UpdatedDate || null,
     raw: order
   };
+}
+
+function parseFalabellaAmount(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parsePositiveInteger(value, fallback = 1) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function extractFalabellaOrderStatuses(order, items) {
+  const orderStatuses = order?.Statuses?.Status || order?.Statuses || [];
+  const statuses = Array.isArray(orderStatuses) ? orderStatuses : [orderStatuses];
+  const itemStatuses = (items || []).map((item) => item.status).filter(Boolean);
+  const candidates = [
+    ...statuses,
+    order?.OrderStatus,
+    order?.Status,
+    ...itemStatuses
+  ]
+    .map((status) => String(status || '').trim().toLowerCase())
+    .filter(Boolean);
+  const priority = [
+    'returned',
+    'canceled',
+    'cancelled',
+    'delivered',
+    'shipped',
+    'ready_to_ship',
+    'ready to ship',
+    'processing',
+    'pending'
+  ];
+  return priority.filter((status) => candidates.includes(status));
 }
 
 function buildFalabellaCustomerSnapshot(orderData, orderInfo) {
@@ -443,12 +589,14 @@ function mapFalabellaOrderStatus(status) {
   const map = {
     pending: 'pending',
     confirmed: 'paid',
+    processing: 'pending',
     shipped: 'shipped',
     delivered: 'delivered',
+    canceled: 'cancelled',
     cancelled: 'cancelled',
     returned: 'returned',
-    'ready to ship': 'shipped',
-    'ready_to_ship': 'shipped',
+    'ready to ship': 'confirmed',
+    'ready_to_ship': 'confirmed',
     'on order created': 'pending',
     'order created': 'pending'
   };

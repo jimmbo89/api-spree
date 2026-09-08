@@ -45,6 +45,7 @@ const FB_FETCH_RETRY_MAX = 3;
 const FB_FETCH_RETRY_BASE_DELAY_MS = 1500;
 const FB_FETCH_RETRY_MAX_DELAY_MS = 8000;
 const FB_WEBHOOK_RECOVERY_GRACE_MS = Number(process.env.FB_WEBHOOK_RECOVERY_GRACE_MS || 3000);
+const FB_ORDER_ITEMS_API_VERSION = process.env.FB_ORDER_ITEMS_API_VERSION || "1.0";
 
 function parseJsonObject(value) {
   if (!value) return {};
@@ -71,8 +72,8 @@ const FB_KNOWN_TOPICS = new Set([
   ...FB_PRODUCT_TOPICS
 ]);
 const STOCK_SALE_STATUSES = new Set(["paid", "confirmed", "shipped", "delivered"]);
-const STOCK_REVERSE_ORDER_STATUSES = new Set(["cancelled", "returned"]);
-const STOCK_REVERSE_PAYMENT_STATUSES = new Set(["refunded", "charged_back", "cancelled"]);
+const STOCK_REVERSE_ORDER_STATUSES = new Set(["cancelled", "canceled", "returned"]);
+const STOCK_REVERSE_PAYMENT_STATUSES = new Set(["refunded", "charged_back", "cancelled", "canceled"]);
 const STOCK_DEDUCT_EVENT_TYPE = "stock_deducted";
 const STOCK_REVERSE_EVENT_TYPE = "stock_reversed";
 const FB_API_VERSION = process.env.FB_API_VERSION || "2.0";
@@ -92,6 +93,8 @@ function buildFalabellaAsyncPayload(input) {
     'SellerSku',
     'OrderId',
     'OrderID',
+    'OrderItemIds',
+    'NewStatus',
     'sku',
     'Sku',
     'resource',
@@ -134,7 +137,16 @@ function buildFalabellaAsyncPayload(input) {
   };
 
   if (sourcePayload && typeof sourcePayload === 'object') {
-    for (const key of ['Feed', 'SellerSkus', 'SellerSku', 'OrderId', 'OrderID', 'resource']) {
+    for (const key of [
+      'Feed',
+      'SellerSkus',
+      'SellerSku',
+      'OrderId',
+      'OrderID',
+      'OrderItemIds',
+      'NewStatus',
+      'resource'
+    ]) {
       if (sourcePayload[key] !== undefined) {
         safePayload[key] = sourcePayload[key];
       }
@@ -2951,10 +2963,12 @@ async function processFalabellaEvent({ event, payload, orderId }) {
   }
 
   let orderData = null;
+  let orderItemsData = null;
   if (!credential || !credential.seller_email || !credential.api_key) {
     const resolvedByOrder = await resolveFalabellaCredentialByOrderProbe(orderId);
     credential = resolvedByOrder?.credential || credential;
     orderData = resolvedByOrder?.orderData || null;
+    orderItemsData = resolvedByOrder?.orderItemsData || null;
   }
 
   if (!credential || !credential.seller_email || !credential.api_key) {
@@ -2977,9 +2991,11 @@ async function processFalabellaEvent({ event, payload, orderId }) {
     return;
   }
 
+  orderItemsData = orderItemsData || await fetchFalabellaOrderItemsWithRetry(orderId, credential);
+
   // ✅ PARSEAR DATOS DE LA ORDEN COMPLETA
-  const orderInfo = parseFalabellaOrderInfo(orderData);
-  const items = parseFalabellaOrderItems(orderData);
+  const orderInfo = parseFalabellaOrderInfo(orderData, orderItemsData, payload);
+  const items = parseFalabellaOrderItems(orderData, orderItemsData);
 
   if (items.length === 0) {
     await MarketplaceWebhookEventRepository.updateById(event.id, {
@@ -3001,6 +3017,15 @@ async function processFalabellaEvent({ event, payload, orderId }) {
   const companyId = companyInfo?.company_id || credential.company_id || null;
   const branchId = companyInfo?.branch_id || null;
   const publicationUserId = companyInfo?.user_id || credential.user_id || null;
+  const itemLinks = await Promise.all(items.map((item) => findOrderProductMarketplaceLink({
+    marketplaceId: credential.marketplace_id,
+    externalId: item?.sku,
+    credentialId: credential.id,
+    companyId,
+    branchId
+  })));
+  const management = getFalabellaOrderManagement(itemLinks);
+  const managedBySpree = management.managedBySpree;
   const existingOrder = await MarketplaceOrderRepository.findByMarketplaceOrderId(
     FB_MARKETPLACE_KEY,
     String(orderId)
@@ -3019,8 +3044,16 @@ async function processFalabellaEvent({ event, payload, orderId }) {
     user_id: publicationUserId,
     company_id: companyId,
     branch_id: branchId,
+    managed_by_spree: managedBySpree,
     order_status: mapFalabellaOrderStatus(orderInfo.status),
-    payment_status: 'pending', // Falabella no expone estado de pago directamente
+    payment_status: 'pending', // Falabella documenta PaymentMethod, no un estado de pago separado
+    payment_method: orderInfo.paymentMethod || null,
+    sale_date: parseDateOrNull(orderInfo.createdAt),
+    invoice_type: orderInfo.invoiceRequired === true
+      ? 'invoice'
+      : orderInfo.invoiceRequired === false
+        ? 'boleta'
+        : null,
     subtotal: orderInfo.subtotal || 0,
     shipping_total: orderInfo.shippingTotal || 0,
     discount_total: orderInfo.discountTotal || 0,
@@ -3039,7 +3072,11 @@ async function processFalabellaEvent({ event, payload, orderId }) {
       ]) || orderInfo.shippingAddress || null,
     shipping_city: customerSnapshot.shipping_city || orderInfo.shippingCity || null,
     shipping_region: customerSnapshot.shipping_state || orderInfo.shippingRegion || null,
-    raw_payload: orderData
+    raw_payload: buildFalabellaOrderRawPayload({
+      webhookPayload: payload,
+      orderData,
+      orderItemsData
+    })
   };
 
   let savedOrder;
@@ -3070,8 +3107,9 @@ async function processFalabellaEvent({ event, payload, orderId }) {
     orderStatus: currentOrderStatus,
     paymentStatus: currentPaymentStatus
   });
-  const shouldDeductStock = lifecycle.shouldDeduct && !stockState.hasDeduction && !stockState.hasReversal;
-  const shouldReverseStock = lifecycle.shouldReverse && stockState.hasDeduction && stockState.pendingReversalCount > 0;
+  const shouldManageLocalStock = !isFalabellaFulfillmentByFalabella(orderInfo.shippingType);
+  const shouldDeductStock = shouldManageLocalStock && lifecycle.shouldDeduct && !stockState.hasDeduction && !stockState.hasReversal;
+  const shouldReverseStock = shouldManageLocalStock && lifecycle.shouldReverse && stockState.hasDeduction && stockState.pendingReversalCount > 0;
   const statusChanged = previousOrderStatus !== currentOrderStatus;
 
   // ✅ GUARDAR EVENTOS DE ESTADO
@@ -3081,7 +3119,11 @@ async function processFalabellaEvent({ event, payload, orderId }) {
       'created',
       null,
       currentOrderStatus,
-      orderData,
+      buildFalabellaOrderRawPayload({
+        webhookPayload: payload,
+        orderData,
+        orderItemsData
+      }),
       { company_id: companyId }
     );
     await SalesAuditService.recordMarketplaceEvent(
@@ -3105,7 +3147,11 @@ async function processFalabellaEvent({ event, payload, orderId }) {
       currentOrderStatus,
       previousOrderStatus,
       currentOrderStatus,
-      orderData,
+      buildFalabellaOrderRawPayload({
+        webhookPayload: payload,
+        orderData,
+        orderItemsData
+      }),
       { company_id: companyId }
     );
     const changes = SalesAuditService.getOrderChanges(existingOrder, savedOrder);
@@ -3132,32 +3178,80 @@ async function processFalabellaEvent({ event, payload, orderId }) {
 
   const errors = [];
   const savedItems = [];
+  const stockProcessedItems = [];
 
+  // Igual que Mercado Libre: primero se conserva cada ítem recibido, aunque no
+  // exista un vínculo con un producto de Spree. Solo los ítems vinculados se
+  // consideran gestionables por Spree y pueden mover inventario.
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    const link = itemLinks[index];
+    const productId = link?.product_id || null;
+
+    try {
+      const variant = productId ? await resolveVariant(productId, item?.sku) : null;
+      const persistedItem = await saveFalabellaOrderItem({
+        item,
+        ctx: {
+          orderIdLocal: savedOrder.id,
+          credentialId: credential.id,
+          companyId,
+          branchId
+        },
+        link,
+        productId,
+        variant,
+        costPrice: null,
+        totalCost: null,
+        inventoryMovementId: null,
+        managedBySpree: Boolean(link)
+      });
+
+      if (persistedItem) {
+        savedItems.push(persistedItem);
+      }
+    } catch (error) {
+      errors.push(`item_persist_failed:${error.message}`);
+      logger.error(`[FB Webhook] Error guardando item order=${orderId}: ${error.message}`);
+    }
+  }
+
+  // Falabella entrega el detalle de la orden por GetOrderItems. El inventario
+  // local solo se mueve para ítems con vínculo marketplace-producto, igual que
+  // en Mercado Libre; los ítems externos permanecen registrados sin descuento.
   if (shouldDeductStock) {
-    // ✅ PROCESAR CADA ITEM SOLO EN PRIMERA VENTA PAGADA
-    for (const item of items) {
+    for (let index = 0; index < items.length; index += 1) {
+      if (!itemLinks[index]) continue;
+
+      const item = items[index];
       try {
-        const itemResult = await processFalabellaOrderItem(item, {
+        await processFalabellaOrderItem(item, {
           orderId,
           marketplaceId: credential.marketplace_id,
           credentialId: credential.id,
           companyId,
           branchId,
           orderIdLocal: savedOrder.id,
-          itemData: item // Pasar datos completos del item
+          itemData: item,
+          deductStock: true
         });
-        
-        if (itemResult) {
-          savedItems.push(itemResult);
-        }
+        stockProcessedItems.push(item);
       } catch (error) {
         errors.push(error.message);
         logger.error(`[FB Webhook] Item error order=${orderId}: ${error.message}`);
       }
     }
+  }
+
+  if (shouldDeductStock) {
+    const allItemsSaved = savedItems.length === items.length && errors.length === 0;
+    const managedItemCount = management.managedItemCount;
+    const stockProcessed = managedItemCount > 0 &&
+      stockProcessedItems.length === managedItemCount &&
+      allItemsSaved;
 
     // ✅ GUARDAR FEES TOTALES DE LA ORDEN (comisiones)
-    if (savedOrder && orderInfo.commission > 0) {
+    if (savedOrder && orderInfo.commission > 0 && allItemsSaved) {
       try {
         await MarketplaceOrderFeeRepository.create({
           order_id: savedOrder.id,
@@ -3174,26 +3268,30 @@ async function processFalabellaEvent({ event, payload, orderId }) {
       }
     }
 
-    await MarketplaceOrderEventRepository.create({
-      order_id: savedOrder.id,
-      event_type: STOCK_DEDUCT_EVENT_TYPE,
-      previous_status: previousOrderStatus,
-      new_status: currentOrderStatus,
-      raw_payload: orderData,
-      notes: `Stock debitado por orden Falabella ${orderId}`,
-      company_id: companyId
-    });
-    if (savedItems.length > 0) {
+    if (stockProcessed) {
+      await MarketplaceOrderEventRepository.create({
+        order_id: savedOrder.id,
+        event_type: STOCK_DEDUCT_EVENT_TYPE,
+        previous_status: previousOrderStatus,
+        new_status: currentOrderStatus,
+        raw_payload: buildFalabellaOrderRawPayload({
+          webhookPayload: payload,
+          orderData,
+          orderItemsData
+        }),
+        notes: `Stock debitado por orden Falabella ${orderId}`,
+        company_id: companyId
+      });
       await SalesAuditService.recordSystemEvent(savedOrder, 'sales.stock_deducted', {
         new_value: {
-          items_count: savedItems.length
+          items_count: stockProcessedItems.length
         },
         description: 'Spree descontó stock por la venta',
         metadata: {
           marketplace: FB_MARKETPLACE_KEY,
           webhook_event_id: event.id,
-          items_count: savedItems.length,
-          is_spree_managed: items.length > 0 && savedItems.length === items.length
+          items_count: stockProcessedItems.length,
+          is_spree_managed: managedBySpree
         }
       });
     }
@@ -3206,7 +3304,7 @@ async function processFalabellaEvent({ event, payload, orderId }) {
       items,
       savedItems,
       totalAmount: orderInfo.totalAmount || 0,
-      isSpreeManaged: items.length > 0 && savedItems.length === items.length
+      isSpreeManaged: managedBySpree
     });
   }
 
@@ -3308,10 +3406,11 @@ async function resolveFalabellaCredentialByOrderProbe(orderId) {
     if (!candidate?.seller_email || !candidate?.api_key) continue;
 
     const orderData = await fetchFalabellaOrderWithRetry(orderId, candidate);
-    const items = parseFalabellaOrderItems(orderData);
+    const orderItemsData = await fetchFalabellaOrderItemsWithRetry(orderId, candidate);
+    const items = parseFalabellaOrderItems(orderData, orderItemsData);
     if (items.length > 0) {
       logger.info(`[FB Webhook] Credencial resuelta por GetOrder: credential_id=${candidate.id}, order_id=${orderId}`);
-      return { credential: candidate, orderData };
+      return { credential: candidate, orderData, orderItemsData };
     }
   }
 
@@ -3349,6 +3448,36 @@ async function fetchFalabellaOrderWithRetry(orderId, credential) {
   return null;
 }
 
+async function fetchFalabellaOrderItemsWithRetry(orderId, credential) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= FB_FETCH_RETRY_MAX; attempt++) {
+    try {
+      const response = await fetchFalabellaOrderItems(orderId, credential);
+      if (response) return response;
+      lastError = new Error("empty_response");
+    } catch (error) {
+      lastError = error;
+    }
+
+    if (attempt < FB_FETCH_RETRY_MAX) {
+      const delayMs = Math.min(
+        FB_FETCH_RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1),
+        FB_FETCH_RETRY_MAX_DELAY_MS
+      );
+      logger.warn(
+        `[FB Webhook] Intento ${attempt}/${FB_FETCH_RETRY_MAX} fallido para items de orden ${orderId}. Reintentando en ${delayMs}ms...`
+      );
+      await sleep(delayMs);
+    }
+  }
+
+  logger.error(
+    `[FB Webhook] Error obteniendo items de orden ${orderId} despues de ${FB_FETCH_RETRY_MAX} intentos: ${lastError?.message || "unknown"}`
+  );
+  return null;
+}
+
 async function fetchFalabellaOrder(orderId, credential) {
   try {
     const timestamp = timestampMinus03();
@@ -3369,20 +3498,74 @@ async function fetchFalabellaOrder(orderId, credential) {
       }
     });
 
-    if (typeof response.data === "string") {
-      try {
-        return JSON.parse(response.data);
-      } catch (e) {
-        logger.error(`[FB Webhook] Respuesta no JSON para OrderId ${orderId}`);
-        return null;
-      }
-    }
-
-    return response.data;
+    const data = parseFalabellaApiResponse(response.data, `GetOrder OrderId=${orderId}`);
+    return data;
   } catch (error) {
     logger.error(`[FB Webhook] Error obteniendo orden ${orderId}: ${error.message}`);
     return null;
   }
+}
+
+async function fetchFalabellaOrderItems(orderId, credential) {
+  try {
+    const timestamp = timestampMinus03();
+    const params = {
+      Action: "GetOrderItems",
+      Format: "JSON",
+      OrderId: String(orderId),
+      Timestamp: timestamp,
+      UserID: credential.seller_email.trim(),
+      Version: FB_ORDER_ITEMS_API_VERSION
+    };
+
+    const url = buildFalabellaSignedUrl(params, credential.api_key);
+    const response = await axios.get(url, {
+      timeout: 15000,
+      headers: {
+        "User-Agent": FB_USER_AGENT
+      }
+    });
+
+    return parseFalabellaApiResponse(response.data, `GetOrderItems OrderId=${orderId}`);
+  } catch (error) {
+    logger.error(`[FB Webhook] Error obteniendo items de orden ${orderId}: ${error.message}`);
+    return null;
+  }
+}
+
+function parseFalabellaApiResponse(data, context) {
+  let parsed = data;
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch (error) {
+      logger.error(`[FB Webhook] Respuesta no JSON para ${context}`);
+      return null;
+    }
+  }
+
+  if (!parsed || typeof parsed !== "object") return null;
+
+  if (parsed.ErrorResponse) {
+    const error = extractFalabellaApiError(parsed.ErrorResponse);
+    logger.error(`[FB Webhook] Error Falabella en ${context}: ${error}`);
+    return null;
+  }
+
+  return parsed;
+}
+
+function extractFalabellaApiError(errorResponse) {
+  const errors = errorResponse?.Body?.Errors?.Error ||
+    errorResponse?.Body?.Error ||
+    errorResponse?.Head?.Errors?.Error ||
+    null;
+  const first = Array.isArray(errors) ? errors[0] : errors;
+  if (!first) return "ErrorResponse";
+  if (typeof first === "string") return first;
+  return [first.Code || first.code, first.Message || first.message]
+    .filter(Boolean)
+    .join(": ") || "ErrorResponse";
 }
 
 async function fetchFalabellaProductWithRetry(sellerSku, credential) {
@@ -4413,76 +4596,95 @@ function parseFalabellaOrderIds(orderData) {
     .map((id) => String(id));
 }
 
-function parseFalabellaOrderItems(orderData) {
+function parseFalabellaOrderItems(orderData, orderItemsData = null) {
   const order =
     orderData?.SuccessResponse?.Body?.Order ||
     orderData?.SuccessResponse?.Body?.Orders?.Order ||
     null;
 
   const rawItems =
+    orderItemsData?.SuccessResponse?.Body?.OrderItems?.OrderItem ||
     order?.OrderItems?.OrderItem ||
     orderData?.SuccessResponse?.Body?.OrderItems?.OrderItem ||
     null;
 
   const items = Array.isArray(rawItems) ? rawItems : rawItems ? [rawItems] : [];
 
-  return items.map((item) => ({
-    sku:
+  return items.map((item) => {
+    const quantity = parsePositiveInteger(item?.Quantity || item?.quantity || item?.Qty, 1);
+    const itemPrice = parseFalabellaAmount(item?.ItemPrice || item?.item_price || item?.Price || item?.UnitPrice);
+    const paidPrice = parseFalabellaAmount(item?.PaidPrice || item?.paid_price || item?.TotalPrice || item?.Amount);
+    const totalPrice = paidPrice != null
+      ? paidPrice
+      : itemPrice != null
+        ? itemPrice * quantity
+        : 0;
+    const voucherAmount = parseFalabellaAmount(item?.VoucherAmount || item?.voucher_amount);
+    const discount = parseFalabellaAmount(item?.Discount || item?.discount) ??
+      (itemPrice != null && totalPrice < itemPrice ? itemPrice - totalPrice : 0);
+
+    return {
+      marketplaceItemId:
+        item?.OrderItemId ||
+        item?.OrderItemID ||
+        item?.order_item_id ||
+        null,
+      sku:
       item?.SellerSku ||
       item?.SellerSKU ||
       item?.Sku ||
       item?.sku ||
       null,
-    quantity: parseInt(item?.Quantity || item?.quantity || item?.Qty, 10) || 0,
-    // ✅ NUEVO: Datos financieros del item
-    unitPrice: parseFloat(item?.Price || item?.price || item?.UnitPrice || 0) || 0,
-    totalPrice: parseFloat(item?.TotalPrice || item?.total_price || item?.Amount || 0) || 0,
-    discount: parseFloat(item?.Discount || item?.discount || 0) || 0,
-    commission: parseFloat(item?.Commission || item?.commission || 0) || 0,
-    shippingFee: parseFloat(item?.ShippingFee || item?.shipping_fee || item?.ShippingCost || 0) || 0,
-    tax: parseFloat(item?.Tax || item?.tax || item?.TaxAmount || 0) || 0
-  }));
+      title: item?.Name || item?.name || null,
+      quantity,
+      itemPrice: itemPrice || 0,
+      unitPrice: totalPrice > 0 ? totalPrice / quantity : 0,
+      paidPrice: paidPrice || totalPrice || 0,
+      totalPrice,
+      discount: discount || voucherAmount || 0,
+      voucherAmount: voucherAmount || 0,
+      commission: parseFalabellaAmount(item?.Commission || item?.commission) || 0,
+      shippingFee: parseFalabellaAmount(
+        item?.ShippingAmount ||
+        item?.shipping_amount ||
+        item?.ShippingFee ||
+        item?.shipping_fee ||
+        item?.ShippingCost
+      ) || 0,
+      tax: parseFalabellaAmount(item?.TaxAmount || item?.Tax || item?.tax) || 0,
+      status: item?.Status || item?.status || null,
+      shippingType: item?.ShippingType || item?.shipping_type || null,
+      packageId: item?.PackageId || item?.package_id || null,
+      trackingCode: item?.TrackingCode || item?.tracking_code || null,
+      raw: item
+    };
+  });
 }
 
 /**
  * Parsea información general de una orden de Falabella
  */
-function parseFalabellaOrderInfo(orderData) {
+function parseFalabellaOrderInfo(orderData, orderItemsData = null, webhookPayload = null) {
   const order = extractFalabellaOrderRoot(orderData);
 
   if (!order) return {};
 
-  // Calcular totales sumando los items
-  const rawItems =
-    order?.OrderItems?.OrderItem ||
-    orderData?.SuccessResponse?.Body?.OrderItems?.OrderItem ||
-    [];
-  
-  const items = Array.isArray(rawItems) ? rawItems : rawItems ? [rawItems] : [];
-  
-  const subtotal = items.reduce((sum, item) => {
-    const price = parseFloat(item?.Price || item?.UnitPrice || 0) || 0;
-    const qty = parseInt(item?.Quantity || item?.Qty || 1, 10) || 1;
-    return sum + (price * qty);
-  }, 0);
+  const items = parseFalabellaOrderItems(orderData, orderItemsData);
+  const statuses = extractFalabellaOrderStatuses(order, items);
+  const webhookStatus = webhookPayload?.payload?.NewStatus || webhookPayload?.NewStatus || null;
+  const status = webhookStatus || statuses[0] || 'pending';
 
-  const shippingTotal = items.reduce((sum, item) => {
-    return sum + (parseFloat(item?.ShippingFee || item?.ShippingCost || 0) || 0);
-  }, 0);
-
-  const discountTotal = items.reduce((sum, item) => {
-    return sum + (parseFloat(item?.Discount || 0) || 0);
-  }, 0);
-
-  const commissionTotal = items.reduce((sum, item) => {
-    return sum + (parseFloat(item?.Commission || 0) || 0);
-  }, 0);
-
-  const taxTotal = items.reduce((sum, item) => {
-    return sum + (parseFloat(item?.Tax || item?.TaxAmount || 0) || 0);
-  }, 0);
-
-  const totalAmount = subtotal + shippingTotal - discountTotal + taxTotal;
+  // Falabella documenta que el total correcto es la suma de PaidPrice y
+  // ShippingAmount por item. GrandTotal/Price solo se usan como respaldo si
+  // la respuesta no trae todavía el detalle.
+  const subtotal = items.reduce((sum, item) => sum + (item.totalPrice || 0), 0);
+  const shippingTotal = items.reduce((sum, item) => sum + (item.shippingFee || 0), 0);
+  const discountTotal = items.reduce((sum, item) => sum + (item.discount || 0), 0);
+  const commissionTotal = items.reduce((sum, item) => sum + (item.commission || 0), 0);
+  const taxTotal = items.reduce((sum, item) => sum + (item.tax || 0), 0);
+  const totalAmount = items.length > 0
+    ? subtotal + shippingTotal
+    : parseFalabellaAmount(order?.GrandTotal || order?.Price) || 0;
 
   // Información del comprador
   const customer = order?.Customer || order?.Buyer || {};
@@ -4517,13 +4719,19 @@ function parseFalabellaOrderInfo(orderData) {
   ];
 
   return {
-    status: order?.OrderStatus || order?.Status || 'pending',
+    status,
+    statuses,
+    webhookStatus,
     subtotal,
     shippingTotal,
     discountTotal,
     taxTotal,
     commission: commissionTotal,
     totalAmount,
+    paymentMethod: order?.PaymentMethod || order?.payment_method || null,
+    invoiceRequired: toBoolean(order?.InvoiceRequired),
+    shippingType: order?.ShippingType || items[0]?.shippingType || null,
+    orderNumber: order?.OrderNumber || null,
     buyerName,
     shippingAddress: buildAddressLine(addressParts),
     shippingCity: pickString(shippingAddress?.City, shippingAddress?.city),
@@ -4532,7 +4740,58 @@ function parseFalabellaOrderInfo(orderData) {
       shippingAddress?.Region,
       shippingAddress?.region
     ),
-    createdAt: order?.CreatedDate || order?.CreatedAt || null
+    createdAt: order?.CreatedDate || order?.CreatedAt || null,
+    updatedAt: order?.UpdatedAt || null,
+    promisedShippingTime: order?.PromisedShippingTime || items[0]?.raw?.PromisedShippingTime || null,
+    sellerWarehouseId: order?.SellerWarehouseId || order?.Warehouse?.SellerWarehouseId || null,
+    facilityId: order?.FacilityId || order?.Warehouse?.FacilityId || null
+  };
+}
+
+function parseFalabellaAmount(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parsePositiveInteger(value, fallback = 1) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function extractFalabellaOrderStatuses(order, items) {
+  const orderStatuses = order?.Statuses?.Status || order?.Statuses || [];
+  const statuses = Array.isArray(orderStatuses) ? orderStatuses : [orderStatuses];
+  const itemStatuses = (items || []).map((item) => item.status).filter(Boolean);
+  const candidates = [
+    ...statuses,
+    order?.OrderStatus,
+    order?.Status,
+    ...itemStatuses
+  ]
+    .map((status) => String(status || '').trim().toLowerCase())
+    .filter(Boolean);
+
+  const priority = [
+    'returned',
+    'canceled',
+    'cancelled',
+    'delivered',
+    'shipped',
+    'ready_to_ship',
+    'ready to ship',
+    'processing',
+    'pending'
+  ];
+
+  return priority.filter((status) => candidates.includes(status));
+}
+
+function buildFalabellaOrderRawPayload({ webhookPayload, orderData, orderItemsData }) {
+  return {
+    webhook: webhookPayload || null,
+    get_order: orderData || null,
+    get_order_items: orderItemsData || null
   };
 }
 
@@ -4959,45 +5218,60 @@ function normalizeCustomerType(initialType) {
 }
 
 async function processFalabellaOrderItem(item, ctx) {
-  const quantity = Number(item?.quantity || 0);
+  const quantity = Number(item?.quantity || 1);
   if (!Number.isInteger(quantity) || quantity <= 0) {
     throw new Error("invalid_quantity");
   }
 
-  const sku = item?.sku;
-  if (!sku) {
-    throw new Error("sku_not_found");
-  }
+  const sku = item?.sku || null;
+  const unitPrice = Number(item?.unitPrice || 0);
+  const totalPrice = Number(item?.totalPrice || (unitPrice * quantity));
+  const commission = Number(item?.commission || 0);
+  const shippingFee = Number(item?.shippingFee || 0);
+  const discount = Number(item?.discount || 0);
+  const tax = Number(item?.tax || 0);
 
-  // ✅ DATOS FINANCIEROS DEL ITEM
-  const unitPrice = parseFloat(item?.unitPrice || 0);
-  const totalPrice = parseFloat(item?.totalPrice || (unitPrice * quantity)) || (unitPrice * quantity);
-  const commission = parseFloat(item?.commission || 0);
-  const shippingFee = parseFloat(item?.shippingFee || 0);
-  const discount = parseFloat(item?.discount || 0);
-  const tax = parseFloat(item?.tax || 0);
-
-  let link = await findOrderProductMarketplaceLink({
-    marketplaceId: ctx.marketplaceId,
-    externalId: sku,
-    credentialId: ctx.credentialId,
-    companyId: ctx.companyId,
-    branchId: ctx.branchId
-  });
+  const link = sku
+    ? await findOrderProductMarketplaceLink({
+        marketplaceId: ctx.marketplaceId,
+        externalId: sku,
+        credentialId: ctx.credentialId,
+        companyId: ctx.companyId,
+        branchId: ctx.branchId
+      })
+    : null;
 
   let productId = link?.product_id || null;
-  if (!productId) {
+  if (!productId && sku) {
     const variantBySku = await ProductVariantRepository.findBySku(sku);
     productId = variantBySku?.product_id || null;
   }
 
-  if (!productId) {
+  if (ctx.deductStock && !sku) {
+    throw new Error("sku_not_found");
+  }
+
+  if (ctx.deductStock && !productId) {
     throw new Error(`product_not_found:${sku}`);
   }
 
-  const variant = await resolveVariant(productId, sku);
-  if (!variant) {
+  const variant = productId ? await resolveVariant(productId, sku) : null;
+  if (ctx.deductStock && !variant) {
     throw new Error(`variant_not_found:${sku}`);
+  }
+
+  if (!ctx.deductStock) {
+    return await saveFalabellaOrderItem({
+      item,
+      ctx,
+      link,
+      productId,
+      variant,
+      costPrice: null,
+      totalCost: null,
+      inventoryMovementId: null,
+      managedBySpree: Boolean(productId && variant)
+    });
   }
 
   const warehouseIds = await resolveWarehouseCandidates({
@@ -5056,51 +5330,20 @@ async function processFalabellaOrderItem(item, ctx) {
     }
   });
 
-  // ✅ GUARDAR ITEM EN marketplace_order_items
-  let savedItem = null;
-  const itemCompanyId = link?.company_id || ctx.companyId;
-  const itemBranchId = link?.branch_id || ctx.branchId;
-  if (ctx.orderIdLocal && exitResults.length > 0) {
-    try {
-      const inventoryMovementId = exitResults[0]?.inventoryMovementId || null;
+  const savedItem = await saveFalabellaOrderItem({
+    item,
+    ctx,
+    link,
+    productId,
+    variant,
+    costPrice,
+    totalCost,
+    inventoryMovementId: exitResults[0]?.inventoryMovementId || null,
+    managedBySpree: true
+  });
 
-      savedItem = await MarketplaceOrderItemRepository.create({
-        order_id: ctx.orderIdLocal,
-        marketplace_item_id: null, // Falabella no devuelve item_id
-        listing_id: sku,
-        sku: sku,
-        product_id: productId,
-        variant_id: variant.id,
-        company_id: itemCompanyId,
-        branch_id: itemBranchId,
-        quantity: quantity,
-        unit_price: unitPrice,
-        total_price: totalPrice,
-        discount_amount: discount,
-        tax_amount: tax,
-        cost_price: costPrice,
-        total_cost: totalCost,
-        inventory_movement_id: inventoryMovementId
-      });
-
-      // ✅ GUARDAR FEE DEL ITEM (commission)
-      if (commission > 0) {
-        await MarketplaceOrderFeeRepository.create({
-          order_id: ctx.orderIdLocal,
-          order_item_id: savedItem.id,
-          company_id: itemCompanyId,
-          fee_type: 'commission',
-          amount: commission,
-          percentage: unitPrice > 0 ? (commission / unitPrice) * 100 : 0,
-          status: 'pending',
-          description: `Comisión Falabella - Item ${sku}`,
-          raw_data: { commission: commission }
-        });
-      }
-    } catch (error) {
-      logger.error(`[FB Webhook] Error guardando item ${sku}: ${error.message}`);
-    }
-  }
+  const itemCompanyId = link?.company_id || ctx.companyId || null;
+  const itemBranchId = link?.branch_id || ctx.branchId || null;
 
   // ✅ ENCULAR SYNC DE STOCK
   for (const result of exitResults) {
@@ -5114,6 +5357,108 @@ async function processFalabellaOrderItem(item, ctx) {
       branchId: itemBranchId,
       logPrefix: "FB Webhook"
     });
+  }
+
+  return savedItem;
+}
+
+async function saveFalabellaOrderItem({
+  item,
+  ctx,
+  link,
+  productId,
+  variant,
+  costPrice,
+  totalCost,
+  inventoryMovementId,
+  managedBySpree
+}) {
+  if (!ctx.orderIdLocal) return null;
+
+  const marketplaceItemId = item?.marketplaceItemId != null
+    ? String(item.marketplaceItemId)
+    : null;
+  const listingId = item?.sku || null;
+  const existingByItem = await MarketplaceOrderItemRepository.findByOrderAndMarketplaceItem(
+    ctx.orderIdLocal,
+    marketplaceItemId,
+    listingId
+  );
+  const existingItem = existingByItem || (marketplaceItemId
+    ? await MarketplaceOrderItemRepository.findByOrderAndMarketplaceItem(
+        ctx.orderIdLocal,
+        null,
+        listingId
+      )
+    : null);
+  const itemCompanyId = link?.company_id || ctx.companyId || null;
+  const itemBranchId = link?.branch_id || ctx.branchId || null;
+  const quantity = Number(item?.quantity || 1);
+  const unitPrice = Number(item?.unitPrice || 0);
+  const totalPrice = Number(item?.totalPrice || (unitPrice * quantity));
+  const commission = Number(item?.commission || 0);
+
+  const itemData = {
+    order_id: ctx.orderIdLocal,
+    marketplace_item_id: marketplaceItemId,
+    listing_id: listingId,
+    sku: listingId,
+    title: item?.title || null,
+    marketplace_attributes: {
+      item_price: item?.itemPrice || null,
+      paid_price: item?.paidPrice || null,
+      shipping_amount: item?.shippingFee || 0,
+      status: item?.status || null,
+      shipping_type: item?.shippingType || null,
+      package_id: item?.packageId || null,
+      tracking_code: item?.trackingCode || null,
+      raw: item?.raw || null
+    },
+    managed_by_spree: Boolean(managedBySpree),
+    product_id: productId || null,
+    variant_id: variant?.id || null,
+    company_id: itemCompanyId,
+    branch_id: itemBranchId,
+    quantity,
+    unit_price: unitPrice,
+    total_price: totalPrice,
+    discount_amount: Number(item?.discount || 0),
+    tax_amount: Number(item?.tax || 0),
+    cost_price: costPrice,
+    total_cost: totalCost,
+    inventory_movement_id: inventoryMovementId || null
+  };
+
+  const savedItem = existingItem
+    ? await MarketplaceOrderItemRepository.updateById(existingItem.id, itemData).then(() => ({
+        ...existingItem.toJSON(),
+        ...itemData,
+        id: existingItem.id
+      }))
+    : await MarketplaceOrderItemRepository.create(itemData);
+
+  if (commission > 0) {
+    const existingFee = await MarketplaceOrderFeeRepository.findByOrderItemAndType(
+      savedItem.id,
+      'commission'
+    );
+    const feeData = {
+      order_id: ctx.orderIdLocal,
+      order_item_id: savedItem.id,
+      company_id: itemCompanyId,
+      fee_type: 'commission',
+      amount: commission,
+      percentage: unitPrice > 0 ? (commission / unitPrice) * 100 : 0,
+      status: 'pending',
+      description: `Comisión Falabella - Item ${listingId || savedItem.id}`,
+      raw_data: { commission }
+    };
+
+    if (existingFee) {
+      await MarketplaceOrderFeeRepository.updateById(existingFee.id, feeData);
+    } else {
+      await MarketplaceOrderFeeRepository.create(feeData);
+    }
   }
 
   return savedItem;
@@ -5823,6 +6168,24 @@ function buildFalabellaEventId(payload, resource, topic = null) {
     return topicPart ? `ts:${topicPart}:${resource}:${timestamp}` : `ts:${resource}:${timestamp}`;
   }
 
+  // Los payloads oficiales de Falabella no exponen event_id ni timestamp.
+  // Para órdenes, el contrato sí entrega una identidad estable compuesta por
+  // OrderId y, en cambios de estado, OrderItemIds/NewStatus.
+  if (/^orders\//i.test(String(resource || ''))) {
+    const eventPayload = payload?.payload || payload?.data || payload || {};
+    const identity = JSON.stringify({
+      topic: topicPart,
+      resource,
+      orderId: eventPayload?.OrderId || eventPayload?.order_id || eventPayload?.orderId || payload?.OrderId || null,
+      orderItemIds: Array.isArray(eventPayload?.OrderItemIds)
+        ? [...eventPayload.OrderItemIds].map(String).sort()
+        : [],
+      newStatus: eventPayload?.NewStatus || eventPayload?.new_status || null
+    });
+    const digest = crypto.createHash("sha256").update(identity, "utf8").digest("hex");
+    return `payload:${digest}`;
+  }
+
   if (!FB_ENABLE_PRODUCT_EVENT_RECONCILIATION && /^products\//i.test(String(resource || ''))) {
     return null;
   }
@@ -5873,8 +6236,12 @@ function mapFalabellaOrderStatus(fbStatus) {
   const statusMap = {
     'confirmed': 'paid',
     'confirmed by seller': 'paid',
+    'ready_to_ship': 'confirmed',
+    'ready to ship': 'confirmed',
+    'processing': 'pending',
     'shipped': 'shipped',
     'delivered': 'delivered',
+    'canceled': 'cancelled',
     'cancelled': 'cancelled',
     'returned': 'returned',
     'pending': 'pending',
@@ -5883,6 +6250,25 @@ function mapFalabellaOrderStatus(fbStatus) {
   };
   
   return statusMap[fbStatus.toLowerCase()] || 'pending';
+}
+
+function isFalabellaFulfillmentByFalabella(shippingType) {
+  const normalized = String(shippingType || '').trim().toLowerCase();
+  return [
+    'own warehouse',
+    'fulfillment',
+    'fulfilment',
+    'fulfillment by falabella',
+    'fulfilment by falabella'
+  ].includes(normalized);
+}
+
+function getFalabellaOrderManagement(itemLinks) {
+  const links = Array.isArray(itemLinks) ? itemLinks : [];
+  return {
+    managedBySpree: links.length > 0 && links.every(Boolean),
+    managedItemCount: links.filter(Boolean).length
+  };
 }
 
 // ==========================================
@@ -6362,5 +6748,13 @@ module.exports = MarketplaceWebhookController;
 MarketplaceWebhookController._processFalabellaEvent = processFalabellaEvent;
 MarketplaceWebhookController._fetchFalabellaOrdersV2 = fetchFalabellaOrdersV2;
 MarketplaceWebhookController._parseFalabellaOrderIds = parseFalabellaOrderIds;
+MarketplaceWebhookController._buildFalabellaAsyncPayload = buildFalabellaAsyncPayload;
+MarketplaceWebhookController._fetchFalabellaOrder = fetchFalabellaOrder;
+MarketplaceWebhookController._fetchFalabellaOrderItems = fetchFalabellaOrderItems;
+MarketplaceWebhookController._parseFalabellaOrderItems = parseFalabellaOrderItems;
+MarketplaceWebhookController._parseFalabellaOrderInfo = parseFalabellaOrderInfo;
+MarketplaceWebhookController._mapFalabellaOrderStatus = mapFalabellaOrderStatus;
+MarketplaceWebhookController._buildFalabellaEventId = buildFalabellaEventId;
+MarketplaceWebhookController._getFalabellaOrderManagement = getFalabellaOrderManagement;
 MarketplaceWebhookController._determineFalabellaTaskLifecycle = determineFalabellaTaskLifecycle;
 MarketplaceWebhookController._resolveFalabellaMarketplaceDisplayStatus = resolveFalabellaMarketplaceDisplayStatus;
