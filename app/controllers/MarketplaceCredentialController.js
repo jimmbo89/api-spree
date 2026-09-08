@@ -14,6 +14,7 @@ const ProductPublishingTaskController = require('./ProductPublishingTaskControll
 const { getRequestMetadata } = require('../util/requestUtil');
 const AuditEventService = require('../services/AuditEventService');
 const { detectChanges } = require('../util/auditUtils');
+const FalabellaWebhookService = require('../services/FalabellaWebhookService');
 
 const MARKETPLACE_CREDENTIAL_AUDIT_FIELDS = [
   'name',
@@ -57,6 +58,25 @@ function resolveCompanyId(req) {
 
   const companyId = Number(rawCompanyId);
   return Number.isInteger(companyId) && companyId > 0 ? companyId : NaN;
+}
+
+function isFalabellaMarketplace(marketplace) {
+  const name = String(marketplace?.name || '').toLowerCase();
+  const domain = String(marketplace?.domain || '').toLowerCase();
+  return name.includes('falabella') || domain.includes('falabella');
+}
+
+async function synchronizeFalabellaWebhook(credentialId) {
+  try {
+    return await FalabellaWebhookService.ensureCredentialWebhookById(credentialId);
+  } catch (error) {
+    logger.error(`[Falabella Webhook] Error sincronizando credential_id=${credentialId}: ${error.message}`);
+    return {
+      status: 'error',
+      credential_id: credentialId,
+      message: 'No se pudo sincronizar el webhook de Falabella'
+    };
+  }
 }
 
 function toPlain(record) {
@@ -156,6 +176,78 @@ function getSecretCredentialChanges(existing, updatePayload) {
       old_value: existing[field] ? 'Configurada' : 'Sin configurar',
       new_value: updatePayload[field] ? 'Actualizada' : 'Eliminada'
     }));
+}
+
+function webhookCredentialSummary(credential) {
+  return {
+    credential_id: credential.id,
+    company_id: credential.company_id,
+    marketplace_id: credential.marketplace_id,
+    credential_name: credential.name || null,
+    active: credential.active,
+    seller_email: credential.seller_email || null,
+    seller_id: credential.seller_id || null,
+    credentials_configured: {
+      seller_email: !!credential.seller_email,
+      api_key: !!credential.api_key
+    },
+    marketplace: credential.marketplace
+      ? {
+          id: credential.marketplace.id,
+          name: credential.marketplace.name || null,
+          domain: credential.marketplace.domain || null
+        }
+      : null
+  };
+}
+
+async function loadFalabellaWebhookCredentials(req, { requireId = false, activeOnly = false } = {}) {
+  const rawCredentialId = req.body?.credential_id ?? req.body?.id ?? null;
+
+  if (rawCredentialId !== null && rawCredentialId !== undefined && rawCredentialId !== '') {
+    const credentialId = Number(rawCredentialId);
+    if (!Number.isInteger(credentialId) || credentialId <= 0) {
+      const error = new Error('credential_id debe ser un numero entero positivo');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const credential = await MarketplaceCredentialRepository.findById(credentialId);
+    if (!credential) {
+      const error = new Error('Credencial no encontrada');
+      error.statusCode = 404;
+      throw error;
+    }
+    if (!isFalabellaMarketplace(credential.marketplace)) {
+      const error = new Error('La credencial indicada no pertenece a Falabella');
+      error.statusCode = 400;
+      throw error;
+    }
+    if (activeOnly && (credential.active === false || Number(credential.active) === 0)) {
+      const error = new Error('La credencial indicada esta inactiva');
+      error.statusCode = 400;
+      throw error;
+    }
+    return [credential];
+  }
+
+  if (requireId) {
+    const error = new Error('credential_id es requerido');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return await MarketplaceCredentialRepository.findAllFalabella({ activeOnly });
+}
+
+function webhookRouteError(error) {
+  return {
+    status: Number.isInteger(error?.statusCode) ? error.statusCode : 500,
+    body: {
+      success: false,
+      message: error?.statusCode ? error.message : 'Error al gestionar webhooks de Falabella'
+    }
+  };
 }
 
 const MarketplaceCredentialController = {
@@ -306,9 +398,157 @@ const MarketplaceCredentialController = {
     }
   },
 
- async store(req, res) {
+  async falabellaWebhooksStatus(req, res) {
+    try {
+      const credentials = await loadFalabellaWebhookCredentials(req, { activeOnly: true });
+      const results = [];
+
+      for (const credential of credentials) {
+        const summary = webhookCredentialSummary(credential);
+        if (!credential.seller_email || !credential.api_key) {
+          results.push({
+            ...summary,
+            status: 'skipped',
+            reason: 'credentials_incomplete',
+            has_webhooks: null,
+            spree_webhook_defined: null,
+            spree_webhook_valid: null,
+            webhooks: []
+          });
+          continue;
+        }
+
+        try {
+          const inspection = await FalabellaWebhookService.inspectCredentialWebhook(credential);
+          results.push({
+            ...summary,
+            status: 'ok',
+            callback_url: inspection.callback_url,
+            required_events: inspection.required_events,
+            has_webhooks: inspection.webhooks.length > 0,
+            spree_webhook_defined: inspection.target_webhooks.length > 0,
+            spree_webhook_valid: inspection.valid_webhooks.length > 0,
+            webhooks: inspection.webhooks.map((webhook) => ({
+              webhook_id: webhook.webhook_id,
+              callback_url: webhook.callback_url,
+              webhook_source: webhook.webhook_source,
+              events: webhook.events,
+              is_spree_callback: inspection.target_webhooks.some(
+                (target) => target.webhook_id === webhook.webhook_id
+              ),
+              has_required_order_events: inspection.valid_webhooks.some(
+                (valid) => valid.webhook_id === webhook.webhook_id
+              )
+            })),
+            target_count: inspection.target_webhooks.length,
+            valid_target_count: inspection.valid_webhooks.length
+          });
+        } catch (error) {
+          results.push({
+            ...summary,
+            status: 'error',
+            message: error.message,
+            has_webhooks: null,
+            spree_webhook_defined: null,
+            spree_webhook_valid: null,
+            webhooks: []
+          });
+        }
+      }
+
+      return res.status(200).json({
+        success: true,
+        active_only: true,
+        callback_url: FalabellaWebhookService.DEFAULT_CALLBACK_URL,
+        required_events: FalabellaWebhookService.REQUIRED_ORDER_EVENTS,
+        count: results.length,
+        credentials: results
+      });
+    } catch (error) {
+      const response = webhookRouteError(error);
+      return res.status(response.status).json(response.body);
+    }
+  },
+
+  async falabellaWebhooksSync(req, res) {
+    try {
+      const replaceCallback = req.body?.replace_callback || null;
+      const credentials = await loadFalabellaWebhookCredentials(req, { activeOnly: true });
+      if (replaceCallback && credentials.length !== 1) {
+        return res.status(400).json({
+          success: false,
+          message: 'replace_callback requiere una sola credential_id para evitar eliminar callbacks de otras cuentas'
+        });
+      }
+
+      const options = replaceCallback ? { replaceCallbackUrls: [replaceCallback] } : {};
+      const results = [];
+      for (const credential of credentials) {
+        try {
+          results.push({
+            ...webhookCredentialSummary(credential),
+            result: await FalabellaWebhookService.ensureCredentialWebhook(credential, options)
+          });
+        } catch (error) {
+          results.push({
+            ...webhookCredentialSummary(credential),
+            result: { status: 'error', message: error.message }
+          });
+        }
+      }
+
+      return res.status(200).json({
+        success: true,
+        active_only: true,
+        callback_url: FalabellaWebhookService.DEFAULT_CALLBACK_URL,
+        required_events: FalabellaWebhookService.REQUIRED_ORDER_EVENTS,
+        count: results.length,
+        credentials: results
+      });
+    } catch (error) {
+      const response = webhookRouteError(error);
+      return res.status(response.status).json(response.body);
+    }
+  },
+
+  async falabellaWebhookEnable(req, res) {
+    try {
+      const credentials = await loadFalabellaWebhookCredentials(req, { requireId: true });
+      const replaceCallback = req.body?.replace_callback || null;
+      const result = await FalabellaWebhookService.ensureCredentialWebhook(credentials[0], replaceCallback
+        ? { replaceCallbackUrls: [replaceCallback] }
+        : {});
+
+      return res.status(200).json({
+        success: result.status !== 'error',
+        ...webhookCredentialSummary(credentials[0]),
+        result
+      });
+    } catch (error) {
+      const response = webhookRouteError(error);
+      return res.status(response.status).json(response.body);
+    }
+  },
+
+  async falabellaWebhookDisable(req, res) {
+    try {
+      const credentials = await loadFalabellaWebhookCredentials(req, { requireId: true });
+      const result = await FalabellaWebhookService.disableCredentialWebhook(credentials[0]);
+
+      return res.status(200).json({
+        success: true,
+        ...webhookCredentialSummary(credentials[0]),
+        result
+      });
+    } catch (error) {
+      const response = webhookRouteError(error);
+      return res.status(response.status).json(response.body);
+    }
+  },
+
+  async store(req, res) {
   logger.info(`${req.user?.name || 'Unknown'} - Crea credencial de marketplace`);
-  logger.info(`Datos recibidos: ${JSON.stringify(req.body)}`);
+  logger.info(`Datos recibidos: ${JSON.stringify(sanitizeAdditionalData(req.body))}`);
 
   const userId = req.user.id;
    const { marketplace_id, name, seller_email, seller_id, api_key, country } = req.body;
@@ -410,9 +650,14 @@ const MarketplaceCredentialController = {
         }
       }));
 
+      const falabellaWebhook = isFalabellaMarketplace(marketplace)
+        ? await synchronizeFalabellaWebhook(newCredential.id)
+        : null;
+
       return res.status(201).json({
         success: true,
-        message: "Credenciales guardadas exitosamente"
+        message: "Credenciales guardadas exitosamente",
+        ...(falabellaWebhook ? { falabella_webhook: falabellaWebhook } : {})
       });
     }
 
@@ -552,7 +797,7 @@ const MarketplaceCredentialController = {
 },
   async refreshToken(req, res) {
   logger.info(`${req.user?.name || 'Unknown'} - Refresca credenciales de marketplace`);
-  logger.info(`Datos recibidos: ${JSON.stringify(req.body)}`);
+  logger.info(`Datos recibidos: ${JSON.stringify(sanitizeAdditionalData(req.body))}`);
   
   const userId = req.user.id;
   const { id } = req.body; // Cambio: ahora recibe credential_id
@@ -647,7 +892,7 @@ const MarketplaceCredentialController = {
 
   async update(req, res) {
     logger.info(`${req.user?.name || 'Unknown'} - Actualiza credenciales de marketplace`);
-    logger.info(JSON.stringify(req.body));
+    logger.info(JSON.stringify(sanitizeAdditionalData(req.body)));
 
       const {
         id,
@@ -754,6 +999,7 @@ const MarketplaceCredentialController = {
       // Detectar si es OAuth (MercadoLibre) o Manual (Falabella)
       const isOAuth = marketplace.client_id && marketplace.client_secret && marketplace.redirect_uri;
       let connectionStatus = { valid: false, auth_required: false };
+      let falabellaWebhook = null;
 
       if (isOAuth) {
         // Para OAuth, verificar/renovar token usando el adapter
@@ -783,6 +1029,16 @@ const MarketplaceCredentialController = {
           valid: !!(credential.seller_email && credential.seller_id && credential.api_key),
           message: credential.api_key ? "Credenciales manuales configuradas" : "Credenciales incompletas"
         };
+
+        if (isFalabellaMarketplace(marketplace)) {
+          falabellaWebhook = connectionStatus.valid && credential.active !== false
+            ? await synchronizeFalabellaWebhook(credential.id)
+            : {
+              status: 'skipped',
+              credential_id: credential.id,
+              reason: credential.active === false ? 'credential_inactive' : 'credentials_incomplete'
+            };
+        }
       }
 
       // 7. Log de exito
@@ -872,7 +1128,8 @@ const MarketplaceCredentialController = {
           auth_required: connectionStatus.auth_required,
           auth_url: connectionStatus.auth_url,
           message: connectionStatus.message || (connectionStatus.valid ? "Conectado" : "Requiere atencion")
-        }
+        },
+        ...(falabellaWebhook ? { falabella_webhook: falabellaWebhook } : {})
       });
 
     } catch (error) {

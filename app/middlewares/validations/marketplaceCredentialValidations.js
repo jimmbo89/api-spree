@@ -81,10 +81,27 @@ const marketplaceCredentialsByUserSchema = Joi.object({
   user_id: Joi.number().integer().positive().optional().allow(null)
 });
 
+const falabellaWebhookStatusSchema = Joi.object({
+  credential_id: Joi.number().integer().positive().optional()
+});
+
+const falabellaWebhookActionSchema = Joi.object({
+  credential_id: Joi.number().integer().positive().required(),
+  replace_callback: Joi.string().uri().optional().allow(null, '')
+});
+
+const falabellaWebhookSyncSchema = Joi.object({
+  credential_id: Joi.number().integer().positive().optional(),
+  replace_callback: Joi.string().uri().optional().allow(null, '')
+});
+
 module.exports = {
   storeMarketplaceCredentialSchema: storeSchema,
   updateMarketplaceCredentialSchema: updateSchema,
   idMarketplaceCredentialSchema: idSchema,
   findByMarketplaceCredentialSchema: findByUserSchema, // renombrado para claridad
-  marketplaceCredentialsByUserSchema
+  marketplaceCredentialsByUserSchema,
+  falabellaWebhookStatusSchema,
+  falabellaWebhookActionSchema,
+  falabellaWebhookSyncSchema
 };

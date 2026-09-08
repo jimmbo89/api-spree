@@ -35,7 +35,7 @@ const { createProductFieldMappingSchema, updateProductFieldMappingSchema, idProd
 const ProductFieldMappingController = require("./controllers/ProductFieldMappingController.js");
 const { storeProductPublishingTaskSchema, updateProductPublishingTaskStatusSchema, updateProductPublishingTaskPayloadSchema, listProductPublishingTaskSchema, listProductPublishingTaskWithProductSchema, retryProductPublishingTaskSchema, publishDraftSchema, listDraftsByUserSchema, publishedProductsSchema, updateMercadoLibreItemSchema, updateFalabellaItemSchema } = require("./middlewares/validations/productPublishingTaskValidations.js");
 const ProductPublishingTaskController = require("./controllers/ProductPublishingTaskController.js");
-const { storeMarketplaceCredentialSchema, findByMarketplaceCredentialSchema, updateMarketplaceCredentialSchema, idMarketplaceCredentialSchema, marketplaceCredentialsByUserSchema } = require("./middlewares/validations/marketplaceCredentialValidations.js");
+const { storeMarketplaceCredentialSchema, findByMarketplaceCredentialSchema, updateMarketplaceCredentialSchema, idMarketplaceCredentialSchema, marketplaceCredentialsByUserSchema, falabellaWebhookStatusSchema, falabellaWebhookActionSchema, falabellaWebhookSyncSchema } = require("./middlewares/validations/marketplaceCredentialValidations.js");
 const MarketplaceCredentialController = require("./controllers/MarketplaceCredentialController.js");
 const OAuthController = require("./controllers/OAuthController.js");
 const { listPoolsSchema, updatePoolSchema, storePoolSchema, idPoolSchema } = require("./middlewares/validations/poolValidations.js");
@@ -382,6 +382,10 @@ router.post("/marketplace-credential-update", requireRoles([ 'Backoffice', 'Admi
 router.post("/marketplace-credential-destroy", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(idMarketplaceCredentialSchema), MarketplaceCredentialController.destroy);
 router.post('/marketplace-credentials-by-user', validateSchema(marketplaceCredentialsByUserSchema), MarketplaceCredentialController.getByUser);
 router.post('/marketplace-refresh-token', validateSchema(idMarketplaceCredentialSchema), MarketplaceCredentialController.refreshToken);
+router.post('/falabella-webhooks-status', requireRoles([ 'Backoffice' ]), validateSchema(falabellaWebhookStatusSchema), MarketplaceCredentialController.falabellaWebhooksStatus);
+router.post('/falabella-webhooks-sync', requireRoles([ 'Backoffice' ]), validateSchema(falabellaWebhookSyncSchema), MarketplaceCredentialController.falabellaWebhooksSync);
+router.post('/falabella-webhook-enable', requireRoles([ 'Backoffice' ]), validateSchema(falabellaWebhookActionSchema), MarketplaceCredentialController.falabellaWebhookEnable);
+router.post('/falabella-webhook-disable', requireRoles([ 'Backoffice' ]), validateSchema(falabellaWebhookActionSchema), MarketplaceCredentialController.falabellaWebhookDisable);
 
 // Metadatos de los marketplaces
 router.post("/product-field-mapping", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(createProductFieldMappingSchema), ProductFieldMappingController.store);

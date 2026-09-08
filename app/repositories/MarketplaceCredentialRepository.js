@@ -141,6 +141,28 @@ function isInactiveCredential(credential) {
   return credential?.active === false || Number(credential?.active) === 0;
 }
 
+async function findFalabellaCredentials({ activeOnly = false, companyId = null } = {}) {
+  const where = activeOnly ? { active: true } : {};
+  if (companyId !== null && companyId !== undefined) {
+    where.company_id = companyId;
+  }
+
+  const records = await MarketplaceCredential.findAll({
+    where,
+    include: [
+      {
+        model: Marketplace,
+        as: 'marketplace',
+        where: { domain: { [Op.like]: '%falabella%' } },
+        required: true
+      }
+    ],
+    order: [['createdAt', 'DESC']]
+  });
+
+  return records.map(decryptCredentialRecord);
+}
+
 const MarketplaceCredentialRepository = {
   /**
    * Obtiene la credencial (token) de un usuario para un marketplace específico
@@ -1111,30 +1133,12 @@ async findByMLUserId(marketplaceId, userId, mlUserId, excludeId = null) {
     return plain;
   },
 
-  async findAllActiveFalabella() {
-    const records = await MarketplaceCredential.findAll({
-      where: { active: true },
-      include: [
-        {
-          model: Marketplace,
-          as: 'marketplace',
-          where: { domain: { [Op.like]: '%falabella%' } },
-          required: true
-        }
-      ],
-      order: [['createdAt', 'DESC']]
-    });
+  async findAllFalabella(options = {}) {
+    return await findFalabellaCredentials(options);
+  },
 
-    return records.map((record) => {
-      const plain = record.get({ plain: true });
-      if (plain.api_key) {
-        plain.api_key = EncryptionService.decrypt(plain.api_key);
-      }
-      if (plain.marketplace?.client_secret) {
-        plain.marketplace.client_secret = EncryptionService.decrypt(plain.marketplace.client_secret);
-      }
-      return plain;
-    });
+  async findAllActiveFalabella() {
+    return await findFalabellaCredentials({ activeOnly: true });
   },
 
   async delete(record) {
