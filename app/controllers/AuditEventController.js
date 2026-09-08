@@ -1542,10 +1542,11 @@ function buildDisplayChanges(changes, { creation = false } = {}) {
     })
     .map(change => {
       const field = change.field || change.key || change.attribute || 'change';
+      const changeIsCreation = creation || change.is_new_variant === true;
       return {
         field,
         field_label: getFieldLabel(field),
-        previous: creation
+        previous: changeIsCreation
           ? ''
           : formatDisplayValue(change.old_value ?? change.previous_value ?? change.before, field),
         current: formatDisplayValue(change.new_value ?? change.current_value ?? change.after, field)

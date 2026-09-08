@@ -38,7 +38,19 @@ const {
 
 function toPlain(record) {
   if (!record) return null;
-  return typeof record.get === "function" ? record.get({ plain: true }) : record;
+  // `Model#get({ plain: true })` puede devolver la misma referencia de
+  // `dataValues` cuando no hay asociaciones incluidas. Para auditoría eso
+  // destruye el estado anterior después de `update()`. `toJSON()` sí devuelve
+  // una copia profunda de la instancia Sequelize.
+  if (typeof record.toJSON === "function") return record.toJSON();
+  if (typeof record.get === "function") {
+    const plain = record.get({ plain: true });
+    if (plain && typeof plain === "object") {
+      return Array.isArray(plain) ? [...plain] : { ...plain };
+    }
+    return plain;
+  }
+  return record;
 }
 
 function getWarehouseAuditLabel(warehouse) {
@@ -115,6 +127,13 @@ function buildWarehouseVariantAuditChanges(previousVariant, currentVariant) {
   }
 
   return changes;
+}
+
+function markNewVariantAuditChanges(changes) {
+  return changes.map((change) => ({
+    ...change,
+    is_new_variant: true
+  }));
 }
 
 function getMovementAuditAction(movementType, isBulk = false) {
@@ -1055,7 +1074,33 @@ const WarehouseProductController = {
       const warehouse = await WarehouseRepository.findById(record.warehouse_id);
       const productRecord = await ProductRepository.findById(record.product_id);
 
-      if (create_new_variant === true) {
+      // El flag superior conserva el contrato histórico de creación cuando se
+      // envía una sola variante. Cuando el payload contiene varias filas, la
+      // intención debe resolverse por fila: una fila con
+      // `create_new_variant: true` crea y una fila con una asociación existente
+      // actualiza esa asociación. Esto permite procesar en una misma solicitud
+      // variantes nuevas y variantes ya existentes sin convertir estas últimas
+      // accidentalmente en creaciones.
+      const topLevelCreateVariants = create_new_variant === true
+        ? normalizeVariantsInput(variantsString, { required: true })
+        : null;
+      const hasExistingAssociationRow = topLevelCreateVariants?.variants.some((submittedVariant) =>
+        submittedVariant &&
+        submittedVariant.warehouse_product_variant_id !== undefined &&
+        submittedVariant.warehouse_product_variant_id !== null
+      );
+
+      if (create_new_variant === true &&
+          (!topLevelCreateVariants.ok || topLevelCreateVariants.variants.length === 0)) {
+        throw createWarehouseVariantFlowError(
+          'Debe enviarse al menos una variante para crear las nuevas opciones'
+        );
+      }
+
+      if (
+        create_new_variant === true &&
+        !hasExistingAssociationRow
+      ) {
         if (!warehouse || !productRecord) {
           throw createWarehouseVariantFlowError(
             'El producto o el almacén indicado no existe',
@@ -1076,112 +1121,139 @@ const WarehouseProductController = {
           );
         }
 
-        const normalizedVariants = normalizeVariantsInput(variantsString, { required: true });
-        if (!normalizedVariants.ok || normalizedVariants.variants.length !== 1) {
-          throw createWarehouseVariantFlowError(
-            'Debe enviarse exactamente una variante para crear la nueva opción'
-          );
-        }
+        const normalizedVariants = topLevelCreateVariants;
 
-        const creation = await createNewWarehouseProductVariant({
-          record,
-          warehouse,
-          productRecord,
-          variantData: {
-            ...normalizedVariants.variants[0],
-            source_variant_id: normalizedVariants.variants[0].source_variant_id ?? source_variant_id
-          },
-          newCharacteristic: new_characteristic,
-          companyId: req.body.company_id ?? productRecord.company_id ?? record.company_id,
-          userId: metadata.user_id,
-          transaction
-        });
+        const creations = [];
+        for (const submittedVariant of normalizedVariants.variants) {
+          const creation = await createNewWarehouseProductVariant({
+            record,
+            warehouse,
+            productRecord,
+            variantData: {
+              ...submittedVariant,
+              source_variant_id: submittedVariant.source_variant_id ?? source_variant_id
+            },
+            newCharacteristic: submittedVariant.new_characteristic || new_characteristic,
+            companyId: req.body.company_id ?? productRecord.company_id ?? record.company_id,
+            userId: metadata.user_id,
+            transaction
+          });
+          creations.push(creation);
+        }
 
         await transaction.commit();
 
-        const auditChanges = [
-          { field: 'variant', old_value: null, new_value: creation.label || null },
-          { field: 'sku', old_value: null, new_value: creation.newVariant.sku },
-          { field: 'variant_value_ids', old_value: null, new_value: creation.requestedValueIds },
-          { field: 'price', old_value: null, new_value: creation.price },
-          { field: 'purchase_price', old_value: null, new_value: creation.purchasePrice },
-          { field: 'stock', old_value: 0, new_value: creation.quantity }
-        ];
-        if (creation.promotionalPrice !== null) {
-          auditChanges.push({
-            field: 'promotional_price',
-            old_value: null,
-            new_value: creation.promotionalPrice
-          });
-        }
-        await AuditEventService.safeRecordFromRequest(req, buildWarehouseAuditPayload(warehouse, {
-          action: 'warehouse.product_config_updated',
-          result: 'success',
-          related_resource_type: 'product',
-          related_resource_id: record.product_id,
-          previous_value: { variant: null, warehouse_product_variant: null },
-          new_value: {
-            variant: {
-              id: creation.newVariant.id,
-              product_id: creation.newVariant.product_id,
-              sku: creation.newVariant.sku,
-              label: creation.label,
-              variant_value_ids: creation.requestedValueIds
+        for (const creation of creations) {
+          const auditChanges = markNewVariantAuditChanges([
+            { field: 'variant', old_value: null, new_value: creation.label || null },
+            { field: 'sku', old_value: null, new_value: creation.newVariant.sku },
+            { field: 'variant_value_ids', old_value: null, new_value: creation.requestedValueIds },
+            {
+              field: 'local_sku',
+              old_value: null,
+              new_value: creation.warehouseProductVariant.local_sku || creation.newVariant.sku
             },
+            { field: 'price', old_value: null, new_value: creation.price },
+            { field: 'purchase_price', old_value: null, new_value: creation.purchasePrice },
+            { field: 'stock', old_value: 0, new_value: creation.quantity },
+            {
+              field: 'active',
+              old_value: null,
+              new_value: creation.warehouseProductVariant.active !== false
+            },
+            {
+              field: 'published',
+              old_value: null,
+              new_value: creation.warehouseProductVariant.published === true
+            }
+          ]);
+          if (creation.promotionalPrice !== null) {
+            auditChanges.push({
+              field: 'promotional_price',
+              old_value: null,
+              new_value: creation.promotionalPrice,
+              is_new_variant: true
+            });
+          }
+          await AuditEventService.safeRecordFromRequest(req, buildWarehouseAuditPayload(warehouse, {
+            action: 'warehouse.product_config_updated',
+            result: 'success',
+            related_resource_type: 'product',
+            related_resource_id: record.product_id,
+            previous_value: { variant: null, warehouse_product_variant: null },
+            new_value: {
+              variant: {
+                id: creation.newVariant.id,
+                product_id: creation.newVariant.product_id,
+                sku: creation.newVariant.sku,
+                label: creation.label,
+                variant_value_ids: creation.requestedValueIds
+              },
             warehouse_product_variant: {
               id: creation.warehouseProductVariant.id,
-              stock: creation.quantity,
+                stock: creation.quantity,
+                price: creation.price,
+                purchase_price: creation.purchasePrice,
+                promotional_price: creation.promotionalPrice
+              }
+            },
+            changes: auditChanges,
+            description: `Nueva variante creada y asociada al almacén: ${creation.label || creation.newVariant.sku}`,
+            correlation_id: creation.referenceId,
+            metadata: {
+              is_new_variant: true,
+              operation: 'warehouse_product_update_create_variant',
+              product_label: productRecord ? getProductAuditLabel(productRecord) : null,
+              warehouse_label: getWarehouseAuditLabel(warehouse),
+              source_variant_id: creation.sourceVariantId,
+              new_variant_id: creation.newVariant.id,
+              warehouse_product_variant_id: creation.warehouseProductVariant.id,
+              variant_value_ids: creation.requestedValueIds,
+              variant_label: creation.label,
+              quantity_added: creation.quantity,
+              stock_before: 0,
+              stock_after: creation.quantity,
               price: creation.price,
               purchase_price: creation.purchasePrice,
               promotional_price: creation.promotionalPrice
             }
-          },
-          changes: auditChanges,
-          description: `Nueva variante creada y asociada al almacén: ${creation.label || creation.newVariant.sku}`,
-          correlation_id: creation.referenceId,
-          metadata: {
-            is_new_variant: true,
-            operation: 'warehouse_product_update_create_variant',
-            product_label: productRecord ? getProductAuditLabel(productRecord) : null,
-            warehouse_label: getWarehouseAuditLabel(warehouse),
-            source_variant_id: creation.sourceVariantId,
-            new_variant_id: creation.newVariant.id,
-            warehouse_product_variant_id: creation.warehouseProductVariant.id,
-            variant_value_ids: creation.requestedValueIds,
-            variant_label: creation.label,
-            quantity_added: creation.quantity,
-            stock_before: 0,
-            stock_after: creation.quantity,
-            price: creation.price,
-            purchase_price: creation.purchasePrice,
-            promotional_price: creation.promotionalPrice
-          }
-        }));
+          }));
+        }
 
         await LogRepository.create({
           user_id: metadata.user_id,
           action: 'warehouse_product.update',
-          description: `Nueva variante creada: product_variant ${creation.newVariant.id} en warehouse_product ${record.id}`,
+           description: `Nuevas variantes creadas: ${creations.map((creation) => creation.newVariant.id).join(', ')} en warehouse_product ${record.id}`,
           ip_address: metadata.ip_address,
           user_agent: metadata.user_agent,
           status: 'success'
         });
 
+        const responseVariants = creations.map((creation) => ({
+          id: creation.newVariant.id,
+          name: creation.label,
+          sku: creation.newVariant.sku
+        }));
+        const responseWarehouseVariants = creations.map((creation) => ({
+          id: creation.warehouseProductVariant.id,
+          stock: creation.quantity,
+          price: creation.price,
+          purchase_price: creation.purchasePrice,
+          promotional_price: creation.promotionalPrice
+        }));
         return res.status(200).json({
           success: true,
-          message: 'Variante creada y asociada al almacén correctamente',
-          variant: {
-            id: creation.newVariant.id,
-            name: creation.label,
-            sku: creation.newVariant.sku
-          },
-          warehouse_product_variant: {
-            id: creation.warehouseProductVariant.id,
-            stock: creation.quantity,
-            price: creation.price,
-            purchase_price: creation.purchasePrice,
-            promotional_price: creation.promotionalPrice
-          }
+          message: creations.length === 1
+            ? 'Variante creada y asociada al almacén correctamente'
+            : 'Variantes creadas y asociadas al almacén correctamente',
+          variant: responseVariants[0],
+          warehouse_product_variant: responseWarehouseVariants[0],
+          ...(creations.length > 1
+            ? {
+                variants: responseVariants,
+                warehouse_product_variants: responseWarehouseVariants
+              }
+            : {})
         });
       }
       const variantAuditDetails = [];
@@ -1189,6 +1261,7 @@ const WarehouseProductController = {
       let createdLotsCount = 0;
       let updatedLotsCount = 0;
       let updatedWarehouseProductVariant = null;
+      const updatedWarehouseProductVariants = [];
 
       // 👉 2. Actualizar el registro principal (warehouse_products)
       record = await WarehouseProductRepository.update(record, req.body, {
@@ -1232,6 +1305,108 @@ const WarehouseProductController = {
         const processedIds = new Set();
         const referenceId = uuidv4(); // ID único para esta operación de actualización
 
+         // Validar todos los precios antes de comenzar a escribir. Esto permite
+         // que una sola solicitud informe cada conflicto y evita procesar
+         // parcialmente las variantes anteriores al primer conflicto.
+        const priceConflicts = [];
+        for (const variantData of variantsData) {
+          const {
+            variant_id,
+            warehouse_product_variant_id,
+            create_new_variant,
+            price,
+            purchase_price,
+            promotional_price
+          } = variantData;
+
+          // Cuando el frontend ya identifica la asociación, la confirmación se
+          // procesa en el flujo de actualización existente. La detección de
+          // conflictos sin autorización aplica a opciones sin ese identificador.
+          if (create_new_variant === true) {
+            continue;
+          }
+          if (warehouse_product_variant_id !== undefined && warehouse_product_variant_id !== null) {
+            continue;
+          }
+
+          const currentOption = existingVariants
+            .filter((candidate) => Number(candidate.variant_id) === Number(variant_id))
+            .sort((left, right) => Number(right.id) - Number(left.id))[0];
+          if (!currentOption) continue;
+
+          const hasPrice = price !== undefined && price !== null;
+          const hasPurchasePrice = purchase_price !== undefined && purchase_price !== null;
+          const hasPromotionalPrice = promotional_price !== undefined;
+          const requestedPrice = hasPrice ? normalizeMoneyValue(price) : null;
+          const requestedPurchasePrice = hasPurchasePrice
+            ? normalizeMoneyValue(purchase_price)
+            : null;
+          const requestedPromotionalPrice = hasPromotionalPrice
+            ? normalizeNullableMoneyValue(promotional_price)
+            : null;
+          const salePriceConflict = hasPrice && !sameNullableMoney(currentOption.price, requestedPrice);
+          const purchasePriceConflict = hasPurchasePrice && !sameNullableMoney(
+            currentOption.purchase_price,
+            requestedPurchasePrice
+          );
+          const promotionalPriceConflict = hasPromotionalPrice && !sameNullableMoney(
+            currentOption.promotional_price,
+            requestedPromotionalPrice
+          );
+
+          logger.info(
+            `[DEBUG] Validando conflicto de precios: variante=${variant_id}, ` +
+            `actual_price=${normalizeNullableMoneyValue(currentOption.price)}, solicitado_price=${requestedPrice}, ` +
+            `actual_purchase_price=${normalizeNullableMoneyValue(currentOption.purchase_price)}, ` +
+            `solicitado_purchase_price=${requestedPurchasePrice}, ` +
+            `actual_promotional_price=${normalizeNullableMoneyValue(currentOption.promotional_price)}, ` +
+            `solicitado_promotional_price=${requestedPromotionalPrice}, ` +
+            `sale_conflict=${salePriceConflict}, purchase_conflict=${purchasePriceConflict}, ` +
+            `promotional_conflict=${promotionalPriceConflict}`
+          );
+
+          if (salePriceConflict || purchasePriceConflict || promotionalPriceConflict) {
+            priceConflicts.push({
+              success: false,
+              code: 'PRODUCT_OPTION_PRICE_CONFLICT',
+              message: 'La opción ya existe con otro precio',
+              option: {
+                product_id: record.product_id,
+                product_variant_id: Number(variant_id),
+                variant_id: Number(variant_id),
+                warehouse_id: record.warehouse_id,
+                warehouse_product_variant_id: currentOption.id,
+                current_price: normalizeNullableMoneyValue(currentOption.price),
+                current_purchase_price: normalizeNullableMoneyValue(currentOption.purchase_price),
+                current_promotional_price: normalizeNullableMoneyValue(currentOption.promotional_price)
+              },
+              requested: {
+                price: hasPrice ? requestedPrice : null,
+                purchase_price: hasPurchasePrice ? requestedPurchasePrice : null,
+                promotional_price: hasPromotionalPrice ? requestedPromotionalPrice : null
+              },
+              changed_fields: [
+                ...(salePriceConflict ? ['price'] : []),
+                ...(purchasePriceConflict ? ['purchase_price'] : []),
+                ...(promotionalPriceConflict ? ['promotional_price'] : [])
+              ]
+            });
+          }
+        }
+
+        if (priceConflicts.length) {
+          await transaction.rollback();
+          return res.status(409).json({
+            ...priceConflicts[0],
+            ...(priceConflicts.length > 1
+              ? {
+                  conflicts: priceConflicts,
+                  options: priceConflicts.map((conflict) => conflict.option)
+                }
+              : {})
+          });
+        }
+
         logger.info(`[DEBUG] Procesando ${variantsData.length} variantes para warehouse_product ${id}`);
         logger.info(`[DEBUG] Variantes existentes en BD: ${existingVariants.length}`);
 
@@ -1270,63 +1445,71 @@ const WarehouseProductController = {
             : null;
           const normalizedLocalSku = hasLocalSku ? String(local_sku || '').trim() : null;
 
-          logger.info(`[DEBUG] Buscando variante con key: ${key}, local_sku: ${normalizedLocalSku}, price: ${normalizedPrice}, purchase_price: ${normalizedPurchasePrice}, promotional_price: ${normalizedPromotionalPrice}`);
+           logger.info(`[DEBUG] Buscando variante con key: ${key}, local_sku: ${normalizedLocalSku}, price: ${normalizedPrice}, purchase_price: ${normalizedPurchasePrice}, promotional_price: ${normalizedPromotionalPrice}`);
 
-          // Un cambio de precio debe confirmarse explícitamente; no debe crear
-          // otro registro cuando el frontend aún no envía el ID existente.
-          if (warehouse_product_variant_id === undefined || warehouse_product_variant_id === null) {
-            const currentOption = existingVariants
-              .filter((candidate) => Number(candidate.variant_id) === Number(variant_id))
-              .sort((left, right) => Number(right.id) - Number(left.id))[0];
-            if (currentOption) {
-              const salePriceConflict = hasPrice && !sameNullableMoney(currentOption.price, normalizedPrice);
-              const purchasePriceConflict = hasPurchasePrice && !sameNullableMoney(
-                currentOption.purchase_price,
-                normalizedPurchasePrice
-              );
-              const promotionalPriceConflict = hasPromotionalPrice && !sameNullableMoney(
-                currentOption.promotional_price,
-                normalizedPromotionalPrice
-              );
-              logger.info(
-                `[DEBUG] Validando conflicto de precios: variante=${variant_id}, ` +
-                `actual_price=${normalizeNullableMoneyValue(currentOption.price)}, solicitado_price=${normalizedPrice}, ` +
-                `actual_purchase_price=${normalizeNullableMoneyValue(currentOption.purchase_price)}, ` +
-                `solicitado_purchase_price=${normalizedPurchasePrice}, ` +
-                `actual_promotional_price=${normalizeNullableMoneyValue(currentOption.promotional_price)}, ` +
-                `solicitado_promotional_price=${normalizedPromotionalPrice}, ` +
-                `sale_conflict=${salePriceConflict}, purchase_conflict=${purchasePriceConflict}, ` +
-                `promotional_conflict=${promotionalPriceConflict}`
-              );
-              if (salePriceConflict || purchasePriceConflict || promotionalPriceConflict) {
-                await transaction.rollback();
-                return res.status(409).json({
-                  success: false,
-                  code: 'PRODUCT_OPTION_PRICE_CONFLICT',
-                  message: 'La opción ya existe con otro precio',
-                  option: {
-                    product_id: record.product_id,
-                    product_variant_id: Number(variant_id),
-                    variant_id: Number(variant_id),
-                    warehouse_id: record.warehouse_id,
-                    warehouse_product_variant_id: currentOption.id,
-                    current_price: normalizeNullableMoneyValue(currentOption.price),
-                    current_purchase_price: normalizeNullableMoneyValue(currentOption.purchase_price),
-                    current_promotional_price: normalizeNullableMoneyValue(currentOption.promotional_price)
-                  },
-                  requested: {
-                    price: hasPrice ? normalizedPrice : null,
-                    purchase_price: hasPurchasePrice ? normalizedPurchasePrice : null,
-                    promotional_price: hasPromotionalPrice ? normalizedPromotionalPrice : null
-                  },
-                  changed_fields: [
-                    ...(salePriceConflict ? ['price'] : []),
-                    ...(purchasePriceConflict ? ['purchase_price'] : []),
-                    ...(promotionalPriceConflict ? ['promotional_price'] : [])
-                  ]
-                });
-              }
-            }
+          if (variantData.create_new_variant === true) {
+            const creation = await createNewWarehouseProductVariant({
+              record,
+              warehouse,
+              productRecord,
+              variantData: {
+                ...variantData,
+                source_variant_id: variantData.source_variant_id ?? variant_id
+              },
+              newCharacteristic: variantData.new_characteristic || new_characteristic,
+              companyId: req.body.company_id ?? productRecord.company_id ?? record.company_id,
+              userId: metadata.user_id,
+              transaction
+            });
+
+            updatedWarehouseProductVariant = creation.warehouseProductVariant;
+            updatedWarehouseProductVariants.push(creation.warehouseProductVariant);
+            createdLotsCount += 1;
+            totalStockAdded += Math.max(Number(creation.quantity) || 0, 0);
+            processedIds.add(creation.warehouseProductVariant.id);
+            variantAuditDetails.push({
+              variant_id: creation.newVariant.id,
+              warehouse_product_variant_id: creation.warehouseProductVariant.id,
+              source_variant_id: creation.sourceVariantId,
+              is_new_variant: true,
+              variante: creation.label || creation.newVariant.sku,
+              operacion: 'Nueva variante creada y asociada al almacén',
+              sku_local: creation.warehouseProductVariant.local_sku || null,
+              existencias_iniciales: Number(creation.quantity) || 0,
+              stock_anterior: 0,
+              cantidad_agregada: Number(creation.quantity) || 0,
+              stock_nuevo: Number(creation.quantity) || 0,
+              precio_de_venta: creation.price,
+              precio_de_compra: creation.purchasePrice,
+              precio_promocional: creation.promotionalPrice,
+              estado: variantData.active === false ? 'Inactivo' : 'Activo',
+              publicar: variantData.published === true ? 'Sí' : 'No',
+              cambios: markNewVariantAuditChanges([
+                { field: 'variant', old_value: null, new_value: creation.label || null },
+                { field: 'sku', old_value: null, new_value: creation.newVariant.sku },
+                { field: 'variant_value_ids', old_value: null, new_value: creation.requestedValueIds },
+                {
+                  field: 'local_sku',
+                  old_value: null,
+                  new_value: creation.warehouseProductVariant.local_sku || creation.newVariant.sku
+                },
+                { field: 'price', old_value: null, new_value: creation.price },
+                { field: 'purchase_price', old_value: null, new_value: creation.purchasePrice },
+                { field: 'promotional_price', old_value: null, new_value: creation.promotionalPrice },
+                { field: 'stock', old_value: 0, new_value: Number(creation.quantity) || 0 },
+                {
+                  field: 'active',
+                  old_value: null,
+                  new_value: creation.warehouseProductVariant.active !== false
+                },
+                {
+                  field: 'published',
+                  old_value: null,
+                  new_value: creation.warehouseProductVariant.published === true
+                }
+              ].filter((change) => !(change.old_value === null && change.new_value === null)))
+            });
+            continue;
           }
 
           // Buscar la relación existente por la variante del producto. Los
@@ -1393,7 +1576,8 @@ const WarehouseProductController = {
                 ...variantToUpdate,
                 stock: newStock
               }, { transaction });
-              updatedWarehouseProductVariant = existingWithSamePrice;
+               updatedWarehouseProductVariant = existingWithSamePrice;
+               updatedWarehouseProductVariants.push(existingWithSamePrice);
 
               // ⭐ REGISTRAR MOVIMIENTO DE INVENTARIO (entrada de stock)
               if (stockAdded > 0) {
@@ -1424,6 +1608,9 @@ const WarehouseProductController = {
               }
               totalStockAdded += Math.max(stockAdded, 0);
               variantAuditDetails.push({
+                variant_id,
+                warehouse_product_variant_id: existingWithSamePrice.id,
+                is_new_variant: false,
                 variante: getVariantAuditLabel(productVariantsById.get(Number(variant_id)), variantData),
                 operacion: stockAdded > 0 ? 'Stock agregado a lote existente' : 'Configuración de variante actualizada',
                 stock_anterior: oldStock,
@@ -1439,8 +1626,12 @@ const WarehouseProductController = {
               });
             } else {
               await existingWithSamePrice.update(variantToUpdate, { transaction });
-              updatedWarehouseProductVariant = existingWithSamePrice;
+               updatedWarehouseProductVariant = existingWithSamePrice;
+               updatedWarehouseProductVariants.push(existingWithSamePrice);
               variantAuditDetails.push({
+                variant_id,
+                warehouse_product_variant_id: existingWithSamePrice.id,
+                is_new_variant: false,
                 variante: getVariantAuditLabel(productVariantsById.get(Number(variant_id)), variantData),
                 operacion: 'Configuración de variante actualizada',
                 stock_anterior: existingWithSamePrice.stock || 0,
@@ -1473,8 +1664,9 @@ const WarehouseProductController = {
               published: hasPublished ? published : false
             };
 
-            const newVariant = await WarehouseProductVariantRepository.create(createData, { transaction });
-            updatedWarehouseProductVariant = newVariant;
+             const newVariant = await WarehouseProductVariantRepository.create(createData, { transaction });
+             updatedWarehouseProductVariant = newVariant;
+             updatedWarehouseProductVariants.push(newVariant);
 
             logger.info(`[DEBUG] Nueva variante creada (ID: ${newVariant.id})`);
             
@@ -1508,8 +1700,11 @@ const WarehouseProductController = {
             const initialStock = hasStock ? (parseInt(stock) || 0) : 0;
             totalStockAdded += Math.max(initialStock, 0);
             createdLotsCount += 1;
-            variantAuditDetails.push({
-              variante: getVariantAuditLabel(productVariantsById.get(Number(variant_id)), variantData),
+              variantAuditDetails.push({
+                variant_id: newVariant.variant_id,
+                warehouse_product_variant_id: newVariant.id,
+                is_new_variant: false,
+                variante: getVariantAuditLabel(productVariantsById.get(Number(variant_id)), variantData),
               operacion: 'Nuevo lote configurado',
               stock_anterior: 0,
               cantidad_agregada: initialStock,
@@ -1591,7 +1786,17 @@ const WarehouseProductController = {
               warehouseId: record.warehouse_id,
               productId: record.product_id
             })
-          : null
+          : null,
+        ...(updatedWarehouseProductVariants.length > 1
+          ? {
+              warehouse_product_variants: updatedWarehouseProductVariants.map((variant) =>
+                buildWarehouseProductVariantResponse(variant, {
+                  warehouseId: record.warehouse_id,
+                  productId: record.product_id
+                })
+              )
+            }
+          : {})
       });
     } catch (error) {
       if (transaction) await transaction.rollback();
