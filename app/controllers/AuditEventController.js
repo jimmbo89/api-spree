@@ -1529,18 +1529,25 @@ function formatSaleAmount(value, currency) {
   return currency ? `${amount} ${currency}` : String(value);
 }
 
-function buildDisplayChanges(changes) {
+function buildDisplayChanges(changes, { creation = false } = {}) {
   const normalized = parseDisplayValue(changes);
   if (!Array.isArray(normalized)) return [];
 
   return normalized
-    .filter(change => change && !shouldHideDisplayKey(change.field || change.key || ''))
+    .filter(change => {
+      if (!change || shouldHideDisplayKey(change.field || change.key || '')) return false;
+      const oldValue = change.old_value ?? change.previous_value ?? change.before;
+      const newValue = change.new_value ?? change.current_value ?? change.after;
+      return !(oldValue === null && newValue === null);
+    })
     .map(change => {
       const field = change.field || change.key || change.attribute || 'change';
       return {
         field,
         field_label: getFieldLabel(field),
-        previous: formatDisplayValue(change.old_value ?? change.previous_value ?? change.before, field),
+        previous: creation
+          ? ''
+          : formatDisplayValue(change.old_value ?? change.previous_value ?? change.before, field),
         current: formatDisplayValue(change.new_value ?? change.current_value ?? change.after, field)
       };
     });
@@ -1559,7 +1566,16 @@ function getDisplayDescription(event, fallback) {
 }
 
 function buildDisplay(event, labels, { compact = false } = {}) {
-  const changes = buildDisplayChanges(event.changes);
+  const metadata = parseDisplayValue(event.metadata) || {};
+  // En una variante nueva no existe un valor anterior. Todas las operaciones
+  // de creación deben conservar esa semántica para que el cliente no pinte
+  // una columna "Anterior" con "Sin dato".
+  const creation = metadata.is_new_variant === true || [
+    'warehouse_product_update_create_variant',
+    'warehouse_movement_create_variant',
+    'warehouse_bulk_movement_create_variant'
+  ].includes(metadata.operation);
+  const changes = buildDisplayChanges(event.changes, { creation });
 
   if (compact) {
     return {

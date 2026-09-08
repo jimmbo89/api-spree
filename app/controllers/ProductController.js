@@ -18,6 +18,13 @@ const {
   VariantDefinitionRepository,
   ProductVariantValueRepository,
 } = require("../repositories");
+const {
+  normalizeVariantValueIds,
+  buildOptionKey,
+  getDuplicateOptionGroups,
+  findProductOptions,
+  buildDuplicateOptionError
+} = require("../services/ProductOptionService");
 const { sequelize } = require("../models");
 const MarketplaceTransformer = require("../services/MarketplaceTransformer");
 const { detectChanges } = require("../util/auditUtils");
@@ -149,6 +156,26 @@ function buildProductAuditPayload(product, data = {}) {
     resource_id: plain.id,
     resource_label: getProductAuditLabel(plain),
     ...data
+  };
+}
+
+function buildProductVariantAuditPayload(product, variant, data = {}) {
+  const productPlain = toPlain(product) || {};
+  const variantPlain = toPlain(variant) || {};
+  return buildProductAuditPayload(product, {
+    related_resource_type: "product_variant",
+    related_resource_id: variantPlain.id,
+    resource_type: "product",
+    resource_id: productPlain.id,
+    ...data
+  });
+}
+
+function buildVariantAuditChange(field, oldValue, newValue) {
+  return {
+    field,
+    old_value: oldValue,
+    new_value: newValue
   };
 }
 
@@ -398,6 +425,11 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
       }
     }
 
+    const duplicateOptionGroups = getDuplicateOptionGroups(parsedProductVariants);
+    if (duplicateOptionGroups.length > 0) {
+      return res.status(409).json(buildDuplicateOptionError(duplicateOptionGroups));
+    }
+
     // Normalizar configuración de almacenes
     let parsedWarehouseConfig = [];
     if (warehouse_config) {
@@ -474,6 +506,8 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
           createdVariants.push({
             id: variant.id,
             frontend_id: variantData.id || createdVariants.length,
+            client_key: variantData.client_key || null,
+            variant_value_ids: normalizeVariantValueIds(variantData.variant_value_ids),
             sku: variant.sku,
           });
 
@@ -553,8 +587,10 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
             for (let i = 0; i < whConfig.variants.length; i++) {
               const variantConfig = whConfig.variants[i];
 
-              // Buscar la variante correspondiente por índice
-              const variant = createdVariants[i];
+              // Preferir client_key; conservar el índice como compatibilidad heredada.
+              const variant = variantConfig.client_key
+                ? createdVariants.find((created) => created.client_key === variantConfig.client_key)
+                : createdVariants[i];
 
               if (variant) {
                 // Usar precios del producto como fallback si la variante no tiene precios
@@ -1069,6 +1105,7 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
       }
 
       let transaction;
+      const variantAuditEvents = [];
       try {
         transaction = await sequelize.transaction();
         const files =
@@ -1115,6 +1152,16 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
           if (Array.isArray(parsedVariants)) {
             const existingVariants =
               await ProductVariantRepository.findByProductId(id);
+            const duplicateOptionGroups = getDuplicateOptionGroups(parsedVariants, id);
+            if (duplicateOptionGroups.length > 0) {
+              await transaction.rollback();
+              return res.status(409).json(buildDuplicateOptionError(duplicateOptionGroups));
+            }
+
+            const existingOptions = await findProductOptions(id, { transaction });
+            const existingByOptionKey = new Map(
+              existingOptions.map((option) => [option.option_key, option.variant])
+            );
             const existingById = new Map();
             const existingBySku = new Map();
             const existingByAttrs = new Map();
@@ -1139,6 +1186,17 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
                 existing = existingById.get(variantId) || null;
               }
 
+              const currentOption = existingOptions.find((option) =>
+                Number(option.variant.id) === variantId
+              );
+              const optionKey = variantData.variant_value_ids !== undefined
+                ? buildOptionKey(id, normalizeVariantValueIds(variantData.variant_value_ids))
+                : currentOption?.option_key;
+
+              if (!existing) {
+                existing = existingByOptionKey.get(optionKey) || null;
+              }
+
               if (!existing && variantData.sku) {
                 existing = existingBySku.get(variantData.sku);
               }
@@ -1149,10 +1207,26 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
               }
 
               if (existing) {
+                const duplicateOption = existingOptions.find((option) =>
+                  Number(option.variant.id) !== Number(existing.id) && optionKey && option.option_key === optionKey
+                );
+                if (duplicateOption) {
+                  await transaction.rollback();
+                  return res.status(409).json(buildDuplicateOptionError([{
+                    option_key: optionKey,
+                    variant_value_ids: duplicateOption.variant_value_ids,
+                    variants: [duplicateOption.variant]
+                  }]));
+                }
+
                 matchedVariantIds.add(Number(existing.id));
 
                 const updates = {};
                 const previousSku = existing.sku;
+                const previousAttributes = existing.attributes;
+                const previousVariantValues = existingOptions.find((option) =>
+                  Number(option.variant.id) === Number(existing.id)
+                )?.variant_value_ids || [];
                 if (variantData.sku && existing.sku !== variantData.sku) {
                   updates.sku = variantData.sku;
                 }
@@ -1178,7 +1252,51 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
                     { transaction, companyId: product.company_id }
                   );
                 }
+
+                const nextVariantValues = variantData.variant_value_ids !== undefined
+                  ? normalizeVariantValueIds(variantData.variant_value_ids)
+                  : previousVariantValues;
+                const variantChanges = [];
+                if (updates.sku !== undefined) {
+                  variantChanges.push(buildVariantAuditChange("sku", previousSku, updates.sku));
+                }
+                if (updates.attributes !== undefined) {
+                  variantChanges.push(buildVariantAuditChange("attributes", previousAttributes, updates.attributes));
+                }
+                if (variantData.variant_value_ids !== undefined &&
+                    JSON.stringify(previousVariantValues) !== JSON.stringify(nextVariantValues)) {
+                  variantChanges.push(buildVariantAuditChange("variant_value_ids", previousVariantValues, nextVariantValues));
+                }
+                if (variantChanges.length > 0) {
+                  variantAuditEvents.push({
+                    action: "product.variant_updated",
+                    variant: existing,
+                    previous_value: {
+                      id: existing.id,
+                      sku: previousSku,
+                      attributes: previousAttributes,
+                      variant_value_ids: previousVariantValues
+                    },
+                    new_value: {
+                      id: existing.id,
+                      sku: existing.sku,
+                      attributes: existing.attributes,
+                      variant_value_ids: nextVariantValues
+                    },
+                    changes: variantChanges,
+                    description: `Opción del producto actualizada: ${existing.sku}`
+                  });
+                }
               } else {
+                const duplicateOption = existingOptions.find((option) => option.option_key === optionKey);
+                if (duplicateOption) {
+                  await transaction.rollback();
+                  return res.status(409).json(buildDuplicateOptionError([{
+                    option_key: optionKey,
+                    variant_value_ids: duplicateOption.variant_value_ids,
+                    variants: [duplicateOption.variant]
+                  }]));
+                }
                 const newVariant = await ProductVariantRepository.create(
                   {
                     product_id: product.id,
@@ -1197,11 +1315,40 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
                 }
 
                 matchedVariantIds.add(Number(newVariant.id));
+                variantAuditEvents.push({
+                  action: "product.variant_created",
+                  variant: newVariant,
+                  previous_value: null,
+                  new_value: {
+                    id: newVariant.id,
+                    sku: newVariant.sku,
+                    attributes: newVariant.attributes,
+                    variant_value_ids: normalizeVariantValueIds(variantData.variant_value_ids)
+                  },
+                  changes: [],
+                  description: `Opción del producto creada: ${newVariant.sku}`
+                });
               }
             }
 
             for (const existing of existingVariants) {
               if (!matchedVariantIds.has(Number(existing.id))) {
+                const previousVariantValues = existingOptions.find((option) =>
+                  Number(option.variant.id) === Number(existing.id)
+                )?.variant_value_ids || [];
+                variantAuditEvents.push({
+                  action: "product.variant_deleted",
+                  variant: existing,
+                  previous_value: {
+                    id: existing.id,
+                    sku: existing.sku,
+                    attributes: existing.attributes,
+                    variant_value_ids: previousVariantValues
+                  },
+                  new_value: null,
+                  changes: [],
+                  description: `Opción del producto eliminada: ${existing.sku}`
+                });
                 await existing.destroy({ transaction });
               }
             }
@@ -1209,6 +1356,21 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
         }
 
         await transaction.commit();
+
+        await Promise.all(variantAuditEvents.map((event) => (
+          AuditEventService.safeRecordFromRequest(req, buildProductVariantAuditPayload(product, event.variant, {
+            action: event.action,
+            result: "success",
+            previous_value: event.previous_value,
+            new_value: event.new_value,
+            changes: event.changes,
+            description: event.description,
+            metadata: {
+              source: "product_update",
+              variant_value_ids: event.new_value?.variant_value_ids || event.previous_value?.variant_value_ids || []
+            }
+          }))
+        )));
 
         const fieldChanges = detectChanges(
           productBeforeUpdate,
@@ -1238,7 +1400,7 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
         await LogRepository.create({
           user_id: metadata.user_id,
           action: "product.update",
-          description: `Producto actualizado: ${fieldChanges.length} campo(s) modificados`,
+          description: `Producto actualizado: ${fieldChanges.length} campo(s) modificados y ${variantAuditEvents.length} opción(es) procesada(s)`,
           ip_address: metadata.ip_address,
           user_agent: metadata.user_agent,
           status: "success",
@@ -1265,6 +1427,15 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
         status: "error",
       });
       logger.error("ProductController->update: " + error.message);
+
+      if (error.code === "VARIANT_VALUE_OUTSIDE_COMPANY_SCOPE") {
+        return res.status(400).json({
+          success: false,
+          code: error.code,
+          message: "Uno de los valores seleccionados no está disponible para esta empresa"
+        });
+      }
+
       res.status(500).json({ success: false, error: "ServerError", details: error.message });
     }
   },
@@ -1362,7 +1533,18 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
       if (whConfig.variants && Array.isArray(whConfig.variants)) {
         for (let i = 0; i < whConfig.variants.length; i++) {
           const variantConfig = whConfig.variants[i];
-          const productVariant = productVariants[i];
+          const productVariant = variantConfig.variant_id
+            ? productVariants.find((variant) => Number(variant.id) === Number(variantConfig.variant_id))
+            : productVariants[i];
+
+          if (!productVariant) {
+            await transaction.rollback();
+            return res.status(400).json({
+              success: false,
+              code: "VARIANT_DOES_NOT_BELONG_TO_PRODUCT",
+              message: "La opción no pertenece al producto indicado"
+            });
+          }
 
           // Buscar si ya existe la variante en este almacén
           let wpv = await WarehouseProductVariantRepository.findByWarehouseProductIdAndVariantId(
@@ -1390,6 +1572,29 @@ if (plan?.max_products !== undefined && plan.max_products !== -1) {
             stock: parseInt(variantConfig.stock) || 0,
           };
           stockTotal += variantData.stock;
+
+          if (
+            wpv &&
+            variantConfig.price !== undefined &&
+            variantConfig.price !== null &&
+            Math.abs(Number(wpv.price || 0) - Number(salePrice || 0)) >= 0.01
+          ) {
+            await transaction.rollback();
+            return res.status(409).json({
+              success: false,
+              code: "PRODUCT_OPTION_PRICE_CONFLICT",
+              message: "La opción ya existe con otro precio",
+              option: {
+                product_id,
+                product_variant_id: productVariant.id,
+                variant_id: productVariant.id,
+                warehouse_id: warehouse.id,
+                warehouse_product_variant_id: wpv.id,
+                current_price: Number(wpv.price || 0)
+              },
+              requested: { price: Number(salePrice || 0) }
+            });
+          }
 
           if (wpv) {
             // 🔄 Actualizar

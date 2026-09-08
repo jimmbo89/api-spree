@@ -185,6 +185,7 @@ const ProductRepository = {
           sku: variant.sku,
           attributes: attributesObj,
           image: variant.image,
+          variant_value_ids: variantValues.map((value) => value.id),
           variant_values: variantValues,
           variant_label: variantLabel,
           stock: totalStock,  // ⭐ Stock total de la variante

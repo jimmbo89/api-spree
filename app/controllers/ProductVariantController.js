@@ -7,6 +7,11 @@ const { Op } = require("sequelize");
 const { ProductRepository } = require("../repositories");
 const AuditEventService = require("../services/AuditEventService");
 const { detectChanges } = require("../util/auditUtils");
+const {
+  buildDuplicateOptionError,
+  findProductOptions,
+  buildOptionKey
+} = require("../services/ProductOptionService");
 
 function toPlain(record) {
   if (!record) return null;
@@ -63,6 +68,22 @@ const ProductVariantController = {
   
     const t = await sequelize.transaction();
     try {
+      if (variant_value_ids !== undefined) {
+        const options = await findProductOptions(variant.product_id, { transaction: t });
+        const requestedKey = buildOptionKey(variant.product_id, variant_value_ids);
+        const duplicate = options.find((option) =>
+          Number(option.variant.id) !== Number(variant.id) && option.option_key === requestedKey
+        );
+        if (duplicate) {
+          await t.rollback();
+          return res.status(409).json(buildDuplicateOptionError([{
+            option_key: requestedKey,
+            variant_value_ids: duplicate.variant_value_ids,
+            variants: [duplicate.variant]
+          }]));
+        }
+      }
+
      // Actualizar solo los atributos (no SKU, no product_id)
       const updateData = { attributes };
       const previousVariant = toPlain(variant);
@@ -106,6 +127,13 @@ const ProductVariantController = {
     } catch (error) {
       await t.rollback();
       logger.error("Error en update variante:", error);
+      if (error.code === "VARIANT_VALUE_OUTSIDE_COMPANY_SCOPE") {
+        return res.status(400).json({
+          success: false,
+          code: error.code,
+          message: "Uno de los valores seleccionados no está disponible para esta empresa"
+        });
+      }
       return res.status(500).json({
         success: false,
         message: "Error interno al actualizar la variante"
@@ -132,6 +160,18 @@ const ProductVariantController = {
     }
   const t = await sequelize.transaction();
   try {
+    const existingOptions = await findProductOptions(product_id, { transaction: t });
+    const requestedKey = buildOptionKey(product_id, variant_value_ids);
+    const existing = existingOptions.find((option) => option.option_key === requestedKey);
+    if (existing) {
+      await t.rollback();
+      return res.status(409).json(buildDuplicateOptionError([{
+        option_key: requestedKey,
+        variant_value_ids: existing.variant_value_ids,
+        variants: [existing.variant]
+      }]));
+    }
+
 
     // Preparar datos
     const variantData = {
@@ -177,6 +217,13 @@ const ProductVariantController = {
   } catch (error) {
     await t.rollback();
     logger.error("Error al crear variante:", error);
+    if (error.code === "VARIANT_VALUE_OUTSIDE_COMPANY_SCOPE") {
+      return res.status(400).json({
+        success: false,
+        code: error.code,
+        message: "Uno de los valores seleccionados no está disponible para esta empresa"
+      });
+    }
     return res.status(500).json({
       success: false,
       message: "Error interno al crear la variante"

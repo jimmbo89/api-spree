@@ -38,8 +38,18 @@ const ProductVariantValueRepository = {
       for (const v of values) {
         if (options.companyId !== undefined && options.companyId !== null) {
           const defCompanyId = v.definition ? v.definition.company_id : null;
-          if (defCompanyId !== null && defCompanyId !== options.companyId) {
-            throw new Error("variant_value_ids fuera del scope de la empresa");
+          const normalizedCompanyId = Number(options.companyId);
+          const normalizedDefinitionCompanyId = defCompanyId === null
+            ? null
+            : Number(defCompanyId);
+
+          if (
+            normalizedDefinitionCompanyId !== null &&
+            normalizedDefinitionCompanyId !== normalizedCompanyId
+          ) {
+            const error = new Error("variant_value_ids fuera del scope de la empresa");
+            error.code = "VARIANT_VALUE_OUTSIDE_COMPANY_SCOPE";
+            throw error;
           }
         }
         if (definitionMap.has(v.variant_definition_id)) {

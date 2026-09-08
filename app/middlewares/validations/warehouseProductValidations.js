@@ -88,6 +88,17 @@ const updateWarehouseProductSchema = Joi.object({
   code: Joi.string().max(100).optional().allow(null, ''),
   minimum_stock: Joi.number().integer().min(0).optional(),
   warehouse_id: Joi.number().integer().positive().optional().allow(null),
+  product_id: Joi.number().integer().positive().optional(),
+  source_variant_id: Joi.number().integer().positive().optional(),
+  warehouse_product_variant_id: Joi.number().integer().positive().optional().allow(null),
+  create_new_variant: Joi.boolean().optional(),
+  new_variant_name: Joi.string().trim().max(255).optional(),
+  new_characteristic: Joi.object({
+    definition_id: Joi.number().integer().positive().optional().allow(null),
+    definition_name: Joi.string().trim().max(255).optional().allow(null, ''),
+    value_id: Joi.number().integer().positive().optional().allow(null),
+    value_name: Joi.string().trim().max(255).optional().allow(null, '')
+  }).optional(),
   variants: jsonArray('variants').optional().default([]),
   company_id: Joi.number().integer().positive().optional().allow(null),
   branch_id: Joi.number().integer().positive().optional().allow(null),
@@ -115,9 +126,19 @@ const transferSchema = Joi.object({
     otherwise: Joi.forbidden()
   }),
   product_id: Joi.number().integer().positive().required(),
+  create_new_variant: Joi.boolean().optional(),
+  source_variant_id: Joi.number().integer().positive().optional(),
+  new_characteristic: Joi.object({
+    definition_id: Joi.number().integer().positive().optional().allow(null),
+    definition_name: Joi.string().trim().max(255).optional().allow(null, ''),
+    value_id: Joi.number().integer().positive().optional().allow(null),
+    value_name: Joi.string().trim().max(255).optional().allow(null, '')
+  }).optional(),
   variants: Joi.array().items(
     Joi.object({
       variant_id: Joi.number().integer().positive().required(),
+      source_variant_id: Joi.number().integer().positive().optional(),
+      confirm_price_change: Joi.boolean().strict().optional(),
       quantity: Joi.number().integer().min(1).required()
     }).unknown(true)
   ).min(1).required(),
@@ -148,6 +169,7 @@ const bulkUploadSchema = Joi.object({
 });
 
 const variantSchema = Joi.object({
+  confirm_price_change: Joi.boolean().strict().optional(),
   variant_id: Joi.number().integer().positive().required(),
   quantity: Joi.number().integer().min(1).required(),
   // Solo para entrada

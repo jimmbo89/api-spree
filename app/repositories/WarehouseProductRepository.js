@@ -39,6 +39,7 @@ function buildWarehouseVariantResponse(wpv) {
     variant_id: wpv.variant_id,
     sku: wpv.variant?.sku || '',
     attributes: wpv.variant?.attributes || {},
+    variant_value_ids: variantValues.map((value) => value.id),
     variant_values: variantValues,
     variant_label: variantLabel,
     active: wpv.active !== false,
@@ -621,6 +622,8 @@ async findProductsNotInWarehouse({ warehouseId, companyId, specificProductId = n
 
           return {
             id: v.id,
+            variant_id: v.id,
+            variant_value_ids: variantValues.map((value) => value.id),
             sku: v.sku || '',
             attributes: v.attributes || {},
             variant_values: variantValues,
@@ -861,6 +864,9 @@ async findProductsByWarehouseIds({ companyId, warehouseIds, includeInactive = fa
       if (!consolidated.variants.has(variantId)) {
         consolidated.variants.set(variantId, {
           id: variantId,
+          variant_id: variantId,
+          warehouse_product_variant_id: wv.id,
+          variant_value_ids: variantValues.map((value) => value.id),
           sku: wv.variant?.sku || '',
           attributes: wv.variant?.attributes || {},
           variant_values: variantValues,

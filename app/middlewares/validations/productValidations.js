@@ -147,6 +147,7 @@ const productAttributeSchema = Joi.object({
 
 const productVariantSchema = Joi.object({
   id: Joi.alternatives().try(Joi.string(), Joi.number()).optional(),
+  client_key: Joi.string().max(100).optional(),
   sku: textField({ max: 100, required: true }),
   attributes: Joi.object().optional().default({}),
   variant_value_ids: Joi.array()
@@ -156,6 +157,9 @@ const productVariantSchema = Joi.object({
 });
 
 const warehouseVariantSchema = Joi.object({
+  client_key: Joi.string().max(100).optional(),
+  variant_id: Joi.number().integer().positive().optional(),
+  warehouse_product_variant_id: Joi.number().integer().positive().optional(),
   active: Joi.boolean().optional().default(true),
   local_sku: Joi.string().max(100).optional().allow(null, ''),
   price: Joi.number().precision(2).min(0).optional().allow(null),
