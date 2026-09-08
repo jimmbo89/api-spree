@@ -665,7 +665,9 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
         managed_by_spree: Boolean(link)
       });
       persistedItem = createdItem;
-      if (!link) savedItems.push(createdItem);
+    }
+    if (persistedItem && !savedItems.some((item) => item.id === persistedItem.id)) {
+      savedItems.push(persistedItem);
     }
     await upsertMercadoLibreCommission({
       orderId: savedOrder.id,
@@ -677,6 +679,18 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
       order: order
     });
   }
+
+  await notifyMercadoLibreSaleRegistered({
+    userId: publicationUserId,
+    companyId,
+    orderId,
+    savedOrder,
+    items,
+    savedItems,
+    totalAmount: order.total_amount || 0,
+    isSpreeManaged: managedBySpree
+  });
+
   if (shouldDeductStock) {
     // ✅ PROCESAR CADA ITEM SOLO EN PRIMERA VENTA PAGADA
     for (const orderItem of items) {
@@ -707,7 +721,7 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
           )
         });
         
-        if (itemResult) {
+        if (itemResult && !savedItems.some((item) => item.id === itemResult.id)) {
           savedItems.push(itemResult);
         }
       } catch (error) {
@@ -737,7 +751,7 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
           webhook_event_id: event.id,
           items_count: savedItems.length,
           total_quantity: totalQuantity,
-          is_spree_managed: items.length > 0 && savedItems.length === items.length
+          is_spree_managed: managedBySpree
         }
       });
     }
@@ -752,16 +766,6 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
       await MarketplaceOrderFeeRepository.updateOrderFeesStatus(savedOrder.id, 'cancelled');
     }
 
-    await notifyMercadoLibreSaleRegistered({
-      userId: publicationUserId,
-      companyId,
-      orderId,
-      savedOrder,
-      items,
-      savedItems,
-      totalAmount: order.total_amount || 0,
-      isSpreeManaged: managedBySpree
-    });
   }
 
   if (!shouldDeductStock) {
@@ -1176,6 +1180,9 @@ async function notifyFalabellaSaleRegistered({
     : `Se registro una venta de ${itemCount} productos en Falabella.`;
 
   try {
+    const shouldNotify = await MarketplaceOrderRepository.claimNewOrderNotification(savedOrder.id);
+    if (!shouldNotify) return null;
+
     const notification = await NotificationRepository.create({
       user_id: userId,
       company_id: companyId,
@@ -1206,6 +1213,7 @@ async function notifyFalabellaSaleRegistered({
     logger.info(`[FB Webhook] Notificacion de venta creada order=${orderId} user_id=${userId} notification_id=${notification?.id}`);
     return notification;
   } catch (error) {
+    await MarketplaceOrderRepository.updateById(savedOrder.id, { new_order_notified_at: null });
     logger.warn(`[FB Webhook] Error creando notificacion de venta order=${orderId}: ${error.message}`);
     return null;
   }
@@ -3216,6 +3224,17 @@ async function processFalabellaEvent({ event, payload, orderId }) {
     }
   }
 
+  await notifyFalabellaSaleRegistered({
+    userId: publicationUserId,
+    companyId,
+    orderId,
+    savedOrder,
+    items,
+    savedItems,
+    totalAmount: orderInfo.totalAmount || 0,
+    isSpreeManaged: managedBySpree
+  });
+
   // Falabella entrega el detalle de la orden por GetOrderItems. El inventario
   // local solo se mueve para ítems con vínculo marketplace-producto, igual que
   // en Mercado Libre; los ítems externos permanecen registrados sin descuento.
@@ -3296,16 +3315,6 @@ async function processFalabellaEvent({ event, payload, orderId }) {
       });
     }
 
-    await notifyFalabellaSaleRegistered({
-      userId: publicationUserId,
-      companyId,
-      orderId,
-      savedOrder,
-      items,
-      savedItems,
-      totalAmount: orderInfo.totalAmount || 0,
-      isSpreeManaged: managedBySpree
-    });
   }
 
   if (shouldReverseStock) {
