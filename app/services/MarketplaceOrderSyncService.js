@@ -3,6 +3,7 @@ const logger = require('../../config/logger');
 const FalabellaOrderSyncService = require('./FalabellaOrderSyncService');
 const {
   MarketplaceOrderRepository,
+  MarketplaceOrderFeeRepository,
   MarketplaceCredentialRepository,
   MarketplaceOrderCustomerRepository
 } = require('../repositories');
@@ -125,7 +126,53 @@ const MarketplaceOrderSyncService = {
         }
       };
 
+      const refreshChargeStatus = resolveMarketplaceChargeStatus({
+        orderStatus: orderData.order_status,
+        paymentStatus: orderData.payment_status,
+        refundedAmount: orderData.refunded_amount,
+        totalAmount: orderData.total_amount
+      });
+
       await MarketplaceOrderRepository.updateById(order.id, orderData);
+      if (Number(shippingFinancials.seller_cost || 0) > 0) {
+        await MarketplaceOrderFeeRepository.upsertOrderFee({
+          order_id: order.id,
+          order_item_id: null,
+          company_id: order.company_id || null,
+          fee_type: 'shipping_fee',
+          amount: Number(shippingFinancials.seller_cost),
+          percentage: null,
+          status: refreshChargeStatus || 'charged',
+          description: `Costo de envío vendedor ML - Orden ${order.marketplace_order_id}`,
+          raw_data: {
+            shipment_id: shippingFinancials.shipment_id,
+            seller_cost: shippingFinancials.seller_cost,
+            gross_amount: shippingFinancials.gross_amount,
+            buyer_cost: shippingFinancials.buyer_cost,
+            shipping_subsidy: shippingFinancials.shipping_subsidy,
+            source: 'marketplace_order_refresh'
+          }
+        });
+      }
+      if (Number(discountFinancials.marketplace_amount || 0) > 0) {
+        await MarketplaceOrderFeeRepository.upsertOrderFee({
+          order_id: order.id,
+          order_item_id: null,
+          company_id: order.company_id || null,
+          fee_type: 'other',
+          amount: -Math.abs(Number(discountFinancials.marketplace_amount)),
+          percentage: null,
+          status: refreshChargeStatus || 'charged',
+          description: `Bonificación marketplace ML - Orden ${order.marketplace_order_id}`,
+          raw_data: {
+            marketplace_amount: discountFinancials.marketplace_amount,
+            source: 'order_discounts_refresh'
+          }
+        });
+      }
+      if (refreshChargeStatus) {
+        await MarketplaceOrderFeeRepository.updateOrderFeesStatus(order.id, refreshChargeStatus);
+      }
       await persistMarketplaceOrderCustomerSnapshot(order.id, customerSnapshot);
 
       const refreshedOrder = await MarketplaceOrderRepository.findById(order.id);
@@ -684,6 +731,35 @@ function mapMercadoLibrePaymentStatus(mlStatus) {
     charged_back: 'charged_back'
   };
   return statusMap[String(mlStatus).toLowerCase()] || 'pending';
+}
+
+function resolveMarketplaceChargeStatus({
+  orderStatus,
+  paymentStatus,
+  refundedAmount = 0,
+  totalAmount = 0
+}) {
+  const normalizedOrderStatus = String(orderStatus || '').toLowerCase();
+  const normalizedPaymentStatus = String(paymentStatus || '').toLowerCase();
+  const isFullyRefunded = Number(totalAmount || 0) > 0 &&
+    Number(refundedAmount || 0) >= Number(totalAmount || 0);
+
+  if (
+    isFullyRefunded ||
+    ['refunded', 'returned', 'reimbursed', 'charged_back'].includes(normalizedOrderStatus) ||
+    ['refunded', 'reimbursed', 'charged_back'].includes(normalizedPaymentStatus)
+  ) {
+    return 'refunded';
+  }
+
+  if (
+    ['cancelled', 'canceled'].includes(normalizedOrderStatus) ||
+    ['cancelled', 'canceled'].includes(normalizedPaymentStatus)
+  ) {
+    return 'cancelled';
+  }
+
+  return null;
 }
 
 function sleep(ms) {

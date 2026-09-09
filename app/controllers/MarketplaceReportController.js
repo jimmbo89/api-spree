@@ -108,14 +108,42 @@ const MarketplaceReportController = {
         offset
       } = req.body || {};
 
+      const hasCompanyId = company_id !== undefined && company_id !== null && company_id !== '';
+      const requestedCompanyId = hasCompanyId ? Number.parseInt(company_id, 10) : null;
+      const contextCompanyId = req.user?.company_id ? Number.parseInt(req.user.company_id, 10) : null;
+
+      if (hasCompanyId && (!Number.isInteger(requestedCompanyId) || requestedCompanyId <= 0)) {
+        return res.status(400).json({
+          success: false,
+          error: 'company_id debe ser un entero positivo'
+        });
+      }
+
+      if (
+        hasCompanyId &&
+        !req.user?.role_id &&
+        requestedCompanyId !== contextCompanyId
+      ) {
+        return res.status(403).json({
+          success: false,
+          error: 'No tienes acceso a la empresa solicitada'
+        });
+      }
+
+      // Los usuarios normales quedan limitados a la empresa establecida por auth.
+      // Un usuario global puede consultar todas o seleccionar una empresa.
+      const reportCompanyId = hasCompanyId
+        ? requestedCompanyId
+        : (req.user?.role_id ? null : contextCompanyId);
+
       // ✅ VALIDAR company_id si se proporciona
-      if (company_id) {
-        const company = await CompanyRepository.findById(company_id);
+      if (reportCompanyId) {
+        const company = await CompanyRepository.findById(reportCompanyId);
         if (!company) {
-          logger.warn(`${req.user?.user || 'Unknown'} - company_id ${company_id} no encontrado`);
+          logger.warn(`${req.user?.user || 'Unknown'} - company_id ${reportCompanyId} no encontrado`);
           return res.status(404).json({
             success: false,
-            error: `La empresa con ID ${company_id} no existe`
+            error: `La empresa con ID ${reportCompanyId} no existe`
           });
         }
       }
@@ -124,7 +152,7 @@ const MarketplaceReportController = {
       const credentials = await MarketplaceCredentialRepository.findByUser(
         req.user.id,
         null,
-        company_id ? parseInt(company_id) : (req.user.company_id || null),
+        reportCompanyId,
         { onlyActive: true }
       );
       const availableMarketplaces = credentials.map(cred => ({
@@ -138,10 +166,11 @@ const MarketplaceReportController = {
         to,
         marketplace,
         status,
-        company_id: company_id ? parseInt(company_id) : null,
-        fee_type: fee_type || 'commission',
-        ...(limit !== undefined && limit !== null && limit !== '' ? { limit: parseInt(limit) } : {}),
-        ...(offset !== undefined && offset !== null && offset !== '' ? { offset: parseInt(offset) } : {})
+        company_id: reportCompanyId,
+        // El reporte ampliado consulta todos los cargos por defecto.
+        fee_type: fee_type || 'all',
+        limit: limit !== undefined && limit !== null && limit !== '' ? Number.parseInt(limit, 10) : 50,
+        offset: offset !== undefined && offset !== null && offset !== '' ? Number.parseInt(offset, 10) : 0
       };
 
       const report = await MarketplaceReportingService.getCommissionReport(filters);
@@ -320,18 +349,45 @@ const MarketplaceReportController = {
         from,
         to,
         marketplace,
+        status,
         company_id,
         fee_type
       } = req.body || {};
 
+      const hasCompanyId = company_id !== undefined && company_id !== null && company_id !== '';
+      const requestedCompanyId = hasCompanyId ? Number.parseInt(company_id, 10) : null;
+      const contextCompanyId = req.user?.company_id ? Number.parseInt(req.user.company_id, 10) : null;
+
+      if (hasCompanyId && (!Number.isInteger(requestedCompanyId) || requestedCompanyId <= 0)) {
+        return res.status(400).json({
+          success: false,
+          error: 'company_id debe ser un entero positivo'
+        });
+      }
+
+      if (
+        hasCompanyId &&
+        !req.user?.role_id &&
+        requestedCompanyId !== contextCompanyId
+      ) {
+        return res.status(403).json({
+          success: false,
+          error: 'No tienes acceso a la empresa solicitada'
+        });
+      }
+
+      const reportCompanyId = hasCompanyId
+        ? requestedCompanyId
+        : (req.user?.role_id ? null : contextCompanyId);
+
       // ✅ VALIDAR company_id si se proporciona
-      if (company_id) {
-        const company = await CompanyRepository.findById(company_id);
+      if (reportCompanyId) {
+        const company = await CompanyRepository.findById(reportCompanyId);
         if (!company) {
-          logger.warn(`${req.user?.user || 'Unknown'} - company_id ${company_id} no encontrado`);
+          logger.warn(`${req.user?.user || 'Unknown'} - company_id ${reportCompanyId} no encontrado`);
           return res.status(404).json({
             success: false,
-            error: `La empresa con ID ${company_id} no existe`
+            error: `La empresa con ID ${reportCompanyId} no existe`
           });
         }
       }
@@ -340,8 +396,9 @@ const MarketplaceReportController = {
         from,
         to,
         marketplace,
-        company_id: company_id ? parseInt(company_id) : null,
-        fee_type: fee_type || 'commission'
+        company_id: reportCompanyId,
+        status,
+        fee_type: fee_type || 'all'
       };
 
       const stats = await MarketplaceReportingService.getCommissionStats(filters);

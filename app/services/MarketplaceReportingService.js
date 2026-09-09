@@ -140,6 +140,289 @@ function getSaleDisplayStatus(order) {
   return 'Pagada';
 }
 
+function normalizeChargeFeeType(feeType) {
+  const normalized = String(feeType ?? 'all').trim().toLowerCase();
+  return normalized || 'all';
+}
+
+function toMoney(value) {
+  const amount = Number(value || 0);
+  return Number.isFinite(amount)
+    ? Math.round((amount + Number.EPSILON) * 100) / 100
+    : 0;
+}
+
+function toPercentage(value) {
+  return toMoney(value);
+}
+
+function buildChargeQuery(filters = {}) {
+  const {
+    from,
+    to,
+    marketplace,
+    company_id,
+    status,
+    fee_type
+  } = filters;
+
+  const normalizedFeeType = normalizeChargeFeeType(fee_type);
+  const replacements = {};
+  const orderConditions = [];
+
+  if (from || to) {
+    const dateFilter = buildDateRange(from, to, 'o');
+    orderConditions.push(...dateFilter.conditions.map((condition) => (
+      condition.replaceAll('o.createdAt', 'COALESCE(o.sale_date, o.createdAt)')
+    )));
+    Object.assign(replacements, dateFilter.replacements);
+  }
+
+  if (marketplace && marketplace !== 'all') {
+    orderConditions.push('o.marketplace_credential_id = :marketplace');
+    replacements.marketplace = marketplace;
+  }
+
+  if (company_id) {
+    orderConditions.push('o.company_id = :company_id');
+    replacements.company_id = company_id;
+  }
+
+  let feeTypeCondition = '1 = 1';
+  if (normalizedFeeType === 'other') {
+    feeTypeCondition = "f.fee_type NOT IN ('commission', 'shipping_fee')";
+  } else if (normalizedFeeType !== 'all') {
+    feeTypeCondition = 'f.fee_type = :fee_type';
+    replacements.fee_type = normalizedFeeType;
+  }
+
+  const includeShipping = normalizedFeeType === 'all' || normalizedFeeType === 'shipping_fee';
+  const orderWhere = orderConditions.length > 0
+    ? `WHERE ${orderConditions.join(' AND ')}`
+    : '';
+  const chargeStatusWhere = status && status !== 'all'
+    ? 'AND charge_status = :status'
+    : '';
+
+  if (status && status !== 'all') {
+    replacements.status = status;
+  }
+
+  const shippingAmountExpression = includeShipping
+    ? `CASE
+        WHEN o.shipment_id IS NULL OR o.id = (
+          SELECT MIN(shipment_order.id)
+          FROM marketplace_orders shipment_order
+          WHERE shipment_order.shipment_id = o.shipment_id
+        ) THEN CASE
+          WHEN COALESCE(fa.shipping_fee_count, 0) > 0
+            THEN COALESCE(fa.stored_shipping_amount, 0)
+          ELSE COALESCE(
+            NULLIF(o.shipping_total, 0),
+            JSON_UNQUOTE(JSON_EXTRACT(o.raw_payload, '$.shipping_financials.seller_cost')),
+            0
+          )
+        END
+        ELSE 0
+      END`
+    : '0';
+
+  const cte = `
+WITH fee_agg AS (
+  SELECT
+    f.order_id,
+    COUNT(*) AS fee_count,
+    SUM(CASE WHEN f.fee_type = 'commission' THEN f.amount ELSE 0 END) AS commission_amount,
+    SUM(CASE WHEN f.fee_type = 'shipping_fee' THEN f.amount ELSE 0 END) AS stored_shipping_amount,
+    SUM(CASE WHEN f.fee_type NOT IN ('commission', 'shipping_fee') THEN f.amount ELSE 0 END) AS other_amount,
+    SUM(CASE WHEN f.fee_type = 'shipping_fee' THEN 1 ELSE 0 END) AS shipping_fee_count,
+    MAX(CASE WHEN LOWER(COALESCE(f.status, '')) IN ('refunded', 'reimbursed', 'charged_back') THEN 1 ELSE 0 END) AS has_refunded_fee,
+    MAX(CASE WHEN LOWER(COALESCE(f.status, '')) IN ('cancelled', 'canceled') THEN 1 ELSE 0 END) AS has_cancelled_fee,
+    MAX(CASE WHEN LOWER(COALESCE(f.status, '')) = 'pending' THEN 1 ELSE 0 END) AS has_pending_fee,
+    MAX(CASE WHEN LOWER(COALESCE(f.status, '')) = 'paid' THEN 1 ELSE 0 END) AS has_paid_fee,
+    MAX(CASE WHEN LOWER(COALESCE(f.status, '')) = 'charged' THEN 1 ELSE 0 END) AS has_charged_fee
+  FROM marketplace_order_fees f
+  WHERE ${feeTypeCondition}
+  GROUP BY f.order_id
+),
+charge_rows AS (
+  SELECT
+    o.id AS order_id,
+    o.marketplace_order_id AS order_ref,
+    o.marketplace_credential_id,
+    COALESCE(o.sale_date, o.createdAt) AS sale_date,
+    o.order_status,
+    o.payment_status,
+    o.total_amount AS sale_total,
+    o.refunded_amount,
+    o.currency,
+    COALESCE(fa.fee_count, 0) AS fee_count,
+    COALESCE(fa.commission_amount, 0) AS commission_amount,
+    ${shippingAmountExpression} AS shipping_amount,
+    COALESCE(fa.other_amount, 0) AS other_amount,
+    CASE
+      WHEN COALESCE(fa.has_refunded_fee, 0) = 1
+        OR LOWER(COALESCE(o.order_status, '')) IN ('refunded', 'returned')
+        OR LOWER(COALESCE(o.payment_status, '')) IN ('refunded', 'reimbursed', 'charged_back')
+        OR (
+          COALESCE(o.total_amount, 0) > 0
+          AND COALESCE(o.refunded_amount, 0) >= o.total_amount
+        ) THEN 'refunded'
+      WHEN COALESCE(fa.has_cancelled_fee, 0) = 1
+        OR LOWER(COALESCE(o.order_status, '')) IN ('cancelled', 'canceled')
+        OR LOWER(COALESCE(o.payment_status, '')) IN ('cancelled', 'canceled') THEN 'cancelled'
+      WHEN COALESCE(fa.has_pending_fee, 0) = 1 THEN 'pending'
+      WHEN COALESCE(fa.has_paid_fee, 0) = 1 THEN 'paid'
+      WHEN COALESCE(fa.has_charged_fee, 0) = 1 THEN 'charged'
+      ELSE 'charged'
+    END AS charge_status,
+    CASE
+      WHEN (
+        COALESCE(fa.has_refunded_fee, 0) = 1
+        OR LOWER(COALESCE(o.order_status, '')) IN ('refunded', 'returned')
+        OR LOWER(COALESCE(o.payment_status, '')) IN ('refunded', 'reimbursed', 'charged_back')
+        OR (
+          COALESCE(o.total_amount, 0) > 0
+          AND COALESCE(o.refunded_amount, 0) >= o.total_amount
+        )
+        OR COALESCE(fa.has_cancelled_fee, 0) = 1
+        OR LOWER(COALESCE(o.order_status, '')) IN ('cancelled', 'canceled')
+        OR LOWER(COALESCE(o.payment_status, '')) IN ('cancelled', 'canceled')
+      ) THEN 0
+      ELSE 1
+    END AS is_definitive
+  FROM marketplace_orders o
+  LEFT JOIN fee_agg fa ON fa.order_id = o.id
+  ${orderWhere}
+)
+`;
+
+  const chargeWhere = `WHERE (
+    ABS(commission_amount) > 0
+    OR ABS(shipping_amount) > 0
+    OR ABS(other_amount) > 0
+  ) ${chargeStatusWhere}`;
+
+  return {
+    cte,
+    chargeWhere,
+    replacements,
+    normalizedFeeType
+  };
+}
+
+async function getChargeRows(filters = {}, pagination = {}) {
+  const { cte, chargeWhere, replacements } = buildChargeQuery(filters);
+  const limit = Number.isInteger(Number(pagination.limit)) && Number(pagination.limit) >= 0
+    ? Number(pagination.limit)
+    : 50;
+  const offset = Number.isInteger(Number(pagination.offset)) && Number(pagination.offset) >= 0
+    ? Number(pagination.offset)
+    : 0;
+
+  const rows = await sequelize.query(`
+    ${cte}
+    SELECT
+      order_id,
+      order_ref,
+      marketplace_credential_id,
+      sale_date,
+      order_status,
+      payment_status,
+      sale_total,
+      refunded_amount,
+      currency,
+      fee_count,
+      commission_amount,
+      shipping_amount,
+      other_amount,
+      commission_amount + shipping_amount + other_amount AS total_charges,
+      CASE
+        WHEN COALESCE(sale_total, 0) > 0
+          THEN ((commission_amount + shipping_amount + other_amount) / sale_total) * 100
+        ELSE 0
+      END AS charges_percentage,
+      charge_status,
+      CASE WHEN charge_status IN ('cancelled', 'refunded') THEN 0 ELSE 1 END AS is_definitive
+    FROM charge_rows
+    ${chargeWhere}
+    ORDER BY sale_date DESC, order_id DESC
+    LIMIT :limit OFFSET :offset
+  `, {
+    type: sequelize.QueryTypes.SELECT,
+    replacements: { ...replacements, limit, offset }
+  });
+
+  return rows;
+}
+
+async function getChargeSummary(filters = {}) {
+  const { cte, chargeWhere, replacements } = buildChargeQuery(filters);
+  const [totals] = await sequelize.query(`
+    ${cte}
+    SELECT
+      COUNT(*) AS total_sales,
+      COALESCE(SUM(fee_count), 0) AS total_fee_records,
+      COALESCE(SUM(commission_amount), 0) AS commissions,
+      COALESCE(SUM(shipping_amount), 0) AS shipping,
+      COALESCE(SUM(other_amount), 0) AS other_charges,
+      COALESCE(SUM(commission_amount + shipping_amount + other_amount), 0) AS total_charges,
+      COALESCE(SUM(CASE WHEN is_definitive = 1 THEN commission_amount ELSE 0 END), 0) AS definitive_commissions,
+      COALESCE(SUM(CASE WHEN is_definitive = 1 THEN shipping_amount ELSE 0 END), 0) AS definitive_shipping,
+      COALESCE(SUM(CASE WHEN is_definitive = 1 THEN other_amount ELSE 0 END), 0) AS definitive_other_charges,
+      COALESCE(SUM(CASE WHEN is_definitive = 1 THEN commission_amount + shipping_amount + other_amount ELSE 0 END), 0) AS definitive_total_charges
+    FROM charge_rows
+    ${chargeWhere}
+  `, {
+    type: sequelize.QueryTypes.SELECT,
+    replacements
+  });
+
+  const byStatusRows = await sequelize.query(`
+    ${cte}
+    SELECT
+      charge_status,
+      COUNT(*) AS sale_count,
+      COALESCE(SUM(commission_amount), 0) AS commissions,
+      COALESCE(SUM(shipping_amount), 0) AS shipping,
+      COALESCE(SUM(other_amount), 0) AS other_charges,
+      COALESCE(SUM(commission_amount + shipping_amount + other_amount), 0) AS total_charges
+    FROM charge_rows
+    ${chargeWhere}
+    GROUP BY charge_status
+  `, {
+    type: sequelize.QueryTypes.SELECT,
+    replacements
+  });
+
+  const byStatus = {};
+  byStatusRows.forEach((row) => {
+    byStatus[row.charge_status] = {
+      count: Number(row.sale_count || 0),
+      commissions: toMoney(row.commissions),
+      shipping: toMoney(row.shipping),
+      otherCharges: toMoney(row.other_charges),
+      totalCharges: toMoney(row.total_charges)
+    };
+  });
+
+  return {
+    totalSales: Number(totals?.total_sales || 0),
+    totalFees: Number(totals?.total_fee_records || 0),
+    commissions: toMoney(totals?.commissions),
+    shipping: toMoney(totals?.shipping),
+    otherCharges: toMoney(totals?.other_charges),
+    totalCharges: toMoney(totals?.total_charges),
+    definitive: {
+      commissions: toMoney(totals?.definitive_commissions),
+      shipping: toMoney(totals?.definitive_shipping),
+      otherCharges: toMoney(totals?.definitive_other_charges),
+      totalCharges: toMoney(totals?.definitive_total_charges)
+    },
+    byStatus
+  };
+}
+
 const MarketplaceReportingService = {
 
   // ========================
@@ -304,44 +587,110 @@ const MarketplaceReportingService = {
   async getCommissionReport(filters = {}) {
     try {
       const {
-         from, to, marketplace, company_id, status,
-         fee_type = 'commission',
-         limit, offset
+        from,
+        to,
+        marketplace,
+        company_id,
+        status,
+        fee_type = 'all',
+        limit,
+        offset
       } = filters;
+      const normalizedFeeType = normalizeChargeFeeType(fee_type);
+      const normalizedStatus = status && status !== 'all' ? status : undefined;
+      const chargeFilters = {
+        from,
+        to,
+        marketplace,
+        company_id,
+        status: normalizedStatus,
+        fee_type: normalizedFeeType
+      };
 
       const feesResult = await MarketplaceOrderFeeRepository.findAndCountAll({
-        filters: { from, to, marketplace, company_id, status, fee_type },
+        filters: {
+          from,
+          to,
+          marketplace,
+          company_id,
+          status: normalizedStatus,
+          fee_type: normalizedFeeType === 'all' ? undefined : normalizedFeeType
+        },
         pagination: { limit, offset }
       });
 
-      const stats = await this.getCommissionStats({ ...filters, marketplace, status });
+      const [chargeRows, chargeSummary] = await Promise.all([
+        getChargeRows(chargeFilters, { limit, offset }),
+        getChargeSummary(chargeFilters)
+      ]);
+
+      const marketplaceIds = [...new Set(
+        chargeRows.map(row => row.marketplace_credential_id).filter(Boolean)
+      )];
+      const credentials = marketplaceIds.length
+        ? await MarketplaceCredentialRepository.findByIds(marketplaceIds)
+        : [];
+      const marketplaceLookup = buildMarketplaceLookup(credentials);
 
       return {
         summary: {
-          totalFees: feesResult.count,
-          totalAmount: stats.total_amount || 0,
-          byStatus: stats.by_status || {}
+          // Campos anteriores conservados para compatibilidad.
+          totalFees: chargeSummary.totalFees,
+          totalAmount: chargeSummary.totalCharges,
+          byStatus: chargeSummary.byStatus,
+          // Totales del nuevo reporte de cargos, calculados sobre todo el
+          // conjunto filtrado y no solo sobre la página visible.
+          totalSales: chargeSummary.totalSales,
+          totalCharges: chargeSummary.totalCharges,
+          commissions: chargeSummary.commissions,
+          shipping: chargeSummary.shipping,
+          otherCharges: chargeSummary.otherCharges,
+          definitive: chargeSummary.definitive
         },
+        // Vista nueva: una fila consolidada por venta.
+        charges: chargeRows.map(row => ({
+          id: row.order_id,
+          orderId: row.order_id,
+          orderRef: row.order_ref,
+          marketplace: row.marketplace_credential_id,
+          ...getMarketplaceMetaFromLookup(row.marketplace_credential_id, marketplaceLookup),
+          saleDate: row.sale_date,
+          saleTotal: toMoney(row.sale_total),
+          commission: toMoney(row.commission_amount),
+          shipping: toMoney(row.shipping_amount),
+          otherCharges: toMoney(row.other_amount),
+          totalCharges: toMoney(row.total_charges),
+          percentage: toPercentage(row.charges_percentage),
+          status: row.charge_status,
+          isDefinitive: Boolean(row.is_definitive),
+          orderStatus: row.order_status,
+          paymentStatus: row.payment_status,
+          refundedAmount: toMoney(row.refunded_amount),
+          currency: row.currency,
+          feeCount: Number(row.fee_count || 0)
+        })),
+        // Vista existente conservada para consumidores que todavía trabajan
+        // con el detalle individual de cada fee.
         fees: feesResult.rows.map(fee => ({
           id: fee.id,
           orderId: fee.order_id,
-           orderRef: fee.order?.marketplace_order_id,
-           marketplace: fee.order?.marketplace_credential_id,
+          orderRef: fee.order?.marketplace_order_id,
+          marketplace: fee.order?.marketplace_credential_id,
           ...getMarketplaceMetaFromCredential(fee.order?.credential),
-           feeType: fee.fee_type,
-           saleDate: fee.order?.sale_date || fee.order?.createdAt,
-           orderStatus: fee.order?.order_status,
-           paymentStatus: fee.order?.payment_status,
-           saleTotal: parseFloat(fee.order?.total_amount || 0),
-           refundedAmount: parseFloat(fee.order?.refunded_amount || 0),
-           currency: fee.order?.currency,
-           sku: fee.orderItem?.sku,
-           productId: fee.orderItem?.product_id,
-           variantId: fee.orderItem?.variant_id,
-           quantity: fee.orderItem?.quantity,
-           unitPrice: parseFloat(fee.orderItem?.unit_price || 0),
-           itemTotal: parseFloat(fee.orderItem?.total_price || 0),
-           title: fee.orderItem?.title || null,
+          feeType: fee.fee_type,
+          saleDate: fee.order?.sale_date || fee.order?.createdAt,
+          orderStatus: fee.order?.order_status,
+          paymentStatus: fee.order?.payment_status,
+          saleTotal: parseFloat(fee.order?.total_amount || 0),
+          refundedAmount: parseFloat(fee.order?.refunded_amount || 0),
+          currency: fee.order?.currency,
+          sku: fee.orderItem?.sku,
+          productId: fee.orderItem?.product_id,
+          variantId: fee.orderItem?.variant_id,
+          quantity: fee.orderItem?.quantity,
+          unitPrice: parseFloat(fee.orderItem?.unit_price || 0),
+          itemTotal: parseFloat(fee.orderItem?.total_price || 0),
+          title: fee.orderItem?.title || null,
           amount: parseFloat(fee.amount || 0),
           percentage: parseFloat(fee.percentage || 0),
           status: fee.status,
@@ -360,62 +709,23 @@ const MarketplaceReportingService = {
 
   async getCommissionStats(filters = {}) {
     try {
-      const { from, to, marketplace, company_id, status, fee_type = 'commission' } = filters;
-
-      const conditions = ['f.fee_type = :fee_type'];
-      const replacements = { fee_type };
-
-      const dateFilter = buildDateRange(from, to);
-      conditions.push(...dateFilter.conditions.map((condition) => condition.replace('createdAt', 'o.sale_date')));
-      Object.assign(replacements, dateFilter.replacements);
-
-      if (company_id) {
-        conditions.push(`f.company_id = :company_id`);
-        replacements.company_id = company_id;
-      }
-      if (marketplace) {
-        conditions.push(`o.marketplace_credential_id = :marketplace`);
-        replacements.marketplace = marketplace;
-      }
-      if (status) {
-        conditions.push(`f.status = :status`);
-        replacements.status = status;
-      }
-
-      const whereClause = `WHERE ${conditions.join(' AND ')}`;
-
-      const totalResult = await sequelize.query(`
-        SELECT COALESCE(SUM(amount), 0) as total_amount
-        FROM marketplace_order_fees f
-        INNER JOIN marketplace_orders o ON o.id = f.order_id
-        ${whereClause}
-      `, {
-        type: sequelize.QueryTypes.SELECT,
-        replacements
-      });
-
-      const byStatusResult = await sequelize.query(`
-        SELECT f.status, SUM(f.amount) as total_amount, COUNT(*) as count
-        FROM marketplace_order_fees f
-        INNER JOIN marketplace_orders o ON o.id = f.order_id
-        ${whereClause}
-        GROUP BY status
-      `, {
-        type: sequelize.QueryTypes.SELECT,
-        replacements
-      });
-
-      const byStatus = {};
-      byStatusResult.forEach(row => {
-        byStatus[row.status] = {
-          total_amount: parseFloat(row.total_amount || 0),
-          count: parseInt(row.count || 0)
-        };
+      const summary = await getChargeSummary({
+        ...filters,
+        fee_type: normalizeChargeFeeType(filters.fee_type)
       });
 
       return {
-        total_amount: parseFloat(totalResult?.[0]?.total_amount || 0),
-        by_status: byStatus
+        // Campos existentes conservados.
+        total_amount: summary.totalCharges,
+        by_status: summary.byStatus,
+        // Totales separados para el resumen de Cargos Marketplace.
+        total_sales: summary.totalSales,
+        total_fees: summary.totalFees,
+        total_charges: summary.totalCharges,
+        commissions: summary.commissions,
+        shipping: summary.shipping,
+        other_charges: summary.otherCharges,
+        definitive: summary.definitive
       };
 
     } catch (error) {

@@ -65,6 +65,40 @@ const MarketplaceOrderFeeRepository = {
   },
 
   /**
+   * Busca un cargo asociado directamente a la orden.
+   * Se usa para cargos de orden como envío, ajustes o bonificaciones.
+   */
+  async findByOrderAndType(orderId, feeType) {
+    return await MarketplaceOrderFee.findOne({
+      where: {
+        order_id: orderId,
+        order_item_id: { [Op.is]: null },
+        fee_type: feeType
+      },
+      order: [['id', 'ASC']]
+    });
+  },
+
+  /**
+   * Crea o actualiza un cargo directo de la orden sin duplicarlo al
+   * reprocesar el webhook o refrescar una venta histórica.
+   */
+  async upsertOrderFee(data, options = {}) {
+    const { order_id: orderId, fee_type: feeType } = data || {};
+    if (!orderId || !feeType) {
+      throw new Error('order_id y fee_type son requeridos para upsertOrderFee');
+    }
+
+    const existing = await this.findByOrderAndType(orderId, feeType);
+    if (existing) {
+      await this.updateById(existing.id, data, options);
+      return existing;
+    }
+
+    return await this.create(data, options);
+  },
+
+  /**
    * Busca un fee por ID
    * @param {Number} id - ID del fee
    * @returns {Promise<MarketplaceOrderFee|null>}
@@ -191,13 +225,26 @@ const MarketplaceOrderFeeRepository = {
 
       const where = {};
       if (company_id) where.company_id = company_id;
-      if (fee_type) where.fee_type = fee_type;
+      if (fee_type === 'other') {
+        where.fee_type = { [Op.notIn]: ['commission', 'shipping_fee'] };
+      } else if (fee_type) {
+        where.fee_type = fee_type;
+      }
       if (status) where.status = status;
       const orderWhere = {};
       if (status) where.status = status;
-      if (marketplace) orderWhere.marketplace_credential_id = marketplace;
+      if (marketplace && marketplace !== 'all') {
+        orderWhere.marketplace_credential_id = marketplace;
+      }
       if (from || to) {
-        orderWhere.sale_date = getDateOnlyRange(from, to);
+        const saleDateRange = getDateOnlyRange(from, to);
+        orderWhere[Op.or] = [
+          { sale_date: saleDateRange },
+          {
+            sale_date: { [Op.is]: null },
+            createdAt: saleDateRange
+          }
+        ];
       }
 
       const queryOptions = {

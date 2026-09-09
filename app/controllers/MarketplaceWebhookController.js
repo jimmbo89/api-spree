@@ -552,6 +552,47 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
 
   const currentOrderStatus = savedOrder?.order_status || orderData.order_status;
   const currentPaymentStatus = savedOrder?.payment_status || orderData.payment_status;
+  const initialChargeStatus = resolveMarketplaceCommissionStatus({
+    orderStatus: currentOrderStatus,
+    paymentStatus: currentPaymentStatus,
+    refundedAmount: savedOrder?.refunded_amount,
+    totalAmount: savedOrder?.total_amount
+  }) || 'charged';
+
+  await upsertMarketplaceOrderCharge({
+    orderId: savedOrder.id,
+    companyId,
+    feeType: 'shipping_fee',
+    amount: shippingFinancials.seller_cost,
+    status: initialChargeStatus,
+    description: `Costo de envío vendedor ML - Orden ${orderId}`,
+    rawData: {
+      shipment_id: shippingFinancials.shipment_id,
+      seller_cost: shippingFinancials.seller_cost,
+      gross_amount: shippingFinancials.gross_amount,
+      buyer_cost: shippingFinancials.buyer_cost,
+      shipping_subsidy: shippingFinancials.shipping_subsidy
+    }
+  });
+
+  // Una bonificación/descuento financiado por el marketplace reduce el
+  // total de cargos; se conserva como monto negativo para no mezclarlo con
+  // la comisión ni con el costo logístico.
+  if (Number(discountFinancials.marketplace_amount || 0) > 0) {
+    await upsertMarketplaceOrderCharge({
+      orderId: savedOrder.id,
+      companyId,
+      feeType: 'other',
+      amount: -Math.abs(Number(discountFinancials.marketplace_amount)),
+      status: initialChargeStatus,
+      description: `Bonificación marketplace ML - Orden ${orderId}`,
+      rawData: {
+        marketplace_amount: discountFinancials.marketplace_amount,
+        source: 'order_discounts'
+      }
+    });
+  }
+
   const stockState = await getMarketplaceOrderStockState(
     ML_MARKETPLACE_KEY,
     orderId,
@@ -780,13 +821,14 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
     }
 
     const refundedAmount = resolveMercadoLibreRefundedAmount(order);
-    const fullyRefunded = Number(order.total_amount || 0) > 0 && refundedAmount >= Number(order.total_amount);
-    if (
-      ['cancelled', 'refunded'].includes(String(resolveMercadoLibreOrderStatus(order) || '').toLowerCase()) ||
-      ['cancelled', 'refunded', 'charged_back'].includes(String(resolveMercadoLibrePaymentStatus(order) || '').toLowerCase()) ||
-      fullyRefunded
-    ) {
-      await MarketplaceOrderFeeRepository.updateOrderFeesStatus(savedOrder.id, 'cancelled');
+    const commissionStatus = resolveMarketplaceCommissionStatus({
+      orderStatus: resolveMercadoLibreOrderStatus(order),
+      paymentStatus: resolveMercadoLibrePaymentStatus(order),
+      refundedAmount,
+      totalAmount: order.total_amount
+    });
+    if (commissionStatus) {
+      await MarketplaceOrderFeeRepository.updateOrderFeesStatus(savedOrder.id, commissionStatus);
     }
 
   }
@@ -829,13 +871,14 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
 
   if (!shouldDeductStock) {
     const refundedAmount = resolveMercadoLibreRefundedAmount(order);
-    const fullyRefunded = Number(order.total_amount || 0) > 0 && refundedAmount >= Number(order.total_amount);
-    if (
-      ['cancelled', 'refunded'].includes(String(resolveMercadoLibreOrderStatus(order) || '').toLowerCase()) ||
-      ['cancelled', 'refunded', 'charged_back'].includes(String(resolveMercadoLibrePaymentStatus(order) || '').toLowerCase()) ||
-      fullyRefunded
-    ) {
-      await MarketplaceOrderFeeRepository.updateOrderFeesStatus(savedOrder.id, 'cancelled');
+    const commissionStatus = resolveMarketplaceCommissionStatus({
+      orderStatus: resolveMercadoLibreOrderStatus(order),
+      paymentStatus: resolveMercadoLibrePaymentStatus(order),
+      refundedAmount,
+      totalAmount: order.total_amount
+    });
+    if (commissionStatus) {
+      await MarketplaceOrderFeeRepository.updateOrderFeesStatus(savedOrder.id, commissionStatus);
     }
   }
 
@@ -1151,6 +1194,33 @@ async function upsertMercadoLibreCommission({
     return existing;
   }
   return await MarketplaceOrderFeeRepository.create(data);
+}
+
+async function upsertMarketplaceOrderCharge({
+  orderId,
+  companyId,
+  feeType,
+  amount,
+  status = 'charged',
+  description,
+  rawData = null
+}) {
+  const numericAmount = Number(amount || 0);
+  if (!orderId || !feeType || !Number.isFinite(numericAmount) || numericAmount === 0) {
+    return null;
+  }
+
+  return await MarketplaceOrderFeeRepository.upsertOrderFee({
+    order_id: orderId,
+    order_item_id: null,
+    company_id: companyId || null,
+    fee_type: feeType,
+    amount: numericAmount,
+    percentage: null,
+    status,
+    description: description || null,
+    raw_data: rawData
+  });
 }
 
 async function notifyMercadoLibreSaleRegistered({
@@ -3166,6 +3236,27 @@ async function processFalabellaEvent({ event, payload, orderId }) {
 
   const currentOrderStatus = savedOrder?.order_status || orderDataToSave.order_status;
   const currentPaymentStatus = savedOrder?.payment_status || orderDataToSave.payment_status;
+  const initialChargeStatus = resolveMarketplaceCommissionStatus({
+    orderStatus: currentOrderStatus,
+    paymentStatus: currentPaymentStatus,
+    refundedAmount: savedOrder?.refunded_amount,
+    totalAmount: savedOrder?.total_amount
+  }) || 'pending';
+
+  await upsertMarketplaceOrderCharge({
+    orderId: savedOrder.id,
+    companyId,
+    feeType: 'shipping_fee',
+    amount: orderInfo.shippingTotal,
+    status: initialChargeStatus,
+    description: `Costo de envío vendedor Falabella - Orden ${orderId}`,
+    rawData: {
+      shipping_total: orderInfo.shippingTotal,
+      shipping_type: orderInfo.shippingType || null,
+      order_number: orderInfo.orderNumber || null
+    }
+  });
+
   const stockState = await getMarketplaceOrderStockState(
     FB_MARKETPLACE_KEY,
     orderId,
@@ -3363,27 +3454,14 @@ async function processFalabellaEvent({ event, payload, orderId }) {
     }
   }
 
-  if (shouldDeductStock) {
-    const allItemsSaved = savedItems.length === items.length && errors.length === 0;
-
-    // ✅ GUARDAR FEES TOTALES DE LA ORDEN (comisiones)
-    if (savedOrder && orderInfo.commission > 0 && allItemsSaved) {
-      try {
-        await MarketplaceOrderFeeRepository.create({
-          order_id: savedOrder.id,
-          company_id: companyId,
-          fee_type: 'commission',
-          amount: orderInfo.commission,
-          percentage: orderInfo.totalAmount > 0 ? (orderInfo.commission / orderInfo.totalAmount) * 100 : 0,
-          status: 'pending',
-          description: `Comisión Falabella - Orden ${orderId}`,
-          raw_data: { commission: orderInfo.commission }
-        });
-      } catch (error) {
-        logger.error(`[FB Webhook] Error guardando fees de orden ${orderId}: ${error.message}`);
-      }
-    }
-
+  const commissionStatus = resolveMarketplaceCommissionStatus({
+    orderStatus: orderInfo.status || currentOrderStatus,
+    paymentStatus: currentPaymentStatus,
+    refundedAmount: savedOrder?.refunded_amount,
+    totalAmount: savedOrder?.total_amount
+  });
+  if (commissionStatus) {
+    await MarketplaceOrderFeeRepository.updateOrderFeesStatus(savedOrder.id, commissionStatus);
   }
 
   const allManagedItemsDeducted = managedItemReferences.length > 0 &&
@@ -4768,6 +4846,16 @@ function parseFalabellaOrderItems(orderData, orderItemsData = null) {
         item?.shipping_fee ||
         item?.ShippingCost
       ) || 0,
+      otherCharge: parseFalabellaAmount(
+        item?.OtherFee ??
+        item?.OtherFees ??
+        item?.OtherCharge ??
+        item?.OtherCharges ??
+        item?.AdditionalFee ??
+        item?.AdditionalCharge ??
+        item?.AdjustmentAmount ??
+        item?.adjustment_amount
+      ) || 0,
       tax: parseFalabellaAmount(item?.TaxAmount || item?.Tax || item?.tax) || 0,
       status: item?.Status || item?.status || null,
       shippingType: item?.ShippingType || item?.shipping_type || null,
@@ -4798,6 +4886,7 @@ function parseFalabellaOrderInfo(orderData, orderItemsData = null, webhookPayloa
   const shippingTotal = items.reduce((sum, item) => sum + (item.shippingFee || 0), 0);
   const discountTotal = items.reduce((sum, item) => sum + (item.discount || 0), 0);
   const commissionTotal = items.reduce((sum, item) => sum + (item.commission || 0), 0);
+  const otherChargesTotal = items.reduce((sum, item) => sum + (item.otherCharge || 0), 0);
   const taxTotal = items.reduce((sum, item) => sum + (item.tax || 0), 0);
   const totalAmount = items.length > 0
     ? subtotal + shippingTotal
@@ -4844,6 +4933,7 @@ function parseFalabellaOrderInfo(orderData, orderItemsData = null, webhookPayloa
     discountTotal,
     taxTotal,
     commission: commissionTotal,
+    otherCharges: otherChargesTotal,
     totalAmount,
     paymentMethod: order?.PaymentMethod || order?.payment_method || null,
     invoiceRequired: toBoolean(order?.InvoiceRequired),
@@ -5517,6 +5607,7 @@ async function saveFalabellaOrderItem({
   const unitPrice = Number(item?.unitPrice || 0);
   const totalPrice = Number(item?.totalPrice || (unitPrice * quantity));
   const commission = Number(item?.commission || 0);
+  const otherCharge = Number(item?.otherCharge || 0);
 
   const itemData = {
     order_id: ctx.orderIdLocal,
@@ -5528,6 +5619,7 @@ async function saveFalabellaOrderItem({
       item_price: item?.itemPrice || null,
       paid_price: item?.paidPrice || null,
       shipping_amount: item?.shippingFee || 0,
+      other_charge: item?.otherCharge || 0,
       status: item?.status || null,
       shipping_type: item?.shippingType || null,
       package_id: item?.packageId || null,
@@ -5568,7 +5660,7 @@ async function saveFalabellaOrderItem({
       company_id: itemCompanyId,
       fee_type: 'commission',
       amount: commission,
-      percentage: unitPrice > 0 ? (commission / unitPrice) * 100 : 0,
+      percentage: totalPrice > 0 ? (commission / totalPrice) * 100 : 0,
       status: 'pending',
       description: `Comisión Falabella - Item ${listingId || savedItem.id}`,
       raw_data: { commission }
@@ -5578,6 +5670,33 @@ async function saveFalabellaOrderItem({
       await MarketplaceOrderFeeRepository.updateById(existingFee.id, feeData);
     } else {
       await MarketplaceOrderFeeRepository.create(feeData);
+    }
+  }
+
+  if (Number.isFinite(otherCharge) && otherCharge !== 0) {
+    const existingOtherFee = await MarketplaceOrderFeeRepository.findByOrderItemAndType(
+      savedItem.id,
+      'other'
+    );
+    const otherFeeData = {
+      order_id: ctx.orderIdLocal,
+      order_item_id: savedItem.id,
+      company_id: itemCompanyId,
+      fee_type: 'other',
+      amount: otherCharge,
+      percentage: null,
+      status: 'pending',
+      description: `Otros cargos Falabella - Item ${listingId || savedItem.id}`,
+      raw_data: {
+        other_charge: otherCharge,
+        source: 'falabella_order_item'
+      }
+    };
+
+    if (existingOtherFee) {
+      await MarketplaceOrderFeeRepository.updateById(existingOtherFee.id, otherFeeData);
+    } else {
+      await MarketplaceOrderFeeRepository.create(otherFeeData);
     }
   }
 
@@ -6693,6 +6812,37 @@ function getMarketplaceOrderLifecycleDecision({ orderStatus, paymentStatus }) {
     shouldDeduct,
     shouldReverse
   };
+}
+
+function resolveMarketplaceCommissionStatus({
+  orderStatus,
+  paymentStatus,
+  refundedAmount = 0,
+  totalAmount = 0
+}) {
+  const normalizedOrderStatus = stringOrNull(orderStatus)?.toLowerCase() || null;
+  const normalizedPaymentStatus = stringOrNull(paymentStatus)?.toLowerCase() || null;
+  const isFullyRefunded = Number(totalAmount || 0) > 0 &&
+    Number(refundedAmount || 0) >= Number(totalAmount || 0);
+  const refundStatuses = new Set(['refunded', 'charged_back']);
+  const cancellationStatuses = new Set(['cancelled', 'canceled']);
+
+  if (
+    isFullyRefunded ||
+    refundStatuses.has(normalizedOrderStatus) ||
+    refundStatuses.has(normalizedPaymentStatus)
+  ) {
+    return 'refunded';
+  }
+
+  if (
+    cancellationStatuses.has(normalizedOrderStatus) ||
+    cancellationStatuses.has(normalizedPaymentStatus)
+  ) {
+    return 'cancelled';
+  }
+
+  return null;
 }
 
 async function getMarketplaceOrderStockState(marketplaceKey, orderReferenceId, localOrderId = orderReferenceId) {
