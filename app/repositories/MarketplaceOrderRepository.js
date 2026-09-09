@@ -1,7 +1,31 @@
-const { MarketplaceOrder } = require('../models');
+const { MarketplaceOrder, sequelize } = require('../models');
 const { Op } = require('sequelize');
 const { getDateOnlyRange } = require('../utils/dateRange');
 const logger = require('../../config/logger');
+
+function buildOrderWhere(filters = {}) {
+  const {
+    marketplace,
+    order_status,
+    payment_status,
+    company_id,
+    user_id,
+    from,
+    to
+  } = filters;
+
+  const where = {};
+  if (marketplace) where.marketplace_credential_id = marketplace;
+  if (order_status) where.order_status = order_status;
+  if (payment_status) where.payment_status = payment_status;
+  if (company_id) where.company_id = company_id;
+  if (user_id) where.user_id = user_id;
+  if (from || to) {
+    where.sale_date = getDateOnlyRange(from, to);
+  }
+
+  return where;
+}
 
 const MarketplaceOrderRepository = {
   /**
@@ -130,27 +154,8 @@ const MarketplaceOrderRepository = {
    */
   async findAndCountAll({ filters = {}, pagination = {} } = {}) {
     try {
-      const {
-        marketplace,
-        order_status,
-        payment_status,
-        company_id,
-        user_id,
-        from,
-        to
-      } = filters;
-
       const { limit, offset } = pagination;
-
-      const where = {};
-      if (marketplace) where.marketplace_credential_id = marketplace;
-      if (order_status) where.order_status = order_status;
-      if (payment_status) where.payment_status = payment_status;
-      if (company_id) where.company_id = company_id;
-      if (user_id) where.user_id = user_id;
-      if (from || to) {
-        where.sale_date = getDateOnlyRange(from, to);
-      }
+      const where = buildOrderWhere(filters);
 
       const queryOptions = {
         where,
@@ -182,6 +187,51 @@ const MarketplaceOrderRepository = {
   },
 
   /**
+   * Obtiene el resumen de ventas con una sola consulta agregada
+   * @param {Object} filters - Filtros de búsqueda
+   * @returns {Promise<Object>} Resumen de ventas
+   */
+  async getSalesSummary({ filters = {} } = {}) {
+    try {
+      const result = await MarketplaceOrder.findOne({
+        where: buildOrderWhere(filters),
+        attributes: [
+          [sequelize.fn('COUNT', sequelize.col('id')), 'total_orders'],
+          [sequelize.fn(
+            'SUM',
+            sequelize.literal("CASE WHEN order_status = 'paid' THEN total_amount ELSE 0 END")
+          ), 'total_revenue'],
+          [sequelize.fn(
+            'SUM',
+            sequelize.literal("CASE WHEN order_status = 'paid' THEN subtotal ELSE 0 END")
+          ), 'total_subtotal'],
+          [sequelize.fn(
+            'SUM',
+            sequelize.literal("CASE WHEN order_status = 'paid' THEN shipping_total ELSE 0 END")
+          ), 'total_shipping'],
+          [sequelize.fn(
+            'SUM',
+            sequelize.literal("CASE WHEN order_status = 'paid' THEN tax_total ELSE 0 END")
+          ), 'total_tax']
+        ],
+        raw: true
+      });
+
+      const row = result || {};
+      return {
+        totalOrders: parseInt(row.total_orders || 0, 10),
+        totalRevenue: parseFloat(row.total_revenue || 0),
+        totalSubtotal: parseFloat(row.total_subtotal || 0),
+        totalShipping: parseFloat(row.total_shipping || 0),
+        totalTax: parseFloat(row.total_tax || 0)
+      };
+    } catch (error) {
+      logger.error('[MarketplaceOrderRepository] Error en getSalesSummary:', error.message);
+      throw error;
+    }
+  },
+
+  /**
    * Obtiene estadísticas de ventas
    * @param {Object} filters - Filtros de búsqueda
    * @returns {Promise<Object>} Estadísticas
@@ -196,15 +246,14 @@ const MarketplaceOrderRepository = {
         to
       } = filters;
 
-      const where = {
+      const where = buildOrderWhere({
+        marketplace,
+        company_id,
+        user_id,
+        from,
+        to,
         order_status: 'paid'
-      };
-      if (marketplace) where.marketplace_credential_id = marketplace;
-      if (company_id) where.company_id = company_id;
-      if (user_id) where.user_id = user_id;
-      if (from || to) {
-        where.sale_date = getDateOnlyRange(from, to);
-      }
+      });
 
       const result = await MarketplaceOrder.findOne({
         where,

@@ -126,23 +126,6 @@ function buildStockDisplay(order) {
   };
 }
 
-function buildSalesSummary(orders = []) {
-  return orders.reduce((summary, order) => {
-    summary.totalOrders += 1;
-    summary.totalRevenue += parseFloat(order.total_amount || 0);
-    summary.totalSubtotal += parseFloat(order.subtotal || 0);
-    summary.totalShipping += parseFloat(order.shipping_total || 0);
-    summary.totalTax += parseFloat(order.tax_total || 0);
-    return summary;
-  }, {
-    totalOrders: 0,
-    totalRevenue: 0,
-    totalSubtotal: 0,
-    totalShipping: 0,
-    totalTax: 0
-  });
-}
-
 function getSaleDisplayStatus(order) {
   const payment = String(order?.payment_status || '').toLowerCase();
   const shipping = String(order?.shipping_status || '').toLowerCase();
@@ -182,17 +165,15 @@ const MarketplaceReportingService = {
         pagination: { limit, offset }
       });
 
-      const summaryOrdersResult = await MarketplaceOrderRepository.findAndCountAll({
+      const summary = await MarketplaceOrderRepository.getSalesSummary({
         filters: {
           from,
           to,
           marketplace,
-          order_status: 'paid',
           company_id,
           user_id
         }
       });
-      const summary = buildSalesSummary(summaryOrdersResult.rows);
 
       return {
         summary,
