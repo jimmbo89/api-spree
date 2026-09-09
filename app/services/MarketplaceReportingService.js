@@ -4,9 +4,11 @@ const {
   MarketplaceCredentialRepository
 } = require('../repositories');
 
-const { sequelize } = require('../models');
+const { sequelize, MarketplaceOrder } = require('../models');
+const { Op } = require('sequelize');
 const { getDateOnlyBounds, formatLocalSqlDateTime } = require('../utils/dateRange');
 const logger = require('../../config/logger');
+const MarketplaceFinancialService = require('./MarketplaceFinancialService');
 
 /**
  * Construye rango de fechas SIN timezone issues
@@ -145,6 +147,24 @@ function normalizeChargeFeeType(feeType) {
   return normalized || 'all';
 }
 
+const FINANCIAL_FEE_LABELS = Object.freeze({
+  commission: 'Comisión',
+  shipping_fee: 'Envío vendedor',
+  other: 'Otros cargos',
+  other_charge: 'Otros cargos',
+  other_charges: 'Otros cargos',
+  payment_fee: 'Cargo de pago',
+  transaction_fee: 'Cargo de transacción',
+  tax: 'Impuesto',
+  refund: 'Reembolso',
+  discount: 'Descuento'
+});
+
+function getFinancialFeeLabel(feeType) {
+  const normalized = String(feeType ?? '').trim().toLowerCase();
+  return FINANCIAL_FEE_LABELS[normalized] || 'Otros cargos';
+}
+
 function toMoney(value) {
   const amount = Number(value || 0);
   return Number.isFinite(amount)
@@ -154,6 +174,16 @@ function toMoney(value) {
 
 function toPercentage(value) {
   return toMoney(value);
+}
+
+function isActiveFinancialFee(fee) {
+  return ![
+    'cancelled',
+    'canceled',
+    'refunded',
+    'reimbursed',
+    'charged_back'
+  ].includes(String(fee?.status || '').toLowerCase());
 }
 
 function buildChargeQuery(filters = {}) {
@@ -458,12 +488,46 @@ const MarketplaceReportingService = {
         }
       });
 
+      const financialSummary = await MarketplaceFinancialService.getFinancialSummary({
+        from,
+        to,
+        marketplace,
+        company_id,
+        user_id,
+        status
+      });
+      const orderIds = ordersResult.rows.map((order) => order.id).filter(Boolean);
+      const financialRows = orderIds.length > 0
+        ? await MarketplaceFinancialService.getOrderFinancialRows({
+            from,
+            to,
+            marketplace,
+            company_id,
+            user_id,
+            status,
+            orderIds
+          })
+        : [];
+      const financialByOrder = new Map(
+        financialRows.map((row) => [String(row.orderId), row])
+      );
+
       return {
-        summary,
+        summary: {
+          ...summary,
+          totalRevenue: financialSummary.totalRevenue,
+          totalShipping: financialSummary.totalShipping,
+          totalProductCost: financialSummary.totalProductCost,
+          totalCommissions: financialSummary.totalCommissions,
+          totalOtherCharges: financialSummary.totalOtherCharges,
+          estimatedProfit: financialSummary.estimatedProfit,
+          marginPercentage: financialSummary.marginPercentage
+        },
         orders: ordersResult.rows.map(order => {
           const buyer = buildBuyerSummary(order);
           const seller = buildSellerSummary(order);
           const stockDisplay = buildStockDisplay(order);
+          const financial = financialByOrder.get(String(order.id));
 
           return {
           id: order.id,
@@ -504,10 +568,29 @@ const MarketplaceReportingService = {
            })),
           itemsCount: order.items?.length || 0,
           subtotal: parseFloat(order.subtotal || 0),
-          shipping: parseFloat(order.shipping_total || 0),
-          tax: parseFloat(order.tax_total || 0),
-          total: parseFloat(order.total_amount || 0),
-          invoiceNumber: order.invoice_number,
+           shipping: financial?.shipping ?? parseFloat(order.shipping_total || 0),
+           shippingSellerCost: financial?.shipping ?? parseFloat(order.shipping_total || 0),
+           tax: parseFloat(order.tax_total || 0),
+           total: parseFloat(order.total_amount || 0),
+           netRevenue: financial?.revenue ?? parseFloat(order.total_amount || 0),
+           commission: financial?.commission ?? 0,
+           otherCharges: financial?.otherCharges ?? 0,
+           productCost: financial?.productCost ?? 0,
+           estimatedProfit: financial?.estimatedProfit ?? 0,
+           margin: financial?.margin ?? 0,
+           financial: financial
+             ? {
+                 revenue: financial.revenue,
+                 commission: financial.commission,
+                 shipping: financial.shipping,
+                 otherCharges: financial.otherCharges,
+                 productCost: financial.productCost,
+                 estimatedProfit: financial.estimatedProfit,
+                 margin: financial.margin,
+                 refundedAmount: financial.refundedAmount
+               }
+             : null,
+           invoiceNumber: order.invoice_number,
           invoiceType: order.invoice_type,
           ...stockDisplay,
           notes_snapshot: normalizeNotesSnapshot(order.notes_snapshot)
@@ -523,56 +606,20 @@ const MarketplaceReportingService = {
 
   async getSalesStats(filters = {}) {
     try {
-      const { from, to, marketplace, company_id, user_id } = filters;
-
-      const conditions = ["order_status = 'paid'"];
-      const replacements = {};
-
-      const dateFilter = buildDateRange(from, to);
-      conditions.push(...dateFilter.conditions);
-      Object.assign(replacements, dateFilter.replacements);
-
-      if (marketplace && marketplace !== 'all') {
-        conditions.push(`marketplace_credential_id = :marketplace`);
-        replacements.marketplace = marketplace;
-      }
-
-      if (company_id) {
-        conditions.push(`company_id = :company_id`);
-        replacements.company_id = company_id;
-      }
-
-      if (user_id) {
-        conditions.push(`user_id = :user_id`);
-        replacements.user_id = user_id;
-      }
-
-      const whereClause = conditions.length
-        ? `WHERE ${conditions.join(' AND ')}`
-        : '';
-
-      const result = await sequelize.query(`
-        SELECT
-          COUNT(*) as total_orders,
-          COALESCE(SUM(total_amount), 0) as total_revenue,
-          COALESCE(SUM(subtotal), 0) as total_subtotal,
-          COALESCE(SUM(shipping_total), 0) as total_shipping,
-          COALESCE(SUM(tax_total), 0) as total_tax
-        FROM marketplace_orders
-        ${whereClause}
-      `, {
-        type: sequelize.QueryTypes.SELECT,
-        replacements
-      });
-
-      const row = result?.[0] || {};
+      const summary = await MarketplaceFinancialService.getFinancialSummary(filters);
+      const legacySummary = await MarketplaceOrderRepository.getSalesStats({ filters });
 
       return {
-        total_orders: parseInt(row.total_orders || 0),
-        total_revenue: parseFloat(row.total_revenue || 0),
-        total_subtotal: parseFloat(row.total_subtotal || 0),
-        total_shipping: parseFloat(row.total_shipping || 0),
-        total_tax: parseFloat(row.total_tax || 0)
+        total_orders: summary.totalOrders,
+        total_revenue: summary.totalRevenue,
+        total_subtotal: parseFloat(legacySummary?.total_subtotal || 0),
+        total_shipping: summary.totalShipping,
+        total_tax: parseFloat(legacySummary?.total_tax || 0),
+        total_product_cost: summary.totalProductCost,
+        total_commissions: summary.totalCommissions,
+        total_other_charges: summary.totalOtherCharges,
+        estimated_profit: summary.estimatedProfit,
+        margin_percentage: summary.marginPercentage
       };
 
     } catch (error) {
@@ -677,7 +724,7 @@ const MarketplaceReportingService = {
           orderRef: fee.order?.marketplace_order_id,
           marketplace: fee.order?.marketplace_credential_id,
           ...getMarketplaceMetaFromCredential(fee.order?.credential),
-          feeType: fee.fee_type,
+          feeType: getFinancialFeeLabel(fee.fee_type),
           saleDate: fee.order?.sale_date || fee.order?.createdAt,
           orderStatus: fee.order?.order_status,
           paymentStatus: fee.order?.payment_status,
@@ -742,6 +789,10 @@ const MarketplaceReportingService = {
       const stats = await this.getProfitStats(filters);
       const byMarketplace = await this.getProfitByMarketplace(filters);
       const byProduct = await this.getProfitByProduct(filters);
+      const details = await this.getProfitDetails(filters, {
+        limit: filters.detail_limit ?? filters.limit,
+        offset: filters.detail_offset ?? filters.offset
+      });
       const marketplaceIds = [...new Set(byMarketplace.map(row => row.marketplace).filter(Boolean))];
       const credentials = marketplaceIds.length
         ? await MarketplaceCredentialRepository.findByIds(marketplaceIds)
@@ -752,7 +803,11 @@ const MarketplaceReportingService = {
         summary: {
           totalRevenue: stats.total_revenue || 0,
           totalCost: stats.total_cost || 0,
+          totalProductCost: stats.total_product_cost || 0,
+          totalShipping: stats.total_shipping || 0,
+          totalCommissions: stats.total_commissions || 0,
           totalFees: stats.total_fees || 0,
+          totalOtherCharges: stats.total_other_charges || 0,
           grossProfit: stats.gross_profit || 0,
           marginPercentage: stats.margin_percentage || 0
         },
@@ -761,7 +816,8 @@ const MarketplaceReportingService = {
           ...getMarketplaceMetaFromLookup(row.marketplace, marketplaceLookup)
         })),
         byProduct,
-        topProducts: byProduct.slice(0, 10)
+        topProducts: byProduct.slice(0, 10),
+        details
       };
 
     } catch (error) {
@@ -772,94 +828,18 @@ const MarketplaceReportingService = {
 
   async getProfitStats(filters = {}) {
     try {
-      const { from, to, marketplace, company_id, user_id } = filters;
-
-      const conditions = [];
-      const replacements = {};
-
-      const dateFilter = buildDateRange(from, to, 'o');
-      conditions.push(...dateFilter.conditions.map((condition) => (
-        condition.replaceAll('o.createdAt', 'COALESCE(o.sale_date, o.createdAt)')
-      )));
-      Object.assign(replacements, dateFilter.replacements);
-
-      if (marketplace && marketplace !== 'all') {
-        conditions.push('o.marketplace_credential_id = :marketplace');
-        replacements.marketplace = marketplace;
-      }
-
-      if (company_id) {
-        conditions.push('o.company_id = :company_id');
-        replacements.company_id = company_id;
-      }
-
-      if (user_id) {
-        conditions.push('o.user_id = :user_id');
-        replacements.user_id = user_id;
-      }
-
-      conditions.push(buildValidProfitOrderCondition('o'));
-
-      const whereClause = `WHERE ${conditions.join(' AND ')}`;
-
-      const result = await sequelize.query(`
-        SELECT
-          COALESCE(SUM(${netRevenueExpression('o')}), 0) as total_revenue,
-          COALESCE(SUM(oi.total_cost), 0) as total_cost,
-          COALESCE(SUM(f.total_fees), 0) as total_fees,
-          COALESCE(SUM(${shippingCostExpression('o')}), 0) as total_shipping,
-          COALESCE(SUM(${netRevenueExpression('o')}), 0)
-            - COALESCE(SUM(oi.total_cost), 0)
-            - COALESCE(SUM(f.total_fees), 0)
-            - COALESCE(SUM(${shippingCostExpression('o')}), 0) as gross_profit
-        FROM marketplace_orders o
-        LEFT JOIN (
-          SELECT order_id, SUM(total_cost) as total_cost
-          FROM marketplace_order_items
-          GROUP BY order_id
-        ) oi ON o.id = oi.order_id
-        LEFT JOIN (
-          SELECT f.order_id, SUM(f.amount) as total_fees
-          FROM marketplace_order_fees f
-          WHERE f.fee_type = 'commission'
-            AND LOWER(COALESCE(f.status, '')) NOT IN ('cancelled', 'refunded')
-            AND (
-              f.order_item_id IS NOT NULL
-              OR NOT EXISTS (
-                SELECT 1
-                FROM marketplace_order_fees item_fee
-                WHERE item_fee.order_id = f.order_id
-                  AND item_fee.order_item_id IS NOT NULL
-                  AND item_fee.fee_type = 'commission'
-                  AND LOWER(COALESCE(item_fee.status, '')) NOT IN ('cancelled', 'refunded')
-              )
-            )
-          GROUP BY order_id
-        ) f ON o.id = f.order_id
-        ${whereClause}
-      `, {
-        type: sequelize.QueryTypes.SELECT,
-        replacements
-      });
-
-      const row = result?.[0] || {};
-
-      const totalRevenue = parseFloat(row.total_revenue || 0);
-      const totalCost = parseFloat(row.total_cost || 0);
-      const totalFees = parseFloat(row.total_fees || 0);
-      const totalShipping = parseFloat(row.total_shipping || 0);
-      const grossProfit = parseFloat(row.gross_profit || 0);
-
-      const marginPercentage =
-        totalRevenue > 0 ? (grossProfit / totalRevenue) * 100 : 0;
+      const summary = await MarketplaceFinancialService.getFinancialSummary(filters);
 
       return {
-        total_revenue: totalRevenue,
-        total_cost: totalCost,
-        total_fees: totalFees,
-        total_shipping: totalShipping,
-        gross_profit: grossProfit,
-        margin_percentage: Math.round(marginPercentage * 100) / 100
+        total_revenue: summary.totalRevenue,
+        total_cost: summary.totalProductCost,
+        total_product_cost: summary.totalProductCost,
+        total_fees: summary.totalCommissions,
+        total_commissions: summary.totalCommissions,
+        total_shipping: summary.totalShipping,
+        total_other_charges: summary.totalOtherCharges,
+        gross_profit: summary.estimatedProfit,
+        margin_percentage: summary.marginPercentage
       };
 
     } catch (error) {
@@ -870,88 +850,7 @@ const MarketplaceReportingService = {
 
   async getProfitByMarketplace(filters = {}) {
     try {
-      const { from, to, marketplace, company_id, user_id } = filters;
-
-      const conditions = [];
-      const replacements = {};
-
-      const dateFilter = buildDateRange(from, to, 'o');
-      conditions.push(...dateFilter.conditions.map((condition) => (
-        condition.replaceAll('o.createdAt', 'COALESCE(o.sale_date, o.createdAt)')
-      )));
-      Object.assign(replacements, dateFilter.replacements);
-
-      if (company_id) {
-        conditions.push('o.company_id = :company_id');
-        replacements.company_id = company_id;
-      }
-      if (user_id) {
-        conditions.push('o.user_id = :user_id');
-        replacements.user_id = user_id;
-      }
-      if (marketplace && marketplace !== 'all') {
-        conditions.push('o.marketplace_credential_id = :marketplace');
-        replacements.marketplace = marketplace;
-      }
-
-      conditions.push(buildValidProfitOrderCondition('o'));
-
-      const whereClause = `WHERE ${conditions.join(' AND ')}`;
-
-      const results = await sequelize.query(`
-        SELECT
-          o.marketplace_credential_id as marketplace,
-          COALESCE(SUM(${netRevenueExpression('o')}), 0) as revenue,
-          COALESCE(SUM(oi.total_cost), 0) as cost,
-          COALESCE(SUM(f.total_fees), 0) as fees,
-          COALESCE(SUM(${shippingCostExpression('o')}), 0) as shipping,
-          COALESCE(SUM(${netRevenueExpression('o')}), 0)
-            - COALESCE(SUM(oi.total_cost), 0)
-            - COALESCE(SUM(f.total_fees), 0)
-            - COALESCE(SUM(${shippingCostExpression('o')}), 0) as profit
-        FROM marketplace_orders o
-        LEFT JOIN (
-          SELECT order_id, SUM(total_cost) as total_cost
-          FROM marketplace_order_items
-          GROUP BY order_id
-        ) oi ON o.id = oi.order_id
-        LEFT JOIN (
-          SELECT f.order_id, SUM(f.amount) as total_fees
-          FROM marketplace_order_fees f
-          WHERE f.fee_type = 'commission'
-            AND LOWER(COALESCE(f.status, '')) NOT IN ('cancelled', 'refunded')
-            AND (
-              f.order_item_id IS NOT NULL
-              OR NOT EXISTS (
-                SELECT 1
-                FROM marketplace_order_fees item_fee
-                WHERE item_fee.order_id = f.order_id
-                  AND item_fee.order_item_id IS NOT NULL
-                  AND item_fee.fee_type = 'commission'
-                  AND LOWER(COALESCE(item_fee.status, '')) NOT IN ('cancelled', 'refunded')
-              )
-            )
-          GROUP BY order_id
-        ) f ON o.id = f.order_id
-        ${whereClause}
-        GROUP BY o.marketplace_credential_id
-      `, {
-        type: sequelize.QueryTypes.SELECT,
-        replacements
-      });
-
-      return results.map(row => ({
-        marketplace: row.marketplace,
-        revenue: parseFloat(row.revenue || 0),
-        cost: parseFloat(row.cost || 0),
-        productCost: parseFloat(row.cost || 0),
-        shippingCost: parseFloat(row.shipping || 0),
-        fees: parseFloat(row.fees || 0),
-        profit: parseFloat(row.profit || 0),
-        margin: Number(row.revenue || 0) > 0
-          ? Math.round((Number(row.profit || 0) / Number(row.revenue)) * 100 * 100) / 100
-          : 0
-      }));
+      return await MarketplaceFinancialService.getMarketplaceSummary(filters);
 
     } catch (error) {
       logger.error('[MarketplaceReportingService] Error en getProfitByMarketplace: ' + error.message);
@@ -959,119 +858,123 @@ const MarketplaceReportingService = {
     }
   },
 
-  async getProfitByProduct(filters = {}) {
+  async getProfitDetails(filters = {}, pagination = {}) {
     try {
-      const { from, to, marketplace, company_id, user_id, limit = 20 } = filters;
+      const financialRows = await MarketplaceFinancialService.getOrderFinancialRows(
+        filters,
+        pagination
+      );
+      if (financialRows.length === 0) return [];
 
-      const conditions = [];
-      const replacements = {};
-
-      const dateFilter = buildDateRange(from, to, 'o');
-      conditions.push(...dateFilter.conditions.map((condition) => (
-        condition.replaceAll('o.createdAt', 'COALESCE(o.sale_date, o.createdAt)')
-      )));
-      Object.assign(replacements, dateFilter.replacements);
-
-      if (marketplace && marketplace !== 'all') {
-        conditions.push('o.marketplace_credential_id = :marketplace');
-        replacements.marketplace = marketplace;
-      }
-
-      if (company_id) {
-        conditions.push('o.company_id = :company_id');
-        replacements.company_id = company_id;
-      }
-      if (user_id) {
-        conditions.push('o.user_id = :user_id');
-        replacements.user_id = user_id;
-      }
-
-      conditions.push(buildValidProfitOrderCondition('o'));
-
-      const whereClause = `WHERE ${conditions.join(' AND ')}`;
-
-      const results = await sequelize.query(`
-        SELECT
-          p.id as product_id,
-          COALESCE(p.name, oi.title, oi.sku, oi.listing_id) as product_name,
-          COALESCE(p.sku, oi.sku) as product_sku,
-          oi.listing_id as listing_id,
-          SUM(oi.quantity) as qty_sold,
-          COALESCE(SUM(oi.total_price - (oi.total_price * COALESCE(${refundAllocationExpression('o')}, 0))), 0) as revenue,
-          COALESCE(SUM(oi.total_cost), 0) as cost,
-          COALESCE(SUM(
-            COALESCE(fi.item_fees, 0)
-            + CASE
-                WHEN COALESCE(ot.order_item_revenue, 0) > 0
-                THEN COALESCE(fo.order_fees, 0) * oi.total_price / ot.order_item_revenue
-                ELSE 0
-              END
-          ), 0) as fees,
-          COALESCE(SUM(oi.total_price - (oi.total_price * COALESCE(${refundAllocationExpression('o')}, 0))), 0)
-            - COALESCE(SUM(oi.total_cost), 0)
-            - COALESCE(SUM(
-                COALESCE(fi.item_fees, 0)
-                + CASE
-                    WHEN COALESCE(ot.order_item_revenue, 0) > 0
-                    THEN COALESCE(fo.order_fees, 0) * oi.total_price / ot.order_item_revenue
-                    ELSE 0
-                  END
-              ), 0) as profit
-        FROM marketplace_orders o
-        JOIN marketplace_order_items oi ON o.id = oi.order_id
-        LEFT JOIN products p ON oi.product_id = p.id
-        LEFT JOIN (
-          SELECT f.order_item_id, SUM(f.amount) AS item_fees
-          FROM marketplace_order_fees f
-          WHERE f.fee_type = 'commission'
-            AND f.order_item_id IS NOT NULL
-            AND LOWER(COALESCE(f.status, '')) NOT IN ('cancelled', 'refunded')
-          GROUP BY f.order_item_id
-        ) fi ON oi.id = fi.order_item_id
-        LEFT JOIN (
-          SELECT f.order_id, SUM(f.amount) AS order_fees
-          FROM marketplace_order_fees f
-          WHERE f.fee_type = 'commission'
-            AND f.order_item_id IS NULL
-            AND LOWER(COALESCE(f.status, '')) NOT IN ('cancelled', 'refunded')
-            AND NOT EXISTS (
-              SELECT 1
-              FROM marketplace_order_fees item_fee
-              WHERE item_fee.order_id = f.order_id
-                AND item_fee.order_item_id IS NOT NULL
-                AND item_fee.fee_type = 'commission'
-                AND LOWER(COALESCE(item_fee.status, '')) NOT IN ('cancelled', 'refunded')
-            )
-          GROUP BY f.order_id
-        ) fo ON o.id = fo.order_id
-        LEFT JOIN (
-          SELECT order_id, SUM(total_price) AS order_item_revenue
-          FROM marketplace_order_items
-          GROUP BY order_id
-        ) ot ON o.id = ot.order_id
-        ${whereClause}
-        GROUP BY p.id, p.name, p.sku, oi.title, oi.sku, oi.listing_id
-        ORDER BY profit DESC
-        LIMIT :limit
-      `, {
-        type: sequelize.QueryTypes.SELECT,
-        replacements: { ...replacements, limit }
+      const orders = await MarketplaceOrder.findAll({
+        where: {
+          id: {
+            [Op.in]: financialRows.map((row) => row.orderId)
+          }
+        },
+        include: [
+          {
+            association: 'credential',
+            include: [{ association: 'marketplace' }]
+          },
+          {
+            association: 'items',
+            include: [
+              { association: 'product' },
+              { association: 'variant' },
+              { association: 'fees' }
+            ]
+          },
+          { association: 'fees' }
+        ]
       });
 
-      return results.map(row => ({
-        product_id: row.product_id,
-        product_name: row.product_name,
-        product_sku: row.product_sku,
-        listing_id: row.listing_id,
-        qty_sold: parseInt(row.qty_sold || 0),
-        revenue: parseFloat(row.revenue || 0),
-        cost: parseFloat(row.cost || 0),
-        fees: parseFloat(row.fees || 0),
-        profit: parseFloat(row.profit || 0),
-        margin: row.revenue > 0
-          ? Math.round((row.profit / row.revenue) * 100 * 100) / 100
-          : 0
-      }));
+      const ordersById = new Map(orders.map((order) => [String(order.id), order]));
+
+      return financialRows.map((financial) => {
+        const order = ordersById.get(String(financial.orderId));
+        const marketplaceMeta = getMarketplaceMetaFromCredential(order?.credential);
+        const orderFees = (order?.fees || []).map((fee) => ({
+          id: fee.id,
+          type: getFinancialFeeLabel(fee.fee_type),
+          amount: toMoney(fee.amount),
+          status: fee.status,
+          description: fee.description,
+          orderItemId: fee.order_item_id,
+          percentage: toPercentage(fee.percentage)
+        }));
+        const items = (order?.items || []).map((item) => {
+          const activeFees = (item.fees || []).filter(isActiveFinancialFee);
+          const commission = activeFees
+            .filter((fee) => fee.fee_type === 'commission')
+            .reduce((sum, fee) => sum + Number(fee.amount || 0), 0);
+          const otherCharges = activeFees
+            .filter((fee) => !['commission', 'shipping_fee'].includes(fee.fee_type))
+            .reduce((sum, fee) => sum + Number(fee.amount || 0), 0);
+          const revenue = Number(item.total_price || 0);
+          const productCost = Number(item.total_cost || 0);
+
+          return {
+            id: item.id,
+            listingId: item.listing_id,
+            marketplaceItemId: item.marketplace_item_id,
+            sku: item.sku,
+            title: item.title || item.product?.name || item.variant?.name || item.listing_id,
+            quantity: Number(item.quantity || 0),
+            unitPrice: toMoney(item.unit_price),
+            totalPrice: toMoney(revenue),
+            productId: item.product_id,
+            variantId: item.variant_id,
+            managedBySpree: Boolean(item.managed_by_spree),
+            productCost: toMoney(productCost),
+            commission: toMoney(commission),
+            otherCharges: toMoney(otherCharges),
+            estimatedProfit: toMoney(revenue - productCost - commission - otherCharges),
+            fees: activeFees.map((fee) => ({
+              id: fee.id,
+              type: getFinancialFeeLabel(fee.fee_type),
+              amount: toMoney(fee.amount),
+              status: fee.status,
+              description: fee.description
+            }))
+          };
+        });
+
+        return {
+          id: financial.orderId,
+          orderId: financial.orderId,
+          date: financial.date,
+          marketplace: marketplaceMeta.marketplace_name || financial.marketplace,
+          marketplaceId: financial.marketplaceCredentialId,
+          marketplaceDomain: marketplaceMeta.marketplace_domain,
+          order: financial.orderRef,
+          orderRef: financial.orderRef,
+          revenue: financial.revenue,
+          netRevenue: financial.revenue,
+          grossRevenue: financial.grossRevenue,
+          refundedAmount: financial.refundedAmount,
+          commission: financial.commission,
+          shipping: financial.shipping,
+          otherCharges: financial.otherCharges,
+          productCost: financial.productCost,
+          estimatedProfit: financial.estimatedProfit,
+          margin: financial.margin,
+          currency: financial.currency,
+          items,
+          fees: orderFees
+        };
+      });
+    } catch (error) {
+      logger.error('[MarketplaceReportingService] Error en getProfitDetails: ' + error.message);
+      throw error;
+    }
+  },
+
+  async getProfitByProduct(filters = {}) {
+    try {
+      return await MarketplaceFinancialService.getProductSummary(filters, {
+        limit: filters.limit ?? 20
+      });
 
     } catch (error) {
       logger.error('[MarketplaceReportingService] Error en getProfitByProduct: ' + error.message);
@@ -1080,52 +983,6 @@ const MarketplaceReportingService = {
   }
 
 };
-
-function refundedAmountExpression(alias = 'o') {
-  return `COALESCE(${alias}.refunded_amount, (
-    SELECT COALESCE(SUM(CAST(JSON_UNQUOTE(JSON_EXTRACT(payment.value, '$.transaction_amount_refunded')) AS DECIMAL(12,2))), 0)
-    FROM JSON_TABLE(
-      JSON_EXTRACT(${alias}.raw_payload, '$.order.payments'),
-      '$[*]' COLUMNS (value JSON PATH '$')
-    ) payment
-  ), 0)`;
-}
-
-function netRevenueExpression(alias = 'o') {
-  return `GREATEST(COALESCE(${alias}.total_amount, 0) - (${refundedAmountExpression(alias)}), 0)`;
-}
-
-function shippingCostExpression(alias = 'o') {
-  const sellerCost = `COALESCE(${alias}.shipping_total, JSON_UNQUOTE(JSON_EXTRACT(${alias}.raw_payload, '$.shipping_financials.seller_cost')), 0)`;
-  return `CASE
-    WHEN ${alias}.shipment_id IS NULL THEN ${sellerCost}
-    WHEN ${alias}.id = (
-      SELECT MIN(shipment_order.id)
-      FROM marketplace_orders shipment_order
-      WHERE shipment_order.shipment_id = ${alias}.shipment_id
-    ) THEN ${sellerCost}
-    ELSE 0
-  END`;
-}
-
-function refundAllocationExpression(alias = 'o') {
-  return `CASE
-    WHEN COALESCE(${alias}.total_amount, 0) > 0
-    THEN LEAST(1, (${refundedAmountExpression(alias)}) / ${alias}.total_amount)
-    ELSE 0
-  END`;
-}
-
-function buildValidProfitOrderCondition(alias = 'o') {
-  return `(
-    LOWER(COALESCE(${alias}.order_status, '')) NOT IN ('cancelled', 'returned', 'refunded')
-    AND LOWER(COALESCE(${alias}.payment_status, '')) NOT IN ('cancelled', 'refunded', 'charged_back')
-    AND (
-      LOWER(COALESCE(${alias}.order_status, '')) IN ('paid', 'shipped', 'delivered')
-      OR LOWER(COALESCE(${alias}.payment_status, '')) IN ('paid', 'approved', 'authorized')
-    )
-  )`;
-}
 
 function normalizeNotesSnapshot(notesSnapshot) {
   if (Array.isArray(notesSnapshot)) {
@@ -1174,3 +1031,4 @@ function normalizeNotesSnapshot(notesSnapshot) {
 
 module.exports = MarketplaceReportingService;
 MarketplaceReportingService._buildStockDisplay = buildStockDisplay;
+MarketplaceReportingService._getFinancialFeeLabel = getFinancialFeeLabel;

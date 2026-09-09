@@ -204,7 +204,9 @@ const MarketplaceReportController = {
         to,
         marketplace,
         company_id,
-        user_id
+        user_id,
+        detail_limit,
+        detail_offset
       } = req.body || {};
 
       // ✅ VALIDAR company_id si se proporciona
@@ -249,7 +251,13 @@ const MarketplaceReportController = {
         to,
         marketplace,
         company_id: company_id ? parseInt(company_id) : null,
-        user_id: user_id ? parseInt(user_id) : null
+        user_id: user_id ? parseInt(user_id) : null,
+        detail_limit: detail_limit !== undefined && detail_limit !== null && detail_limit !== ''
+          ? parseInt(detail_limit)
+          : undefined,
+        detail_offset: detail_offset !== undefined && detail_offset !== null && detail_offset !== ''
+          ? parseInt(detail_offset)
+          : undefined
       };
 
       const groupBy = req.body?.group_by || 'marketplace';
