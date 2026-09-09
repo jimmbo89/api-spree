@@ -31,7 +31,7 @@ const WarehouseProductVariantRepository = {
    * NUEVO: Obtiene TODOS los lotes activos de una variante en un almacén
    * Ordenados por fecha de creación (más antiguo primero) para FIFO
    */
-  async findAllLotsByVariantAndWarehouse(variantId, warehouseProductId) {
+  async findAllLotsByVariantAndWarehouse(variantId, warehouseProductId, options = {}) {
     return await WarehouseProductVariant.findAll({
       where: {
         variant_id: variantId,
@@ -45,7 +45,8 @@ const WarehouseProductVariantRepository = {
         'active', 'published', 'local_sku',
         'price', 'promotional_price', 'purchase_price', 'stock',
         'createdAt'
-      ]
+      ],
+      ...options
     });
   },
 
@@ -104,7 +105,7 @@ const WarehouseProductVariantRepository = {
   /**
    * NUEVO: Obtiene el stock total de una variante en un almacén (suma de todos los lotes)
    */
-  async getTotalStockByVariantAndWarehouse(variantId, warehouseProductId) {
+  async getTotalStockByVariantAndWarehouse(variantId, warehouseProductId, options = {}) {
     const result = await WarehouseProductVariant.findOne({
       where: {
         variant_id: variantId,
@@ -116,13 +117,52 @@ const WarehouseProductVariantRepository = {
         [literal('SUM(stock)'), 'total_stock'],
         [literal('AVG(purchase_price)'), 'avg_purchase_price']
       ],
-      raw: true
+      raw: true,
+      ...options
     });
     
     return {
       total_stock: parseInt(result?.total_stock || 0),
       avg_purchase_price: parseFloat(result?.avg_purchase_price || 0)
     };
+  },
+
+  /**
+   * Obtiene el stock consolidado de una variante en varios almacenes.
+   * Se utiliza para publicaciones asociadas a un grupo de almacenes.
+   */
+  async getTotalStockByVariantAndWarehouses(variantId, warehouseIds, options = {}) {
+    const normalizedWarehouseIds = [...new Set(
+      (Array.isArray(warehouseIds) ? warehouseIds : [])
+        .map((warehouseId) => Number(warehouseId))
+        .filter((warehouseId) => Number.isFinite(warehouseId))
+    )];
+
+    if (!variantId || normalizedWarehouseIds.length === 0) return 0;
+
+    const records = await WarehouseProductVariant.findAll({
+      where: {
+        variant_id: variantId,
+        active: true,
+        stock: { [Op.gt]: 0 }
+      },
+      include: [{
+        model: WarehouseProduct,
+        as: 'warehouseProduct',
+        attributes: [],
+        required: true,
+        where: {
+          warehouse_id: { [Op.in]: normalizedWarehouseIds }
+        }
+      }],
+      attributes: ['stock'],
+      raw: true,
+      ...options
+    });
+
+    return records.reduce((total, record) => {
+      return total + (parseInt(record.stock, 10) || 0);
+    }, 0);
   },
 
   async create(data, options = {}) {
@@ -179,14 +219,15 @@ const WarehouseProductVariantRepository = {
   /**
    * NUEVO: Obtiene un lote específico por ID para venta selectiva
    */
-  async findLotById(lotId) {
+  async findLotById(lotId, options = {}) {
     return await WarehouseProductVariant.findByPk(lotId, {
       attributes: [
         'id', 'warehouse_product_id', 'variant_id',
         'active', 'published', 'local_sku',
         'price', 'promotional_price', 'purchase_price', 'stock',
         'createdAt'
-      ]
+      ],
+      ...options
     });
   },
 

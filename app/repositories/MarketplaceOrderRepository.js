@@ -3,6 +3,13 @@ const { Op } = require('sequelize');
 const { getDateOnlyRange } = require('../utils/dateRange');
 const logger = require('../../config/logger');
 
+const FINANCIAL_ORDER_CONDITION = [
+  "order_status = 'paid'",
+  "LOWER(COALESCE(payment_status, '')) NOT IN ('cancelled', 'refunded', 'charged_back', 'returned')",
+  "LOWER(COALESCE(shipping_status, '')) NOT IN ('cancelled', 'returned')",
+  "NOT (COALESCE(total_amount, 0) > 0 AND COALESCE(refunded_amount, 0) >= total_amount)"
+].join(' AND ');
+
 function buildOrderWhere(filters = {}) {
   const {
     marketplace,
@@ -199,19 +206,19 @@ const MarketplaceOrderRepository = {
           [sequelize.fn('COUNT', sequelize.col('id')), 'total_orders'],
           [sequelize.fn(
             'SUM',
-            sequelize.literal("CASE WHEN order_status = 'paid' THEN total_amount ELSE 0 END")
+            sequelize.literal(`CASE WHEN ${FINANCIAL_ORDER_CONDITION} THEN total_amount ELSE 0 END`)
           ), 'total_revenue'],
           [sequelize.fn(
             'SUM',
-            sequelize.literal("CASE WHEN order_status = 'paid' THEN subtotal ELSE 0 END")
+            sequelize.literal(`CASE WHEN ${FINANCIAL_ORDER_CONDITION} THEN subtotal ELSE 0 END`)
           ), 'total_subtotal'],
           [sequelize.fn(
             'SUM',
-            sequelize.literal("CASE WHEN order_status = 'paid' THEN shipping_total ELSE 0 END")
+            sequelize.literal(`CASE WHEN ${FINANCIAL_ORDER_CONDITION} THEN shipping_total ELSE 0 END`)
           ), 'total_shipping'],
           [sequelize.fn(
             'SUM',
-            sequelize.literal("CASE WHEN order_status = 'paid' THEN tax_total ELSE 0 END")
+            sequelize.literal(`CASE WHEN ${FINANCIAL_ORDER_CONDITION} THEN tax_total ELSE 0 END`)
           ), 'total_tax']
         ],
         raw: true

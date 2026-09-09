@@ -476,7 +476,7 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
     companyId,
     branchId
   })));
-  const managedBySpree = items.length > 0 && itemLinks.every(Boolean);
+  const managedBySpree = items.length > 0 && itemLinks.every(isSpreeManagedLink);
   const shippingSnapshot = normalizeMercadoLibreShipping(shipmentData);
   const existingOrder = await MarketplaceOrderRepository.findByMarketplaceOrderId(
     ML_MARKETPLACE_KEY,
@@ -554,13 +554,38 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
   const currentPaymentStatus = savedOrder?.payment_status || orderData.payment_status;
   const stockState = await getMarketplaceOrderStockState(
     ML_MARKETPLACE_KEY,
+    orderId,
     savedOrder.id
   );
   const lifecycle = getMarketplaceOrderLifecycleDecision({
     orderStatus: currentOrderStatus,
     paymentStatus: currentPaymentStatus
   });
-  const shouldDeductStock = lifecycle.shouldDeduct && !stockState.hasDeduction && !stockState.hasReversal;
+  const managedItemReferences = items
+    .map((item, index) => isSpreeManagedLink(itemLinks[index])
+      ? {
+          referenceId: buildMarketplaceStockReferenceId(
+            ML_MARKETPLACE_KEY,
+            orderId,
+            getListingId(item),
+            item?.id?.toString() || null
+          ),
+          legacyReferenceId: buildMarketplaceStockReferenceId(
+            ML_MARKETPLACE_KEY,
+            orderId,
+            getListingId(item)
+          )
+        }
+      : null)
+    .filter(Boolean);
+  const pendingManagedItemReferences = managedItemReferences.filter(
+    ({ referenceId, legacyReferenceId }) =>
+      !stockState.deductedReferenceIds.has(referenceId) &&
+      !stockState.deductedReferenceIds.has(legacyReferenceId)
+  );
+  const shouldDeductStock = lifecycle.shouldDeduct &&
+    !stockState.hasReversal &&
+    pendingManagedItemReferences.length > 0;
   const shouldReverseStock = lifecycle.shouldReverse && stockState.hasDeduction && stockState.pendingReversalCount > 0;
 
   const statusChanged = previousOrderStatus !== currentOrderStatus;
@@ -662,7 +687,7 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
         quantity: Number(item?.quantity || 1),
         unit_price: Number(item?.unit_price || 0),
         total_price: Number(item?.unit_price || 0) * Number(item?.quantity || 1),
-        managed_by_spree: Boolean(link)
+        managed_by_spree: isSpreeManagedLink(link)
       });
       persistedItem = createdItem;
     }
@@ -692,8 +717,30 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
   });
 
   if (shouldDeductStock) {
-    // ✅ PROCESAR CADA ITEM SOLO EN PRIMERA VENTA PAGADA
-    for (const orderItem of items) {
+    // Solo se procesan ítems vinculados y que todavía no tienen un movimiento
+    // de salida para esta orden. Esto permite reintentar una orden parcialmente
+    // procesada sin volver a descontar los ítems ya aplicados.
+    for (let index = 0; index < items.length; index += 1) {
+      const orderItem = items[index];
+      const link = itemLinks[index];
+      if (!isSpreeManagedLink(link)) continue;
+
+      const stockReferenceId = buildMarketplaceStockReferenceId(
+        ML_MARKETPLACE_KEY,
+        orderId,
+        getListingId(orderItem),
+        orderItem?.id?.toString() || null
+      );
+      const legacyStockReferenceId = buildMarketplaceStockReferenceId(
+        ML_MARKETPLACE_KEY,
+        orderId,
+        getListingId(orderItem)
+      );
+      if (
+        stockState.deductedReferenceIds.has(stockReferenceId) ||
+        stockState.deductedReferenceIds.has(legacyStockReferenceId)
+      ) continue;
+
       try {
         const itemResult = await processOrderItem(orderItem, {
           orderId,
@@ -714,6 +761,7 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
           shippingWhoPays: shippingData.whoPays,
           totalItems: items.length,
           totalQuantity,
+          stockItemReferenceId: stockReferenceId,
           existingItem: await MarketplaceOrderItemRepository.findByOrderAndMarketplaceItem(
             savedOrder.id,
             orderItem?.id?.toString() || null,
@@ -724,36 +772,11 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
         if (itemResult && !savedItems.some((item) => item.id === itemResult.id)) {
           savedItems.push(itemResult);
         }
+        stockState.deductedReferenceIds.add(stockReferenceId);
       } catch (error) {
         errors.push(error.message);
         logger.error(`[ML Webhook] Item error order=${orderId}: ${error.message}`);
       }
-    }
-
-    await MarketplaceOrderEventRepository.create({
-      order_id: savedOrder.id,
-      event_type: STOCK_DEDUCT_EVENT_TYPE,
-      previous_status: previousOrderStatus,
-      new_status: currentOrderStatus,
-      raw_payload: order,
-      notes: `Stock debitado por orden Mercado Libre ${orderId}`,
-      company_id: companyId
-    });
-    if (savedItems.length > 0) {
-      await SalesAuditService.recordSystemEvent(savedOrder, 'sales.stock_deducted', {
-        new_value: {
-          items_count: savedItems.length,
-          total_quantity: totalQuantity
-        },
-        description: 'Spree descontó stock por la venta',
-        metadata: {
-          marketplace: ML_MARKETPLACE_KEY,
-          webhook_event_id: event.id,
-          items_count: savedItems.length,
-          total_quantity: totalQuantity,
-          is_spree_managed: managedBySpree
-        }
-      });
     }
 
     const refundedAmount = resolveMercadoLibreRefundedAmount(order);
@@ -766,6 +789,42 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
       await MarketplaceOrderFeeRepository.updateOrderFeesStatus(savedOrder.id, 'cancelled');
     }
 
+  }
+
+  const allManagedItemsDeducted = managedItemReferences.length > 0 &&
+    managedItemReferences.every(({ referenceId, legacyReferenceId }) =>
+      stockState.deductedReferenceIds.has(referenceId) ||
+      stockState.deductedReferenceIds.has(legacyReferenceId)
+    );
+  if (
+    lifecycle.shouldDeduct &&
+    !stockState.hasReversal &&
+    allManagedItemsDeducted &&
+    !stockState.hasDeductionEvent
+  ) {
+    await MarketplaceOrderEventRepository.create({
+      order_id: savedOrder.id,
+      event_type: STOCK_DEDUCT_EVENT_TYPE,
+      previous_status: previousOrderStatus,
+      new_status: currentOrderStatus,
+      raw_payload: order,
+      notes: `Stock debitado por orden Mercado Libre ${orderId}`,
+      company_id: companyId
+    });
+    await SalesAuditService.recordSystemEvent(savedOrder, 'sales.stock_deducted', {
+      new_value: {
+        items_count: managedItemReferences.length,
+        total_quantity: totalQuantity
+      },
+      description: 'Spree descontó stock por la venta',
+      metadata: {
+        marketplace: ML_MARKETPLACE_KEY,
+        webhook_event_id: event.id,
+        items_count: managedItemReferences.length,
+        total_quantity: totalQuantity,
+        is_spree_managed: managedBySpree
+      }
+    });
   }
 
   if (!shouldDeductStock) {
@@ -3109,6 +3168,7 @@ async function processFalabellaEvent({ event, payload, orderId }) {
   const currentPaymentStatus = savedOrder?.payment_status || orderDataToSave.payment_status;
   const stockState = await getMarketplaceOrderStockState(
     FB_MARKETPLACE_KEY,
+    orderId,
     savedOrder.id
   );
   const lifecycle = getMarketplaceOrderLifecycleDecision({
@@ -3116,7 +3176,32 @@ async function processFalabellaEvent({ event, payload, orderId }) {
     paymentStatus: currentPaymentStatus
   });
   const shouldManageLocalStock = !isFalabellaFulfillmentByFalabella(orderInfo.shippingType);
-  const shouldDeductStock = shouldManageLocalStock && lifecycle.shouldDeduct && !stockState.hasDeduction && !stockState.hasReversal;
+  const managedItemReferences = items
+    .map((item, index) => isSpreeManagedLink(itemLinks[index])
+      ? {
+          referenceId: buildMarketplaceStockReferenceId(
+            FB_MARKETPLACE_KEY,
+            orderId,
+            item?.sku,
+            item?.marketplaceItemId != null ? String(item.marketplaceItemId) : null
+          ),
+          legacyReferenceId: buildMarketplaceStockReferenceId(
+            FB_MARKETPLACE_KEY,
+            orderId,
+            item?.sku
+          )
+        }
+      : null)
+    .filter(Boolean);
+  const pendingManagedItemReferences = managedItemReferences.filter(
+    ({ referenceId, legacyReferenceId }) =>
+      !stockState.deductedReferenceIds.has(referenceId) &&
+      !stockState.deductedReferenceIds.has(legacyReferenceId)
+  );
+  const shouldDeductStock = shouldManageLocalStock &&
+    lifecycle.shouldDeduct &&
+    !stockState.hasReversal &&
+    pendingManagedItemReferences.length > 0;
   const shouldReverseStock = shouldManageLocalStock && lifecycle.shouldReverse && stockState.hasDeduction && stockState.pendingReversalCount > 0;
   const statusChanged = previousOrderStatus !== currentOrderStatus;
 
@@ -3186,7 +3271,6 @@ async function processFalabellaEvent({ event, payload, orderId }) {
 
   const errors = [];
   const savedItems = [];
-  const stockProcessedItems = [];
 
   // Igual que Mercado Libre: primero se conserva cada ítem recibido, aunque no
   // exista un vínculo con un producto de Spree. Solo los ítems vinculados se
@@ -3212,7 +3296,7 @@ async function processFalabellaEvent({ event, payload, orderId }) {
         costPrice: null,
         totalCost: null,
         inventoryMovementId: null,
-        managedBySpree: Boolean(link)
+        managedBySpree: isSpreeManagedLink(link)
       });
 
       if (persistedItem) {
@@ -3240,9 +3324,25 @@ async function processFalabellaEvent({ event, payload, orderId }) {
   // en Mercado Libre; los ítems externos permanecen registrados sin descuento.
   if (shouldDeductStock) {
     for (let index = 0; index < items.length; index += 1) {
-      if (!itemLinks[index]) continue;
+      if (!isSpreeManagedLink(itemLinks[index])) continue;
 
       const item = items[index];
+      const stockReferenceId = buildMarketplaceStockReferenceId(
+        FB_MARKETPLACE_KEY,
+        orderId,
+        item?.sku,
+        item?.marketplaceItemId != null ? String(item.marketplaceItemId) : null
+      );
+      const legacyStockReferenceId = buildMarketplaceStockReferenceId(
+        FB_MARKETPLACE_KEY,
+        orderId,
+        item?.sku
+      );
+      if (
+        stockState.deductedReferenceIds.has(stockReferenceId) ||
+        stockState.deductedReferenceIds.has(legacyStockReferenceId)
+      ) continue;
+
       try {
         await processFalabellaOrderItem(item, {
           orderId,
@@ -3252,9 +3352,10 @@ async function processFalabellaEvent({ event, payload, orderId }) {
           branchId,
           orderIdLocal: savedOrder.id,
           itemData: item,
-          deductStock: true
+          deductStock: true,
+          stockItemReferenceId: stockReferenceId
         });
-        stockProcessedItems.push(item);
+        stockState.deductedReferenceIds.add(stockReferenceId);
       } catch (error) {
         errors.push(error.message);
         logger.error(`[FB Webhook] Item error order=${orderId}: ${error.message}`);
@@ -3264,10 +3365,6 @@ async function processFalabellaEvent({ event, payload, orderId }) {
 
   if (shouldDeductStock) {
     const allItemsSaved = savedItems.length === items.length && errors.length === 0;
-    const managedItemCount = management.managedItemCount;
-    const stockProcessed = managedItemCount > 0 &&
-      stockProcessedItems.length === managedItemCount &&
-      allItemsSaved;
 
     // ✅ GUARDAR FEES TOTALES DE LA ORDEN (comisiones)
     if (savedOrder && orderInfo.commission > 0 && allItemsSaved) {
@@ -3287,34 +3384,45 @@ async function processFalabellaEvent({ event, payload, orderId }) {
       }
     }
 
-    if (stockProcessed) {
-      await MarketplaceOrderEventRepository.create({
-        order_id: savedOrder.id,
-        event_type: STOCK_DEDUCT_EVENT_TYPE,
-        previous_status: previousOrderStatus,
-        new_status: currentOrderStatus,
-        raw_payload: buildFalabellaOrderRawPayload({
-          webhookPayload: payload,
-          orderData,
-          orderItemsData
-        }),
-        notes: `Stock debitado por orden Falabella ${orderId}`,
-        company_id: companyId
-      });
-      await SalesAuditService.recordSystemEvent(savedOrder, 'sales.stock_deducted', {
-        new_value: {
-          items_count: stockProcessedItems.length
-        },
-        description: 'Spree descontó stock por la venta',
-        metadata: {
-          marketplace: FB_MARKETPLACE_KEY,
-          webhook_event_id: event.id,
-          items_count: stockProcessedItems.length,
-          is_spree_managed: managedBySpree
-        }
-      });
-    }
+  }
 
+  const allManagedItemsDeducted = managedItemReferences.length > 0 &&
+    managedItemReferences.every(({ referenceId, legacyReferenceId }) =>
+      stockState.deductedReferenceIds.has(referenceId) ||
+      stockState.deductedReferenceIds.has(legacyReferenceId)
+    );
+  if (
+    shouldManageLocalStock &&
+    lifecycle.shouldDeduct &&
+    !stockState.hasReversal &&
+    allManagedItemsDeducted &&
+    !stockState.hasDeductionEvent
+  ) {
+    await MarketplaceOrderEventRepository.create({
+      order_id: savedOrder.id,
+      event_type: STOCK_DEDUCT_EVENT_TYPE,
+      previous_status: previousOrderStatus,
+      new_status: currentOrderStatus,
+      raw_payload: buildFalabellaOrderRawPayload({
+        webhookPayload: payload,
+        orderData,
+        orderItemsData
+      }),
+      notes: `Stock debitado por orden Falabella ${orderId}`,
+      company_id: companyId
+    });
+    await SalesAuditService.recordSystemEvent(savedOrder, 'sales.stock_deducted', {
+      new_value: {
+        items_count: managedItemReferences.length
+      },
+      description: 'Spree descontó stock por la venta',
+      metadata: {
+        marketplace: FB_MARKETPLACE_KEY,
+        webhook_event_id: event.id,
+        items_count: managedItemReferences.length,
+        is_spree_managed: managedBySpree
+      }
+    });
   }
 
   if (shouldReverseStock) {
@@ -5319,8 +5427,10 @@ async function processFalabellaOrderItem(item, ctx) {
     productId,
     variantId: variant.id,
     allocation,
+    warehouseIds,
     orderId: ctx.orderId,
     listingId: sku,
+    stockItemReferenceId: ctx.stockItemReferenceId || null,
     marketplaceKey: FB_MARKETPLACE_KEY,
     referencePrefix: "fb",
     reason: "falabella_sale",
@@ -5354,13 +5464,14 @@ async function processFalabellaOrderItem(item, ctx) {
   const itemCompanyId = link?.company_id || ctx.companyId || null;
   const itemBranchId = link?.branch_id || ctx.branchId || null;
 
-  // ✅ ENCULAR SYNC DE STOCK
-  for (const result of exitResults) {
+  // Sincronizar una sola vez por ítem con el stock consolidado del grupo.
+  if (exitResults.length > 0) {
     await queueStockSync({
       productId,
       variantId: variant.id,
-      warehouseId: result.warehouseId,
-      stock: result.stockAfter,
+      warehouseId: warehouseIds[0] || exitResults[0].warehouseId,
+      warehouseIds,
+      stock: warehouseIds.length === 1 ? exitResults[0].stockAfter : undefined,
       sourceMarketplaceId: ctx.marketplaceId,
       companyId: itemCompanyId,
       branchId: itemBranchId,
@@ -5578,8 +5689,10 @@ async function processOrderItem(orderItem, ctx) {
     productId,
     variantId: variant.id,
     allocation,
+    warehouseIds,
     orderId: ctx.orderId,
     listingId,
+    stockItemReferenceId: ctx.stockItemReferenceId || null,
     marketplaceKey: ML_MARKETPLACE_KEY,
     referencePrefix: "ml",
     reason: "mercadolibre_sale",
@@ -5652,16 +5765,18 @@ async function processOrderItem(orderItem, ctx) {
       });
     } catch (error) {
       logger.error(`[ML Webhook] Error guardando item ${listingId}: ${error.message}`);
+      throw error;
     }
   }
 
-  // ✅ ENCULAR SYNC DE STOCK
-  for (const result of exitResults) {
+  // Sincronizar una sola vez por ítem con el stock consolidado del grupo.
+  if (exitResults.length > 0) {
     await queueStockSync({
       productId,
       variantId: variant.id,
-      warehouseId: result.warehouseId,
-      stock: result.stockAfter,
+      warehouseId: warehouseIds[0] || exitResults[0].warehouseId,
+      warehouseIds,
+      stock: warehouseIds.length === 1 ? exitResults[0].stockAfter : undefined,
       sourceMarketplaceId: ctx.marketplaceId,
       companyId: itemCompanyId,
       branchId: itemBranchId,
@@ -5819,17 +5934,22 @@ async function getWarehouseStockAndCost(productId, variantId, warehouseId) {
     return { available: 0, costPrice: 0 };
   }
 
-  const wpVariant = await WarehouseProductVariantRepository.findByVariantAndWarehouseProduct(
+  const lots = await WarehouseProductVariantRepository.findAllLotsByVariantAndWarehouse(
     variantId,
     warehouseProduct.id
   );
-  if (!wpVariant) {
+  if (!lots || lots.length === 0) {
     return { available: 0, costPrice: 0 };
   }
 
+  const available = lots.reduce((sum, lot) => sum + (parseInt(lot.stock, 10) || 0), 0);
+  const totalCost = lots.reduce((sum, lot) => {
+    return sum + (parseInt(lot.stock, 10) || 0) * (parseFloat(lot.purchase_price || 0) || 0);
+  }, 0);
+
   return {
-    available: parseInt(wpVariant.stock, 10) || 0,
-    costPrice: parseFloat(wpVariant.purchase_price || wpVariant.price || 0)
+    available,
+    costPrice: available > 0 ? totalCost / available : 0
   };
 }
 
@@ -5837,62 +5957,73 @@ async function applyStockExitByPlan({
   productId,
   variantId,
   allocation,
+  warehouseIds = [],
   orderId,
   listingId,
+  stockItemReferenceId = null,
   marketplaceKey,
   referencePrefix,
   reason,
   financialData
 }) {
   const results = [];
-  let firstInventoryMovementId = null;
+  const transaction = await sequelize.transaction();
 
-  for (const entry of allocation.plan) {
-    const qty = Number(entry.deduct || 0);
-    if (qty <= 0) continue;
+  try {
+    for (const entry of allocation.plan) {
+      const qty = Number(entry.deduct || 0);
+      if (qty <= 0) continue;
 
-    const exitResult = await applyStockExit({
-      productId,
-      variantId,
-      warehouseId: entry.warehouseId,
-      quantity: qty,
-      orderId,
-      listingId,
-      marketplaceKey,
-      referencePrefix,
-      reason,
-      financial_data: financialData
-    });
+      const exitResult = await applyStockExit({
+        productId,
+        variantId,
+        warehouseId: entry.warehouseId,
+        warehouseIds,
+        quantity: qty,
+        orderId,
+        listingId,
+        stockItemReferenceId,
+        marketplaceKey,
+        referencePrefix,
+        reason,
+        financial_data: financialData,
+        transaction
+      });
 
-    if (!firstInventoryMovementId && exitResult?.inventoryMovementId) {
-      firstInventoryMovementId = exitResult.inventoryMovementId;
+      results.push({
+        warehouseId: entry.warehouseId,
+        stockAfter: exitResult?.stockAfter,
+        inventoryMovementId: exitResult?.inventoryMovementId || null
+      });
     }
 
-    results.push({ 
-      warehouseId: entry.warehouseId, 
-      stockAfter: exitResult?.stockAfter,
-      inventoryMovementId: exitResult?.inventoryMovementId || null
-    });
+    await transaction.commit();
+    return results;
+  } catch (error) {
+    await transaction.rollback();
+    throw error;
   }
-
-  return results;
 }
 
 async function applyStockExit({
   productId,
   variantId,
   warehouseId,
+  warehouseIds = [],
   quantity,
   orderId,
   listingId,
+  stockItemReferenceId = null,
   marketplaceKey,
   referencePrefix,
   reason,
-  financial_data = null  // ✅ NUEVO: Datos financieros opcionales
+  financial_data = null,
+  transaction: transactionOverride = null
 }) {
   const finalMarketplaceKey = marketplaceKey || "marketplace";
   const finalReferencePrefix = referencePrefix || finalMarketplaceKey;
-  const transaction = await sequelize.transaction();
+  const transaction = transactionOverride || await sequelize.transaction();
+  const ownsTransaction = !transactionOverride;
 
   try {
     const warehouseProduct = await WarehouseProductRepository.findByWarehouseAndProduct(
@@ -5904,32 +6035,21 @@ async function applyStockExit({
       throw new Error("warehouse_product_not_found");
     }
 
-    const wpVariant = await WarehouseProductVariantRepository.findByVariantAndWarehouseProduct(
+    const lots = await WarehouseProductVariantRepository.findAllLotsByVariantAndWarehouse(
       variantId,
-      warehouseProduct.id
+      warehouseProduct.id,
+      {
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      }
     );
 
-    if (!wpVariant) {
-      throw new Error("warehouse_product_variant_not_found");
+    const totalAvailable = (lots || []).reduce((sum, lot) => {
+      return sum + (parseInt(lot.stock, 10) || 0);
+    }, 0);
+    if (totalAvailable < quantity) {
+      throw new Error(`insufficient_stock:${totalAvailable}`);
     }
-
-    const stockBefore = parseInt(wpVariant.stock, 10) || 0;
-    if (stockBefore < quantity) {
-      throw new Error(`insufficient_stock:${stockBefore}`);
-    }
-
-    const stockAfter = stockBefore - quantity;
-    const updateData = { stock: stockAfter };
-
-    if (stockAfter === 0) {
-      updateData.price = null;
-      updateData.promotional_price = null;
-      updateData.local_sku = null;
-      updateData.active = false;
-      updateData.published = false;
-    }
-
-    await WarehouseProductVariantRepository.update(wpVariant, updateData, { transaction });
 
     let companyId = warehouseProduct.company_id || null;
     let branchId = warehouseProduct.branch_id || null;
@@ -5939,53 +6059,90 @@ async function applyStockExit({
       branchId = warehouse?.branch_id || null;
     }
 
-    // ✅ PREPARAR METADATOS CON INFORMACIÓN FINANCIERA
-    const meta = {
-      order_id: orderId,
-      listing_id: listingId,
-      marketplace: finalMarketplaceKey,
-      pre_sale_state: {
-        price: wpVariant.price ?? null,
-        promotional_price: wpVariant.promotional_price ?? null,
-        local_sku: wpVariant.local_sku ?? null,
-        active: wpVariant.active ?? null,
-        published: wpVariant.published ?? null
-      }
-    };
+    const normalizedWarehouseIds = [...new Set(
+      (Array.isArray(warehouseIds) && warehouseIds.length > 0 ? warehouseIds : [warehouseId])
+        .map((id) => Number(id))
+        .filter((id) => Number.isFinite(id))
+    )];
+    let remaining = quantity;
+    let firstInventoryMovementId = null;
 
-    // Agregar datos financieros si existen
-    if (financial_data) {
-      meta.financial_data = financial_data;
-      meta.calculated_at = financial_data.calculated_at || new Date().toISOString();
+    // FIFO: cada lote recibe su propio movimiento para conservar trazabilidad
+    // y permitir que una reversa restaure exactamente el lote original.
+    for (const lot of lots) {
+      if (remaining <= 0) break;
+
+      const stockBefore = parseInt(lot.stock, 10) || 0;
+      const deducted = Math.min(stockBefore, remaining);
+      if (deducted <= 0) continue;
+
+      const stockAfter = stockBefore - deducted;
+      const updateData = { stock: stockAfter };
+
+      if (stockAfter === 0) {
+        updateData.price = null;
+        updateData.promotional_price = null;
+        updateData.local_sku = null;
+        updateData.active = false;
+        updateData.published = false;
+      }
+
+      await WarehouseProductVariantRepository.update(lot, updateData, { transaction });
+
+      const meta = {
+        order_id: orderId,
+        listing_id: listingId,
+        stock_item_reference_id: stockItemReferenceId || null,
+        marketplace: finalMarketplaceKey,
+        warehouse_product_variant_id: lot.id,
+        warehouse_ids: normalizedWarehouseIds,
+        pre_sale_state: {
+          price: lot.price ?? null,
+          promotional_price: lot.promotional_price ?? null,
+          local_sku: lot.local_sku ?? null,
+          active: lot.active ?? null,
+          published: lot.published ?? null
+        }
+      };
+
+      if (financial_data) {
+        meta.financial_data = financial_data;
+        meta.calculated_at = financial_data.calculated_at || new Date().toISOString();
+      }
+
+      const movement = await InventoryMovementRepository.create({
+        warehouse_id: warehouseId,
+        product_id: productId,
+        variant_id: variantId,
+        company_id: companyId,
+        branch_id: branchId,
+        movement_type: "exit",
+        quantity: deducted,
+        stock_before: stockBefore,
+        stock_after: stockAfter,
+        unit_price: lot.price || null,
+        total_value: lot.price ? lot.price * deducted : null,
+        reference_type: finalMarketplaceKey,
+        reference_id: `${finalReferencePrefix}:${orderId}:${listingId}`,
+        reason: reason || `${finalMarketplaceKey}_sale`,
+        notes: `order:${orderId}`,
+        user_id: null,
+        meta
+      }, { transaction });
+
+      if (!firstInventoryMovementId && movement?.id) {
+        firstInventoryMovementId = movement.id;
+      }
+      remaining -= deducted;
     }
 
-    const movement = await InventoryMovementRepository.create({
-      warehouse_id: warehouseId,
-      product_id: productId,
-      variant_id: variantId,
-      company_id: companyId,
-      branch_id: branchId,
-      movement_type: "exit",
-      quantity,
-      stock_before: stockBefore,
-      stock_after: stockAfter,
-      unit_price: wpVariant.price || null,
-      total_value: wpVariant.price ? wpVariant.price * quantity : null,
-      reference_type: finalMarketplaceKey,
-      reference_id: `${finalReferencePrefix}:${orderId}:${listingId}`,
-      reason: reason || `${finalMarketplaceKey}_sale`,
-      notes: `order:${orderId}`,
-      user_id: null,
-      meta: meta  // ✅ GUARDAR METADATOS CON DATOS FINANCIEROS
-    }, { transaction });
-
-    await transaction.commit();
+    if (ownsTransaction) await transaction.commit();
     return { 
-      stockAfter,
-      inventoryMovementId: movement?.id || null
+      stockAfter: totalAvailable - quantity,
+      inventoryMovementId: firstInventoryMovementId
     };
   } catch (error) {
-    await transaction.rollback();
+    if (ownsTransaction) await transaction.rollback();
     throw error;
   }
 }
@@ -5994,6 +6151,7 @@ async function queueStockSync({
   productId,
   variantId,
   warehouseId,
+  warehouseIds = [],
   stock,
   sourceMarketplaceId,
   companyId,
@@ -6006,6 +6164,7 @@ async function queueStockSync({
       productId,
       variantId,
       warehouseId,
+      warehouseIds,
       stock,
       sourceMarketplaceId,
       companyId,
@@ -6272,11 +6431,15 @@ function isFalabellaFulfillmentByFalabella(shippingType) {
   ].includes(normalized);
 }
 
+function isSpreeManagedLink(link) {
+  return Boolean(link?.product_id);
+}
+
 function getFalabellaOrderManagement(itemLinks) {
   const links = Array.isArray(itemLinks) ? itemLinks : [];
   return {
-    managedBySpree: links.length > 0 && links.every(Boolean),
-    managedItemCount: links.filter(Boolean).length
+    managedBySpree: links.length > 0 && links.every(isSpreeManagedLink),
+    managedItemCount: links.filter(isSpreeManagedLink).length
   };
 }
 
@@ -6504,6 +6667,12 @@ function getMarketplaceOrderReferencePrefix(marketplaceKey) {
   return String(marketplaceKey || "marketplace");
 }
 
+function buildMarketplaceStockReferenceId(marketplaceKey, orderId, listingId, itemId = null) {
+  const prefix = getMarketplaceOrderReferencePrefix(marketplaceKey);
+  const itemSuffix = itemId == null || itemId === '' ? '' : `:${itemId}`;
+  return `${prefix}:${orderId}:${listingId}${itemSuffix}`;
+}
+
 function getMarketplaceOrderLifecycleDecision({ orderStatus, paymentStatus }) {
   const normalizedOrderStatus = stringOrNull(orderStatus)?.toLowerCase() || null;
   const normalizedPaymentStatus = stringOrNull(paymentStatus)?.toLowerCase() || null;
@@ -6526,10 +6695,10 @@ function getMarketplaceOrderLifecycleDecision({ orderStatus, paymentStatus }) {
   };
 }
 
-async function getMarketplaceOrderStockState(marketplaceKey, orderId) {
+async function getMarketplaceOrderStockState(marketplaceKey, orderReferenceId, localOrderId = orderReferenceId) {
   const referencePrefix = getMarketplaceOrderReferencePrefix(marketplaceKey);
   const movements = await InventoryMovementRepository.findByReferencePrefix(
-    `${referencePrefix}:${orderId}:`
+    `${referencePrefix}:${orderReferenceId}:`
   );
   const reversalMovements = await InventoryMovementRepository.findByReferencePrefix(
     `${referencePrefix}:reversal:`
@@ -6546,15 +6715,26 @@ async function getMarketplaceOrderStockState(marketplaceKey, orderId) {
   const exitMovements = movements.filter(
     (movement) => String(movement.movement_type || "").toLowerCase() === "exit"
   );
-  const events = await MarketplaceOrderEventRepository.findByOrderId(orderId);
+  const events = await MarketplaceOrderEventRepository.findByOrderId(localOrderId);
   const pendingReversalCount = exitMovements.filter(
     (movement) => !reversedMovementIds.has(String(movement.id))
   ).length;
+  const deductedReferenceIds = new Set(
+    exitMovements.map((movement) => String(movement.reference_id || ""))
+  );
+  for (const movement of exitMovements) {
+    const movementMeta = normalizeInventoryMovementMeta(movement.meta);
+    if (movementMeta.stock_item_reference_id) {
+      deductedReferenceIds.add(String(movementMeta.stock_item_reference_id));
+    }
+  }
 
   return {
     movements,
     events,
+    deductedReferenceIds,
     pendingReversalCount,
+    hasDeductionEvent: events.some((event) => event.event_type === STOCK_DEDUCT_EVENT_TYPE),
     hasDeduction:
       movements.some((movement) => String(movement.movement_type || "").toLowerCase() === "exit") ||
       events.some((event) => event.event_type === STOCK_DEDUCT_EVENT_TYPE),
@@ -6634,12 +6814,29 @@ async function reverseMarketplaceOrderStock({
         throw new Error("warehouse_product_not_found");
       }
 
-      const wpVariant = await WarehouseProductVariantRepository.findByVariantAndWarehouseProduct(
-        variantId,
-        warehouseProduct.id
-      );
+      const movementMeta = normalizeInventoryMovementMeta(movement.meta);
+      const lotId = movementMeta.warehouse_product_variant_id || null;
+      const wpVariant = lotId
+        ? await WarehouseProductVariantRepository.findLotById(lotId, {
+            transaction,
+            lock: transaction.LOCK.UPDATE
+          })
+        : (await WarehouseProductVariantRepository.findAllLotsByVariantAndWarehouse(
+            variantId,
+            warehouseProduct.id,
+            {
+              transaction,
+              lock: transaction.LOCK.UPDATE
+            }
+          ))[0] || null;
       if (!wpVariant) {
         throw new Error("warehouse_product_variant_not_found");
+      }
+      if (
+        Number(wpVariant.warehouse_product_id) !== Number(warehouseProduct.id) ||
+        Number(wpVariant.variant_id) !== Number(variantId)
+      ) {
+        throw new Error("warehouse_product_variant_context_mismatch");
       }
 
       const quantity = parseInt(movement.quantity, 10) || 0;
@@ -6649,7 +6846,6 @@ async function reverseMarketplaceOrderStock({
 
       const stockBefore = parseInt(wpVariant.stock, 10) || 0;
       const stockAfter = stockBefore + quantity;
-      const movementMeta = normalizeInventoryMovementMeta(movement.meta);
       const preSaleState = movementMeta.pre_sale_state || {};
       const updateData = { stock: stockAfter };
 
@@ -6707,6 +6903,9 @@ async function reverseMarketplaceOrderStock({
         warehouseId,
         productId,
         variantId,
+        warehouseIds: Array.isArray(movementMeta.warehouse_ids) && movementMeta.warehouse_ids.length > 0
+          ? movementMeta.warehouse_ids
+          : [warehouseId],
         stockAfter,
         inventoryMovementId: reversalMovement?.id || null
       });
@@ -6718,13 +6917,26 @@ async function reverseMarketplaceOrderStock({
   }
 
   if (results.length > 0) {
+    const syncGroups = new Map();
     for (const result of results) {
+      const warehouseIds = [...new Set(
+        (Array.isArray(result.warehouseIds) ? result.warehouseIds : [result.warehouseId])
+          .map((warehouseId) => Number(warehouseId))
+          .filter((warehouseId) => Number.isFinite(warehouseId))
+      )];
+      const key = `${result.productId}:${result.variantId}:${warehouseIds.join(',')}`;
+      if (!syncGroups.has(key)) {
+        syncGroups.set(key, { ...result, warehouseIds });
+      }
+    }
+
+    for (const result of syncGroups.values()) {
       try {
         await queueStockSync({
           productId: result.productId,
           variantId: result.variantId,
-          warehouseId: result.warehouseId,
-          stock: result.stockAfter,
+          warehouseId: result.warehouseIds[0] || result.warehouseId,
+          warehouseIds: result.warehouseIds,
           sourceMarketplaceId,
           companyId: order?.company_id || null,
           branchId: order?.branch_id || null,

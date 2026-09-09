@@ -11,7 +11,6 @@ const {
   MarketplaceRepository,
   MarketplaceCredentialRepository,
   WarehouseRepository,
-  WarehouseProductRepository,
   WarehouseProductVariantRepository,
   ProductVariantRepository
 } = require('../repositories');
@@ -21,6 +20,7 @@ class MarketplaceStockSyncService {
     productId,
     variantId,
     warehouseId,
+    warehouseIds = [],
     stock,
     sourceMarketplaceId,
     companyId,
@@ -59,6 +59,7 @@ class MarketplaceStockSyncService {
       productId,
       variantId,
       warehouseId,
+      warehouseIds,
       stock
     });
 
@@ -66,16 +67,30 @@ class MarketplaceStockSyncService {
     const jobProductsData = [];
 
     for (const link of targets) {
-      const latestTask = await ProductPublishingTaskRepository.findLatestPublishedByProductMarketplaceAndCredential(
+      // Prefer the exact published task for the external publication. This
+      // keeps the credential tied to the item actually being synchronized
+      // when a link was created without credential_id or when the product has
+      // more than one publication/credential in the same marketplace.
+      const latestTask = link.external_id
+        ? await ProductPublishingTaskRepository.findLatestPublishedByExternalIdAndContext({
+            marketplaceId: link.marketplace_id,
+            externalId: link.external_id,
+            companyId: link.company_id || finalCompanyId,
+            branchId: link.branch_id || finalBranchId,
+            credentialId: link.credential_id || null
+          })
+        : null;
+
+      const fallbackTask = latestTask || await ProductPublishingTaskRepository.findLatestPublishedByProductMarketplaceAndCredential(
         productId,
         link.marketplace_id,
         link.credential_id,
         link.company_id || finalCompanyId
       );
 
-      const credentialId = link.credential_id || latestTask?.credential_id || null;
-      const externalId = link.external_id || latestTask?.external_id || null;
-      const publishedPayload = link.published_payload || latestTask?.payload || null;
+      const credentialId = link.credential_id || fallbackTask?.credential_id || null;
+      const externalId = link.external_id || fallbackTask?.external_id || null;
+      const publishedPayload = link.published_payload || fallbackTask?.payload || null;
       let publishedStockLimit = this._resolvePublishedStockLimit(publishedPayload, sku);
       if (publishedStockLimit == null && link.published_stock != null) {
         publishedStockLimit = this._toNonNegativeInteger(link.published_stock);
@@ -101,6 +116,7 @@ class MarketplaceStockSyncService {
           product_id: productId,
           variant_id: variantId,
           warehouse_id: warehouseId,
+          warehouse_ids: warehouseIds,
           stock: effectiveStock,
           source_stock: stockValue,
           published_stock_limit: publishedStockLimit,
@@ -129,6 +145,7 @@ class MarketplaceStockSyncService {
       config: {
         source_marketplace_id: sourceMarketplaceId,
         warehouse_id: warehouseId,
+        warehouse_ids: warehouseIds,
         variant_id: variantId,
         stock: stockValue,
         company_id: finalCompanyId,
@@ -382,22 +399,26 @@ class MarketplaceStockSyncService {
       .replace(/'/g, '&apos;');
   }
 
-  static async _resolveStock({ productId, variantId, warehouseId, stock }) {
-    if (Number.isInteger(stock) && stock >= 0) return stock;
+  static async _resolveStock({ productId, variantId, warehouseId, warehouseIds = [], stock }) {
+    const candidateWarehouseIds = [...new Set(
+      (Array.isArray(warehouseIds) && warehouseIds.length > 0 ? warehouseIds : [warehouseId])
+        .map((id) => Number(id))
+        .filter((id) => Number.isFinite(id))
+    )];
 
-    if (!warehouseId) return 0;
+    // El stock recibido por parámetro es confiable para un almacén único.
+    // Para un grupo se recalcula consolidado, evitando publicar el stock de
+    // solo uno de sus almacenes.
+    if (candidateWarehouseIds.length <= 1 && Number.isInteger(stock) && stock >= 0) {
+      return stock;
+    }
 
-    const wp = await WarehouseProductRepository.findByWarehouseAndProduct(
-      warehouseId,
-      productId
-    );
-    if (!wp) return 0;
+    if (candidateWarehouseIds.length === 0) return 0;
 
-    const wv = await WarehouseProductVariantRepository.findByVariantAndWarehouseProduct(
+    return await WarehouseProductVariantRepository.getTotalStockByVariantAndWarehouses(
       variantId,
-      wp.id
+      candidateWarehouseIds
     );
-    return parseInt(wv?.stock || 0, 10) || 0;
   }
 
   static async _resolveSku(variantId) {

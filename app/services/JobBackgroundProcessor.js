@@ -400,6 +400,124 @@ async _processProduct(jobProduct, parentJobId) {
       throw new Error(`Job ${parentJobId} no encontrado`);
     }
 
+    // Los jobs de sincronización de stock no son publicaciones nuevas y no
+    // requieren el pool de publicación. Su contexto es el warehouse/warehouse
+    // group que ya quedó persistido en el job y debe llegar intacto al servicio
+    // de sincronización.
+    if (job.job_type === 'sync') {
+      let syncConfig = job?.config || {};
+
+      if (typeof syncConfig === 'string') {
+        try {
+          syncConfig = JSON.parse(syncConfig);
+        } catch (e) {
+          throw new Error(`Config del job ${parentJobId} no es un JSON válido`);
+        }
+      }
+
+      syncConfig = {
+        ...(syncConfig || {}),
+        job_id: job.id,
+        company_id: syncConfig?.company_id || job.company_id || null,
+        branch_id: syncConfig?.branch_id || job.branch_id || null
+      };
+
+      const syncJob = {
+        id: job.id,
+        batch_id: job.batch_id,
+        job_type: job.job_type,
+        company_id: job.company_id,
+        branch_id: job.branch_id,
+        user_id: job.user_id,
+        config: syncConfig
+      };
+
+      const auditMetadata = {
+        product_id: product_id || null,
+        variant_id: product_payload?.variant_id || syncConfig?.variant_id || null,
+        marketplace_id: marketplace_id || null,
+        credential_id: credential_id || null,
+        external_id: jobProduct?.external_id
+          || product_payload?.external_id
+          || marketplace_payload?.external_id
+          || null,
+        stock: product_payload?.stock ?? null,
+        warehouse_id: product_payload?.warehouse_id || syncConfig?.warehouse_id || null,
+        warehouse_ids: product_payload?.warehouse_ids || syncConfig?.warehouse_ids || []
+      };
+
+      try {
+        await JobProductRepository.update(jobProduct, {
+          status: 'processing',
+          last_attempt_at: new Date(),
+          error_message: null
+        });
+
+        const result = await MarketplaceStockSyncService.processJobProduct(jobProduct, syncJob);
+
+        if (result?.success) {
+          await JobProductRepository.update(jobProduct, {
+            status: 'success',
+            error_message: null,
+            error_details: null
+          });
+
+          await PublicationAuditService.recordProcessSystemEvent(
+            syncJob,
+            'stock_sync.succeeded',
+            {
+              result: 'success',
+              metadata: auditMetadata
+            }
+          );
+
+          return { success: true };
+        }
+
+        const errorMessage = result?.error || 'sync_failed';
+        await JobProductRepository.update(jobProduct, {
+          status: 'error',
+          error_message: errorMessage,
+          error_details: result?.details || null
+        });
+
+        await PublicationAuditService.recordProcessSystemEvent(
+          syncJob,
+          'stock_sync.failed',
+          {
+            result: 'error',
+            error: errorMessage,
+            metadata: {
+              ...auditMetadata,
+              details: result?.details || null
+            }
+          }
+        );
+
+        return { success: false };
+      } catch (syncError) {
+        const errorMessage = syncError.message || 'sync_failed';
+
+        await JobProductRepository.update(jobProduct, {
+          status: 'error',
+          error_message: errorMessage,
+          error_details: { stack: syncError.stack }
+        });
+
+        await PublicationAuditService.recordProcessSystemEvent(
+          syncJob,
+          'stock_sync.failed',
+          {
+            result: 'error',
+            error: errorMessage,
+            metadata: auditMetadata
+          }
+        );
+
+        return { success: false };
+      }
+    }
+
     // 🔧 PARSEAR CONFIG SI VIENE COMO STRING + RECONSTRUIR primary_warehouse
     let config = job?.config;
     
@@ -422,33 +540,6 @@ async _processProduct(jobProduct, parentJobId) {
     // Validación final reforzada
     if (!config?.pool?.primary_warehouse) {
       throw new Error(`Job ${parentJobId} sin pool.primary_warehouse en config`);
-    }
-
-    if (job.job_type === 'sync') {
-      await JobProductRepository.update(jobProduct, {
-        status: 'processing',
-        last_attempt_at: new Date(),
-        error_message: null
-      });
-
-      const result = await MarketplaceStockSyncService.processJobProduct(jobProduct, job);
-
-      if (result?.success) {
-        await JobProductRepository.update(jobProduct, {
-          status: 'success',
-          error_message: null,
-          error_details: null
-        });
-        return { success: true };
-      }
-
-      const errorMessage = result?.error || 'sync_failed';
-      await JobProductRepository.update(jobProduct, {
-        status: 'error',
-        error_message: errorMessage,
-        error_details: result?.details || null
-      });
-      return { success: false };
     }
 
     // === Validaciones básicas ===

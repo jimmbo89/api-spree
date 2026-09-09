@@ -107,6 +107,10 @@ test('Falabella conserva la orden externa y solo marca gestionables los ítems v
     helpers._getFalabellaOrderManagement([{ product_id: 10 }, { product_id: 11 }]),
     { managedBySpree: true, managedItemCount: 2 }
   );
+  assert.deepEqual(
+    helpers._getFalabellaOrderManagement([{ product_id: null }]),
+    { managedBySpree: false, managedItemCount: 0 }
+  );
 });
 
 test('Falabella genera una identidad estable para reintentos del mismo webhook oficial', () => {
