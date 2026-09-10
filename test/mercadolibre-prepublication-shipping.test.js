@@ -158,7 +158,9 @@ test('shipping prepublicación aplica el escenario obligatorio cuando ML devuelv
   assert.equal(result.shipping_summary.free_shipping, true);
   assert.equal(result.shipping_summary.mandatory_free_shipping, true);
   assert.equal(result.shipping_summary.seller_shipping_cost, 3600);
-  assert.equal(result.shipping_summary.shipping_subsidy, 7200);
+  assert.equal(result.shipping_summary.shipping_subsidy, 3600);
   assert.equal(result.shipping_summary.shipping_resolution_state, 'resolved');
   assert.equal(result.shipping_summary.shipping_complexity, 'automated');
+  assert.equal(result.shipping_cost_source.seller, 'coverage.all_country.list_cost');
+  assert.equal(result.shipping_cost_fallbacks.seller_used_list_cost_fallback, false);
 });

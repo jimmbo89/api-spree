@@ -551,8 +551,19 @@ const extractCoverageSubsidy = (coverage) => {
     if (typeof discount === "number") return total + Math.max(0, toNumberOrZero(discount));
     if (typeof discount !== "object" || discount === null) return total;
 
-    const direct = toNumberOrNull(discount.promoted_amount);
-    if (direct !== null) return total + Math.max(0, direct);
+    // Mercado Libre entrega promoted_amount como el importe base antes del
+    // descuento. El subsidio es solo la parte descontada, no todo el importe.
+    const promotedAmount = toNumberOrNull(discount.promoted_amount);
+    const rate = toNumberOrNull(discount.rate);
+    if (promotedAmount !== null && rate !== null) {
+      return total + Math.max(0, promotedAmount * Math.min(1, rate));
+    }
+    if (promotedAmount !== null) {
+      const chargedCost = toNumberOrNull(coverage?.cost ?? coverage?.list_cost);
+      if (chargedCost !== null) {
+        return total + Math.max(0, promotedAmount - chargedCost);
+      }
+    }
     const amount = toNumberOrNull(discount.amount);
     return amount === null ? total : total + Math.max(0, amount);
   }, 0);
@@ -570,8 +581,10 @@ const extractCoverageCostDetails = (coverage) => {
 
   return {
     cost: toNumberOrNull(coverage?.list_cost),
-    source: "coverage.list_cost_fallback",
-    used_fallback: true
+    // /shipping_options/free devuelve list_cost como el importe estimado que
+    // paga el vendedor; no es un fallback local ante la ausencia de cost.
+    source: "coverage.all_country.list_cost",
+    used_fallback: false
   };
 };
 
@@ -4518,7 +4531,8 @@ async mercadoLibreShippingCosts(req, res) {
             combos: availableShippingCombos
           });
           availableShippingCombos = supportedShippingResolution.combos;
-          selectionWarnings.push(...supportedShippingResolution.warnings);
+          // Las combinaciones descartadas durante el descubrimiento son una
+          // decisión interna. El cliente recibe solo las combinaciones válidas.
 
           const hasRequestedLogisticType = logistic_type !== undefined && logistic_type !== null && String(logistic_type).trim() !== "";
           const hasRequestedShippingSelection = Boolean(shipping_mode || hasRequestedLogisticType);
@@ -4932,6 +4946,7 @@ async mercadoLibreShippingCosts(req, res) {
               category_id: cat.category_id,
               listing_type_id: pricingTypeId,
               currency_id: getPricingCurrencyIdFromSite(site_id),
+              channel: "marketplace",
               shipping_mode: effectiveShippingMode,
               logistic_type: effectiveLogisticType
             };
@@ -5352,12 +5367,8 @@ async mercadoLibreShippingCosts(req, res) {
           combos: availableShippingCombos
         });
         availableShippingCombos = supportedShippingResolution.combos;
-        // Las combinaciones rechazadas durante la exploración interna no son
-        // un error del usuario cuando no solicitó ninguna modalidad concreta.
-        // Solo exponerlas si el cliente pidió explícitamente una selección.
-        if (requestedShippingMode || requestedLogisticType) {
-          categoryWarnings.push(...supportedShippingResolution.warnings);
-        }
+        // No exponer rechazos de otras combinaciones exploradas internamente.
+        // La combinación solicitada se valida después contra availableShippingCombos.
 
         const shippingComboResolution = selectPreferredShippingCombo({
           requestedMode: requestedShippingMode,
