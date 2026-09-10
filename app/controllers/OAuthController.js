@@ -771,14 +771,17 @@ const buildShippingMeasurementInput = (product) => {
   if (!product || typeof product !== "object") return null;
 
   if (product.package && typeof product.package === "object") {
+    const productVolumetricWeight = product.volumetric_weight_measurement
+      || (product.volumetric_weight !== null && product.volumetric_weight !== undefined
+        ? { value: product.volumetric_weight, unit: "kg" }
+        : null);
     return {
       ...product.package,
       volumetric_weight:
         product.package.volumetric_weight ??
         product.package.volumetric_weight_measurement ??
         product.package.volumetric_weight_grams ??
-        product.volumetric_weight ??
-        product.volumetric_weight_measurement ??
+        productVolumetricWeight ??
         product.volumetric_weight_grams ??
         product.volumetric_weightolumetric_weight ??
         null
