@@ -1542,13 +1542,18 @@ function buildDisplayChanges(changes, { creation = false } = {}) {
     })
     .map(change => {
       const field = change.field || change.key || change.attribute || 'change';
-      const changeIsCreation = creation || change.is_new_variant === true;
+      const changeIsCreation =
+        creation ||
+        change.is_new_variant === true ||
+        change.is_new_association === true;
       return {
         field,
         field_label: getFieldLabel(field),
         previous: changeIsCreation
-          ? ''
+          ? null
           : formatDisplayValue(change.old_value ?? change.previous_value ?? change.before, field),
+        has_previous_value: !changeIsCreation,
+        is_new_association: change.is_new_association === true,
         current: formatDisplayValue(change.new_value ?? change.current_value ?? change.after, field)
       };
     });
@@ -1602,12 +1607,16 @@ function buildDisplay(event, labels, { compact = false } = {}) {
         previous_value: changes.map(change => ({
           key: change.field,
           label: change.field_label,
-          value: change.previous
+          value: change.previous,
+          has_previous_value: change.has_previous_value,
+          is_new_association: change.is_new_association
         })),
         new_value: changes.map(change => ({
           key: change.field,
           label: change.field_label,
-          value: change.current
+          value: change.current,
+          has_previous_value: change.has_previous_value,
+          is_new_association: change.is_new_association
         })),
         metadata: []
       }

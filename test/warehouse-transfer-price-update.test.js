@@ -44,6 +44,9 @@ function harness() {
       findByWarehouseAndProduct: async (warehouseId) => warehouseProductFor(warehouseId),
       isProductAssociatedWithCompany: async () => true
     },
+    ProductVariantRepository: {
+      findByProductId: async () => [{ id: 103 }]
+    },
     WarehouseProductVariantRepository: {
       findByWarehouseProductId: async (warehouseProductId) =>
         Number(warehouseProductId) === 80 ? [sourceLot] : [destinationLot],

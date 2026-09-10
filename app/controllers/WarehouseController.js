@@ -36,6 +36,23 @@ function buildWarehouseAuditPayload(warehouse, data = {}) {
   };
 }
 
+async function resolveWarehouseCompanyId(warehouse, requestedCompanyId = null) {
+  const plain = toPlain(warehouse) || {};
+  const companyId = requestedCompanyId ?? plain.company_id;
+  if (companyId !== undefined && companyId !== null && companyId !== '') {
+    return Number(companyId);
+  }
+
+  if (plain.branch_id !== undefined && plain.branch_id !== null) {
+    const branch = await BranchRepository.findById(plain.branch_id);
+    if (branch?.company_id !== undefined && branch.company_id !== null) {
+      return Number(branch.company_id);
+    }
+  }
+
+  return null;
+}
+
 function changesToValueSnapshot(changes, valueKey) {
   return changes.reduce((snapshot, change) => {
     snapshot[change.field] = change[valueKey];
@@ -244,8 +261,10 @@ const WarehouseController = {
 
     try {
       const warehouse = await WarehouseRepository.create(req.body, req.file);
+      const auditCompanyId = await resolveWarehouseCompanyId(warehouse, company_id);
 
       await AuditEventService.safeRecordFromRequest(req, buildWarehouseAuditPayload(warehouse, {
+        company_id: auditCompanyId,
         action: 'warehouse.created',
         result: 'success',
         new_value: toPlain(warehouse),
@@ -361,11 +380,14 @@ const WarehouseController = {
 
       const originalData = { ...warehouse.get({ plain: true }) };
       const updated = await WarehouseRepository.update(warehouse, req.body, req.file);
+      const updatedData = updated.get({ plain: true });
+      const auditCompanyId = await resolveWarehouseCompanyId(updatedData, company_id);
 
       // ✅ Detectar cambios y crear UN SOLO log
-      const fieldChanges = detectChanges(originalData, updated.get({ plain: true }), WAREHOUSE_AUDIT_FIELDS);
+      const fieldChanges = detectChanges(originalData, updatedData, WAREHOUSE_AUDIT_FIELDS);
 
       await AuditEventService.safeRecordFromRequest(req, buildWarehouseAuditPayload(updated, {
+        company_id: auditCompanyId,
         action: 'warehouse.updated',
         result: 'success',
         previous_value: changesToValueSnapshot(fieldChanges, 'old_value'),
@@ -439,9 +461,11 @@ const WarehouseController = {
       const warehouse = await WarehouseRepository.findById(req.body.id);
       if (!warehouse) return res.status(404).json({ msg: 'WarehouseNotFound' });
       const warehouseBeforeDelete = toPlain(warehouse);
+      const auditCompanyId = await resolveWarehouseCompanyId(warehouseBeforeDelete);
 
       await WarehouseRepository.delete(warehouse);
       await AuditEventService.safeRecordFromRequest(req, buildWarehouseAuditPayload(warehouseBeforeDelete, {
+        company_id: auditCompanyId,
         action: 'warehouse.deleted',
         result: 'success',
         previous_value: warehouseBeforeDelete,
@@ -471,8 +495,10 @@ const WarehouseController = {
       const originalData = { ...warehouse.get({ plain: true }) };
       
       await warehouse.update({ status: newStatus });
+      const auditCompanyId = await resolveWarehouseCompanyId(warehouse);
 
       await AuditEventService.safeRecordFromRequest(req, buildWarehouseAuditPayload(warehouse, {
+        company_id: auditCompanyId,
         action: 'warehouse.status_changed',
         result: 'success',
         previous_value: { status: originalData.status },

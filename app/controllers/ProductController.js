@@ -70,6 +70,47 @@ function getProductAuditLabel(product) {
   return [plain.sku, plain.name].filter(Boolean).join(" / ") || "Producto sin nombre";
 }
 
+function buildProductDetailResponse(product) {
+  const plainProduct = toPlain(product) || {};
+  const variants = Array.isArray(plainProduct.variants) ? plainProduct.variants : [];
+
+  return {
+    id: Number(plainProduct.id),
+    name: plainProduct.name,
+    sku: plainProduct.sku,
+    variants: variants.map((variant) => {
+      const plainVariant = toPlain(variant) || {};
+      const rawValues = Array.isArray(plainVariant.variantValues)
+        ? plainVariant.variantValues
+        : (Array.isArray(plainVariant.variant_values) ? plainVariant.variant_values : []);
+      const variantValues = rawValues
+        .map((value) => {
+          const plainValue = toPlain(value) || {};
+          return {
+            id: Number(plainValue.id),
+            variant_definition_id: plainValue.variant_definition_id === null || plainValue.variant_definition_id === undefined
+              ? null
+              : Number(plainValue.variant_definition_id),
+            name: plainValue.name
+          };
+        })
+        .filter((value) => value.id !== undefined && value.id !== null)
+        .sort((left, right) => {
+          const definitionOrder = Number(left.variant_definition_id || 0) - Number(right.variant_definition_id || 0);
+          if (definitionOrder !== 0) return definitionOrder;
+          return Number(left.id) - Number(right.id);
+        });
+
+      return {
+        id: Number(plainVariant.id),
+        sku: plainVariant.sku,
+        variant_value_ids: normalizeVariantValueIds(variantValues.map((value) => value.id)),
+        variant_values: variantValues
+      };
+    })
+  };
+}
+
 function getProductStateLabel(state) {
   const labels = {
     "-1": "Archivado",
@@ -260,6 +301,45 @@ const ProductController = {
     } catch (error) {
       logger.error("ProductController->list: " + error.message);
       res.status(500).json({ error: "ServerError", details: error.message });
+    }
+  },
+
+  async detail(req, res) {
+    const { company_id, product_id } = req.body;
+    logger.info(
+      `${req.user?.name || "Unknown"} - Consulta detalle del producto ${product_id} para compañía ${company_id}`
+    );
+
+    try {
+      const company = await CompanyRepository.findById(company_id);
+      if (!company) {
+        return res.status(404).json({
+          success: false,
+          code: "COMPANY_NOT_FOUND",
+          message: "La compañía no existe"
+        });
+      }
+
+      const product = await ProductRepository.findById(product_id);
+      if (!product || Number(product.company_id) !== Number(company_id)) {
+        return res.status(404).json({
+          success: false,
+          code: "PRODUCT_NOT_FOUND",
+          message: "El producto no existe para la compañía indicada"
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        product: buildProductDetailResponse(product)
+      });
+    } catch (error) {
+      logger.error("ProductController->detail: " + error.message);
+      return res.status(500).json({
+        success: false,
+        code: "PRODUCT_DETAIL_ERROR",
+        message: "No fue posible obtener el detalle del producto"
+      });
     }
   },
 

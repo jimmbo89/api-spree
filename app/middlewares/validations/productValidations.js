@@ -270,6 +270,11 @@ const listProductsSchema = Joi.object({
   state: Joi.number().allow(null).empty('').optional(),
 });
 
+const productDetailSchema = Joi.object({
+  company_id: Joi.number().integer().positive().required(),
+  product_id: Joi.number().integer().positive().required()
+});
+
 const listByWarehouseIdsSchema = Joi.object({
   company_id: Joi.number().integer().required(),
   warehouse_ids: Joi.array()
@@ -288,6 +293,7 @@ module.exports = {
   storeProductSchema,
   updateProductSchema,
   idProductSchema,
+  productDetailSchema,
   listProductsSchema,
   listByWarehouseIdsSchema,
   assignWarehouseSchema,

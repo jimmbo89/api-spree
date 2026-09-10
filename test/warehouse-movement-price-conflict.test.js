@@ -22,6 +22,9 @@ function harness() {
       findByWarehouseAndProduct: async () => wp,
       isProductAssociatedWithCompany: async () => true
     },
+    ProductVariantRepository: {
+      findByProductId: async () => [{ id: 111 }]
+    },
     WarehouseProductVariantRepository: {
       findByWarehouseProductId: async () => [lot],
       getTotalStockByVariantAndWarehouse: async () => ({ total_stock: lot.stock }),
@@ -116,6 +119,29 @@ for (const endpoint of ['createMovement', 'createBulkMovement']) {
     assert.equal(h.lot.price, 42000);
     assert.equal(h.lot.purchase_price, 38000);
     assert.equal(h.lot.stock, 6);
+  });
+
+  test(`${endpoint}: rechaza la creación de una variante global desde inventario`, async () => {
+    const h = harness();
+    const res = await invoke(h, {
+      variant_id: 111,
+      warehouse_product_variant_id: null,
+      quantity: 1,
+      price: 45000,
+      purchase_price: 40000,
+      create_new_variant: true,
+      source_variant_id: 111,
+      new_characteristic: {
+        definition_name: 'Modelo',
+        value_name: 'Pro'
+      }
+    });
+
+    assert.equal(res.statusCode, 400);
+    assert.equal(res.body.code, 'VARIANT_CREATION_NOT_ALLOWED_IN_INVENTORY');
+    assert.equal(h.calls.writes, 0);
+    assert.equal(h.calls.rollback, 0);
+    assert.equal(h.calls.commit, 0);
   });
 
   if (endpoint === 'createBulkMovement') {

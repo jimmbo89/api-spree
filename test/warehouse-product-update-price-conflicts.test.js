@@ -135,9 +135,15 @@ test('warehouse-product-update: devuelve todos los conflictos de precios del pay
   assert.equal(h.calls.commit, 0);
 });
 
-function creationHarness({ withExistingAssociation = false } = {}) {
-  const record = { id: 84, product_id: 37, warehouse_id: 31, company_id: 17, branch_id: 1, active: true };
-  const warehouse = { id: 31, company_id: 17, branch_id: 1, code: 'WH-31', name: 'Almacén' };
+function creationHarness({
+  withExistingAssociation = false,
+  additionalAssociations = [],
+  recordCompanyId = 17,
+  warehouseCompanyId = 17,
+  branchCompanyId = 17
+} = {}) {
+  const record = { id: 84, product_id: 37, warehouse_id: 31, company_id: recordCompanyId, branch_id: 1, active: true };
+  const warehouse = { id: 31, company_id: warehouseCompanyId, branch_id: 1, code: 'WH-31', name: 'Almacén' };
   const product = { id: 37, company_id: 17, sku: 'BAND-CUBA', name: 'Banda Cuba' };
   const sourceVariant = { id: 139, product_id: 37, sku: 'BAND-CUBA-001' };
   const productVariants = [sourceVariant];
@@ -185,7 +191,9 @@ function creationHarness({ withExistingAssociation = false } = {}) {
         }
       }
     : null;
-  const existingAssociations = existingAssociation ? [existingAssociation] : [];
+  const existingAssociations = existingAssociation
+    ? [existingAssociation, ...additionalAssociations]
+    : [...additionalAssociations];
   const definitions = [
     { id: 1, company_id: 17, name: 'Color' },
     { id: 2, company_id: 17, name: 'Modelo' }
@@ -194,6 +202,7 @@ function creationHarness({ withExistingAssociation = false } = {}) {
 
   const repositories = {
     WarehouseRepository: { findById: async () => warehouse },
+    BranchRepository: { findById: async () => ({ id: 1, company_id: branchCompanyId }) },
     ProductRepository: { findById: async () => product },
     ProductVariantRepository: {
       findByProductId: async () => productVariants,
@@ -324,7 +333,7 @@ function creationHarness({ withExistingAssociation = false } = {}) {
   };
 }
 
-test('warehouse-product-update: crea cada nueva variante con su propia característica', async () => {
+test('warehouse-product-update: rechaza la creación de variantes globales', async () => {
   const h = creationHarness();
   const body = {
     id: 84,
@@ -373,27 +382,15 @@ test('warehouse-product-update: crea cada nueva variante con su propia caracter�
 
   await h.controller.update({ body, user: { id: 1 } }, res);
 
-  assert.equal(res.statusCode, 200);
-  assert.equal(h.calls.creates, 2);
-  assert.equal(h.calls.movements, 2);
-  assert.equal(h.calls.commit, 1);
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.body.code, 'VARIANT_CREATION_NOT_ALLOWED_IN_INVENTORY');
+  assert.equal(h.calls.creates, 0);
+  assert.equal(h.calls.movements, 0);
+  assert.equal(h.calls.commit, 0);
   assert.equal(h.calls.rollback, 0);
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(h.associations.map((association) => ({
-      variant_id: association.variant_id,
-      stock: association.stock,
-      price: association.price,
-      purchase_price: association.purchase_price
-    })))),
-    [
-      { variant_id: 200, stock: 2, price: 55000, purchase_price: 50000 },
-      { variant_id: 201, stock: 3, price: 60000, purchase_price: 52000 }
-    ]
-  );
-  assert.equal(res.body.warehouse_product_variants.length, 2);
 });
 
-test('warehouse-product-update: mezcla actualización existente y creación por fila aunque el flag global sea true', async () => {
+test('warehouse-product-update: rechaza una solicitud mixta que intente crear una variante global', async () => {
   const h = creationHarness({ withExistingAssociation: true });
   const body = {
     id: 84,
@@ -444,66 +441,163 @@ test('warehouse-product-update: mezcla actualización existente y creación por 
 
   await h.controller.update({ body, user: { id: 1 } }, res);
 
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.body.code, 'VARIANT_CREATION_NOT_ALLOWED_IN_INVENTORY');
+  assert.equal(h.calls.updates, 0);
+  assert.equal(h.calls.creates, 0);
+  assert.equal(h.calls.movements, 0);
+  assert.equal(h.calls.commit, 0);
+  assert.equal(h.calls.rollback, 0);
+});
+
+test('warehouse-product-update: asocia una variante global existente sin crearla', async () => {
+  const h = creationHarness();
+  const body = {
+    id: 84,
+    warehouse_id: 31,
+    company_id: 17,
+    variants: JSON.stringify([{
+      variant_id: 139,
+      warehouse_product_variant_id: null,
+      stock: 2,
+      local_sku: 'BAND-CUBA-001',
+      price: 55000,
+      purchase_price: 50000,
+      promotional_price: null,
+      active: true,
+      published: false
+    }])
+  };
+  const res = {
+    status(code) { this.statusCode = code; return this; },
+    json(data) { this.body = data; return this; }
+  };
+
+  await h.controller.update({ body, user: { id: 1 } }, res);
+
   assert.equal(res.statusCode, 200);
-  assert.equal(h.calls.updates, 1);
   assert.equal(h.calls.creates, 1);
-  assert.equal(h.calls.movements, 2);
+  assert.equal(h.calls.movements, 1);
   assert.equal(h.calls.commit, 1);
   assert.equal(h.calls.rollback, 0);
-  assert.deepEqual(
-    {
-      stock: h.existingAssociation.stock,
-      price: h.existingAssociation.price,
-      purchase_price: h.existingAssociation.purchase_price
-    },
-    { stock: 7, price: 45000, purchase_price: 40000 }
-  );
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(h.associations.map((association) => ({
-      variant_id: association.variant_id,
-      stock: association.stock,
-      price: association.price,
-      purchase_price: association.purchase_price
-    })))),
-    [{ variant_id: 200, stock: 2, price: 60000, purchase_price: 55000 }]
-  );
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(res.body.warehouse_product_variants.map((association) => association.id))),
-    [180, 300]
-  );
-  assert.equal(h.calls.audits, 1);
+  assert.deepEqual(h.productVariants.map((variant) => variant.id), [139]);
+  assert.deepEqual(h.associations.map((association) => ({
+    variant_id: association.variant_id,
+    stock: association.stock,
+    price: association.price,
+    purchase_price: association.purchase_price
+  })), [{ variant_id: 139, stock: 2, price: 55000, purchase_price: 50000 }]);
+  assert.equal(res.body.warehouse_product_variant.id, 300);
+  assert.equal(res.body.warehouse_product_variant.product_variant_id, 139);
   assert.equal(h.auditEvents.length, 1);
-  const audit = h.auditEvents[0];
-  assert.equal(audit.metadata.detalle_de_variantes.length, 2);
-  const updatedDetail = audit.metadata.detalle_de_variantes.find((detail) => detail.is_new_variant === false);
-  const createdDetail = audit.metadata.detalle_de_variantes.find((detail) => detail.is_new_variant === true);
-  assert.equal(updatedDetail.warehouse_product_variant_id, 180);
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(updatedDetail.cambios)),
-    [
-      { field: 'price', old_value: 40000, new_value: 45000 },
-      { field: 'purchase_price', old_value: 35000, new_value: 40000 },
-      { field: 'stock', old_value: 5, new_value: 7 }
-    ]
-  );
-  assert.equal(createdDetail.warehouse_product_variant_id, 300);
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(createdDetail.cambios.map((change) => ({
-      field: change.field,
-      previous: change.old_value,
-      current: change.new_value,
-      is_new_variant: change.is_new_variant
-    })))),
-    [
-      { field: 'variant', previous: null, current: 'Azul / Pro', is_new_variant: true },
-      { field: 'sku', previous: null, current: 'BAND-CUBA-MODELO-PRO', is_new_variant: true },
-      { field: 'variant_value_ids', previous: null, current: [10, 21], is_new_variant: true },
-      { field: 'local_sku', previous: null, current: 'BAND-CUBA-MODELO-PRO', is_new_variant: true },
-      { field: 'price', previous: null, current: 60000, is_new_variant: true },
-      { field: 'purchase_price', previous: null, current: 55000, is_new_variant: true },
-      { field: 'stock', previous: 0, current: 2, is_new_variant: true },
-      { field: 'active', previous: null, current: true, is_new_variant: true },
-      { field: 'published', previous: null, current: false, is_new_variant: true }
-    ]
-  );
+  const detail = h.auditEvents[0].metadata.detalle_de_variantes[0];
+  assert.equal(detail.is_new_variant, false);
+  assert.equal(detail.is_new_association, true);
+  assert.equal(detail.operacion, 'Variante global asociada al almacén');
+  assert.ok(detail.cambios.every((change) => change.is_new_association === true));
+});
+
+test('warehouse-product-update: resuelve company_id desde la sucursal para auditar', async () => {
+  const h = creationHarness({
+    recordCompanyId: null,
+    warehouseCompanyId: null,
+    branchCompanyId: 17
+  });
+  const body = {
+    id: 84,
+    warehouse_id: 31,
+    variants: JSON.stringify([{
+      variant_id: 139,
+      warehouse_product_variant_id: null,
+      stock: 2,
+      local_sku: 'BAND-CUBA-001',
+      price: 55000,
+      purchase_price: 50000,
+      promotional_price: null,
+      active: true,
+      published: false
+    }])
+  };
+  const res = {
+    status(code) { this.statusCode = code; return this; },
+    json(data) { this.body = data; return this; }
+  };
+
+  await h.controller.update({ body, user: { id: 1 } }, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(h.calls.commit, 1);
+  assert.equal(h.calls.rollback, 0);
+  assert.equal(h.auditEvents.length, 1);
+  assert.equal(h.auditEvents[0].company_id, 17);
+});
+
+test('warehouse-product-update: usa lot_id como respaldo para actualizar la asociación exacta', async () => {
+  const secondAssociation = {
+    id: 181,
+    variant_id: 139,
+    price: 41000,
+    purchase_price: 36000,
+    promotional_price: null,
+    stock: 2,
+    local_sku: 'BAND-CUBA-002',
+    active: true,
+    published: false,
+    async update(changes) {
+      Object.assign(this, changes);
+    }
+  };
+  const h = creationHarness({
+    withExistingAssociation: true,
+    additionalAssociations: [secondAssociation]
+  });
+  const body = {
+    id: 84,
+    product_id: 37,
+    warehouse_id: 31,
+    company_id: 17,
+    variants: JSON.stringify([{
+      variant_id: 139,
+      warehouse_product_variant_id: null,
+      lot_id: 180,
+      stock: 2,
+      price: 40000,
+      purchase_price: 35000,
+      promotional_price: null
+    }])
+  };
+  const res = {
+    status(code) { this.statusCode = code; return this; },
+    json(data) { this.body = data; return this; }
+  };
+
+  await h.controller.update({ body, user: { id: 1 } }, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(h.existingAssociation.stock, 7);
+  assert.equal(h.existingAssociation.price, 40000);
+  assert.equal(secondAssociation.stock, 2);
+  assert.equal(secondAssociation.price, 41000);
+  assert.equal(res.body.warehouse_product_variant.id, 180);
+});
+
+test('warehouse-product-update: rechaza una cabecera que no coincide con el warehouse_product', async () => {
+  const h = creationHarness();
+  const body = {
+    id: 84,
+    product_id: 999,
+    warehouse_id: 31,
+    company_id: 17,
+    variants: JSON.stringify([])
+  };
+  const res = {
+    status(code) { this.statusCode = code; return this; },
+    json(data) { this.body = data; return this; }
+  };
+
+  await h.controller.update({ body, user: { id: 1 } }, res);
+
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.body.code, 'WAREHOUSE_PRODUCT_CONTEXT_MISMATCH');
+  assert.match(res.body.message, /product_id/);
 });
