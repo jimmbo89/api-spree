@@ -990,6 +990,13 @@ const buildMlSuggestedCategoryPayload = (categoryData, responseDetail) => {
     domain_name: categoryData.domain_name,
     path: categoryData.path,
     resolved: categoryData.resolved,
+    shipping_resolution: categoryData.shipping_resolution || null,
+    shipping_combinations: Array.isArray(categoryData.shipping_combinations)
+      ? categoryData.shipping_combinations
+      : [],
+    available_shipping_combinations: Array.isArray(categoryData.available_shipping_combinations)
+      ? categoryData.available_shipping_combinations
+      : [],
     listing_resolution: categoryData.listing_resolution,
     selection_warnings: Array.isArray(categoryData.selection_warnings) ? categoryData.selection_warnings : [],
     attributes: Array.isArray(categoryData.attributes) ? categoryData.attributes : [],
@@ -1004,6 +1011,9 @@ const buildMlSuggestedCategoryPayload = (categoryData, responseDetail) => {
         : [],
       shipping_combinations: Array.isArray(categoryData.shipping_combinations)
         ? categoryData.shipping_combinations
+        : [],
+      available_shipping_combinations: Array.isArray(categoryData.available_shipping_combinations)
+        ? categoryData.available_shipping_combinations
         : [],
       shipping_modes_count: categoryData.shipping_modes_count ?? 0
     },
@@ -1654,6 +1664,50 @@ const buildShippingUi = (shippingMode, logisticType, resolutionState = null) => 
   };
 };
 
+const buildShippingCombinationPayload = (combo) => {
+  if (!combo?.shipping_mode) return null;
+
+  const shippingMode = normalizeMarketplaceShippingValue(combo.shipping_mode);
+  const logisticType = normalizeMarketplaceLogisticType(shippingMode, combo.logistic_type);
+  const shippingResolutionState = combo.shipping_resolution_state
+    || (combo.is_resolved ? SHIPPING_RESOLUTION_STATE.RESOLVED : SHIPPING_RESOLUTION_STATE.DYNAMIC);
+  const shippingComplexity = combo.shipping_complexity
+    || (shippingResolutionState === SHIPPING_RESOLUTION_STATE.RESOLVED
+      ? SHIPPING_COMPLEXITY.AUTOMATED
+      : shippingResolutionState === SHIPPING_RESOLUTION_STATE.MANUAL
+        ? SHIPPING_COMPLEXITY.MANUAL
+        : SHIPPING_COMPLEXITY.DYNAMIC);
+
+  return {
+    ...combo,
+    shipping_mode: shippingMode,
+    logistic_type: logisticType,
+    shipping_operation: combo.shipping_operation
+      || deriveShippingOperation(shippingMode, logisticType, shippingResolutionState),
+    logistic_model: combo.logistic_model
+      || deriveLogisticModel(shippingMode, logisticType, shippingResolutionState),
+    shipping_resolution_state: shippingResolutionState,
+    shipping_complexity: shippingComplexity,
+    is_resolved: typeof combo.is_resolved === "boolean"
+      ? combo.is_resolved
+      : shippingResolutionState === SHIPPING_RESOLUTION_STATE.RESOLVED,
+    is_partial: typeof combo.is_partial === "boolean"
+      ? combo.is_partial
+      : shippingResolutionState === SHIPPING_RESOLUTION_STATE.PARTIAL,
+    is_manual: typeof combo.is_manual === "boolean"
+      ? combo.is_manual
+      : shippingResolutionState === SHIPPING_RESOLUTION_STATE.MANUAL,
+    is_dynamic: typeof combo.is_dynamic === "boolean"
+      ? combo.is_dynamic
+      : shippingResolutionState === SHIPPING_RESOLUTION_STATE.DYNAMIC || isDynamicShippingMode(shippingMode),
+    requires_buyer_context: typeof combo.requires_buyer_context === "boolean"
+      ? combo.requires_buyer_context
+      : shippingResolutionState === SHIPPING_RESOLUTION_STATE.DYNAMIC
+        || shippingResolutionState === SHIPPING_RESOLUTION_STATE.PARTIAL,
+    is_default: Boolean(combo.is_default)
+  };
+};
+
 const buildMarketplaceShippingSelection = ({ userPreferences, categoryPreferences }) => {
   const categoryLogistics = Array.isArray(categoryPreferences?.logistics)
     ? categoryPreferences.logistics
@@ -1897,9 +1951,12 @@ const buildMlSelectionCategoryPayload = ({
 }) => {
   const logisticTypesByShippingMode = {};
   const shippingStatesByMode = {};
-  const defaultCombo = Array.isArray(shippingCombinations)
-    ? shippingCombinations.find((combo) => combo.shipping_mode === effectiveShippingMode && combo.logistic_type === effectiveLogisticType)
-    : null;
+  const availableShippingCombinations = (Array.isArray(shippingCombinations) ? shippingCombinations : [])
+    .map(buildShippingCombinationPayload)
+    .filter(Boolean);
+  const defaultCombo = availableShippingCombinations
+    .find((combo) => combo.shipping_mode === effectiveShippingMode && combo.logistic_type === effectiveLogisticType)
+    || null;
   const defaultMode = Array.isArray(shippingModeStates)
     ? shippingModeStates.find((modeEntry) => modeEntry?.value === effectiveShippingMode)
     : null;
@@ -1940,7 +1997,7 @@ const buildMlSelectionCategoryPayload = ({
       : [];
   }
 
-  for (const combo of Array.isArray(shippingCombinations) ? shippingCombinations : []) {
+  for (const combo of availableShippingCombinations) {
     if (!combo?.shipping_mode) continue;
     if (!logisticTypesByShippingMode[combo.shipping_mode]) {
       logisticTypesByShippingMode[combo.shipping_mode] = [];
@@ -1971,13 +2028,14 @@ const buildMlSelectionCategoryPayload = ({
     shipping_options: Array.isArray(shippingOptions) ? shippingOptions : [],
     logistic_types_by_shipping_mode: logisticTypesByShippingMode,
     shipping_states_by_mode: shippingStatesByMode,
-    shipping_combinations: Array.isArray(shippingCombinations) ? shippingCombinations : [],
+    shipping_combinations: availableShippingCombinations,
+    available_shipping_combinations: availableShippingCombinations,
     shipping_capabilities: {
       manual_shipping_supported: Object.values(shippingStatesByMode).some((entry) => entry.is_manual_shipping),
       dynamic_shipping_supported: Object.values(shippingStatesByMode).some((entry) => entry.is_dynamic_shipping),
-      resolved_shipping_supported: Array.isArray(shippingCombinations) && shippingCombinations.some((combo) => combo?.shipping_resolution_state === SHIPPING_RESOLUTION_STATE.RESOLVED),
+      resolved_shipping_supported: availableShippingCombinations.some((combo) => combo?.shipping_resolution_state === SHIPPING_RESOLUTION_STATE.RESOLVED),
       partial_shipping_supported: Object.values(shippingStatesByMode).some((entry) => entry.is_partial_shipping),
-      unsupported_shipping_detected: Array.isArray(shippingCombinations) && shippingCombinations.some((combo) => combo?.shipping_resolution_state === SHIPPING_RESOLUTION_STATE.UNSUPPORTED),
+      unsupported_shipping_detected: availableShippingCombinations.some((combo) => combo?.shipping_resolution_state === SHIPPING_RESOLUTION_STATE.UNSUPPORTED),
       automation_status: automationStatus,
       ui_flags: {
         show_marketplace_envios: Object.values(shippingStatesByMode).some((entry) => entry.is_dynamic_shipping || entry.is_resolved_shipping || entry.is_partial_shipping),
@@ -2370,6 +2428,18 @@ const selectPreferredShippingCombo = ({
     return pickBestShippingCombo(list);
   };
 
+  const buildComboSelection = (combo) => ({
+    shipping_mode: combo.shipping_mode,
+    logistic_type: combo.logistic_type || null,
+    shipping_resolution_state: combo.shipping_resolution_state || SHIPPING_RESOLUTION_STATE.RESOLVED,
+    shipping_complexity: combo.shipping_complexity || SHIPPING_COMPLEXITY.AUTOMATED,
+    shipping_ui: buildShippingUi(
+      combo.shipping_mode,
+      combo.logistic_type,
+      combo.shipping_resolution_state || SHIPPING_RESOLUTION_STATE.RESOLVED
+    )
+  });
+
   if (requestedMode && requestedLogisticType) {
     const exactMatch = combos.find(
       combo =>
@@ -2379,18 +2449,19 @@ const selectPreferredShippingCombo = ({
     if (exactMatch) {
       return {
         combo: exactMatch,
-        selection: {
-          shipping_mode: exactMatch.shipping_mode,
-          logistic_type: exactMatch.logistic_type || null,
-          shipping_resolution_state: exactMatch.shipping_resolution_state || SHIPPING_RESOLUTION_STATE.RESOLVED,
-          shipping_complexity: exactMatch.shipping_complexity || SHIPPING_COMPLEXITY.AUTOMATED,
-          shipping_ui: buildShippingUi(
-            exactMatch.shipping_mode,
-            exactMatch.logistic_type,
-            exactMatch.shipping_resolution_state || SHIPPING_RESOLUTION_STATE.RESOLVED
-          )
-        },
+        selection: buildComboSelection(exactMatch),
         warnings: []
+      };
+    }
+
+    const fallbackCombo = pickBestCombo(combos);
+    if (fallbackCombo) {
+      return {
+        combo: fallbackCombo,
+        selection: buildComboSelection(fallbackCombo),
+        warnings: [
+          `shipping_combination_normalized:${requestedMode || "none"}:${requestedLogisticType || "none"}->${fallbackCombo.shipping_mode}:${fallbackCombo.logistic_type || "none"}`
+        ]
       };
     }
 
@@ -2402,21 +2473,12 @@ const selectPreferredShippingCombo = ({
   }
 
   if (requestedMode && !requestedLogisticType) {
-    const modeEntry = modes.find((entry) => entry?.value === requestedMode) || null;
-    if (modeEntry) {
+    const modeCombos = combos.filter((combo) => combo.shipping_mode === requestedMode);
+    const modeCombo = pickBestCombo(modeCombos);
+    if (modeCombo) {
       return {
-        combo: null,
-        selection: {
-          shipping_mode: requestedMode,
-          logistic_type: null,
-          shipping_resolution_state: modeEntry.shipping_resolution_state || SHIPPING_RESOLUTION_STATE.DYNAMIC,
-          shipping_complexity: modeEntry.shipping_complexity || SHIPPING_COMPLEXITY.DYNAMIC,
-          shipping_ui: buildShippingUi(
-            requestedMode,
-            null,
-            modeEntry.shipping_resolution_state || SHIPPING_RESOLUTION_STATE.DYNAMIC
-          )
-        },
+        combo: modeCombo,
+        selection: buildComboSelection(modeCombo),
         warnings: []
       };
     }
@@ -4546,10 +4608,10 @@ async mercadoLibreShippingCosts(req, res) {
           if (shippingComboResolution.selection) {
             effectiveShippingMode = shippingComboResolution.selection.shipping_mode;
             effectiveLogisticType = shippingComboResolution.selection.logistic_type || null;
-          } else if (hasRequestedShippingSelection) {
+          } else if (hasRequestedShippingSelection && availableShippingCombos.length === 0) {
             return res.status(422).json({
               success: false,
-              error: "La combinación shipping_mode/logistic_type seleccionada no está permitida para la categoría o credencial.",
+              error: "No existe una combinación de envío válida para este producto y categoría.",
               product_id: product.id,
               category_id: cat.category_id,
               requested_shipping_mode: shipping_mode,
@@ -5380,10 +5442,10 @@ async mercadoLibreShippingCosts(req, res) {
         const hasRequestedLogisticType = requestedLogisticType !== undefined && requestedLogisticType !== null && String(requestedLogisticType).trim() !== "";
         const hasRequestedShippingSelection = Boolean(requestedShippingMode || hasRequestedLogisticType);
 
-        if (hasRequestedLogisticType && !shippingComboResolution.combo) {
+        if (hasRequestedLogisticType && !shippingComboResolution.combo && availableShippingCombos.length === 0) {
           return res.status(422).json({
             success: false,
-            error: "La combinación shipping_mode/logistic_type seleccionada no está permitida para la categoría o credencial.",
+            error: "No existe una combinación de envío válida para este producto y categoría.",
             product_id: product.id,
             category_id: cat.category_id,
             requested_shipping_mode: requestedShippingMode,
@@ -5395,10 +5457,10 @@ async mercadoLibreShippingCosts(req, res) {
         if (shippingComboResolution.selection) {
           effectiveShippingMode = shippingComboResolution.selection.shipping_mode;
           effectiveLogisticType = shippingComboResolution.selection.logistic_type || null;
-        } else if (hasRequestedShippingSelection) {
+        } else if (hasRequestedShippingSelection && availableShippingCombos.length === 0) {
           return res.status(422).json({
             success: false,
-            error: "No se pudo resolver la combinación shipping_mode/logistic_type seleccionada.",
+            error: "No existe una combinación de envío válida para este producto y categoría.",
             product_id: product.id,
             category_id: cat.category_id,
             requested_shipping_mode: requestedShippingMode,
@@ -5414,6 +5476,24 @@ async mercadoLibreShippingCosts(req, res) {
         if (!shippingComboResolution.selection) {
           categoryWarnings.push(`shipping_resolution_inferred:${effectiveShippingResolutionState}`);
         }
+        const requestedLogisticTypeForComparison = requestedLogisticType || null;
+        const shippingCombinationWasNormalized = Boolean(
+          (requestedShippingMode || requestedLogisticTypeForComparison)
+          && (
+            requestedShippingMode !== effectiveShippingMode
+            || requestedLogisticTypeForComparison !== (effectiveLogisticType || null)
+          )
+        );
+        const shippingResolution = {
+          requested_shipping_mode: requestedShippingMode || null,
+          requested_logistic_type: requestedLogisticTypeForComparison,
+          resolved_shipping_mode: effectiveShippingMode || null,
+          resolved_logistic_type: effectiveLogisticType || null,
+          was_normalized: shippingCombinationWasNormalized,
+          resolution_source: shippingCombinationWasNormalized
+            ? "marketplace_allowed_combinations"
+            : "requested_or_default"
+        };
         if (normalizedInstallments.requested) {
           categoryWarnings.push("installments_request_ignored_backend_resolves_by_listing_type");
         }
@@ -5607,7 +5687,9 @@ async mercadoLibreShippingCosts(req, res) {
               }
             }
           : null;
-        const shippingCombinations = finalizeShippingCombos(availableShippingCombos);
+        const shippingCombinations = finalizeShippingCombos(availableShippingCombos)
+          .map(buildShippingCombinationPayload)
+          .filter(Boolean);
 
         const shippingOptions = buildShippingOptionsFromCombos(shippingCombinations).map(option => ({
           ...option,
@@ -5657,6 +5739,7 @@ async mercadoLibreShippingCosts(req, res) {
             shipping_ui: buildShippingUi(effectiveShippingMode, effectiveLogisticType, effectiveShippingResolutionState),
             strategy: selectedStrategy
           },
+          shipping_resolution: shippingResolution,
           category_id: cat.category_id,
           category_name: cat.category_name,
           domain_id: cat.domain_id,
@@ -5711,7 +5794,8 @@ async mercadoLibreShippingCosts(req, res) {
           attributes,
           ...(categoryInfo && { category_settings: categoryInfo.settings || {} }),
           quote: quoteBlock,
-          ...(shippingCombinations.length > 0 && { shipping_combinations: shippingCombinations }),
+          shipping_combinations: shippingCombinations,
+          available_shipping_combinations: shippingCombinations,
           ...(hasShippingInput && { shipping_policy: quoteBlock.shipping_policy })
         };
 
@@ -5778,6 +5862,7 @@ async mercadoLibreShippingCosts(req, res) {
           marketplace_id: suggestion.marketplace_id,
           id: category?.category_id || null,
           price: category?.quote?.price ?? null,
+          shipping_resolution: category?.shipping_resolution || null,
           selection: category ? {
             category_id: category.category_id,
             category_name: category.category_name,
