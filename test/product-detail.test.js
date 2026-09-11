@@ -3,6 +3,12 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
+const {
+  storeProductSchema,
+  updateProductSchema,
+  assignWarehouseSchema,
+  productDetailSchema
+} = require('../app/middlewares/validations/productValidations');
 
 function loadController({ company, product }) {
   const repositories = {
@@ -116,9 +122,62 @@ test('product-detail no expone un producto de otra compañía', async () => {
 });
 
 test('product-detail valida el esquema de entrada', () => {
-  const { productDetailSchema } = require('../app/middlewares/validations/productValidations');
-
   assert.equal(productDetailSchema.validate({ company_id: 24, product_id: 28 }).error, undefined);
   assert.ok(productDetailSchema.validate({ company_id: 24 }).error);
   assert.ok(productDetailSchema.validate({ company_id: 24, product_id: -1 }).error);
+});
+
+const flexibleProductData = {
+  sku: 'PROD-TEST-01',
+  name: 'Producto de prueba',
+  brand: 'Marca de prueba',
+  company_id: 19,
+  product_measurements: JSON.stringify({
+    frontend_payload: { any_key: true, nested: ['value'] }
+  }),
+  packaging_measurements: JSON.stringify({ packaging: { custom: 'format' } }),
+  attributes: JSON.stringify([{
+    custom_attribute: { arbitrary: true },
+    value: ['managed', 'by', 'frontend']
+  }]),
+  product_variants: JSON.stringify([{
+    frontend_variant_shape: { arbitrary: true },
+    variant_value_ids: ['managed-by-frontend']
+  }]),
+  warehouse_config: JSON.stringify([{
+    warehouse_id: 'frontend-format',
+    variants: [{ stock: 'frontend-format', custom_price_data: { arbitrary: true } }]
+  }]),
+  images_order: JSON.stringify([{ file: 'temporary-upload', position: 'first' }]),
+  sync_meta: JSON.stringify({ source: 'frontend', payload: { arbitrary: true } }),
+  warehouses: [{ frontend_warehouse_shape: true, nested: { arbitrary: true } }]
+};
+
+test('la creación acepta JSON serializado sin validar estructuras internas', () => {
+  const { error } = storeProductSchema.validate(flexibleProductData, { abortEarly: false });
+
+  assert.equal(error, undefined);
+});
+
+test('la actualización acepta JSON serializado sin validar estructuras internas', () => {
+  const { warehouses, ...updateData } = flexibleProductData;
+  const { error } = updateProductSchema.validate({ id: 81, ...updateData }, { abortEarly: false });
+
+  assert.equal(error, undefined);
+});
+
+test('la asociación de almacén conserva la validación del array raíz, no de sus elementos', () => {
+  const valid = assignWarehouseSchema.validate({
+    product_id: 28,
+    company_id: 24,
+    warehouse_config: JSON.stringify([{ arbitrary: true }])
+  });
+  const empty = assignWarehouseSchema.validate({
+    product_id: 28,
+    company_id: 24,
+    warehouse_config: JSON.stringify([])
+  });
+
+  assert.equal(valid.error, undefined);
+  assert.ok(empty.error);
 });

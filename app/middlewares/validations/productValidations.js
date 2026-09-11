@@ -91,22 +91,58 @@ const enumTextField = (validValues, options = {}) =>
     return value;
   });
 
-const jsonString = (validator, label) =>
-  Joi.alternatives().try(
-    validator,
+const jsonRootValidator = (validator) => {
+  const description = validator.describe();
+  let rootValidator;
+
+  if (description.type === 'array') {
+    rootValidator = Joi.array();
+  } else if (description.type === 'object') {
+    rootValidator = Joi.object().unknown(true);
+  } else {
+    rootValidator = Joi.any();
+  }
+
+  // Preserve only generic collection rules. The nested JSON contract belongs
+  // to the frontend and must not be duplicated in this middleware.
+  for (const rule of description.rules || []) {
+    if (rule.name === 'min' && rule.args?.limit !== undefined) {
+      rootValidator = rootValidator.min(rule.args.limit);
+    }
+
+    if (rule.name === 'max' && rule.args?.limit !== undefined) {
+      rootValidator = rootValidator.max(rule.args.limit);
+    }
+  }
+
+  return rootValidator;
+};
+
+/**
+ * Accepts a collection directly or as a JSON string. Only the JSON encoding
+ * and the root type are validated; nested fields are intentionally opaque.
+ */
+const jsonString = (validator, label) => {
+  const rootValidator = jsonRootValidator(validator);
+
+  return Joi.alternatives().try(
+    rootValidator,
     Joi.string().custom((value, helpers) => {
       try {
         const parsed = JSON.parse(value);
-        const { error } = validator.validate(parsed);
+        const { error } = rootValidator.validate(parsed);
+
         if (error) {
           return helpers.error('any.invalid');
         }
+
         return value;
       } catch (error) {
         return helpers.error('any.invalid');
       }
     }, `${label} JSON validator`)
   );
+};
 
 const measurementValueSchema = Joi.object({
   value: Joi.number().min(0).allow(null),
@@ -215,12 +251,11 @@ const productBaseSchema = {
     .optional(), 'images_order'),
   images_to_remove: Joi.alternatives().try(
     Joi.array()
-      .items(Joi.string().pattern(/\.(jpg|jpeg|png|gif|webp)$/i))
       .optional()
       .default([]),
     Joi.string().optional().allow(null, '')
   ),
-  sync_meta: Joi.object().optional().default({}),
+  sync_meta: jsonString(Joi.object(), 'sync_meta').optional().default({}),
   state: Joi.number().integer().optional(),
   purchase_price: Joi.number().precision(2).min(0).optional().allow(null),
   sale_price: Joi.number().precision(2).min(0).optional().allow(null),
@@ -230,15 +265,7 @@ const storeProductSchema = Joi.object({
   ...productBaseSchema,
   product_variants: jsonString(Joi.array().items(productVariantSchema), 'product_variants').optional().default([]),
   warehouse_config: jsonString(warehouseConfigSchema, 'warehouse_config').optional().default([]),
-  warehouses: Joi.array().items(
-    Joi.object({
-      id: Joi.number().integer().positive().required(),
-      published: Joi.boolean().optional().default(false),
-      minimum_stock: Joi.number().integer().min(0).optional().default(5),
-      price: Joi.number().precision(2).min(0).optional().allow(null), // precio por almacén/variante (puede ser null, usa fallback del producto)
-      stock: Joi.number().integer().min(0).required()    // stock por almacén/variante
-    })
-  ).optional().default([])
+  warehouses: Joi.array().optional().default([])
 });
 
 const assignWarehouseSchema = Joi.object({
