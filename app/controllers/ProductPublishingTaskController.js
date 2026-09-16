@@ -29,6 +29,10 @@ const { getRequestMetadata } = require('../util/requestUtil');
 const PublishingAdapterFactory = require('../services/adapters/PublishingAdapterFactory');
 const MercadoLibreCapabilitiesService = require('../services/MercadoLibreCapabilitiesService');
 const PublicationAuditService = require('../services/PublicationAuditService');
+const {
+  humanizeMarketplaceError,
+  presentMarketplacePublicationError
+} = require('../utils/marketplaceErrorHumanizer');
 
 function resolveRefreshActor(actor) {
   if (actor && typeof actor === 'object') {
@@ -808,7 +812,19 @@ function buildFalabellaPublicationNoteExact(productState) {
   ];
 
   const uniqueMessages = [...new Set(exactMessages)];
-  return uniqueMessages.length > 0 ? uniqueMessages.join('\n') : null;
+  if (uniqueMessages.length === 0) return null;
+
+  const presentation = humanizeMarketplaceError({
+    marketplace_name: 'Falabella',
+    error_details: {
+      marketplace: 'falabella',
+      raw: {
+        FeedErrors: uniqueMessages.map((message) => ({ Message: message }))
+      }
+    }
+  });
+
+  return presentation.details || presentation.message;
 }
 
 function buildFalabellaPublishedStateSnapshot(product, sellerSku) {
@@ -2230,6 +2246,15 @@ async store(req, res) {
         }
       });
     } else {
+      const presentation = presentMarketplacePublicationError({
+        marketplace_name: marketplace.name || null,
+        marketplace_domain: marketplace.domain || null,
+        error_code: result.error,
+        error_message: result.error,
+        error_details: result.details,
+        status_code: result.status_code
+      });
+
       await LogRepository.create({
         user_id: metadata.user_id,
         action: 'publishing_task.draft_publish_failed',
@@ -2242,12 +2267,14 @@ async store(req, res) {
 
       return res.status(200).json({
         success: false,
-        message: "Publicación fallida",
+        message: presentation.error_message,
         data: {
           task_id: task.id,
           product_id: task.product_id,
           error: result.error,
-          error_details: result.details,
+          error_message: presentation.error_message,
+          error_details: presentation.error_details,
+          marketplace_error: presentation.marketplace_error,
           attempt_count: (task.attempt_count || 0) + 1
         }
       });
@@ -2706,7 +2733,18 @@ async store(req, res) {
         tasks = await ProductPublishingTaskRepository.findAllByCompany(company_id, user_id);
       }
 
-       const mapped = tasks.map(t => ({
+       const mapped = tasks.map(t => {
+      const isFailed = ['failed', 'error'].includes(String(t.status || '').trim().toLowerCase());
+      const presentation = isFailed
+        ? presentMarketplacePublicationError({
+            marketplace_name: t.marketplace?.name || null,
+            marketplace_domain: t.marketplace?.domain || null,
+            error_message: t.error_message,
+            error_details: t.error_details
+          })
+        : null;
+
+      return ({
       id: t.id,
       product_id: t.product_id,
       product_name: t.product?.name || 'N/A',
@@ -2724,8 +2762,9 @@ async store(req, res) {
       draft_name: t.draft_name,
       payload: t.payload,
       publishing_mode: t.publishing_mode,
-      error_message: t.error_message,
-      error_details: t.error_details,
+      error_message: presentation?.error_message || t.error_message,
+      error_details: presentation?.error_details || t.error_details,
+      marketplace_error: presentation?.marketplace_error || null,
       api_response: t.api_response,
       external_id: t.external_id,
       external_url: t.external_url,
@@ -2737,7 +2776,8 @@ async store(req, res) {
       has_warnings: t.status === 'published_with_warnings' || 
                     (t.error_details && typeof t.error_details === 'object' && t.error_details.has_warnings === true) ||
                     (Array.isArray(t.error_details?.warnings) && t.error_details.warnings.length > 0)
-    }));
+      });
+    });
 
       // ✅ Agrupar por batch_id si existe
       const grouped = {};
@@ -3564,11 +3604,22 @@ async publishedProducts(req, res) {
           if (retryResult.success) {
             result = retryResult;
           } else {
+            const presentation = presentMarketplacePublicationError({
+              marketplace_name: marketplace.name || null,
+              marketplace_domain: marketplace.domain || null,
+              error_code: retryResult.error,
+              error_message: retryResult.error,
+              error_details: retryResult.details,
+              status_code: retryResult.status_code
+            });
+
             return res.status(retryResult.status_code && retryResult.status_code >= 400 && retryResult.status_code < 600 ? retryResult.status_code : 401).json({
               success: false,
               msg: retryResult.error === 'item_closed_relist_required' ? 'relist_required' : 'auth_required',
               error: retryResult.error,
-              details: retryResult.details || null,
+              message: presentation.error_message,
+              details: presentation.error_details,
+              marketplace_error: presentation.marketplace_error,
               auth_url: retryResult.error === 'auth_required' ? (retryResult.auth_url || null) : null
             });
           }
@@ -3614,11 +3665,22 @@ async publishedProducts(req, res) {
           });
         }
 
+        const presentation = presentMarketplacePublicationError({
+          marketplace_name: marketplace.name || null,
+          marketplace_domain: marketplace.domain || null,
+          error_code: result.error,
+          error_message: result.error,
+          error_details: result.details,
+          status_code: result.status_code
+        });
+
         return res.status(result.status_code && result.status_code >= 400 && result.status_code < 600 ? result.status_code : 400).json({
           success: false,
           msg: 'update_failed',
           error: result.error,
-          details: result.details || null
+          message: presentation.error_message,
+          details: presentation.error_details,
+          marketplace_error: presentation.marketplace_error
         });
       }
 
@@ -3925,11 +3987,22 @@ async publishedProducts(req, res) {
           });
         }
 
+        const presentation = presentMarketplacePublicationError({
+          marketplace_name: marketplace.name || null,
+          marketplace_domain: marketplace.domain || null,
+          error_code: result.error,
+          error_message: result.error,
+          error_details: result.details,
+          status_code: result.status_code
+        });
+
         return res.status(result.status_code && result.status_code >= 400 && result.status_code < 600 ? result.status_code : 400).json({
           success: false,
           msg: 'update_failed',
           error: result.error,
-          details: result.details || null
+          message: presentation.error_message,
+          details: presentation.error_details,
+          marketplace_error: presentation.marketplace_error
         });
       }
 

@@ -6691,7 +6691,8 @@ async falabellaSuggestedCategoriesWithAttributes(req, res) {
     const suggestions = [];
     let cacheHits = 0, apiCalls = 0, pricingCalls = 0, treeCalls = 0;
     const treeData = await OAuthController.fetchFalabellaCategoryTree(baseUrl, userId, apiKey);
-    const allCategories = OAuthController.flattenFalabellaCategoryTree(treeData);
+    const allCategories = OAuthController.buildFalabellaCategoryTree(treeData);
+    const allCategoriesCount = OAuthController.countFalabellaCategoryTree(allCategories);
 
     // === PROCESAR CADA PRODUCTO ===
     for (const product of products) {
@@ -6708,14 +6709,27 @@ async falabellaSuggestedCategoriesWithAttributes(req, res) {
         && cachedProductResult.every(category => isFalabellaPricingForProductPrice(category?.pricing, productPrice));
       if (cachedProductMatchesPrice) {
         cacheHits++;
+        const cachedCategories = [];
+        for (const category of cachedProductResult) {
+          const cachedCategoryId = String(category?.category_id || category?.id || '').trim();
+          const treeMatch = await OAuthController.findCategoryInTree(treeData, cachedCategoryId);
+          cachedCategories.push({
+            ...category,
+            category_id: cachedCategoryId || null,
+            category_name: category?.category_name || category?.name || null,
+            category_path: treeMatch?.path || null,
+            level: treeMatch?.level || null,
+            parent_category_id: treeMatch?.parent_category_id || null,
+            selectable: treeMatch?.selectable === true,
+            expandable: treeMatch?.expandable === true,
+            pricing: normalizeFalabellaSuggestedPricing(category.pricing, productPrice)
+          });
+        }
         suggestions.push({
           product_id: product.id,
           credential_id,
           marketplace_id,
-          categories: cachedProductResult.map(category => ({
-            ...category,
-            pricing: normalizeFalabellaSuggestedPricing(category.pricing, productPrice)
-          }))
+          categories: cachedCategories
         });
         continue;
       }
@@ -6756,12 +6770,23 @@ async falabellaSuggestedCategoriesWithAttributes(req, res) {
       for (const item of suggestedItems) {
         if (!item.CategoryId || !item.CategoryName) continue;
         const categoryId = item.CategoryId.toString();
+        const treeMatch = await OAuthController.findCategoryInTree(treeData, categoryId);
+        const categorySelectionMetadata = {
+          category_id: categoryId,
+          category_name: item.CategoryName,
+          category_path: treeMatch?.path || null,
+          level: treeMatch?.level || null,
+          parent_category_id: treeMatch?.parent_category_id || null,
+          selectable: treeMatch?.selectable === true,
+          expandable: treeMatch?.expandable === true
+        };
 
         // === Cache de categoría ===
         const cachedCategory = getFromCache(`credential_${credential_id}`, FALABELLA_CATEGORY_ATTRIBUTES_CACHE_TYPE, categoryId);
         if (cachedCategory && isFalabellaPricingForProductPrice(cachedCategory.pricing, productPrice)) {
           categories.push({
             ...cachedCategory,
+            ...categorySelectionMetadata,
             pricing: normalizeFalabellaSuggestedPricing(cachedCategory.pricing, productPrice)
           });
           continue;
@@ -6937,6 +6962,7 @@ logger.info(`comisión encontrada en la bd: \n ${JSON.stringify(commissionByPath
           path: item.SuggestedCategory || "",
           search_term: item.Name || "",
           attributes,
+          ...categorySelectionMetadata,
           ...(productPrice !== null && { pricing: normalizeFalabellaSuggestedPricing(pricing, productPrice) })
         };
 
@@ -6953,7 +6979,7 @@ logger.info(`comisión encontrada en la bd: \n ${JSON.stringify(commissionByPath
     return res.status(200).json({
       success: true,
       all_categories: allCategories,
-      all_categories_count: allCategories.length,
+      all_categories_count: allCategoriesCount,
       suggestions,
       count: suggestions.length,
       stats: {
@@ -7037,12 +7063,35 @@ async falabellaEnrichedCategory(req, res) {
     const treeData = await OAuthController.fetchFalabellaCategoryTree(baseUrl, userId, apiKey);
     const treeMatch = await OAuthController.findCategoryInTree(treeData, categoryId);
     const resolvedName = String(category_name || treeMatch?.api_name || '').trim();
-    const resolvedPath = String(path || [
+    const resolvedPath = String(path || treeMatch?.path || [
       treeMatch?.level1,
       treeMatch?.level2,
       treeMatch?.level3,
       treeMatch?.level4
     ].filter(Boolean).join(' > ')).trim();
+
+    if (!treeMatch) {
+      return res.status(404).json({
+        success: false,
+        error: "La categoría de Falabella no existe en el árbol oficial.",
+        category_id: categoryId
+      });
+    }
+
+    if (treeMatch.selectable !== true) {
+      return res.status(422).json({
+        success: false,
+        error: "La categoría seleccionada no se puede usar para publicar.",
+        details: "Debes seleccionar una categoría de último nivel; esta categoría solo sirve para mostrar sus subcategorías.",
+        category: {
+          id: categoryId,
+          name: resolvedName,
+          path: resolvedPath,
+          selectable: false,
+          expandable: true
+        }
+      });
+    }
 
     let categoryData = getFromCache(`credential_${credential_id}`, FALABELLA_CATEGORY_ATTRIBUTES_CACHE_TYPE, categoryId);
     let cacheHit = Boolean(categoryData);
@@ -7074,6 +7123,18 @@ async falabellaEnrichedCategory(req, res) {
         search_term: categoryData.search_term || search_term || product?.name || ""
       };
     }
+
+    categoryData = {
+      ...categoryData,
+      category_id: categoryId,
+      category_name: categoryData.name || resolvedName,
+      category_path: treeMatch.path || resolvedPath,
+      level: treeMatch.level || null,
+      parent_category_id: treeMatch.parent_category_id || null,
+      selectable: true,
+      expandable: false,
+      children: []
+    };
 
     let pricing = null;
     let pricingCalls = 0;
@@ -7432,7 +7493,71 @@ async fetchFalabellaCategoryTree(baseUrl, userId, apiKey) {
 },
 
 /**
- * Aplana el árbol de categorías de Falabella para búsqueda en UI
+ * Construye el árbol de categorías de Falabella para navegación en UI.
+ * Las categorías con hijas son navegables, pero solo las hojas son seleccionables.
+ *
+ * @param {Array|Object} nodes
+ * @param {Array<string>} path
+ * @param {string|null} parentCategoryId
+ * @param {number} level
+ * @returns {Array<Object>}
+ */
+buildFalabellaCategoryTree(nodes, path = [], parentCategoryId = null, level = 1) {
+  const nodeList = Array.isArray(nodes) ? nodes : (nodes ? [nodes] : []);
+
+  return nodeList
+    .filter(node => node && typeof node === 'object')
+    .map(node => {
+      const currentName = String(node?.Name || '').trim();
+      const currentId = String(node?.CategoryId || '').trim();
+      const currentPath = currentName ? [...path, currentName] : [...path];
+      const childNodes = OAuthController.getFalabellaCategoryChildren(node);
+      const hasChildren = childNodes.length > 0;
+
+      return {
+        category_id: currentId,
+        category_name: currentName,
+        path: currentPath.join(' > '),
+        level,
+        parent_category_id: parentCategoryId,
+        selectable: !hasChildren,
+        expandable: hasChildren,
+        children: OAuthController.buildFalabellaCategoryTree(
+          childNodes,
+          currentPath,
+          currentId || parentCategoryId,
+          level + 1
+        ),
+        domain_id: node?.DomainId || null,
+        domain_name: node?.DomainName || null
+      };
+    })
+    .filter(category => category.category_id && category.category_name);
+},
+
+/**
+ * Normaliza Children.Category tanto si Falabella lo devuelve como objeto único
+ * como si lo devuelve como arreglo.
+ */
+getFalabellaCategoryChildren(node) {
+  const rawChildren = node?.Children?.Category;
+  if (!rawChildren) return [];
+  return Array.isArray(rawChildren) ? rawChildren.filter(Boolean) : [rawChildren];
+},
+
+/**
+ * Cuenta todas las categorías del árbol, incluidos los niveles anidados.
+ */
+countFalabellaCategoryTree(nodes) {
+  const nodeList = Array.isArray(nodes) ? nodes : (nodes ? [nodes] : []);
+  return nodeList.reduce(
+    (total, node) => total + 1 + OAuthController.countFalabellaCategoryTree(node?.children || []),
+    0
+  );
+},
+
+/**
+ * Aplana el árbol de categorías de Falabella para compatibilidad interna.
  * @param {Array|Object} nodes
  * @param {Array<string>} path
  * @returns {Array<Object>}
@@ -7470,26 +7595,44 @@ flattenFalabellaCategoryTree(nodes, path = []) {
  * Busca recursivamente un CategoryId en el árbol de categorías
  * @returns {Object|null} { level1, level2, level3, level4, api_name } o null
  */
-async findCategoryInTree(nodes, targetCategoryId, path = []) {
+async findCategoryInTree(nodes, targetCategoryId, path = [], parentCategoryId = null) {
   const nodeList = Array.isArray(nodes) ? nodes : [nodes];
+  const normalizedTargetCategoryId = String(targetCategoryId || '').trim();
   
   for (const node of nodeList) {
-    const currentPath = [...path, node.Name];
+    const currentName = String(node?.Name || '').trim();
+    const currentId = String(node?.CategoryId || '').trim();
+    const currentPath = currentName ? [...path, currentName] : [...path];
     
-    // Si coincide el CategoryId, retornar la ruta
-    if (node.CategoryId?.toString() === targetCategoryId) {
+    const childNodes = OAuthController.getFalabellaCategoryChildren(node);
+    const hasChildren = childNodes.length > 0;
+
+    // Si coincide el CategoryId, retornar la ruta y si es seleccionable
+    if (currentId === normalizedTargetCategoryId) {
       return {
         level1: currentPath[0] || null,
         level2: currentPath[1] || null,
         level3: currentPath[2] || null,
-        level4: currentPath[3] || node.Name, // Último nivel disponible
-        api_name: node.Name
+        level4: currentPath[3] || currentName, // Último nivel disponible
+        level: currentPath.length,
+        api_name: currentName,
+        category_id: currentId,
+        category_name: currentName,
+        path: currentPath.join(' > '),
+        parent_category_id: parentCategoryId,
+        selectable: !hasChildren,
+        expandable: hasChildren
       };
     }
     
     // Recursividad para hijos
-    if (node.Children?.Category) {
-      const result = await OAuthController.findCategoryInTree(node.Children.Category, targetCategoryId, currentPath);
+    if (childNodes.length > 0) {
+      const result = await OAuthController.findCategoryInTree(
+        childNodes,
+        normalizedTargetCategoryId,
+        currentPath,
+        currentId || parentCategoryId
+      );
       if (result) return result;
     }
   }

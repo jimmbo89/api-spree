@@ -1202,6 +1202,11 @@ _transformImages(images = []) {
     if (!categoryMetadata?.success || !categoryMetadata?.category) {
       throw new Error(`No se pudo validar la categoría Falabella ${category.id} con GetCategoryTree/GetCategoryAttributes`);
     }
+    if (categoryMetadata.category.selectable !== true) {
+      throw new Error(
+        `La categoría Falabella ${category.id} no es de último nivel. Selecciona una categoría final antes de publicar.`
+      );
+    }
     const categoryAttributeMap = new Map(categoryAttributes.map(attr => [attr.id, attr]));
 
     attributes = attributes.map(attr => {
@@ -2150,7 +2155,10 @@ _transformImages(images = []) {
 
     const categoryMetadata = await this.loadCategoryMetadata(product.PrimaryCategory);
     if (!categoryMetadata?.success) {
-      return product;
+      return {
+        ...product,
+        category_metadata: categoryMetadata
+      };
     }
 
     const categoryAttributes = Array.isArray(categoryMetadata.attributes)
@@ -2343,30 +2351,45 @@ _transformImages(images = []) {
     };
   }
 
-  findCategoryInTree(nodes, targetCategoryId, path = []) {
+  findCategoryInTree(nodes, targetCategoryId, path = [], parentCategoryId = null) {
     const nodeList = Array.isArray(nodes) ? nodes : (nodes ? [nodes] : []);
     for (const node of nodeList) {
       const currentName = String(node?.Name || '').trim();
       const currentPath = currentName ? [...path, currentName] : [...path];
-      if (String(node?.CategoryId || '').trim() === String(targetCategoryId || '').trim()) {
+      const currentId = String(node?.CategoryId || '').trim();
+      const childNodes = this.getFalabellaCategoryChildren(node);
+      const hasChildren = childNodes.length > 0;
+      if (currentId === String(targetCategoryId || '').trim()) {
         return {
           level1: currentPath[0] || null,
           level2: currentPath[1] || null,
           level3: currentPath[2] || null,
           level4: currentPath[3] || null,
+          level: currentPath.length,
           api_name: currentName || null,
-          category_id: String(node?.CategoryId || '').trim() || null,
+          category_id: currentId || null,
+          category_name: currentName || null,
+          path: currentPath.join(' > '),
+          parent_category_id: parentCategoryId,
+          selectable: !hasChildren,
+          expandable: hasChildren,
           raw: node
         };
       }
 
-      if (node?.Children?.Category) {
-        const result = this.findCategoryInTree(node.Children.Category, targetCategoryId, currentPath);
+      if (childNodes.length > 0) {
+        const result = this.findCategoryInTree(childNodes, targetCategoryId, currentPath, currentId || parentCategoryId);
         if (result) return result;
       }
     }
 
     return null;
+  }
+
+  getFalabellaCategoryChildren(node) {
+    const rawChildren = node?.Children?.Category;
+    if (!rawChildren) return [];
+    return Array.isArray(rawChildren) ? rawChildren.filter(Boolean) : [rawChildren];
   }
 
   // ✅ Validación específica para Falabella
@@ -2377,6 +2400,15 @@ _transformImages(images = []) {
     for (const field of required) {
       if (product[field] == null || (typeof product[field] === 'string' && product[field].trim() === '')) {
         errors.push(`Campo requerido ausente: ${field}`);
+      }
+    }
+
+    if (product?.category_metadata) {
+      const categoryMetadata = product.category_metadata;
+      if (!categoryMetadata.success || !categoryMetadata.category) {
+        errors.push('No se pudo validar la categoría Falabella contra el árbol oficial');
+      } else if (categoryMetadata.category.selectable !== true) {
+        errors.push('La categoría Falabella seleccionada no es de último nivel y no se puede publicar');
       }
     }
 

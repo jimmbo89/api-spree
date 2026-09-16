@@ -233,7 +233,11 @@ test('FalabellaAdapter: prepareProduct conserva oferta recibida como atributos F
       { id: 'SaleEndDateFalabella', name: 'Fin oferta', value_name: '2030-08-28' }
     ]
   });
-  adapter.loadCategoryMetadata = async () => ({ success: true, category: { id: 1234 }, attributes: [] });
+  adapter.loadCategoryMetadata = async () => ({
+    success: true,
+    category: { id: 1234, selectable: true, expandable: false },
+    attributes: []
+  });
 
   const prepared = await adapter.prepareProduct({
     id: 1,
@@ -254,6 +258,62 @@ test('FalabellaAdapter: prepareProduct conserva oferta recibida como atributos F
   assert.equal(node.BusinessUnits.BusinessUnit.SpecialFromDate, '2026-08-28 00:00:00');
   assert.equal(node.BusinessUnits.BusinessUnit.SpecialToDate, '2030-08-28 23:59:59');
   assert.equal(node.ProductData.SalePriceFalabella, undefined);
+});
+
+test('FalabellaAdapter: identifica categorías intermedias y hojas desde GetCategoryTree', () => {
+  const adapter = createAdapter();
+  const tree = [{
+    Name: 'Raíz',
+    CategoryId: '1',
+    Children: {
+      Category: [{
+        Name: 'Rama',
+        CategoryId: '2',
+        Children: {
+          Category: [{
+            Name: 'Hoja',
+            CategoryId: '3',
+            Children: {}
+          }]
+        }
+      }]
+    }
+  }];
+
+  const branch = adapter.findCategoryInTree(tree, '2');
+  const leaf = adapter.findCategoryInTree(tree, '3');
+
+  assert.equal(branch.selectable, false);
+  assert.equal(branch.expandable, true);
+  assert.equal(branch.parent_category_id, '1');
+  assert.equal(leaf.selectable, true);
+  assert.equal(leaf.expandable, false);
+  assert.equal(leaf.parent_category_id, '2');
+});
+
+test('FalabellaAdapter: prepareProduct bloquea categorías que no son de último nivel', async () => {
+  const adapter = createAdapter();
+  adapter.getFalabellaCategory = () => ({ id: '2', name: 'Rama' });
+  adapter.getFalabellaConfig = () => ({ attributes: [] });
+  adapter.loadCategoryMetadata = async () => ({
+    success: true,
+    category: { id: '2', selectable: false, expandable: true },
+    attributes: []
+  });
+
+  await assert.rejects(
+    () => adapter.prepareProduct({
+      id: 1,
+      sku: 'SKU-1',
+      name: 'Producto',
+      brand: 'Marca',
+      price: 1000,
+      stock: 1,
+      condition: 'new',
+      variants: [{ price: 1000, publish: true, publishStock: 1 }]
+    }),
+    /no es de último nivel/
+  );
 });
 
 test('FalabellaAdapter: ConditionType se normaliza al contrato oficial', () => {
