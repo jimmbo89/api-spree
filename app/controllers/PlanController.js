@@ -68,14 +68,9 @@ const PlanController = {
       const warehouses = await WarehouseRepository.findWarehousesByCompanyOrBranch(companyId, branchId);
       const warehouseCount = warehouses.length;
 
-      // 3. Obtener productos (usando TU método)
-      let productCount = 0;
-      if (warehouseCount > 0) {
-        const warehouseIds = warehouses.map(w => w.id);
-        const countsByWarehouse = await WarehouseProductRepository.getCountsByWarehouse(warehouseIds);
-        productCount = Object.values(countsByWarehouse)
-          .reduce((sum, item) => sum + (item.productCount || 0), 0);
-      }
+      // 3. Contar productos únicos de la empresa.
+      // Debe coincidir con el criterio usado al crear un producto.
+      const productCount = await WarehouseProductRepository.countUniqueProductsByCompanyId(companyId);
 
       // 4. Obtener pools
       const pools = await PoolRepository.findByCompany(companyId);
