@@ -5,7 +5,7 @@ const logger = require('../../config/logger');
 
 const BranchRepository = {
   // ✅ Método flexible: por company_id, user_id o ambos
-  async findFiltered({ companyId, userId, status = 1 }) {
+  async findFiltered({ companyId, userId, status = 1, excludeDeletedWarehouses = false }) {
   const where = {};
 
   if (companyId !== undefined) {
@@ -16,16 +16,25 @@ const BranchRepository = {
     where.user_id = userId;
   }
 
-  where.status = status !== undefined ? status : 1;
+  if (status !== null) {
+    where.status = status !== undefined ? status : 1;
+  }
+
+  const warehouseInclude = {
+    model: Warehouse,
+    as: 'warehouses',
+    attributes: ['id', 'name', 'status'], // o lo que necesites
+  };
+
+  if (excludeDeletedWarehouses) {
+    warehouseInclude.where = { status: { [Op.ne]: 'delete' } };
+    warehouseInclude.required = false;
+  }
 
   const branches = await Branch.findAll({
     where,
     attributes: ['id', 'company_id', 'user_id', 'name', 'address', 'city', 'phone', 'status', 'image'],
-    include: [{
-      model: Warehouse,
-      as: 'warehouses',
-      attributes: ['id', 'name', 'status'], // o lo que necesites
-    }]
+    include: [warehouseInclude]
   });
 
   return branches.map(branch => ({

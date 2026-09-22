@@ -11,12 +11,20 @@ const BRANCH_AUDIT_FIELDS = ['name', 'address', 'city', 'phone', 'status', 'comp
  * @param {number} companyId - ID de la empresa
  * @param {number} userId - ID del usuario
  * @param {boolean} includeProducts - Si true incluye productos en warehouses
+ * @param {object} options - Opciones de visibilidad para la respuesta
  * @returns {object} { branches, warehouses }
  */
-async function buildBranchWarehouseResponse(companyId, userId, includeProducts = false) {
+async function buildBranchWarehouseResponse(
+  companyId,
+  userId,
+  includeProducts = false,
+  { includeInactiveBranches = false, excludeDeletedWarehouses = false } = {}
+) {
   const branches = await BranchRepository.findFiltered({
     companyId,
-    userId
+    userId,
+    ...(includeInactiveBranches ? { status: null } : {}),
+    excludeDeletedWarehouses
   });
 
   let warehouses = [];
@@ -59,7 +67,15 @@ const BranchController = {
       }
 
     try {
-      const { branches, warehouses } = await buildBranchWarehouseResponse(company_id, user_id, include_products);
+      const { branches, warehouses } = await buildBranchWarehouseResponse(
+        company_id,
+        user_id,
+        include_products,
+        {
+          includeInactiveBranches: true,
+          excludeDeletedWarehouses: true
+        }
+      );
 
       if (branches.length === 0 && warehouses.length === 0) {
         return res.status(200).json({ branches: [], warehouses: [], msg: 'NoDataFound' });
