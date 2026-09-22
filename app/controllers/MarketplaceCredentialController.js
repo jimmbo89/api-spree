@@ -60,6 +60,10 @@ function resolveCompanyId(req) {
   return Number.isInteger(companyId) && companyId > 0 ? companyId : NaN;
 }
 
+function isActiveFlag(value) {
+  return Number(value) === 1;
+}
+
 function isFalabellaMarketplace(marketplace) {
   const name = String(marketplace?.name || '').toLowerCase();
   const domain = String(marketplace?.domain || '').toLowerCase();
@@ -347,6 +351,12 @@ const MarketplaceCredentialController = {
           credentials = credentials.filter((cred) => Number(cred.marketplace_id) === marketplaceId);
         }
       }
+
+      // Este endpoint solo expone conexiones cuyo registro y marketplace están activos.
+      // Se aplica aquí para no cambiar el comportamiento de otros consumidores del repositorio.
+      credentials = credentials.filter((cred) =>
+        isActiveFlag(cred.active) && isActiveFlag(cred.marketplace?.active)
+      );
 
       credentials = await ProductPublishingTaskController.refreshExpiredTokens(
         credentials,
