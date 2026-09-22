@@ -6,7 +6,7 @@ const logger = require("../../config/logger");
  * Uso:
  *   validateSchema({ body: schemaBody, params: schemaParams })
  */
-const validateSchema = (schemas) => {
+const validateSchema = (schemas, options = {}) => {
   const normalizedSchemas = (
     schemas && typeof schemas.validate === 'function' &&
     !Object.prototype.hasOwnProperty.call(schemas, 'body') &&
@@ -81,16 +81,20 @@ const validateSchema = (schemas) => {
           message = 'El campo "marketplaces" es obligatorio y debe ser un array con al menos un marketplace';
         }
         
-        return `${e.source}.${e.path}: ${message}`;
+        return options.humanize
+          ? message
+          : `${e.source}.${e.path}: ${message}`;
       });
 
       return res.status(400).json({
         success: false,
-        msg: "Error de validación",
+        msg: options.message || "Error de validación",
         details: friendlyMessages,
-        error_details: errors.map(e => ({
+        error_details: errors.map((e, index) => ({
           field: e.path,
-          message: e.message,
+          message: options.humanize
+            ? friendlyMessages[index]
+            : e.message,
           source: e.source
         }))
       });

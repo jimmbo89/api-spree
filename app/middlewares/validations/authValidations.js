@@ -78,11 +78,21 @@ const updateSchema = Joi.object({
 });
 
 const loginSchema = Joi.object({
- email: Joi.string().min(3).required(),
+  email: Joi.string().min(3).required().messages({
+    'string.base': 'Ingresa un correo electrónico válido',
+    'string.min': 'El correo electrónico debe tener al menos 3 caracteres',
+    'string.empty': 'El correo electrónico es obligatorio',
+    'any.required': 'El correo electrónico es obligatorio'
+  }),
   password: Joi.string().min(3).required().messages({
+    'string.base': 'Ingresa una contraseña válida',
     'string.min': 'La contraseña debe tener al menos 3 caracteres',
+    'string.empty': 'La contraseña es obligatoria',
     'any.required': 'La contraseña es obligatoria'
   })
+}).messages({
+  'object.base': 'Los datos de inicio de sesión no son válidos',
+  'object.unknown': 'El campo {{#label}} no está permitido'
 });
 
 const createUserSchema = Joi.object({

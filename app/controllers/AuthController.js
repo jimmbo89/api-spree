@@ -547,7 +547,11 @@ const AuthController = {
         ? error.details.map((d) => d.message).join(", ")
         : error.message;
       logger.error("Error al loguear usuario: " + errorMsg);
-      return res.status(500).json({ error: "ServerError", details: errorMsg });
+      return res.status(500).json({
+        success: false,
+        msg: "No se pudo iniciar sesión. Intenta nuevamente más tarde.",
+        error: "Error interno del servidor"
+      });
     }
   },
   async logout(req, res) {

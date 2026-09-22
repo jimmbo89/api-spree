@@ -98,7 +98,14 @@ const router = express.Router();
 router.get("/", (req, res) => res.json({ hello: "World" }));
 
 router.post("/user-register", validateSchema(registerSchema), AuthController.register);
-router.post("/sign-in", validateSchema(loginSchema), AuthController.signIn);
+router.post(
+  "/sign-in",
+  validateSchema(loginSchema, {
+    humanize: true,
+    message: "No se pudo iniciar sesión"
+  }),
+  AuthController.signIn
+);
 
 // === Rutas de invitación (InvitationController) ===
 router.post("/verific-invitation", InvitationController.verificInvitation); // Verificar y aceptar invitación
