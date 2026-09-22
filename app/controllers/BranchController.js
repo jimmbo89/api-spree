@@ -282,25 +282,48 @@ const BranchController = {
 
       const branch = await BranchRepository.findById(id);
       if (!branch) return res.status(404).json({ msg: 'BranchNotFound' });
+      if (Number(branch.status) === 2) {
+        return res.status(404).json({ msg: 'BranchNotFound' });
+      }
 
-      const newStatus = status === 0 ? 0 : 1;
+      const newStatus = Number(status);
+      if (![0, 1, 2].includes(newStatus)) {
+        return res.status(400).json({ msg: 'status_must_be_active_inactive_or_deleted' });
+      }
+
+      const previousStatus = branch.status;
       await branch.update({ status: newStatus });
+
+      const statusLabel = {
+        0: 'desactivada',
+        1: 'activada',
+        2: 'eliminada'
+      }[newStatus];
+      const action = newStatus === 2 ? 'branch.delete' : 'branch.status_change';
 
       await LogRepository.create({
         user_id: metadata.user_id,
-        action: 'branch.status_change',
-        description: `Sucursal ${branch.name} (ID ${id}) ${newStatus === 0 ? 'desactivada' : 'activada'}`,
+        action,
+        description: `Sucursal ${branch.name} (ID ${id}) ${statusLabel}`,
         ip_address: metadata.ip_address,
         user_agent: metadata.user_agent,
         status: 'success',
-        meta: { branch_id: id, old_status: branch.status, new_status: newStatus }
+        meta: { branch_id: id, old_status: previousStatus, new_status: newStatus }
       });
 
-      const { branches, warehouses } = await buildBranchWarehouseResponse(branch.company_id, branch.user_id, include_products);
+      const { branches, warehouses } = await buildBranchWarehouseResponse(
+        branch.company_id,
+        branch.user_id,
+        include_products,
+        {
+          includeInactiveBranches: true,
+          excludeDeletedWarehouses: true
+        }
+      );
 
       res.status(200).json({
         success: true,
-        message: `Sucursal ${newStatus === 0 ? 'desactivada' : 'activada'} correctamente`,
+        message: `Sucursal ${statusLabel} correctamente`,
         branches,
         warehouses
       });
@@ -308,7 +331,7 @@ const BranchController = {
     } catch (error) {
       await LogRepository.create({
         user_id: metadata?.user_id,
-        action: 'branch.status_change',
+        action: Number(req.body?.status) === 2 ? 'branch.delete' : 'branch.status_change',
         description: `Error al cambiar estado de sucursal ID ${req.body?.id}: ${error.message}`,
         ip_address: metadata?.ip_address,
         user_agent: metadata?.user_agent,

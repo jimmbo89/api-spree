@@ -55,7 +55,10 @@ module.exports = (sequelize, DataTypes) => {
     status: {
       type: DataTypes.TINYINT,
       allowNull: true,
-      defaultValue: 1, // 1 = activa, 0 = inactiva
+      defaultValue: 1, // 1 = activa, 0 = inactiva, 2 = eliminada lógicamente
+      validate: {
+        isIn: [[0, 1, 2]]
+      }
     },
     image: {
       type: DataTypes.STRING,

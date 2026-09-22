@@ -16,7 +16,9 @@ const BranchRepository = {
     where.user_id = userId;
   }
 
-  if (status !== null) {
+  if (status === null) {
+    where.status = { [Op.in]: [0, 1] };
+  } else {
     where.status = status !== undefined ? status : 1;
   }
 
@@ -45,7 +47,11 @@ const BranchRepository = {
     address: branch.address,
     city: branch.city,
     phone: branch.phone,
-    status: branch.status === 1 ? 'activa' : 'inactiva',
+    status: branch.status === 1
+      ? 'activa'
+      : branch.status === 0
+        ? 'inactiva'
+        : 'eliminada',
     status_code: branch.status,
     image: branch.image,
     warehouses: branch.warehouses || [], // ← aquí tienes el array
@@ -114,10 +120,8 @@ const BranchRepository = {
   },
 
   async delete(branch) {
-    if (branch.image && branch.image !== 'branches/default.jpg') {
-      await ImageService.deleteFile(branch.image);
-    }
-    return await branch.destroy();
+    // Eliminación lógica: 2 = eliminada. El estado 0 queda reservado para inactiva.
+    return await branch.update({ status: 2 });
   },
 };
 
