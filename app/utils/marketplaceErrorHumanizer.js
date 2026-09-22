@@ -218,6 +218,20 @@ function humanizeFalabellaMessage(message, code = null, field = null) {
     return 'La categoría seleccionada no es válida o ya no está disponible en Falabella. Selecciona una categoría vigente.';
   }
 
+  if (
+    normalized.includes('invalid brand')
+    || normalized.includes('marca invalida')
+    || normalized.includes('marca no valida')
+  ) {
+    const brandMatch = text.match(
+      /(?:invalid\s+brand|marca\s+inv[aá]lida|marca\s+no\s+válida)\s*:\s*(?:&quot;|&#34;|&#x22;|["'])(.*?)(?:&quot;|&#34;|&#x22;|["'])/i
+    );
+    const brand = brandMatch?.[1]?.trim();
+    return brand
+      ? `La marca «${brand}» no es válida para publicar en Falabella. Verifica que esté registrada y habilitada para la categoría seleccionada.`
+      : 'La marca indicada no es válida para publicar en Falabella. Verifica que esté registrada y habilitada para la categoría seleccionada.';
+  }
+
   if (normalized.includes('brand') && (normalized.includes('does not exist') || normalized.includes('not found'))
     || normalized.includes('marca') && (normalized.includes('no existe') || normalized.includes('no esta registrada'))) {
     return 'La marca indicada no está registrada en Falabella. Revisa la marca o solicita su habilitación.';

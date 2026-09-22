@@ -153,6 +153,7 @@ const getFalabellaProductCreateRule = (feedName) =>
 
 const FALABELLA_CATEGORY_ATTRIBUTES_CACHE_TYPE = 'category_attributes_v2';
 const FALABELLA_PRODUCT_SUGGESTION_CACHE_TYPE = 'product_suggestion_v2';
+const FALABELLA_BRANDS_CACHE_TYPE = 'brands_v1';
 
 const resolveFalabellaOperatorForContentScore = (credential = {}) => {
   const additional = credential?.additional_data;
@@ -6690,7 +6691,10 @@ async falabellaSuggestedCategoriesWithAttributes(req, res) {
 
     const suggestions = [];
     let cacheHits = 0, apiCalls = 0, pricingCalls = 0, treeCalls = 0;
-    const treeData = await OAuthController.fetchFalabellaCategoryTree(baseUrl, userId, apiKey);
+    const [treeData, brandCatalog] = await Promise.all([
+      OAuthController.fetchFalabellaCategoryTree(baseUrl, userId, apiKey),
+      OAuthController.fetchFalabellaBrands(baseUrl, userId, apiKey, `credential_${credential_id}`)
+    ]);
     const allCategories = OAuthController.buildFalabellaCategoryTree(treeData);
     const allCategoriesCount = OAuthController.countFalabellaCategoryTree(allCategories);
 
@@ -6980,6 +6984,15 @@ logger.info(`comisión encontrada en la bd: \n ${JSON.stringify(commissionByPath
       success: true,
       all_categories: allCategories,
       all_categories_count: allCategoriesCount,
+      brand_catalog: brandCatalog,
+      brand_contract: {
+        field: 'Brand',
+        value_type: 'string',
+        source: 'brand_catalog.items',
+        allow_free_text: false,
+        match: 'name_or_global_identifier',
+        send_value: 'name'
+      },
       suggestions,
       count: suggestions.length,
       stats: {
@@ -7229,6 +7242,67 @@ async fetchFalabellaCategoryAttributes(baseUrl, userId, apiKey, categoryId, cred
   }
 
   return [];
+},
+async fetchFalabellaBrands(baseUrl, userId, apiKey, cacheNamespace = 'falabella') {
+  const cached = getFromCache(cacheNamespace, FALABELLA_BRANDS_CACHE_TYPE, 'all');
+  if (cached) return cached;
+
+  const params = {
+    UserID: userId,
+    Version: "1.0",
+    Action: "GetBrands",
+    Format: "JSON",
+    Timestamp: timestampMinus03(),
+  };
+  const keys = Object.keys(params).sort();
+  const canonicalQuery = keys
+    .map((key) => `${rfc3986Encode(key)}=${rfc3986Encode(String(params[key]))}`)
+    .join("&");
+  const signature = rfc3986Encode(
+    crypto.createHmac("sha256", apiKey).update(canonicalQuery).digest("hex")
+  );
+  const url = `${baseUrl}?${canonicalQuery}&Signature=${signature}`;
+
+  try {
+    const response = await axios.get(url, { timeout: 20000 });
+    const body = response.data?.SuccessResponse?.Body;
+    const rawBrands = body?.Brands?.Brand;
+    const list = rawBrands ? (Array.isArray(rawBrands) ? rawBrands : [rawBrands]) : [];
+    const items = list
+      .map((brand) => ({
+        id: normalizeFalabellaInteger(brand?.BrandId ?? brand?.Id ?? brand?.id),
+        name: normalizeFalabellaString(brand?.Name ?? brand?.name),
+        global_identifier: normalizeFalabellaString(
+          brand?.GlobalIdentifier ?? brand?.global_identifier
+        )
+      }))
+      .filter((brand) => brand.name);
+
+    const catalog = {
+      source: 'GetBrands',
+      scope: 'falabella_global',
+      category_specific: false,
+      status: items.length > 0 ? 'available' : 'unavailable',
+      items,
+      fetched_at: new Date().toISOString()
+    };
+
+    if (catalog.status === 'available') {
+      saveToCache(cacheNamespace, FALABELLA_BRANDS_CACHE_TYPE, 'all', catalog, 86400);
+    }
+
+    return catalog;
+  } catch (error) {
+    logger.warn(`[FALABELLA][BRANDS] No se pudo consultar GetBrands: ${error.message}`);
+    return {
+      source: 'GetBrands',
+      scope: 'falabella_global',
+      category_specific: false,
+      status: 'unavailable',
+      items: [],
+      fetched_at: new Date().toISOString()
+    };
+  }
 },
 async fetchFalabellaContentScoreRules(baseUrl, userId, apiKey, categoryId, operatorCode) {
   const cacheKey = `${categoryId}_${operatorCode}`;
