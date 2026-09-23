@@ -228,13 +228,13 @@ function humanizeFalabellaMessage(message, code = null, field = null) {
     );
     const brand = brandMatch?.[1]?.trim();
     return brand
-      ? `La marca «${brand}» no es válida para publicar en Falabella. Verifica que esté registrada y habilitada para la categoría seleccionada.`
-      : 'La marca indicada no es válida para publicar en Falabella. Verifica que esté registrada y habilitada para la categoría seleccionada.';
+      ? `La marca «${brand}» no está registrada o autorizada para publicar en Falabella. Contacta al soporte técnico de Falabella para solicitar la validación y habilitación de la marca.`
+      : 'La marca indicada no está registrada o autorizada para publicar en Falabella. Contacta al soporte técnico de Falabella para solicitar su validación y habilitación.';
   }
 
   if (normalized.includes('brand') && (normalized.includes('does not exist') || normalized.includes('not found'))
     || normalized.includes('marca') && (normalized.includes('no existe') || normalized.includes('no esta registrada'))) {
-    return 'La marca indicada no está registrada en Falabella. Revisa la marca o solicita su habilitación.';
+    return 'La marca indicada no está registrada o autorizada en Falabella. Contacta al soporte técnico de Falabella para solicitar su validación y habilitación.';
   }
 
   if (normalized.includes('format error') || normalized.includes('error de formato')) {
