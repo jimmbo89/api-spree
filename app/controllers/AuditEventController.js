@@ -848,7 +848,13 @@ async function getUserOptions(companyId) {
 }
 
 async function getMarketplaceAndCredentialOptions(companyId, scopeData) {
-  const where = { company_id: companyId };
+  // Las opciones de filtros solo deben representar conexiones utilizables.
+  // El historial de auditoría se mantiene intacto y puede seguir apuntando a
+  // credenciales que fueron desactivadas posteriormente.
+  const where = {
+    company_id: companyId,
+    active: true
+  };
   if (!scopeData.has_full_access) {
     where.id = {
       [Op.in]: scopeData.marketplace_credential_ids.length > 0
@@ -862,8 +868,9 @@ async function getMarketplaceAndCredentialOptions(companyId, scopeData) {
     attributes: ['id', 'name', 'seller_email', 'seller_id', 'marketplace_id', 'active'],
     include: [{
       association: 'marketplace',
+      where: { active: true },
       attributes: ['id', 'name', 'domain', 'active'],
-      required: false
+      required: true
     }],
     order: [['name', 'ASC']]
   });
