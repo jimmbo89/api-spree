@@ -7210,12 +7210,12 @@ async falabellaEnrichedCategory(req, res) {
         credential_id,
         marketplace_id,
         categoryId,
-        categoryName: categoryData.name,
-        globalIdentifier: categoryData.path,
+        categoryName: treeMatch.api_name || categoryData.name,
+        globalIdentifier: treeMatch.global_identifier || categoryData.path,
         productPrice,
         treeData
       });
-      pricing = pricingResult.pricing;
+      pricing = normalizeFalabellaSuggestedPricing(pricingResult.pricing, productPrice);
       pricingCalls = pricingResult.pricing_calls;
       categoryData = { ...categoryData, pricing };
     }
@@ -7747,6 +7747,7 @@ async findCategoryInTree(nodes, targetCategoryId, path = [], parentCategoryId = 
         category_id: currentId,
         category_name: currentName,
         path: currentPath.join(' > '),
+        global_identifier: node?.GlobalIdentifier || node?.global_identifier || null,
         parent_category_id: parentCategoryId,
         selectable: !hasChildren,
         expandable: hasChildren
