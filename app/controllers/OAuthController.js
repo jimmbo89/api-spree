@@ -2730,18 +2730,57 @@ const buildEconomicSummary = ({
   };
 };
 
-const OAuthController = {
-async mercadoLibreCallback(req, res) {
-  const { code, state } = req.body;
-  logger.info("Datos recibidos actualizar las credenciales de mercado libre:");
-  logger.info(JSON.stringify(req.body));
-  const metadata = getRequestMetadata(req);
-  let credentialIdForCleanup = null;
+function extractCredentialIdFromOAuthState(state) {
+  if (!state) return null;
 
-  if (!code || !state) {
-    logger.warn("OAuth callback sin code o state");
-    return res.status(400).json({ error: 'Datos incompletos: se requieren "code" y "state"' });
-  }
+  const stateParts = String(state).split('_');
+  const rawCredentialId = stateParts.length >= 4
+    ? stateParts[3]
+    : stateParts.length >= 3
+      ? stateParts[2]
+      : null;
+  const credentialId = Number(rawCredentialId);
+
+  return Number.isInteger(credentialId) && credentialId > 0 ? credentialId : null;
+}
+
+const OAuthController = {
+  async mercadoLibreCallback(req, res) {
+    const payload = req.body || {};
+    const code = payload.code || req.query?.code;
+    const state = payload.state || req.query?.state;
+    const oauthError = payload.error || req.query?.error || null;
+    const oauthErrorDescription = payload.error_description || req.query?.error_description || null;
+    logger.info("Datos recibidos actualizar las credenciales de mercado libre:");
+    logger.info(JSON.stringify(payload));
+    const metadata = getRequestMetadata(req);
+    let credentialIdForCleanup = extractCredentialIdFromOAuthState(state);
+
+    if (!state) {
+      logger.warn("OAuth callback sin code o state");
+      return res.status(400).json({ error: 'Datos incompletos: se requiere "state"' });
+    }
+
+    if (!code) {
+      if (credentialIdForCleanup) {
+        try {
+          await MarketplaceCredentialRepository.deletePendingOAuthById(
+            credentialIdForCleanup,
+            oauthError || 'oauth_callback_without_code'
+          );
+        } catch (cleanupError) {
+          logger.error('[OAuth] Error limpiando cancelacion OAuth:', cleanupError.message);
+        }
+      }
+
+      logger.warn(`[OAuth] Flujo cancelado o incompleto: ${oauthError || 'sin codigo'}`);
+      return res.status(oauthError ? 200 : 400).json({
+        success: false,
+        cancelled: Boolean(oauthError),
+        error: oauthError || 'oauth_callback_without_code',
+        message: oauthErrorDescription || 'La autorización de Mercado Libre no fue completada'
+      });
+    }
 
   try {
     // ✅ Parsear state legado y nuevo (formato nuevo: marketplaceId_companyId_userId_credentialId)
@@ -2751,7 +2790,7 @@ async mercadoLibreCallback(req, res) {
     const userId = stateParts.length >= 4 ? stateParts[2] : stateParts[1];
     const credentialId = stateParts.length >= 4 ? stateParts[3] : stateParts[2];
 
-    credentialIdForCleanup = credentialId; 
+    credentialIdForCleanup = credentialId;
     
     // ✅ Buscar credencial específica por ID
     const credential = credentialId 
@@ -2972,6 +3011,8 @@ async mercadoLibreCallback(req, res) {
     const updatedAdditionalData = {
       ...normalizeMarketplaceCredentialAdditionalData(credential.additional_data),
       ml_user_id: mlUserId,  // ← Guardar ID de usuario de ML
+      connection_status: 'connected',
+      authenticated_at: new Date().toISOString(),
       authenticated_by_user_id: userId,
       authenticated_by_user_name: req.user?.name || req.user?.email || null
     };
@@ -2980,6 +3021,7 @@ async mercadoLibreCallback(req, res) {
       access_token: tokenRes.data.access_token,
       refresh_token: tokenRes.data.refresh_token,
       expires_at: new Date(Date.now() + tokenRes.data.expires_in * 1000),
+      active: true,
       additional_data: updatedAdditionalData  // ← NUEVO: Incluir ml_user_id
     });
     const authenticatedCredential = await MarketplaceCredentialRepository.findById(credential.id);
@@ -3058,25 +3100,26 @@ async mercadoLibreCallback(req, res) {
     logger.error("OAuth callback error:", {
       message: error.message,
       stack: error.stack,
-      code: req.body.code?.substring(0, 10),
-      state: req.body.state,
+      code: code?.substring(0, 10),
+      state,
     });
 
      if (credentialIdForCleanup) {
-      try {
-        const cred = await MarketplaceCredentialRepository.findById(credentialIdForCleanup);
-        // Solo eliminar si NO tiene access_token (está pendiente de OAuth)
-        if (cred && !cred.access_token) {
-          await MarketplaceCredentialRepository.deleteById(credentialIdForCleanup);
-          logger.info(`[OAuth] Credencial huérfana eliminada: ${credentialIdForCleanup}`);
+       try {
+        const deleted = await MarketplaceCredentialRepository.deletePendingOAuthById(
+          credentialIdForCleanup,
+          'oauth_callback_error'
+        );
+        if (deleted) {
+          logger.info(`[OAuth] Credencial OAuth pendiente eliminada: ${credentialIdForCleanup}`);
         }
-      } catch (deleteError) {
-        logger.error('[OAuth] Error limpiando credencial huérfana:', deleteError.message);
+       } catch (deleteError) {
+         logger.error('[OAuth] Error limpiando credencial huérfana:', deleteError.message);
       }
     }
 
     await LogRepository.create({
-      user_id: req.body.userId,
+      user_id: payload.userId,
       action: "oauth.mercadolibre.error",
       description: `Error en OAuth: ${error.message}`,
       ip_address: metadata.ip_address,

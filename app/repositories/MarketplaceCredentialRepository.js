@@ -615,10 +615,70 @@ async deleteById(id) {
     logger.error(`[REPO] ERROR al eliminar credencial (ID: ${id}):`, error.message);
     throw error;
   }
-},
+  },
+
+  async deletePendingOAuthById(id, reason = 'oauth_cancelled') {
+    const credential = await MarketplaceCredential.findByPk(id);
+    if (!credential) return false;
+
+    const additionalData = normalizeAdditionalData(credential.additional_data);
+    const isPendingOAuth =
+      isInactiveCredential(credential) &&
+      !credential.access_token &&
+      !credential.refresh_token &&
+      additionalData.connection_status === 'pending' &&
+      additionalData.oauth_started_at;
+
+    if (!isPendingOAuth) return false;
+
+    await credential.destroy();
+    logger.info(`[REPO] Credencial OAuth pendiente eliminada (ID: ${id}, reason=${reason})`);
+    return true;
+  },
+
+  async cleanupExpiredPendingOAuthCredentials({
+    companyId = null,
+    userId = null,
+    maxAgeMs = 24 * 60 * 60 * 1000
+  } = {}) {
+    const cutoff = new Date(Date.now() - maxAgeMs);
+    const where = {
+      active: false,
+      access_token: null,
+      refresh_token: null,
+      createdAt: { [Op.lt]: cutoff }
+    };
+
+    if (companyId !== null && companyId !== undefined) {
+      where.company_id = companyId;
+    }
+    if (userId !== null && userId !== undefined) {
+      where.user_id = userId;
+    }
+
+    const candidates = await MarketplaceCredential.findAll({
+      where
+    });
+
+    let deletedCount = 0;
+    for (const credential of candidates) {
+      const additionalData = normalizeAdditionalData(credential.additional_data);
+      if (additionalData.connection_status !== 'pending') continue;
+      if (!additionalData.oauth_started_at) continue;
+
+      await credential.destroy();
+      deletedCount += 1;
+    }
+
+    if (deletedCount > 0) {
+      logger.info(`[REPO] Credenciales OAuth pendientes expiradas eliminadas: ${deletedCount}`);
+    }
+
+    return deletedCount;
+  },
 
   async countActiveByMarketplace(company_id, options = {}) {
-    const where = { company_id: company_id, ...options.where };
+    const where = { company_id: company_id, ...options.where, active: true };
     return MarketplaceCredential.count({ where });
   },
 

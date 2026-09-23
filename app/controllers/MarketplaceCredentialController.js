@@ -64,6 +64,16 @@ function isActiveFlag(value) {
   return Number(value) === 1;
 }
 
+function isOAuthMarketplaceCredential(credential) {
+  const marketplace = credential?.marketplace || {};
+  return Boolean(marketplace.client_id && marketplace.client_secret && marketplace.redirect_uri);
+}
+
+function hasCompletedOAuth(credential) {
+  if (!isOAuthMarketplaceCredential(credential)) return true;
+  return Boolean(credential?.access_token && credential?.refresh_token);
+}
+
 function isFalabellaMarketplace(marketplace) {
   const name = String(marketplace?.name || '').toLowerCase();
   const domain = String(marketplace?.domain || '').toLowerCase();
@@ -352,10 +362,17 @@ const MarketplaceCredentialController = {
         }
       }
 
+      await MarketplaceCredentialRepository.cleanupExpiredPendingOAuthCredentials({
+        companyId,
+        userId: userId || null
+      });
+
       // Este endpoint solo expone conexiones cuyo registro y marketplace están activos.
       // Se aplica aquí para no cambiar el comportamiento de otros consumidores del repositorio.
       credentials = credentials.filter((cred) =>
-        isActiveFlag(cred.active) && isActiveFlag(cred.marketplace?.active)
+        isActiveFlag(cred.active) &&
+        isActiveFlag(cred.marketplace?.active) &&
+        hasCompletedOAuth(cred)
       );
 
       credentials = await ProductPublishingTaskController.refreshExpiredTokens(
@@ -588,6 +605,11 @@ const MarketplaceCredentialController = {
       return res.status(400).json({ success: false, message: "Marketplace no encontrado" });
     }
 
+    await MarketplaceCredentialRepository.cleanupExpiredPendingOAuthCredentials({
+      companyId,
+      userId: userId || null
+    });
+
     // 2. Validaciones de duplicados (name y credentials)
     const nameExists = await MarketplaceCredentialRepository.existsByName(
       marketplace_id, companyId, name
@@ -684,7 +706,11 @@ const MarketplaceCredentialController = {
         access_token: null,
         refresh_token: null,
         expires_at: null,
-        active: true  // La credencial se crea ACTIVA (el front detectara cuando expire)
+        active: false,
+        additional_data: {
+          connection_status: 'pending',
+          oauth_started_at: new Date().toISOString()
+        }
       });
 
         logger.info(`[store] Nueva credencial creada:`, {
@@ -703,6 +729,10 @@ const MarketplaceCredentialController = {
       );
       
       if (!adapter) {
+        await MarketplaceCredentialRepository.deletePendingOAuthById(
+          newCredential.id,
+          'adapter_unavailable'
+        );
         return res.status(400).json({ success: false, message: "Adaptador no disponible" });
       }
       adapter.auditContext = {
@@ -763,6 +793,10 @@ const MarketplaceCredentialController = {
           credential_id: newCredential.id  // Para referencia del frontend
         });
       } else {
+        await MarketplaceCredentialRepository.deletePendingOAuthById(
+          newCredential.id,
+          'oauth_initialization_failed'
+        );
         return res.status(400).json({
           success: false,
           error: status.error || "Error al iniciar conexion OAuth"
@@ -779,8 +813,13 @@ const MarketplaceCredentialController = {
   } catch (error) {
     if (newCredential?.id) {
       try {
-        await MarketplaceCredentialRepository.deleteById(newCredential.id);
-        logger.info(`[store] Credencial huérfana eliminada: ${newCredential.id}`);
+        const deleted = await MarketplaceCredentialRepository.deletePendingOAuthById(
+          newCredential.id,
+          'oauth_store_error'
+        );
+        if (deleted) {
+          logger.info(`[store] Credencial OAuth pendiente eliminada: ${newCredential.id}`);
+        }
       } catch (deleteError) {
         logger.error(`[store] No se pudo eliminar credencial huérfana ${newCredential.id}:`, deleteError.message);
       }
