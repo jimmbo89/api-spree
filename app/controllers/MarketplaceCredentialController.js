@@ -658,6 +658,12 @@ const MarketplaceCredentialController = {
         active: true
       });
 
+      await UserMarketplaceCredentialRepository.ensureActiveAccess({
+        userId,
+        companyId,
+        marketplaceCredentialId: newCredential.id
+      });
+
       await LogRepository.create({
         user_id: metadata.user_id,
         action: 'marketplace_credential.create',
@@ -750,6 +756,11 @@ const MarketplaceCredentialController = {
       if (status.valid) {
         // Ya esta conectado (caso raro al crear, pero posible)
         const connectedCredential = await MarketplaceCredentialRepository.findById(newCredential.id);
+        await UserMarketplaceCredentialRepository.ensureActiveAccess({
+          userId,
+          companyId,
+          marketplaceCredentialId: newCredential.id
+        });
         await AuditEventService.safeRecordFromRequest(req, buildMarketplaceCredentialAuditPayload(connectedCredential || newCredential, {
           action: 'marketplace.connection_created',
           result: 'success',

@@ -175,6 +175,55 @@ const UserMarketplaceCredentialRepository = {
     });
   },
 
+  async ensureActiveAccess({ userId, companyId, marketplaceCredentialId, transaction = null }) {
+    const normalizedUserId = Number(userId);
+    const normalizedCompanyId = Number(companyId);
+    const normalizedCredentialId = Number(marketplaceCredentialId);
+
+    if (!Number.isInteger(normalizedUserId) || normalizedUserId <= 0) {
+      throw new Error('userId inválido para asociar credencial de marketplace');
+    }
+    if (!Number.isInteger(normalizedCompanyId) || normalizedCompanyId <= 0) {
+      throw new Error('companyId inválido para asociar credencial de marketplace');
+    }
+    if (!Number.isInteger(normalizedCredentialId) || normalizedCredentialId <= 0) {
+      throw new Error('marketplaceCredentialId inválido para asociar credencial de marketplace');
+    }
+
+    const credential = await MarketplaceCredential.findOne({
+      where: {
+        id: normalizedCredentialId,
+        company_id: normalizedCompanyId
+      },
+      attributes: ['id'],
+      transaction
+    });
+
+    if (!credential) {
+      throw new Error('La credencial no pertenece a la empresa indicada');
+    }
+
+    const [access, created] = await UserMarketplaceCredential.findOrCreate({
+      where: {
+        user_id: normalizedUserId,
+        company_id: normalizedCompanyId,
+        marketplace_credential_id: normalizedCredentialId
+      },
+      defaults: { status: 1 },
+      transaction
+    });
+
+    if (!created && Number(access.status) !== 1) {
+      await access.update({ status: 1 }, { transaction });
+    }
+
+    logger.info(
+      `[UserMarketplaceCredentialRepository] Acceso activo garantizado user=${normalizedUserId}, company=${normalizedCompanyId}, credential=${normalizedCredentialId}`
+    );
+
+    return access;
+  },
+
   async syncUserMarketplaceCredentials({ userId, companyId, items = [], transaction = null }) {
     const normalizedItems = normalizeCredentialItems(items);
     const incomingIds = normalizedItems.map(item => item.marketplace_credential_id);

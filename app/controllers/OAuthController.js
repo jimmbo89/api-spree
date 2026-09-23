@@ -3,6 +3,7 @@ const axios = require("axios");
 const qs = require("qs");
 const {
   MarketplaceCredentialRepository,
+  UserMarketplaceCredentialRepository,
   LogRepository,
   CategoryCommissionRepository,
 } = require("../repositories");
@@ -2902,6 +2903,11 @@ const OAuthController = {
         active: true,
         additional_data: reconnectedAdditionalData
       });
+      await UserMarketplaceCredentialRepository.ensureActiveAccess({
+        userId,
+        companyId,
+        marketplaceCredentialId: duplicateCredential.id
+      });
       const reconnectedCredential = await MarketplaceCredentialRepository.findById(duplicateCredential.id);
       const reconnectedCredentialValue = sanitizeMarketplaceCredentialForAudit(reconnectedCredential || duplicateCredential);
       const authChanges = detectChanges(
@@ -3023,6 +3029,11 @@ const OAuthController = {
       expires_at: new Date(Date.now() + tokenRes.data.expires_in * 1000),
       active: true,
       additional_data: updatedAdditionalData  // ← NUEVO: Incluir ml_user_id
+    });
+    await UserMarketplaceCredentialRepository.ensureActiveAccess({
+      userId,
+      companyId,
+      marketplaceCredentialId: credential.id
     });
     const authenticatedCredential = await MarketplaceCredentialRepository.findById(credential.id);
     const authenticatedCredentialValue = sanitizeMarketplaceCredentialForAudit(authenticatedCredential || credential);
