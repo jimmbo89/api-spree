@@ -313,7 +313,10 @@ router.post("/product-category-destroy", requireRoles([ 'Backoffice', 'Admin', '
 router.post("/attributes", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(listAttributeSchema), AttributeController.index);
 router.post("/attribute", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(attributeSchema), AttributeController.store);
 router.post("/attribute-update", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(updateAttributeSchema), AttributeController.update);
-router.post("/attribute-destroy", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(idAttributeSchema), AttributeController.destroy);
+router.post("/attribute-destroy", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(idAttributeSchema, {
+  humanize: true,
+  message: 'Solicitud inválida'
+}), AttributeController.destroy);
 
 // Rutas de variantes (definiciones)
 router.post("/variants", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(listVariantDefinitionSchema), VariantDefinitionController.index);
