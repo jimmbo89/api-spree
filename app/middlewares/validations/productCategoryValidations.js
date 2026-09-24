@@ -39,9 +39,13 @@ const listProductCategorySchema = Joi.object({
 // Schema para eliminar categoría (solo ID)
 const idProductCategorySchema = Joi.object({
   id: Joi.number().integer().positive().required().messages({
-    'number.base': 'El ID debe ser un número entero',
-    'any.required': 'El campo "id" es obligatorio'
+    'number.base': 'El campo «id» debe ser un número entero positivo.',
+    'number.integer': 'El campo «id» debe ser un número entero.',
+    'number.positive': 'El campo «id» debe ser mayor que cero.',
+    'any.required': 'El campo «id» es obligatorio.'
   })
+}).messages({
+  'object.unknown': 'El campo «{#key}» no está permitido en esta solicitud.'
 });
 
 module.exports = {

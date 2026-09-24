@@ -304,7 +304,10 @@ router.post("/warehouse-metadata", requireRoles([ 'Backoffice', 'Admin', 'Seller
 router.post("/product-categories", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(listProductCategorySchema), ProductCategoryController.index);
 router.post("/product-category", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(productCategorySchema), ProductCategoryController.store);
 router.post("/product-category-update", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(updateProductCategorySchema), ProductCategoryController.update);
-router.post("/product-category-destroy", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(idProductCategorySchema), ProductCategoryController.destroy);
+router.post("/product-category-destroy", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(idProductCategorySchema, {
+  humanize: true,
+  message: 'Solicitud inválida'
+}), ProductCategoryController.destroy);
 
 // Rutas de atributos de productos
 router.post("/attributes", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(listAttributeSchema), AttributeController.index);
