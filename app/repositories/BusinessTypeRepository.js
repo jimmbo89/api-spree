@@ -1,5 +1,5 @@
 // src/repositories/BusinessTypeRepository.js
-const { BusinessType } = require("../models");
+const { BusinessType, Company, Sequelize } = require("../models");
 const logger = require("../../config/logger");
 
 const BusinessTypeRepository = {
@@ -12,6 +12,37 @@ const BusinessTypeRepository = {
       return businessTypes;
     } catch (error) {
       logger.error("Error en BusinessTypeRepository->findAll:", error);
+      throw new Error(`Error al obtener tipos de negocio: ${error.message}`);
+    }
+  },
+
+  async findAllWithCompanyCount() {
+    try {
+      const [businessTypes, companyCounts] = await Promise.all([
+        this.findAll(),
+        Company.findAll({
+          attributes: [
+            "business_type_id",
+            [Sequelize.fn("COUNT", Sequelize.col("id")), "companies_count"]
+          ],
+          where: {
+            business_type_id: { [Sequelize.Op.ne]: null }
+          },
+          group: ["business_type_id"],
+          raw: true
+        })
+      ]);
+
+      const countsByBusinessType = new Map(
+        companyCounts.map((row) => [String(row.business_type_id), Number(row.companies_count) || 0])
+      );
+
+      return businessTypes.map((businessType) => ({
+        ...businessType.get({ plain: true }),
+        companies_count: countsByBusinessType.get(String(businessType.id)) || 0
+      }));
+    } catch (error) {
+      logger.error("Error en BusinessTypeRepository->findAllWithCompanyCount:", error);
       throw new Error(`Error al obtener tipos de negocio: ${error.message}`);
     }
   },

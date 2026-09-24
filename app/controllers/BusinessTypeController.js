@@ -10,7 +10,7 @@ async index(req, res) {
   try {
     const { includePlans } = req.body; // 👈 Leer el flag del body
 
-    const businessTypes = await BusinessTypeRepository.findAll();
+    const businessTypes = await BusinessTypeRepository.findAllWithCompanyCount();
 
     // ✅ Si se pide, incluir planes
     let response = { businessTypes: businessTypes };
