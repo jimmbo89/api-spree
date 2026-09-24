@@ -1,5 +1,5 @@
 // repositories/MarketplaceRepository.js
-const { Marketplace, ProductFieldMapping } = require('../models');
+const { Marketplace, MarketplaceCredential, ProductFieldMapping, Sequelize } = require('../models');
 const EncryptionService = require('../services/EncryptionService');
 const logger = require('../../config/logger');
 
@@ -70,6 +70,29 @@ const MarketplaceRepository = {
   async findAll() {
     const records = await Marketplace.findAll();
     return records.map(formatMarketplace);
+  },
+
+  async findAllWithCredentialCount() {
+    const [records, credentialCounts] = await Promise.all([
+      Marketplace.findAll(),
+      MarketplaceCredential.findAll({
+        attributes: [
+          'marketplace_id',
+          [Sequelize.fn('COUNT', Sequelize.col('id')), 'credentials_count']
+        ],
+        group: ['marketplace_id'],
+        raw: true
+      })
+    ]);
+
+    const countsByMarketplace = new Map(
+      credentialCounts.map((row) => [String(row.marketplace_id), Number(row.credentials_count) || 0])
+    );
+
+    return records.map((record) => ({
+      ...formatMarketplace(record),
+      credentials_count: countsByMarketplace.get(String(record.id)) || 0
+    }));
   },
 
   async create(marketplaceData, options = {}) {

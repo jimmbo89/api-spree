@@ -1,10 +1,12 @@
 ﻿const express = require("express");
 const logger = require('../config/logger');
+const multer = require('multer');
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { requireRoles } = require('./policies/RolePolicity.js')
 const validateSchema = require("./middlewares/validateSchema");
+const parseMarketplaceForm = multer().none();
 const auth = require("./middlewares/auth");
 const RoleController = require("./controllers/RoleController");
 const AuthController = require("./controllers/AuthController");
@@ -372,7 +374,10 @@ router.post("/inventory-products", requireRoles([ 'Backoffice', 'Admin', 'Seller
 //router.post("/warehouse-product-bulk-confirm", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), WarehouseProductController.bulkUploadConfirm);
 
 // Marketplaces
-router.post("/marketplace", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(storeMarketplaceSchema), MarketplaceController.store);
+router.post("/marketplace", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), parseMarketplaceForm, validateSchema(storeMarketplaceSchema, {
+  humanize: true,
+  message: 'Solicitud inválida'
+}), MarketplaceController.store);
 router.post("/marketplace-update", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(updateMarketplaceSchema), MarketplaceController.update);
 router.post("/marketplace-destroy", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(idMarketplaceSchema), MarketplaceController.destroy);
 router.post("/marketplace-show", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(idMarketplaceSchema), MarketplaceController.show);

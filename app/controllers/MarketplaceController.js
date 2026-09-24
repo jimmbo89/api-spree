@@ -12,7 +12,7 @@ const MarketplaceController = {
   async list(req, res) {
     logger.info(`${req.user?.name || 'Unknown'} - Lista marketplaces`);
     try {
-      const marketplaces = await MarketplaceRepository.findAll();
+      const marketplaces = await MarketplaceRepository.findAllWithCredentialCount();
       // ⚠️ Eliminar client_secret de la respuesta
       const safeMarketplaces = marketplaces.map(mp => {
         const { client_secret, ...safeMp } = mp;
