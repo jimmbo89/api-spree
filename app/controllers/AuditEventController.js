@@ -1832,7 +1832,12 @@ const AuditEventController = {
     try {
       const companyId = Number(req.body.company_id);
       const filters = { ...req.body };
-      if (filters.product_id != null && filters.product_id !== '') {
+      // `product_id` conserva su compatibilidad histórica para el historial
+      // global del producto. El scope contextual usa product_id + warehouse_id
+      // sin convertirlos en resource_type/resource_id.
+      if (filters.scope !== 'warehouse_product'
+        && filters.product_id != null
+        && filters.product_id !== '') {
         filters.resource_type = 'product';
         filters.resource_id = String(filters.product_id);
       }

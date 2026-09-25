@@ -7,6 +7,7 @@ const nullableId = Joi.alternatives()
 
 const auditEventListSchema = Joi.object({
   company_id: Joi.number().integer().positive().required(),
+  scope: Joi.string().trim().valid('warehouse_product').optional(),
   module: Joi.string().trim().max(80).optional(),
   action: Joi.string().trim().max(120).optional(),
   result: Joi.string().trim().max(30).optional(),
@@ -18,9 +19,17 @@ const auditEventListSchema = Joi.object({
   related_resource_id: nullableId,
   marketplace_id: Joi.number().integer().positive().optional().allow(null),
   marketplace_credential_id: Joi.number().integer().positive().optional().allow(null),
-  product_id: Joi.number().integer().positive().optional().allow(null),
+  product_id: Joi.when('scope', {
+    is: 'warehouse_product',
+    then: Joi.number().integer().positive().required(),
+    otherwise: Joi.number().integer().positive().optional().allow(null)
+  }),
   pool_id: Joi.number().integer().positive().optional().allow(null),
-  warehouse_id: Joi.number().integer().positive().optional().allow(null),
+  warehouse_id: Joi.when('scope', {
+    is: 'warehouse_product',
+    then: Joi.number().integer().positive().required(),
+    otherwise: Joi.number().integer().positive().optional().allow(null)
+  }),
   branch_id: Joi.number().integer().positive().optional().allow(null),
   job_id: Joi.number().integer().positive().optional().allow(null),
   origin_job_id: Joi.number().integer().positive().optional().allow(null),

@@ -1,5 +1,5 @@
 const { AuditEvent, UserCompany } = require('../models');
-const { Op } = require('sequelize');
+const { Op, literal } = require('sequelize');
 const logger = require('../../config/logger');
 
 function removeUndefinedValues(value) {
@@ -63,6 +63,8 @@ const AuditEventRepository = {
     try {
       const {
         company_id,
+        scope,
+        product_id,
         module,
         action,
         result,
@@ -108,6 +110,65 @@ const AuditEventRepository = {
         origin_job_id,
         correlation_id
       });
+
+      if (scope === 'warehouse_product') {
+        const productId = Number(product_id);
+        const warehouseId = Number(warehouse_id);
+
+        if (!Number.isSafeInteger(productId) || productId <= 0
+          || !Number.isSafeInteger(warehouseId) || warehouseId <= 0) {
+          throw new Error('warehouse_product_scope_requires_product_and_warehouse');
+        }
+
+        // Los eventos de movimiento apuntan al inventory_movement, no al
+        // producto. La subconsulta mantiene el filtrado en la base de datos
+        // y evita traer todo el historial del almacén a memoria.
+        const movementIds = literal(`(
+          SELECT id
+          FROM inventory_movements
+          WHERE product_id = ${productId}
+            AND (
+              warehouse_id = ${warehouseId}
+              OR origin_warehouse_id = ${warehouseId}
+              OR destination_warehouse_id = ${warehouseId}
+            )
+        )`);
+
+        // Este scope es una relación contextual. No debe combinarse con los
+        // filtros de recurso simples, porque excluirían alguna de las tres
+        // formas históricas en que se guardan estos eventos.
+        delete where.resource_type;
+        delete where.resource_id;
+        delete where.related_resource_type;
+        delete where.related_resource_id;
+
+        where[Op.and] = [{
+          [Op.or]: [
+            // Cambios registrados desde el módulo de productos.
+            {
+              resource_type: 'product',
+              resource_id: String(productId),
+              warehouse_id: warehouseId
+            },
+            // Alta, configuración o eliminación del producto en el almacén.
+            {
+              resource_type: 'warehouse',
+              resource_id: String(warehouseId),
+              warehouse_id: warehouseId,
+              related_resource_type: 'product',
+              related_resource_id: String(productId)
+            },
+            // Entradas, salidas, ajustes y transferencias.
+            {
+              resource_type: 'warehouse',
+              resource_id: String(warehouseId),
+              warehouse_id: warehouseId,
+              related_resource_type: 'inventory_movement',
+              related_resource_id: { [Op.in]: movementIds }
+            }
+          ]
+        }];
+      }
 
       // El historial individual usa contrato existente actor_type/actor_id.
       // Solo se amplía cuando no hay filtro de recurso explícito.
