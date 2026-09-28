@@ -133,6 +133,82 @@ test('FalabellaAdapter: buildFalabellaProductNodeXml no usa ProductId interno', 
   assert.equal(node.ProductId, undefined);
 });
 
+test('FalabellaAdapter: resuelve cualquier atributo de opción desde value_id a la etiqueta visible', async () => {
+  const adapter = createAdapter();
+  const categoryAttributes = [
+    {
+      id: 'ConditionType',
+      feed_name: 'ConditionType',
+      attribute_type: 'option',
+      input_type: 'dropdown',
+      values: [{ id: 9, name: 'Nuevo' }]
+    },
+    {
+      id: 'Segmento',
+      feed_name: 'Segmento',
+      attribute_type: 'option',
+      input_type: 'dropdown',
+      values: [{ id: 7224353, name: 'Productividad' }]
+    },
+    {
+      id: 'SellerWarranty',
+      feed_name: 'SellerWarranty',
+      attribute_type: 'option',
+      input_type: 'dropdown',
+      values: [{ id: 4, name: '1 año' }]
+    },
+    {
+      id: 'FulfillmentMode',
+      feed_name: 'FulfillmentMode',
+      attribute_type: 'option',
+      input_type: 'dropdown',
+      values: [{ id: 77, name: 'Despacho estándar' }]
+    }
+  ];
+
+  adapter.loadCategoryMetadata = async () => ({
+    success: true,
+    category: { id: '1234', selectable: true },
+    attributes: categoryAttributes
+  });
+
+  const hydrated = await adapter.hydrateAttributesForPublish({
+    sku: 'SKU-OPTIONS-1',
+    productName: 'Producto',
+    brand: 'Marca',
+    price: 1000,
+    stock: 1,
+    PrimaryCategory: '1234',
+    description: 'Descripción real',
+    attributes: [
+      { id: 'ConditionType', value_id: 9 },
+      { id: 'Segmento', value_id: 7224353 },
+      { id: 'SellerWarranty', value_id: 4 },
+      { id: 'FulfillmentMode', value_id: 77 }
+    ]
+  });
+
+  const attributesById = new Map(hydrated.attributes.map((attr) => [attr.id, attr]));
+  assert.equal(attributesById.get('ConditionType').value_name, 'Nuevo');
+  assert.equal(attributesById.get('Segmento').value_name, 'Productividad');
+  assert.equal(attributesById.get('SellerWarranty').value_name, '1 año');
+  assert.equal(attributesById.get('FulfillmentMode').value_name, 'Despacho estándar');
+
+  const node = adapter.buildFalabellaProductNodeXml({
+    ...hydrated,
+    package_height: 10,
+    package_width: 10,
+    package_length: 10,
+    package_weight: 1,
+    images: []
+  });
+
+  assert.equal(node.ProductData.ConditionType, 'Nuevo');
+  assert.equal(node.ProductData.Segmento, 'Productividad');
+  assert.equal(node.ProductData.SellerWarranty, '1 año');
+  assert.equal(node.ProductData.FulfillmentMode, 'Despacho estándar');
+});
+
 test('FalabellaAdapter: conserva PackageHeight positivo de 1 cm', () => {
   const adapter = createAdapter();
   const node = adapter.buildFalabellaProductNodeXml({
@@ -289,6 +365,99 @@ test('FalabellaAdapter: identifica categorías intermedias y hojas desde GetCate
   assert.equal(leaf.selectable, true);
   assert.equal(leaf.expandable, false);
   assert.equal(leaf.parent_category_id, '2');
+});
+
+test('FalabellaAdapter: reintenta GetCategoryTree ante timeout transitorio', async () => {
+  const adapter = createAdapter();
+  const originalGet = axios.get;
+  const originalDelay = process.env.FALABELLA_CATEGORY_RETRY_DELAY_MS;
+  let calls = 0;
+
+  process.env.FALABELLA_CATEGORY_RETRY_DELAY_MS = '0';
+  axios.get = async () => {
+    calls += 1;
+    if (calls === 1) {
+      const error = new Error('timeout of 30000ms exceeded');
+      error.code = 'ECONNABORTED';
+      throw error;
+    }
+
+    return {
+      data: {
+        SuccessResponse: {
+          Body: {
+            Categories: {
+              Category: [{ Name: 'Categoria', CategoryId: '1234', Children: {} }]
+            }
+          }
+        }
+      }
+    };
+  };
+
+  try {
+    const result = await adapter.getCategoryTree();
+    const cachedResult = await adapter.getCategoryTree();
+
+    assert.equal(result.success, true);
+    assert.equal(cachedResult.cached, true);
+    assert.equal(calls, 2);
+  } finally {
+    axios.get = originalGet;
+    if (originalDelay === undefined) {
+      delete process.env.FALABELLA_CATEGORY_RETRY_DELAY_MS;
+    } else {
+      process.env.FALABELLA_CATEGORY_RETRY_DELAY_MS = originalDelay;
+    }
+  }
+});
+
+test('FalabellaAdapter: usa metadata persistida ante timeout sin relajar categoría final', async () => {
+  const adapter = createAdapter();
+  const persistedAttributes = [
+    { id: 'ConditionType', name: 'Condición', value_name: 'Nuevo' },
+    { id: 'PackageHeight', name: 'Alto empaque', value_name: 10 },
+    { id: 'PackageWidth', name: 'Ancho empaque', value_name: 10 },
+    { id: 'PackageLength', name: 'Largo empaque', value_name: 10 },
+    { id: 'PackageWeight', name: 'Peso empaque', value_name: 1 }
+  ];
+
+  adapter.getFalabellaCategory = () => ({ id: '1234', name: 'Categoria' });
+  adapter.getFalabellaConfig = () => ({
+    category: {
+      category_id: '1234',
+      category_name: 'Categoria',
+      selectable: true,
+      expandable: false
+    },
+    attributes: persistedAttributes
+  });
+  adapter.loadCategoryMetadata = async () => ({
+    success: false,
+    category: null,
+    attributes: [],
+    retryable: true,
+    source: {
+      category_tree: 'GetCategoryTree',
+      category_attributes: 'GetCategoryAttributes'
+    }
+  });
+
+  const prepared = await adapter.prepareProduct({
+    id: 1,
+    sku: 'SKU-RETRY-1',
+    name: 'Producto',
+    brand: 'Marca',
+    price: 1000,
+    stock: 1,
+    condition: 'new',
+    variants: [{ price: 1000, publish: true, publishStock: 1 }]
+  });
+
+  assert.equal(prepared.PrimaryCategory, '1234');
+  assert.equal(prepared.category_metadata.stale, true);
+  assert.equal(prepared.category_metadata.category.selectable, true);
+  assert.equal(prepared.category_attributes.length, persistedAttributes.length);
 });
 
 test('FalabellaAdapter: prepareProduct bloquea categorías que no son de último nivel', async () => {
