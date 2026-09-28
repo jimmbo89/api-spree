@@ -5,11 +5,25 @@ const { User, UserToken } = require('../models');
 const logger = require('../../config/logger');
 const { UserTokenRepository, UserRepository } = require('../repositories');
 
+function sendValidateSessionUnauthorized(req, res) {
+  if (req.path !== '/validate-session') return false;
+
+  res.status(401).json({
+    success: false,
+    error: {
+      code: 'TOKEN_INVALID',
+      message: 'La sesión no es válida o ha expirado.'
+    }
+  });
+  return true;
+}
+
 module.exports = async (req, res, next) => {
   // Verificar si el token existe en los encabezados de la solicitud
   const token = req.headers.authorization?.split(" ")[1];
 
   if (!token) {
+    if (sendValidateSessionUnauthorized(req, res)) return;
     return res.status(401).json({ msg: "Acceso no autorizado: token no proporcionado" });
   }
 
@@ -17,12 +31,14 @@ module.exports = async (req, res, next) => {
     // Verificar si el token está revocado o expirado
     const userToken = await UserTokenRepository.findByToken(token);
     if (!userToken) {
+      if (sendValidateSessionUnauthorized(req, res)) return;
       return res.status(401).json({ succes: false, message: 'Acceso no autorizado: token inválido, revocado o expirado' });
     }
 
     // Verificar la validez del token JWT
     jwt.verify(token, authConfig.secret, async (err, decoded) => {
       if (err) {
+        if (sendValidateSessionUnauthorized(req, res)) return;
         return res.status(401).json({ succes: false, message: "Token inválido o expirado" });
       }
 
@@ -36,6 +52,7 @@ module.exports = async (req, res, next) => {
         '/available-for-request',
         '/membership-requests',
         '/logout',
+        '/validate-session',
         '/joint-invitation-token'
       ]);
 

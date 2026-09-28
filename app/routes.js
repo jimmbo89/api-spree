@@ -182,6 +182,8 @@ router.head("/images/:foldername/:filename", (req, res) => {
 //rutas protegidas
 router.use(auth);
 
+router.get('/validate-session', AuthController.validateSession);
+
 // Rutas de reportes de marketplace (protegidas con auth)
 router.post("/reports-sales", MarketplaceReportController.sales);
 router.post("/reports-sales-stats", MarketplaceReportController.salesStats);

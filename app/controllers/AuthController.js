@@ -596,6 +596,15 @@ const AuthController = {
     }
   },
 
+  async validateSession(req, res) {
+    return res.status(200).json({
+      success: true,
+      data: {
+        valid: true
+      }
+    });
+  },
+
   async getUsers(req, res) {
     const { company_id } = req.body;
     const requester = req.user?.name || "Anonymous";
