@@ -4274,7 +4274,13 @@ async mercadoLibreShippingCosts(req, res) {
         return res.status(404).json({ success: false, error: "Credencial no encontrada" });
       }
 
-      if (credential.user_id !== user_id) {
+      const hasCredentialAccess = await UserMarketplaceCredentialRepository.hasActiveAccess({
+        userId: user_id,
+        marketplaceCredentialId: credential_id,
+        companyId: req.user?.company_id ?? req.headers['x-company-id'] ?? null
+      });
+
+      if (!hasCredentialAccess) {
         return res.status(403).json({ success: false, error: "No autorizado" });
       }
 

@@ -175,6 +175,35 @@ const UserMarketplaceCredentialRepository = {
     });
   },
 
+  async hasActiveAccess({ userId, marketplaceCredentialId, companyId = null, transaction = null } = {}) {
+    const normalizedUserId = Number(userId);
+    const normalizedCredentialId = Number(marketplaceCredentialId);
+
+    if (!Number.isInteger(normalizedUserId) || normalizedUserId <= 0) return false;
+    if (!Number.isInteger(normalizedCredentialId) || normalizedCredentialId <= 0) return false;
+
+    const where = {
+      user_id: normalizedUserId,
+      marketplace_credential_id: normalizedCredentialId,
+      status: 1
+    };
+
+    if (companyId !== null && companyId !== undefined && companyId !== '') {
+      const normalizedCompanyId = Number(companyId);
+      if (!Number.isInteger(normalizedCompanyId) || normalizedCompanyId <= 0) return false;
+      where.company_id = normalizedCompanyId;
+    }
+
+    const access = await UserMarketplaceCredential.findOne({
+      where,
+      attributes: ['id'],
+      raw: true,
+      transaction
+    });
+
+    return Boolean(access);
+  },
+
   async ensureActiveAccess({ userId, companyId, marketplaceCredentialId, transaction = null }) {
     const normalizedUserId = Number(userId);
     const normalizedCompanyId = Number(companyId);
