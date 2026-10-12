@@ -6,6 +6,24 @@ const { parseStringPromise, Builder } = require('xml2js');
 const logger = require('../../../config/logger');
 const { MarketplaceCredentialRepository } = require('../../repositories');
 const MarketplaceTransformerFalabella = require('../MarketplaceTransformerFalabella');
+const { humanizeFalabellaMessage } = require('../../utils/marketplaceErrorHumanizer');
+const { getFromCache, saveToCache } = require('../../../helpers/marketplaceCacheHelper');
+
+const FALABELLA_CATEGORY_METADATA_CACHE_TYPE = 'category_metadata_v1';
+const FALABELLA_CATEGORY_TREE_CACHE_TYPE = 'category_tree_v1';
+const FALABELLA_CATEGORY_METADATA_CACHE_TTL_SECONDS = 86400;
+
+const sleep = (milliseconds) => new Promise(resolve => setTimeout(resolve, milliseconds));
+
+const isRetryableFalabellaCategoryError = (error) => {
+  const status = Number(error?.response?.status);
+  const code = String(error?.code || '').toUpperCase();
+  const message = String(error?.message || '').toLowerCase();
+
+  return [502, 503, 504].includes(status)
+    || ['ECONNABORTED', 'ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN'].includes(code)
+    || /timeout|timed out|socket hang up|network error/.test(message);
+};
 
 class FalabellaAdapter extends BaseAdapter {
   static supportsCategoryPrediction() {
@@ -819,8 +837,11 @@ class FalabellaAdapter extends BaseAdapter {
       logger.info(`[FalabellaAdapter] Feed ${requestId} finalizado. Totales=${totalRecords} procesados=${processedRecords} fallidos=${failedRecords} warnings=${warnings.length} errors=${errors.length}`);
 
       if (failedRecords > 0 || errors.length > 0) {
-        const errorMessage = errors.length > 0
+        const originalErrorMessage = errors.length > 0
           ? errors.map(item => item?.message).filter(Boolean).join(' | ')
+          : null;
+        const errorMessage = errors.length > 0
+          ? errors.map(item => humanizeFalabellaMessage(item?.message, item?.code, item?.field)).filter(Boolean).join(' | ')
           : null;
 
         return {
@@ -830,7 +851,8 @@ class FalabellaAdapter extends BaseAdapter {
             error_code: 'feed_failed',
             marketplace_error: {
               request_action: feed?.Action || action || 'ProductCreate',
-              error_message: errorMessage,
+              error_message: originalErrorMessage,
+              original_message: originalErrorMessage,
               raw: feed?.raw || feed
             },
             feed: feedData
@@ -845,12 +867,16 @@ class FalabellaAdapter extends BaseAdapter {
 
       if (warnings.length > 0) {
         logger.warn(`[FalabellaAdapter] Producto publicado con advertencias confirmadas por FeedStatus`, warnings);
-        const warningMessage = warnings.map(item => item?.message).filter(Boolean).join(' | ');
+        const humanWarnings = warnings.map(item => ({
+          ...item, original_message: item.message,
+          message: humanizeFalabellaMessage(item.message, null, item.field)
+        }));
+        const warningMessage = humanWarnings.map(item => item.message).join(' ');
         return {
           success: true,
           external_id: transformedProduct.sku,
           has_warnings: true,
-          warnings,
+          warnings: humanWarnings,
           warning_message: warningMessage
             ? `Pendiente en Falabella: ${warningMessage}`
             : 'Pendiente en Falabella por advertencias del marketplace',
@@ -884,7 +910,7 @@ class FalabellaAdapter extends BaseAdapter {
     };
   }
 
-  async uploadImagesAfterConfirmedProductCreate(transformedProduct, currentImageUploadResult = null) {
+  async uploadImagesAfterConfirmedProductCreate(transformedProduct, currentImageUploadResult = null, uploadImages = null) {
     const images = this.normalizeFalabellaImages(transformedProduct?.images || []);
     const baseResult = currentImageUploadResult || (
       images.length > 0
@@ -959,10 +985,10 @@ class FalabellaAdapter extends BaseAdapter {
     logger.info(
       `[FalabellaAdapter] ProductCreate confirmado para ${sellerSku}; asociando ${images.length} imagen(es) via Action=Image`
     );
-    return await this.uploadProductImages(sellerSku, images);
+    return uploadImages ? await uploadImages(sellerSku, images) : await this.uploadProductImages(sellerSku, images);
   }
 
-  async resolveImmediateProductCreateFeedResult({ transformedProduct, requestId, imageUploadResult }) {
+  async resolveImmediateProductCreateFeedResult({ transformedProduct, requestId, imageUploadResult, uploadImages = null, action = 'ProductCreate' }) {
     const maxAttempts = Number(process.env.FALABELLA_PRODUCT_CREATE_FEED_STATUS_MAX_ATTEMPTS || 2);
     const intervalMs = Number(process.env.FALABELLA_PRODUCT_CREATE_FEED_STATUS_INTERVAL_MS || 3000);
 
@@ -989,7 +1015,7 @@ class FalabellaAdapter extends BaseAdapter {
         requestId,
         feed,
         timedOut: false,
-        action: 'ProductCreate'
+        action
       });
 
       feedResult.data = {
@@ -1007,7 +1033,8 @@ class FalabellaAdapter extends BaseAdapter {
 
       const confirmedImageUploadResult = await this.uploadImagesAfterConfirmedProductCreate(
         transformedProduct,
-        imageUploadResult
+        imageUploadResult,
+        uploadImages
       );
 
       feedResult.data = {
@@ -1022,13 +1049,13 @@ class FalabellaAdapter extends BaseAdapter {
           {
             field: 'images',
             sku: transformedProduct.sku,
-            message: confirmedImageUploadResult.error || 'No se pudo iniciar la subida de imágenes en Falabella',
+            message: 'No pudimos enviar las imágenes del producto a Falabella. Revisa las imágenes y vuelve a intentarlo.',
             value: null
           }
         ];
         feedResult.warning_message = [
           feedResult.warning_message,
-          `La subida de imágenes quedó pendiente: ${confirmedImageUploadResult.error || confirmedImageUploadResult.reason || 'sin detalle'}`
+          'La publicación está pendiente porque no pudimos enviar las imágenes a Falabella. Revisa las imágenes del producto.'
         ].filter(Boolean).join(' | ');
       }
 
@@ -1071,7 +1098,7 @@ getFalabellaConfig(productData) {
 }
 
 // ✅ Usar categoría marketplace-específica, no categoría general de Spree
-getFalabellaCategory(productData) {
+  getFalabellaCategory(productData) {
   const falabellaData = this.getFalabellaConfig(productData);
   if (!falabellaData) {
     return null;
@@ -1093,11 +1120,61 @@ getFalabellaCategory(productData) {
     falabellaData?.category_name ||
     '';
 
-  return {
-    id: categoryId,
-    name: categoryName
-  };
-}
+    return {
+      id: categoryId,
+      name: categoryName
+    };
+  }
+
+  getFalabellaCategoryCacheNamespace() {
+    const credentialKey = this.credential?.id
+      || (typeof this.credentialId === 'number' || typeof this.credentialId === 'string'
+        ? this.credentialId
+        : null)
+      || this.credential?.seller_email
+      || this.marketplaceId
+      || 'unknown';
+
+    return `falabella_credential_${credentialKey}`;
+  }
+
+  async requestFalabellaCategoryEndpoint(apiUrl, action) {
+    const configuredTimeoutMs = Number(process.env.FALABELLA_CATEGORY_REQUEST_TIMEOUT_MS);
+    const configuredRetries = Number(process.env.FALABELLA_CATEGORY_REQUEST_RETRIES);
+    const configuredRetryDelayMs = Number(process.env.FALABELLA_CATEGORY_RETRY_DELAY_MS);
+    const timeoutMs = Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0
+      ? configuredTimeoutMs
+      : 30000;
+    const maxRetries = Number.isInteger(configuredRetries) && configuredRetries >= 0
+      ? configuredRetries
+      : 1;
+    const retryDelayMs = Number.isFinite(configuredRetryDelayMs) && configuredRetryDelayMs >= 0
+      ? configuredRetryDelayMs
+      : 1000;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+      try {
+        return await axios.get(apiUrl, { timeout: timeoutMs });
+      } catch (error) {
+        const retryable = isRetryableFalabellaCategoryError(error);
+        const hasRetriesLeft = attempt < maxRetries;
+
+        if (!retryable || !hasRetriesLeft) {
+          error.retryable = retryable;
+          error.attempts = attempt + 1;
+          throw error;
+        }
+
+        logger.warn(
+          `[FalabellaAdapter] ${action} transitorio (${error.message}); `
+          + `reintento ${attempt + 1}/${maxRetries}`
+        );
+        await sleep(Math.max(0, retryDelayMs) * (attempt + 1));
+      }
+    }
+
+    throw new Error(`No se pudo ejecutar ${action}`);
+  }
 
 // 🔑 NUEVO MÉTODO: Transformar imágenes a formato compatible con Falabella
 // 🔑 MÉTODO COMPLETO: Transformar y normalizar imágenes a formato compatible con Falabella
@@ -1195,7 +1272,22 @@ _transformImages(images = []) {
       }));
     }
 
-    const categoryMetadata = await this.loadCategoryMetadata(category.id);
+    let categoryMetadata = await this.loadCategoryMetadata(category.id);
+    if (!categoryMetadata?.success || !categoryMetadata?.category) {
+      const persistedMetadata = this.getPersistedFalabellaCategoryMetadata(
+        category.id,
+        falabellaConfig
+      );
+
+      if (categoryMetadata?.retryable && persistedMetadata) {
+        categoryMetadata = persistedMetadata;
+        logger.warn(
+          `[FalabellaAdapter] Usando metadata persistida para categoría ${category.id} `
+          + 'porque Falabella no respondió temporalmente'
+        );
+      }
+    }
+
     const categoryAttributes = Array.isArray(categoryMetadata?.attributes)
       ? categoryMetadata.attributes
       : [];
@@ -1381,30 +1473,132 @@ _transformImages(images = []) {
     return prepared;
   }
 
+  isFalabellaOptionAttribute(attr) {
+    const attributeType = String(
+      attr?.attribute_type ?? attr?.attributeType ?? attr?.AttributeType ?? ''
+    ).toLowerCase();
+    const inputType = String(
+      attr?.input_type ?? attr?.inputType ?? attr?.InputType ?? ''
+    ).toLowerCase();
+    const valueType = String(attr?.value_type ?? attr?.valueType ?? '').toLowerCase();
+
+    return (
+      ['option', 'multi_option'].includes(attributeType)
+      || ['dropdown', 'multiselect'].includes(inputType)
+      || ['list', 'enum', 'option', 'multi_option'].includes(valueType)
+      || (Array.isArray(attr?.values) && attr.values.length > 0)
+    );
+  }
+
+  resolveFalabellaOptionLabels(attr) {
+    if (!this.isFalabellaOptionAttribute(attr)) return null;
+
+    const options = Array.isArray(attr?.values)
+      ? attr.values
+      : (Array.isArray(attr?.options) ? attr.options : []);
+    if (options.length === 0) return null;
+
+    const hasValue = (value) => {
+      if (Array.isArray(value)) return value.length > 0;
+      return value !== undefined && value !== null && String(value).trim() !== '';
+    };
+
+    const sourceValue = [attr?.value_name, attr?.value, attr?.value_id].find(hasValue);
+    if (!hasValue(sourceValue)) return null;
+
+    const toScalar = (value) => {
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        return value.value_name
+          ?? value.value
+          ?? value.name
+          ?? value.label
+          ?? value.id
+          ?? value.value_id
+          ?? '';
+      }
+      return value;
+    };
+
+    const sourceValues = (Array.isArray(sourceValue) ? sourceValue : [sourceValue])
+      .flatMap((value) => {
+        const scalar = toScalar(value);
+        const text = String(scalar ?? '').trim();
+        if (!text) return [];
+
+        const directMatch = options.some((option) => {
+          const optionId = option?.id ?? option?.value_id;
+          const optionLabel = option?.name
+            ?? option?.label
+            ?? option?.value_name
+            ?? option?.value
+            ?? '';
+          return this.normalizeFalabellaText(text) === this.normalizeFalabellaText(optionId)
+            || this.normalizeFalabellaText(text) === this.normalizeFalabellaText(optionLabel);
+        });
+
+        return directMatch
+          ? [text]
+          : text.split(',').map((part) => part.trim()).filter(Boolean);
+      });
+
+    const resolvedValues = sourceValues.map((source) => {
+      const normalizedSource = this.normalizeFalabellaText(source);
+      const matchedOption = options.find((option) => {
+        const optionId = option?.id ?? option?.value_id;
+        const optionLabel = option?.name
+          ?? option?.label
+          ?? option?.value_name
+          ?? option?.value
+          ?? '';
+        return normalizedSource === this.normalizeFalabellaText(optionId)
+          || normalizedSource === this.normalizeFalabellaText(optionLabel);
+      });
+
+      if (!matchedOption) {
+        return { value: source, matched: false };
+      }
+
+      const label = String(
+        matchedOption.name
+          ?? matchedOption.label
+          ?? matchedOption.value_name
+          ?? matchedOption.value
+          ?? source
+      ).trim();
+
+      return { value: label || source, matched: true };
+    });
+
+    if (!resolvedValues.some((entry) => entry.matched)) return null;
+    return resolvedValues.map((entry) => entry.value).filter(Boolean).join(', ');
+  }
+
   normalizeFalabellaAttributeValue(attr) {
     if (!attr) return '';
 
-  const isOptionAttr =
-    ['option', 'multi_option'].includes(attr?.attribute_type) ||
-    ['dropdown', 'multiselect'].includes(
-      String(attr?.input_type || '').toLowerCase()
-    );
+    const isOptionAttr = this.isFalabellaOptionAttribute(attr);
 
-  // 🔑 Falabella ProductCreate espera LABEL visible
-  // NO IDs internos
-  let value;
+    // Falabella ProductCreate espera la etiqueta visible, no el ID interno.
+    let value;
 
-  if (isOptionAttr) {
-    value =
-      attr?.value_name ??
-      attr?.value ??
-      '';
-  } else {
-    value =
-      attr?.value ??
-      attr?.value_name ??
-      '';
-  }
+    if (isOptionAttr) {
+      const resolvedLabel = this.resolveFalabellaOptionLabels(attr);
+      const hasValueName = attr?.value_name !== undefined
+        && attr?.value_name !== null
+        && String(attr.value_name).trim() !== '';
+      const valueDiffersFromId = attr?.value !== undefined
+        && attr?.value !== null
+        && (attr?.value_id === undefined
+          || this.normalizeFalabellaText(attr.value) !== this.normalizeFalabellaText(attr.value_id));
+
+      value = resolvedLabel
+        ?? (hasValueName ? attr.value_name : (valueDiffersFromId ? attr.value : ''));
+    } else {
+      value =
+        attr?.value ??
+        attr?.value_name ??
+        '';
+    }
 
   if (
     value === null ||
@@ -2179,15 +2373,80 @@ _transformImages(images = []) {
       return metadata ? { ...metadata.raw, ...metadata, ...attr } : attr;
     });
 
+    const hydratedAttributes = mergedAttributes.map((attr) => {
+      const resolvedLabel = this.resolveFalabellaOptionLabels(attr);
+      return resolvedLabel
+        ? { ...attr, value_name: resolvedLabel, value: resolvedLabel }
+        : attr;
+    });
+
     return {
       ...product,
-      attributes: mergedAttributes,
+      attributes: hydratedAttributes,
       category_attributes: product.category_attributes || categoryAttributes,
       category_metadata: categoryMetadata
     };
   }
 
+  getPersistedFalabellaCategoryMetadata(categoryId, falabellaConfig) {
+    const persistedMetadata = falabellaConfig?.category_metadata;
+    const persistedCategory = persistedMetadata?.category || falabellaConfig?.category;
+    const persistedCategoryId = persistedCategory?.category_id
+      || persistedCategory?.id
+      || falabellaConfig?.category_id;
+    const persistedAttributes = Array.isArray(persistedMetadata?.attributes)
+      ? persistedMetadata.attributes
+      : (Array.isArray(falabellaConfig?.attributes)
+        ? falabellaConfig.attributes
+        : (Array.isArray(persistedCategory?.attributes) ? persistedCategory.attributes : []));
+
+    if (
+      String(persistedCategoryId || '') !== String(categoryId || '')
+      || persistedCategory?.selectable !== true
+      || persistedAttributes.length === 0
+    ) {
+      return null;
+    }
+
+    return {
+      success: true,
+      category_id: String(categoryId),
+      category: {
+        ...persistedCategory,
+        category_id: String(persistedCategoryId)
+      },
+      tree: [],
+      attributes: persistedAttributes,
+      raw_attributes: persistedMetadata?.raw_attributes || null,
+      raw_tree: persistedMetadata?.raw_tree || null,
+      retrieved_at: persistedMetadata?.retrieved_at || null,
+      source: {
+        category_tree: 'persisted_category_metadata',
+        category_attributes: 'persisted_category_metadata'
+      },
+      stale: true
+    };
+  }
+
   async loadCategoryMetadata(categoryId) {
+    await this.ensureValidCredentials();
+
+    const normalizedCategoryId = String(categoryId);
+    const cacheNamespace = this.getFalabellaCategoryCacheNamespace();
+    const cachedMetadata = getFromCache(
+      cacheNamespace,
+      FALABELLA_CATEGORY_METADATA_CACHE_TYPE,
+      normalizedCategoryId
+    );
+
+    if (cachedMetadata?.success && cachedMetadata?.category) {
+      logger.info(`[FalabellaAdapter] Cache hit metadata categoría ${normalizedCategoryId}`);
+      return {
+        ...cachedMetadata,
+        cached: true
+      };
+    }
+
     const [attributesResponse, treeResponse] = await Promise.all([
       this.getCategoryAttributes(categoryId),
       this.getCategoryTree()
@@ -2198,9 +2457,11 @@ _transformImages(images = []) {
       : [];
     const treeMatch = this.findCategoryInTree(categoryTree, String(categoryId));
 
-    return {
-      success: attributesResponse?.success === true,
-      category_id: String(categoryId),
+    const metadata = {
+      success: attributesResponse?.success === true
+        && treeResponse?.success === true
+        && Boolean(treeMatch),
+      category_id: normalizedCategoryId,
       category: treeMatch || null,
       tree: categoryTree,
       attributes: Array.isArray(attributesResponse?.attributes) ? attributesResponse.attributes : [],
@@ -2210,8 +2471,21 @@ _transformImages(images = []) {
       source: {
         category_tree: treeResponse?.source || 'GetCategoryTree',
         category_attributes: attributesResponse?.source || 'GetCategoryAttributes'
-      }
+      },
+      retryable: Boolean(attributesResponse?.retryable || treeResponse?.retryable)
     };
+
+    if (metadata.success) {
+      saveToCache(
+        cacheNamespace,
+        FALABELLA_CATEGORY_METADATA_CACHE_TYPE,
+        normalizedCategoryId,
+        metadata,
+        FALABELLA_CATEGORY_METADATA_CACHE_TTL_SECONDS
+      );
+    }
+
+    return metadata;
   }
 
   async getCategoryTree() {
@@ -2219,6 +2493,19 @@ _transformImages(images = []) {
       const credentialStatus = await this.ensureValidCredentials();
       if (!credentialStatus.valid) {
         throw new Error('Credenciales inválidas');
+      }
+
+      const cacheNamespace = this.getFalabellaCategoryCacheNamespace();
+      const cachedTree = getFromCache(cacheNamespace, FALABELLA_CATEGORY_TREE_CACHE_TYPE, 'all');
+      if (Array.isArray(cachedTree) && cachedTree.length > 0) {
+        logger.info('[FalabellaAdapter] Cache hit árbol de categorías Falabella');
+        return {
+          success: true,
+          categories: cachedTree,
+          raw: null,
+          source: 'GetCategoryTree',
+          cached: true
+        };
       }
 
       const params = {
@@ -2231,17 +2518,33 @@ _transformImages(images = []) {
 
       const { canonicalQuery, signatureEncoded } = this.buildSignedQuery(params);
       const apiUrl = `https://sellercenter-api.falabella.com?${canonicalQuery}&Signature=${signatureEncoded}`;
-      const response = await axios.get(apiUrl, { timeout: 10000 });
+      const response = await this.requestFalabellaCategoryEndpoint(apiUrl, 'GetCategoryTree');
       const tree = response.data?.SuccessResponse?.Body?.Categories?.Category || [];
+      const categories = Array.isArray(tree) ? tree : [tree];
+      if (categories.length > 0) {
+        saveToCache(
+          cacheNamespace,
+          FALABELLA_CATEGORY_TREE_CACHE_TYPE,
+          'all',
+          categories,
+          FALABELLA_CATEGORY_METADATA_CACHE_TTL_SECONDS
+        );
+      }
       return {
         success: true,
-        categories: Array.isArray(tree) ? tree : [tree],
+        categories,
         raw: response.data,
         source: 'GetCategoryTree'
       };
     } catch (error) {
       logger.error(`[FalabellaAdapter] Error obteniendo árbol de categorías: ${error.message}`);
-      return { success: false, categories: [], raw: error.response?.data || null, source: 'GetCategoryTree' };
+      return {
+        success: false,
+        categories: [],
+        raw: error.response?.data || null,
+        source: 'GetCategoryTree',
+        retryable: error.retryable === true
+      };
     }
   }
 
@@ -2264,7 +2567,7 @@ _transformImages(images = []) {
 
       const { canonicalQuery, signatureEncoded } = this.buildSignedQuery(params);
       const apiUrl = `https://sellercenter-api.falabella.com?${canonicalQuery}&Signature=${signatureEncoded}`;
-      const response = await axios.get(apiUrl, { timeout: 10000 });
+      const response = await this.requestFalabellaCategoryEndpoint(apiUrl, 'GetCategoryAttributes');
 
       const rawAttributes = response.data?.SuccessResponse?.Body?.Attribute;
       const items = Array.isArray(rawAttributes) ? rawAttributes : rawAttributes ? [rawAttributes] : [];
@@ -2323,7 +2626,13 @@ _transformImages(images = []) {
       };
     } catch (error) {
       logger.error(`[FalabellaAdapter] Error obteniendo atributos: ${error.message}`);
-      return { success: false, source: 'GetCategoryAttributes', attributes: [], raw: error.response?.data || null };
+      return {
+        success: false,
+        source: 'GetCategoryAttributes',
+        attributes: [],
+        raw: error.response?.data || null,
+        retryable: error.retryable === true
+      };
     }
   }
 
@@ -2692,7 +3001,7 @@ _transformImages(images = []) {
     return node;
   }
 
-    async publish(transformedProduct) {
+    async publish(transformedProduct, options = {}) {
     try {
       const credentialStatus = await this.ensureValidCredentials();
       if (!credentialStatus.valid) {
@@ -2790,6 +3099,8 @@ _transformImages(images = []) {
           };
         }
 
+        if (options.onFeedAccepted) await options.onFeedAccepted({ feed_id: requestId, action });
+
         const imagesPendingCount = this.normalizeFalabellaImages(transformedProduct.images || []).length;
         const normalizedImages = [];
         const imageUploadResult = imagesPendingCount > 0
@@ -2806,13 +3117,15 @@ _transformImages(images = []) {
         // La confirmación final del estado se obtiene por FeedStatus; el webhook onFeedCompleted
         // queda como mecanismo de reconciliación asíncrona.
         logger.info(`[FalabellaAdapter] ✅ Feed aceptado por Falabella. FeedID: ${requestId}`);
-        const marketplaceMessage = `Falabella emitió FeedID: ${requestId}; confirmar luego con FeedStatus`;
+        const marketplaceMessage = 'Falabella recibió tu producto y está procesando la publicación. El estado se actualizará automáticamente.';
 
-        const immediateFeedResult = action === 'ProductCreate'
+        const immediateFeedResult = ['ProductCreate', 'ProductUpdate'].includes(action)
           ? await this.resolveImmediateProductCreateFeedResult({
               transformedProduct,
               requestId,
-              imageUploadResult
+              imageUploadResult,
+              uploadImages: options.uploadImages,
+              action
             })
           : null;
 
@@ -3210,6 +3523,7 @@ _transformImages(images = []) {
         
         return {
           success: true,
+          pending: true,
           request_id: requestId,
           images_count: images.length,
           data: responseBody

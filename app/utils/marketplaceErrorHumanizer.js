@@ -27,6 +27,9 @@ const FIELD_LABELS = {
   sellerpackagelength: 'largo del paquete del vendedor',
   sellerpackagewidth: 'ancho del paquete del vendedor',
   sellerpackageweight: 'peso del paquete del vendedor',
+  conditiontype: 'condición del producto',
+  segmento: 'segmento',
+  sellerwarranty: 'garantía del proveedor',
   gtin: 'código universal (GTIN)',
   unitsperpack: 'unidades por pack',
   saleformat: 'formato de venta',
@@ -195,6 +198,13 @@ function humanizeFalabellaMessage(message, code = null, field = null) {
   const normalizedCode = normalizeCode(code);
   const fieldLabel = publicationFieldLabel(field);
 
+  if (/qc_status\s*:\s*rejected/i.test(text) || normalized.includes('no aprobo el producto en su revision de calidad')) {
+    return 'Falabella no aprobó el producto en su revisión de calidad. Revisa el motivo en Seller Center y corrige la información indicada.';
+  }
+  if (normalized.includes('brand') && /requires? (an? )?approval/.test(normalized)) {
+    return 'Para publicar con esta marca necesitas la autorización de Falabella. Contacta a su soporte técnico para solicitar la validación y habilitación de la marca.';
+  }
+
   if (!text) {
     return 'Falabella rechazó la publicación, pero no entregó un detalle adicional.';
   }
@@ -239,6 +249,17 @@ function humanizeFalabellaMessage(message, code = null, field = null) {
 
   if (normalized.includes('format error') || normalized.includes('error de formato')) {
     return 'El formato de uno o más datos no es válido. Revisa los valores enviados según la categoría.';
+  }
+
+  const invalidOptionMatch = text.match(
+    /Field\s+["']([^"']+)["']\s+with\s+value\s+["']([^"']*)["']\s+does not appear to be a valid option/i
+  );
+  if (invalidOptionMatch || normalized.includes('does not appear to be a valid option')) {
+    const invalidField = publicationFieldLabel(invalidOptionMatch?.[1] || field);
+    const invalidValue = invalidOptionMatch?.[2]?.trim();
+    return invalidValue
+      ? `El valor «${invalidValue}» en ${publicationFieldText(invalidField)} no es una opción válida para la categoría seleccionada. Revisa las opciones permitidas.`
+      : `El valor de ${publicationFieldText(invalidField)} no es una opción válida para la categoría seleccionada. Revisa las opciones permitidas.`;
   }
 
   if (normalized.includes('exact match') || normalized.includes('being processed') || normalized.includes('document is being processed')) {

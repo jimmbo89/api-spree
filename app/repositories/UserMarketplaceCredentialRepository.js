@@ -204,6 +204,44 @@ const UserMarketplaceCredentialRepository = {
     return Boolean(access);
   },
 
+  async findActiveCredentialIdByMarketplace({ userId, marketplaceId, companyId = null, transaction = null } = {}) {
+    const normalizedUserId = Number(userId);
+    const normalizedMarketplaceId = Number(marketplaceId);
+
+    if (!Number.isInteger(normalizedUserId) || normalizedUserId <= 0) return null;
+    if (!Number.isInteger(normalizedMarketplaceId) || normalizedMarketplaceId <= 0) return null;
+
+    const where = {
+      user_id: normalizedUserId,
+      status: 1
+    };
+
+    if (companyId !== null && companyId !== undefined && companyId !== '') {
+      const normalizedCompanyId = Number(companyId);
+      if (!Number.isInteger(normalizedCompanyId) || normalizedCompanyId <= 0) return null;
+      where.company_id = normalizedCompanyId;
+    }
+
+    const access = await UserMarketplaceCredential.findOne({
+      where,
+      attributes: ['marketplace_credential_id'],
+      include: [{
+        model: MarketplaceCredential,
+        as: 'marketplaceCredential',
+        attributes: [],
+        required: true,
+        where: {
+          marketplace_id: normalizedMarketplaceId,
+          active: true
+        }
+      }],
+      order: [['createdAt', 'DESC']],
+      transaction
+    });
+
+    return access ? Number(access.marketplace_credential_id) : null;
+  },
+
   async ensureActiveAccess({ userId, companyId, marketplaceCredentialId, transaction = null }) {
     const normalizedUserId = Number(userId);
     const normalizedCompanyId = Number(companyId);

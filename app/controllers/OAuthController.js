@@ -17,6 +17,21 @@ const MercadoLibreCapabilitiesService = require("../services/MercadoLibreCapabil
 const AuditEventService = require("../services/AuditEventService");
 const { detectChanges } = require("../util/auditUtils");
 
+const getRequestCompanyId = (req) =>
+  req.user?.company_id ?? req.headers['x-company-id'] ?? null;
+
+const findAuthorizedMarketplaceCredential = async ({ req, userId, marketplaceId }) => {
+  const credentialId = await UserMarketplaceCredentialRepository.findActiveCredentialIdByMarketplace({
+    userId,
+    marketplaceId,
+    companyId: getRequestCompanyId(req)
+  });
+
+  return credentialId
+    ? MarketplaceCredentialRepository.findById(credentialId)
+    : null;
+};
+
 const rfc3986Encode = (str) =>
   encodeURIComponent(str).replace(
     /[!'()*]/g,
@@ -3150,20 +3165,23 @@ const OAuthController = {
       productName,
       site_id,
       marketplace_id,
-      user_id: bodyUserId,
     } = req.body;
-    const user_id = bodyUserId || getUserId();
+    const user_id = req.user?.id || getUserId();
     logger.info(
       "Datos recibidos al optener ls categorías de un producto en mercado libre:",
     );
     logger.info(JSON.stringify(req.body));
 
     try {
-      const credential =
-        await MarketplaceCredentialRepository.findByMarketplaceAndUser(
-          marketplace_id,
-          user_id,
-        );
+      const credential = await findAuthorizedMarketplaceCredential({
+        req,
+        userId: user_id,
+        marketplaceId: marketplace_id
+      });
+
+      if (!credential) {
+        return res.status(403).json({ success: false, error: "No autorizado" });
+      }
       logger.info("Credenciales básicas obtenidas para OAuth Mercado Libre");
       logger.info(JSON.stringify(credential));
 
@@ -3193,19 +3211,23 @@ const OAuthController = {
   },
 
   async mercadoLibreAttributes(req, res) {
-    const { category_id, marketplace_id, user_id: bodyUserId } = req.body;
-    const user_id = bodyUserId || getUserId();
+    const { category_id, marketplace_id } = req.body;
+    const user_id = req.user?.id || getUserId();
     logger.info(
       "Datos recibidos al optener los atributos de una categoría en mercado libre:",
     );
     logger.info(JSON.stringify(req.body));
 
     try {
-      const credential =
-        await MarketplaceCredentialRepository.findByMarketplaceAndUser(
-          marketplace_id,
-          user_id,
-        );
+      const credential = await findAuthorizedMarketplaceCredential({
+        req,
+        userId: user_id,
+        marketplaceId: marketplace_id
+      });
+
+      if (!credential) {
+        return res.status(403).json({ success: false, error: "No autorizado" });
+      }
       logger.info("Credenciales básicas obtenidas para OAuth Mercado Libre");
       logger.info(JSON.stringify(credential));
 
@@ -3260,7 +3282,13 @@ const OAuthController = {
         });
       }
 
-      if (credential.user_id !== user_id) {
+      const hasCredentialAccess = await UserMarketplaceCredentialRepository.hasActiveAccess({
+        userId: user_id,
+        marketplaceCredentialId: credential_id,
+        companyId: req.user?.company_id ?? req.headers['x-company-id'] ?? null
+      });
+
+      if (!hasCredentialAccess) {
         return res.status(403).json({
           success: false,
           error: "No autorizado",
@@ -4113,7 +4141,7 @@ async mercadoLibreShippingCosts(req, res) {
   logger.info(`Datos recibidos para calcular costos de envío en MercadoLibre:\n ${JSON.stringify(req.body)}`);
 
   const { credential_id, product, category_id, listing_type_id } = req.body;
-  const user_id = req.user?.id || req.body.user_id;
+  const user_id = req.user?.id || getUserId();
 
   // Validaciones
   if (!credential_id) {
@@ -4166,7 +4194,13 @@ async mercadoLibreShippingCosts(req, res) {
       return res.status(404).json({ success: false, error: "Credencial no encontrada" });
     }
 
-    if (credential.user_id !== user_id) {
+    const hasCredentialAccess = await UserMarketplaceCredentialRepository.hasActiveAccess({
+      userId: user_id,
+      marketplaceCredentialId: credential_id,
+      companyId: req.user?.company_id ?? req.headers['x-company-id'] ?? null
+    });
+
+    if (!hasCredentialAccess) {
       return res.status(403).json({ success: false, error: "No autorizado" });
     }
 
@@ -4236,7 +4270,7 @@ async mercadoLibreShippingCosts(req, res) {
       strategy
     } = req.body;
 
-    const user_id = req.user?.id || req.body.user_id;
+    const user_id = req.user?.id || getUserId();
     const selectedStrategy = normalizeStrategy(strategy, listing_type_id);
 
     if (!credential_id) {
@@ -4784,7 +4818,7 @@ async mercadoLibreShippingCosts(req, res) {
     installments,
     response_detail
   } = req.body;
-  const user_id = req.user?.id || req.body.user_id;
+  const user_id = req.user?.id || getUserId();
   let selectedStrategy = normalizeStrategy(strategy, listing_type_id);
   const normalizedInstallments = normalizeInstallments(installments);
   const resolvedResponseDetail = normalizeMlSuggestedCategoriesResponseDetail(response_detail);
@@ -4856,7 +4890,13 @@ async mercadoLibreShippingCosts(req, res) {
       return res.status(404).json({ success: false, error: "Credencial no encontrada" });
     }
 
-    if (credential.user_id !== user_id) {
+    const hasCredentialAccess = await UserMarketplaceCredentialRepository.hasActiveAccess({
+      userId: user_id,
+      marketplaceCredentialId: credential_id,
+      companyId: req.user?.company_id ?? req.headers['x-company-id'] ?? null
+    });
+
+    if (!hasCredentialAccess) {
       return res.status(403).json({ success: false, error: "No autorizado" });
     }
 
@@ -6736,7 +6776,14 @@ async falabellaSuggestedCategoriesWithAttributes(req, res) {
     if (!credential) {
       return res.status(404).json({ success: false, error: "Credencial no encontrada" });
     }
-    if (credential.user_id !== user_id) {
+
+    const hasCredentialAccess = await UserMarketplaceCredentialRepository.hasActiveAccess({
+      userId: user_id,
+      marketplaceCredentialId: credential_id,
+      companyId: req.user?.company_id ?? req.headers['x-company-id'] ?? null
+    });
+
+    if (!hasCredentialAccess) {
       return res.status(403).json({ success: false, error: "No autorizado" });
     }
 
@@ -7115,7 +7162,14 @@ async falabellaEnrichedCategory(req, res) {
     if (!credential) {
       return res.status(404).json({ success: false, error: "Credencial no encontrada" });
     }
-    if (credential.user_id !== user_id) {
+
+    const hasCredentialAccess = await UserMarketplaceCredentialRepository.hasActiveAccess({
+      userId: user_id,
+      marketplaceCredentialId: credential_id,
+      companyId: req.user?.company_id ?? req.headers['x-company-id'] ?? null
+    });
+
+    if (!hasCredentialAccess) {
       return res.status(403).json({ success: false, error: "No autorizado" });
     }
 
@@ -7784,16 +7838,16 @@ async falabellaCategories(req, res) {
     const user_id = req.user?.id;
 
     try {
-      const credential =
-        await MarketplaceCredentialRepository.findByMarketplaceAndUser(
-          marketplace_id,
-          user_id,
-        );
+      const credential = await findAuthorizedMarketplaceCredential({
+        req,
+        userId: user_id,
+        marketplaceId: marketplace_id
+      });
 
       if (!credential) {
-        return res.status(400).json({
+        return res.status(403).json({
           success: false,
-          error: "Credenciales no encontradas",
+          error: "No autorizado",
         });
       }
       const baseUrl = "https://sellercenter-api.falabella.com";
@@ -7920,16 +7974,16 @@ async falabellaCategories(req, res) {
     const user_id = req.user?.id;
 
     try {
-      const credential =
-        await MarketplaceCredentialRepository.findByMarketplaceAndUser(
-          marketplace_id,
-          user_id,
-        );
+      const credential = await findAuthorizedMarketplaceCredential({
+        req,
+        userId: user_id,
+        marketplaceId: marketplace_id
+      });
 
       if (!credential) {
-        return res.status(400).json({
+        return res.status(403).json({
           success: false,
-          error: "Credenciales no encontradas",
+          error: "No autorizado",
         });
       }
 
@@ -8022,15 +8076,16 @@ async falabellaProductStatus(req, res) {
   }
 
   try {
-    const credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
-      marketplace_id,
-      user_id,
-    );
+    const credential = await findAuthorizedMarketplaceCredential({
+      req,
+      userId: user_id,
+      marketplaceId: marketplace_id
+    });
 
     if (!credential) {
-      return res.status(400).json({
+      return res.status(403).json({
         success: false,
-        error: "Credenciales no encontradas para este marketplace y usuario",
+        error: "No autorizado",
       });
     }
 
@@ -8184,15 +8239,16 @@ async falabellaFeedStatus(req, res) {
   }
 
   try {
-    const credential = await MarketplaceCredentialRepository.findByMarketplaceAndUser(
-      marketplace_id,
-      user_id,
-    );
+    const credential = await findAuthorizedMarketplaceCredential({
+      req,
+      userId: user_id,
+      marketplaceId: marketplace_id
+    });
 
     if (!credential) {
-      return res.status(400).json({
+      return res.status(403).json({
         success: false,
-        error: "Credenciales no encontradas para este marketplace y usuario",
+        error: "No autorizado",
       });
     }
 

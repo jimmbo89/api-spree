@@ -588,18 +588,13 @@ function resolveFalabellaMarketplaceDisplayStatus(productStatus, { taskStatus = 
   const qcStatus = String(productStatus.qc_status || '').trim().toLowerCase();
   const isPublished = productStatus.is_published;
   const productErrors = Array.isArray(productStatus.product_errors) ? productStatus.product_errors : [];
-  const hasPublicUrl = typeof productStatus.url === 'string' && productStatus.url.trim().length > 0;
-  const hasShopSku = typeof productStatus.shop_sku === 'string' && productStatus.shop_sku.trim().length > 0;
   const qcApproved = ['approved', 'active', 'live'].includes(qcStatus);
-  const strongPublishSignal = hasPublicUrl || hasShopSku || isPublished === true;
 
   const looksPublished = ['active', 'live'].includes(status)
     && hasImage !== false
     && productErrors.length === 0
-    && (
-      (qcApproved && strongPublishSignal)
-      || (isPublished === true && qcStatus !== 'rejected')
-    );
+    && qcApproved
+    && isPublished === true;
 
   if (looksPublished) {
     return 'active';
@@ -615,6 +610,14 @@ function resolveFalabellaMarketplaceDisplayStatus(productStatus, { taskStatus = 
 
   if (['inactive', 'deleted'].includes(status)) {
     return status;
+  }
+
+  if (productStatus.images_pending === true) {
+    return 'processing';
+  }
+
+  if (status === 'not_published') {
+    return 'not_published';
   }
 
   if (status === 'active' && isPublished === false) {
@@ -861,12 +864,12 @@ function buildFalabellaPublishedStateSnapshot(product, sellerSku) {
   // ✅ Determinar estado REAL de publicación
   let realStatus = rawStatus;
   if (rawStatus === 'active') {
-    if (isPublished === false) {
-      realStatus = 'not_published';
-    } else if (qcStatus === 'rejected') {
+    if (qcStatus === 'rejected') {
       realStatus = 'rejected';
     } else if (qcStatus === 'pending') {
       realStatus = 'pending';
+    } else if (isPublished === false) {
+      realStatus = 'not_published';
     }
   }
 
@@ -4235,7 +4238,9 @@ async publishedProducts(req, res) {
       const taskUpdate = {
         api_response: apiResponseToSave,
         error_message: shouldKeepWarning
-          ? `Falabella item status: ${currentProductState.status}${currentProductState.qc_status ? ` (${currentProductState.qc_status})` : ''}`
+          ? currentProductState.is_published === false
+            ? 'Falabella recibió el producto, pero todavía no lo ha habilitado para la venta.'
+            : 'Falabella todavía está procesando la publicación del producto.'
           : null,
         error_details: mergedDetails,
         external_id: externalId,
@@ -4247,6 +4252,8 @@ async publishedProducts(req, res) {
       } else if (isActive && task.status === 'published_with_warnings') {
         taskUpdate.status = 'published';
       } else if (feedFinishedSuccessfully && !isActive) {
+        taskUpdate.status = 'pending';
+      } else if (!isActive && ['published', 'published_with_warnings'].includes(task.status)) {
         taskUpdate.status = 'pending';
       } else if (shouldKeepWarning && task.status === 'published') {
         taskUpdate.status = 'published_with_warnings';
@@ -4550,3 +4557,4 @@ async updatePayload(req, res) {
 };
 
 module.exports = ProductPublishingTaskController;
+ProductPublishingTaskController._resolveFalabellaMarketplaceDisplayStatus = resolveFalabellaMarketplaceDisplayStatus;

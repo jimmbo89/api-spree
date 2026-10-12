@@ -609,6 +609,12 @@ async _processProduct(jobProduct, parentJobId) {
 
     // Éxito
     if (result?.success) {
+      // La aceptación del envío no puede sobrescribir el resultado del webhook.
+      if (result.task_id && String(marketplace_payload.domain || '').toLowerCase().includes('falabella')) {
+        const controller = require('../controllers/MarketplaceWebhookController');
+        await controller._recalculateFalabellaJobProgressFromTask({ id: result.task_id });
+        return { success: true, pending_confirmation: true };
+      }
       const warningMessage = buildWarningMessage(
         result.warning_details?.warnings || result.warnings,
         result.warning_message || result.error || null

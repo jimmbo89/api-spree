@@ -28,6 +28,7 @@ const MarketplaceStockSyncService = require("../services/MarketplaceStockSyncSer
 const { verifyMercadoLibreItem } = require("../services/MarketplaceItemVerificationService");
 const FalabellaAdapter = require('../services/adapters/FalabellaAdapter');
 const MercadoLibreAdapter = require('../services/adapters/MercadoLibreAdapter');
+const { humanizeFalabellaMessage } = require('../utils/marketplaceErrorHumanizer');
 const { trackPendingOperation } = require("../utils/pendingOperations");
 const PublicationAuditService = require("../services/PublicationAuditService");
 const SalesAuditService = require("../services/SalesAuditService");
@@ -1444,11 +1445,13 @@ function resolveFalabellaJobProductStatus(taskStatus) {
   if (['published', 'published_with_warnings'].includes(normalizedStatus)) return 'success';
   if (normalizedStatus === 'failed') return 'error';
   if (normalizedStatus === 'deleted') return 'deleted';
-  if (normalizedStatus === 'pending') return 'pending';
+  // Pendiente de Falabella no significa pendiente de un nuevo envío del worker.
+  if (normalizedStatus === 'pending') return 'processing';
   return 'processing';
 }
 
 async function recalculateFalabellaJobProgressFromTask(task) {
+  task = (task?.id && await ProductPublishingTaskRepository.findById(task.id)) || task;
   if (!task?.batch_id || !task?.product_id || !task?.marketplace_id) {
     await recalculateJobProgressFromTask(task);
     return;
@@ -2178,11 +2181,11 @@ async function persistFalabellaFeedReconciliationState({ task, feedId, feedStatu
   const marketplaceError = extractFalabellaFeedStatusError(feedStatus);
 
   await ProductPublishingTaskRepository.updateTask(task, {
-    status: task.status === 'failed' || task.status === 'deleted' ? task.status : 'processing',
+    status: ['published', 'published_with_warnings', 'failed', 'deleted'].includes(task.status) ? task.status : 'processing',
     error_message: task.error_message || null,
     error_details: {
       ...currentDetails,
-      feed_id: feedId,
+      feed_id: currentDetails.feed_id || feedId,
       feed_status: feedStatus,
       marketplace_error: marketplaceError,
       feed_sync_state: 'awaiting_webhook_confirmation',
@@ -2201,11 +2204,14 @@ async function persistFalabellaFeedReconciliationState({ task, feedId, feedStatu
 async function finalizeFalabellaTaskFromFeedError({ task, credential, feedId, feedStatus, topic, marketplaceError = null }) {
   const resolvedMarketplaceError = marketplaceError || extractFalabellaFeedStatusError(feedStatus);
   const errorMessage = resolvedMarketplaceError?.error_message || null;
+  const userErrorMessage = errorMessage
+    ? humanizeFalabellaMessage(errorMessage, resolvedMarketplaceError?.error_code, resolvedMarketplaceError?.field)
+    : null;
   const currentDetails = normalizeFalabellaDetailObject(task?.error_details);
 
   await ProductPublishingTaskRepository.updateTask(task, {
     status: 'failed',
-    error_message: errorMessage,
+    error_message: userErrorMessage,
     error_details: {
       ...currentDetails,
       feed_id: feedId,
@@ -2233,7 +2239,7 @@ async function finalizeFalabellaTaskFromFeedError({ task, credential, feedId, fe
 
       await JobProductRepository.update(jobProduct, {
         status: 'error',
-        error_message: errorMessage,
+        error_message: userErrorMessage,
         error_details: {
           ...currentJobDetails,
           feed_id: feedId,
@@ -2295,14 +2301,20 @@ async function finalizeFalabellaTaskFromFeedError({ task, credential, feedId, fe
 }
 
 async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic) {
+  const credential = adapter?.credential || null;
   const latestTask = await ProductPublishingTaskRepository.findById(task.id);
-  if (latestTask && ['failed', 'deleted'].includes(latestTask.status)) {
+  if (latestTask && latestTask.status === 'deleted') {
     logger.info(`[FB Webhook] Tarea ${task.id} ya está en estado final (${latestTask.status}), no se procesa el feed ${feedId}`);
     return;
   }
 
   task = latestTask || task;
-  const taskDetails = normalizeFalabellaDetailObject(task?.error_details);
+  const currentAttempt = await ProductPublishingTaskRepository.findLatestByExternalIdAndContext({
+    marketplaceId: task.marketplace_id, externalId: task.external_id,
+    companyId: task.company_id, branchId: task.branch_id, credentialId: task.credential_id
+  });
+  if (currentAttempt && currentAttempt.id !== task.id) return;
+  let taskDetails = normalizeFalabellaDetailObject(task?.error_details);
   const imageSyncAlreadySucceeded = Boolean(
     taskDetails?.image_upload?.success === true ||
     taskDetails?.image_sync?.success === true
@@ -2390,12 +2402,18 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
           return `${field}${e.message}`;
         }).join(' | ')
       : null;
+    const userErrorMessage = feedErrors.length > 0
+      ? feedErrors.map(e => {
+          const field = e.field ? `${e.field}: ` : '';
+          return `${field}${humanizeFalabellaMessage(e.message, e.code, e.field)}`;
+        }).join(' | ')
+      : realErrorMessage;
 
     logger.error(`[FB Webhook] Feed ${feedId} falló: ${realErrorMessage}`);
 
     await ProductPublishingTaskRepository.updateTask(task, {
       status: 'failed',
-      error_message: realErrorMessage, // ✅ GUARDAR ERROR REAL
+      error_message: userErrorMessage,
       error_details: {
         feed_id: feedId,
         feed_status: feedStatus,
@@ -2513,22 +2531,68 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
       logger.warn(`[FB Webhook] Feed ${feedId}: SKU ${sellerSku} sin imagen, pero no hay imágenes guardadas en la tarea ${task.id}`);
     }
     
+    taskDetails = normalizeFalabellaDetailObject((await ProductPublishingTaskRepository.findById(task.id))?.error_details);
+    productStatus.images_pending = hasImage === false && Boolean(
+      imageUploadResult?.pending === true || taskDetails.image_sync?.in_progress
+    );
     const lifecycle = determineFalabellaTaskLifecycle(productStatus, {
       realErrors,
       hasImage
     });
     const finalStatus = lifecycle.status;
     const realErrorMessage = lifecycle.errorMessage;
+    const currentImageSync = taskDetails.image_sync || {};
+    const imageFeedFinishedWithoutConfirmation = feedStatusLower === 'finished'
+      && currentImageSync.in_progress === true
+      && String(currentImageSync.request_id || '') === String(feedId || '')
+      && hasImage === false;
+    const imageSyncBase = imageFeedFinishedWithoutConfirmation
+      ? {
+          ...currentImageSync,
+          success: false,
+          in_progress: false,
+          finished_at: new Date().toISOString(),
+          error_message: 'Falabella finalizó la carga, pero todavía no confirmó la imagen del producto.',
+          error_code: 'image_not_confirmed'
+        }
+      : currentImageSync;
+    const imageAccepted = imageUploadResult?.success === true && imageUploadResult?.pending === true;
+    const imageConfirmed = hasImage === true || (
+      imageUploadResult?.success === true && imageUploadResult?.pending !== true
+    );
+    const imageSync = imageConfirmed && (imageSyncBase.in_progress || imageUploadResult?.success)
+      ? {
+          ...imageSyncBase,
+          attempted: true,
+          success: true,
+          in_progress: false,
+          finished_at: new Date().toISOString(),
+          request_id: imageUploadResult?.request_id || imageSyncBase.request_id || null,
+          images_count: imageUploadResult?.images_count || imageSyncBase.images_count || taskImages.length,
+          error_message: null,
+          error_code: null
+        }
+      : imageAccepted
+        ? {
+            ...imageSyncBase,
+            attempted: true,
+            success: false,
+            in_progress: true,
+            request_id: imageUploadResult.request_id || imageSyncBase.request_id || null,
+            images_count: imageUploadResult.images_count || imageSyncBase.images_count || taskImages.length
+          }
+        : imageSyncBase;
 
     // ✅ Preparar datos de actualización con errores REALES
     const updateData = {
       status: finalStatus,
       error_message: realErrorMessage, // ✅ GUARDAR ERROR REAL
       error_details: {
-        feed_id: feedId,
+        ...taskDetails,
+        feed_id: taskDetails.feed_id || feedId,
         feed_status: feedStatus,
         product_status: productStatus,
-        image_upload: imageUploadResult,
+        image_upload: imageUploadResult || taskDetails.image_upload || null,
         feed_warnings: feedWarnings,
         source: 'feed_webhook',
         qc_status: productStatus.qc_status,
@@ -2536,14 +2600,7 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
         marketplace_status: productStatus.status,
         is_published: productStatus.is_published,
         has_image: hasImage,
-        image_sync: imageUploadResult?.success
-          ? {
-              attempted: true,
-              success: true,
-              request_id: imageUploadResult.request_id || null,
-              images_count: imageUploadResult.images_count || taskImages.length
-            }
-          : (imageSyncAlreadySucceeded ? taskDetails?.image_sync || { attempted: true, success: true } : null),
+        image_sync: imageSync,
         // ✅ GUARDAR ERRORES REALES EXTRAÍDOS
         real_errors: realErrors,
         product_errors: productStatus.product_errors || [],
@@ -2607,7 +2664,7 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
             user_id: task.user_id || null,
             company_id: task.company_id != null ? task.company_id : null,
             branch_id: task.branch_id != null ? task.branch_id : null,
-            status: finalStatus === 'published' ? 'active' : finalStatus,
+            status: resolveFalabellaMarketplaceDisplayStatus(productStatus),
             external_id: task.external_id,
             external_url: productStatus.url || null,
             published_stock: confirmedPublishedStock,
@@ -2621,7 +2678,7 @@ async function processFeedResultForTask(task, adapter, feedStatus, feedId, topic
 
       if (link) {
         await link.update({
-          status: finalStatus === 'published' ? 'active' : finalStatus,
+          status: resolveFalabellaMarketplaceDisplayStatus(productStatus),
           external_url: productStatus.url || link.external_url,
           published_stock: confirmedPublishedStock,
           published_payload: persistedPublishedPayload,
@@ -2949,9 +3006,11 @@ async function processFalabellaProductWebhook(payload, options = {}) {
           if (nextStatus === 'published') {
             statusMessage = 'Producto aprobado y activo';
           } else if (nextStatus === 'failed' && qcStatus) {
-            statusMessage = `Producto rechazado o desactivado: ${qcStatus}`;
+            statusMessage = 'Falabella no aprobó el producto. Revisa el motivo en Seller Center.';
           } else if (nextStatus === 'processing' && qcStatus) {
-            statusMessage = `Producto pendiente de aprobación QC: ${qcStatus}`;
+            statusMessage = snapshot.images_pending
+              ? 'Falabella está procesando las imágenes de tu producto.'
+              : 'Falabella está revisando tu producto. El estado se actualizará automáticamente.';
           }
         }
 
@@ -2990,7 +3049,7 @@ async function processFalabellaProductWebhook(payload, options = {}) {
             user_id: task.user_id || null,
           company_id: task.company_id != null ? task.company_id : null,
           branch_id: task.branch_id != null ? task.branch_id : null,
-            status: nextStatus === 'published' ? 'active' : nextStatus,
+            status: resolveFalabellaMarketplaceDisplayStatus(snapshot),
             external_id: task.external_id,
             external_url: snapshot.url || null,
             published_stock: snapshot.stock ?? null,
@@ -3010,7 +3069,7 @@ async function processFalabellaProductWebhook(payload, options = {}) {
           external_url: link.external_url || null
         };
         const nextPublishedState = {
-          status: nextStatus === 'published' ? 'active' : nextStatus,
+          status: resolveFalabellaMarketplaceDisplayStatus(snapshot),
           price: snapshot.price ?? previousPublishedState.price,
           available_quantity: snapshot.stock ?? link.published_stock,
           external_url: snapshot.url || link.external_url || null
@@ -3941,7 +4000,6 @@ function buildFalabellaProductStateSnapshot({ product, payload, source = "webhoo
   ].find((value) => typeof value === 'string' && value.trim()) || null;
   const productErrors = FalabellaAdapter.extractRealFalabellaErrors(product || {});
   const hasImage = product?.has_image === true
-    || product?.image_upload?.success === true
     || FalabellaAdapter.hasFalabellaImage(product || {});
 
   const extractFalabellaNumericValue = (candidates) => {
@@ -4327,45 +4385,16 @@ function isFalabellaConfirmedPublishedState(productStatus) {
     && isPublished === true;
 }
 
-function resolveFalabellaMarketplaceDisplayStatus(productStatus, { taskStatus = null } = {}) {
-  if (!productStatus || typeof productStatus !== 'object') {
-    return 'processing';
-  }
-
-  if (productStatus.found === false) {
-    return 'pending';
-  }
-
-  const status = String(productStatus.status || '').trim().toLowerCase();
-  const qcStatus = String(productStatus.qc_status || '').trim().toLowerCase();
-  const isPublished = productStatus.is_published;
-  const productErrors = Array.isArray(productStatus.product_errors) ? productStatus.product_errors : [];
-
-  if (isPublished === false || qcStatus === 'pending') {
-    return 'pending';
-  }
-
-  if (qcStatus === 'rejected') {
-    return 'rejected';
-  }
-
-  if (['inactive', 'deleted'].includes(status)) {
-    return status;
-  }
-
-  if (['active', 'live'].includes(status) && productErrors.length === 0 && isPublished === true) {
-    return 'active';
-  }
-
-  if (taskStatus === 'pending') {
-    return 'pending';
-  }
-
-  if (taskStatus === 'processing') {
-    return 'processing';
-  }
-
-  return status || 'processing';
+function resolveFalabellaMarketplaceDisplayStatus(productStatus) {
+  const status = String(productStatus?.status || '').trim().toLowerCase();
+  if (['inactive', 'deleted'].includes(status)) return status;
+  const lifecycle = determineFalabellaTaskLifecycle(productStatus, {
+    realErrors: productStatus?.product_errors || [],
+    hasImage: productStatus?.has_image !== false
+  });
+  if (lifecycle.status === 'published') return 'active';
+  if (lifecycle.status === 'failed') return 'rejected';
+  return lifecycle.status;
 }
 
 function determineFalabellaTaskLifecycle(productStatus, { realErrors = [], hasImage = true } = {}) {
@@ -4393,17 +4422,26 @@ function determineFalabellaTaskLifecycle(productStatus, { realErrors = [], hasIm
       status: 'failed',
       isFinal: true,
       errorMessage: qcStatus === 'rejected'
-        ? `qc_status: ${qcStatus}`
-        : `status: ${status || 'unknown'}`
+        ? 'Falabella no aprobó el producto en su revisión de calidad. Revisa el motivo en Seller Center y corrige la información indicada.'
+        : (status === 'deleted' ? 'El producto fue eliminado en Falabella.' : 'El producto está inactivo en Falabella.')
     };
   }
 
+  // Solo mantener el envío en curso mientras se confirma un feed de imágenes.
+  // Un rechazo explícito de QC siempre conserva prioridad.
+  if (productStatus.images_pending === true) {
+    return { status: 'processing', isFinal: false, errorMessage: null };
+  }
+
   if (['active', 'live'].includes(status)) {
+    if (qcStatus === 'pending') {
+      return { status: 'pending', isFinal: false, errorMessage: null };
+    }
     if (hasImage === false) {
       return { status: 'processing', isFinal: false, errorMessage: null };
     }
 
-    if (isPublished === true) {
+    if (isPublished === true && qcStatus === 'approved') {
       return { status: 'published', isFinal: true, errorMessage: null };
     }
 
@@ -4490,35 +4528,43 @@ async function finalizeFalabellaImageSyncState(task, taskDetails, imageUploadRes
     return null;
   }
 
-  const baseDetails = normalizeFalabellaDetailObject(taskDetails);
-  const previousImageSync = baseDetails?.image_sync || {};
-  const nextImageSync = {
-    ...previousImageSync,
-    attempted: true,
-    success: Boolean(imageUploadResult?.success),
-    in_progress: false,
-    requested_by_webhook: requestedBy || previousImageSync.requested_by_webhook || null,
-    started_at: previousImageSync.started_at || null,
-    finished_at: new Date().toISOString(),
-    request_id: imageUploadResult?.request_id || previousImageSync.request_id || null,
-    images_count: imageUploadResult?.images_count || previousImageSync.images_count || null,
-    error_message: imageUploadResult?.success ? null : (imageUploadResult?.error || previousImageSync.error_message || null),
-    error_code: imageUploadResult?.success ? null : (imageUploadResult?.error_code || previousImageSync.error_code || null)
-  };
+  return sequelize.transaction(async (transaction) => {
+    const current = await ProductPublishingTask.findByPk(task.id, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!current) return null;
+    const baseDetails = normalizeFalabellaDetailObject(current.error_details);
+    const previousImageSync = baseDetails?.image_sync || {};
+    const feedAccepted = imageUploadResult?.success === true && imageUploadResult?.pending === true;
+    const feedCompleted = imageUploadResult?.success === true && !feedAccepted;
+    const nextImageSync = {
+      ...previousImageSync,
+      attempted: true,
+      success: feedCompleted,
+      in_progress: feedAccepted,
+      requested_by_webhook: requestedBy || previousImageSync.requested_by_webhook || null,
+      started_at: previousImageSync.started_at || null,
+      accepted_at: feedAccepted ? new Date().toISOString() : (previousImageSync.accepted_at || null),
+      finished_at: feedCompleted || !imageUploadResult?.success ? new Date().toISOString() : null,
+      request_id: imageUploadResult?.request_id || previousImageSync.request_id || null,
+      images_count: imageUploadResult?.images_count || previousImageSync.images_count || null,
+      error_message: imageUploadResult?.success ? null : (imageUploadResult?.error || previousImageSync.error_message || null),
+      error_code: imageUploadResult?.success ? null : (imageUploadResult?.error_code || previousImageSync.error_code || null)
+    };
 
-  const nextDetails = {
-    ...baseDetails,
-    image_sync: nextImageSync
-  };
+    const nextDetails = {
+      ...baseDetails,
+      image_sync: nextImageSync
+    };
 
-  await ProductPublishingTaskRepository.updateTask(task, {
-    error_details: nextDetails
+    await current.update({
+      error_details: nextDetails
+    }, { transaction });
+
+    return nextDetails;
   });
-
-  return nextDetails;
 }
 
 async function persistFalabellaProductState({ credential, sellerSku, product, payload, imageUploadResult = null, task: sourceTask = null }) {
+  sourceTask = (sourceTask?.id && await ProductPublishingTaskRepository.findById(sourceTask.id)) || sourceTask;
   const marketplaceId = credential?.marketplace_id || null;
   const existingPublishedPayload = normalizeTaskPayload(sourceTask?.payload)
     || normalizeTaskPayload(sourceTask?.job?.config)
@@ -4526,21 +4572,25 @@ async function persistFalabellaProductState({ credential, sellerSku, product, pa
     || null;
   const productForSnapshot = mergeFalabellaPublishedPayload(existingPublishedPayload, product || null);
   const snapshot = buildFalabellaProductStateSnapshot({ product: productForSnapshot, payload });
-  if (imageUploadResult?.success) {
-    snapshot.has_image = true;
-  }
+  // Las imágenes del payload local no prueban que Falabella ya las haya asociado.
+  snapshot.has_image = product?.has_image === true || FalabellaAdapter.hasFalabellaImage(product || {});
+  const imageDetails = normalizeFalabellaDetailObject(sourceTask?.error_details);
+  const imageSyncConfirmed = snapshot.has_image === true && imageDetails.image_sync?.in_progress === true;
+  snapshot.images_pending = snapshot.has_image === false && Boolean(
+    imageUploadResult?.pending === true || imageDetails.image_sync?.in_progress
+  );
   const previousPublishedState = extractFalabellaPublishedState(
     normalizeFalabellaDetailObject(sourceTask?.error_details)?.marketplace_item_state
       || normalizeTaskPayload(sourceTask?.api_response)
       || normalizeTaskPayload(sourceTask?.payload)
       || normalizeTaskPayload(sourceTask?.job?.config)
   );
-  const isActive = snapshot.status === "active";
   const isDeleted = snapshot.status === "deleted";
   const marketplaceDisplayStatus = resolveFalabellaMarketplaceDisplayStatus(snapshot, {
     taskStatus: sourceTask?.status || null,
     hasImage: snapshot.has_image !== false
   });
+  const marketplaceIsActive = marketplaceDisplayStatus === 'active';
   const lifecycle = determineFalabellaTaskLifecycle(snapshot, {
     realErrors: Array.isArray(snapshot.product_errors) ? snapshot.product_errors : [],
     hasImage: snapshot.has_image !== false
@@ -4690,28 +4740,40 @@ async function persistFalabellaProductState({ credential, sellerSku, product, pa
       ...currentDetails,
       marketplace_item_state: snapshot,
       marketplace_display_status: marketplaceDisplayStatus,
-      image_upload: imageUploadResult || null,
+      image_upload: imageUploadResult || currentDetails.image_upload || null,
+      image_sync: imageSyncConfirmed
+        ? {
+            ...(currentDetails.image_sync || {}),
+            success: true,
+            in_progress: false,
+            finished_at: new Date().toISOString(),
+            error_message: null,
+            error_code: null
+          }
+        : currentDetails.image_sync || null,
       terminal_state: isDeleted ? "deleted" : null
     };
 
     const taskErrorMessage = lifecycle.isFinal
       ? (lifecycle.status === 'published' ? null : lifecycle.errorMessage)
-      : (isActive
+      : (marketplaceIsActive
         ? null
         : (isDeleted
-          ? "Falabella item eliminado"
-          : `Falabella item status: ${snapshot.status}${snapshot.qc_status ? ` (${snapshot.qc_status})` : ''}`));
+          ? 'El producto fue eliminado en Falabella.'
+          : (snapshot.is_published === false
+            ? 'Falabella recibió el producto, pero todavía no lo ha habilitado para la venta.'
+            : 'Falabella está revisando tu producto. El estado se actualizará automáticamente.')));
 
     const taskUpdate = {
       status: resolvedStatus,
       api_response: mergedPublishedPayload || product || latestTask.api_response || null,
       error_message: taskErrorMessage,
-      error_details: lifecycle.isFinal && lifecycle.status === 'published' ? null : mergedDetails
+      error_details: mergedDetails
     };
 
     if (lifecycle.isFinal) {
       taskUpdate.error_message = lifecycle.errorMessage;
-      taskUpdate.error_details = lifecycle.status === 'published' ? null : mergedDetails;
+      taskUpdate.error_details = mergedDetails;
     }
 
     await ProductPublishingTaskRepository.updateTask(latestTask, taskUpdate);
@@ -7128,4 +7190,10 @@ MarketplaceWebhookController._mapFalabellaOrderStatus = mapFalabellaOrderStatus;
 MarketplaceWebhookController._buildFalabellaEventId = buildFalabellaEventId;
 MarketplaceWebhookController._getFalabellaOrderManagement = getFalabellaOrderManagement;
 MarketplaceWebhookController._determineFalabellaTaskLifecycle = determineFalabellaTaskLifecycle;
+MarketplaceWebhookController._recalculateFalabellaJobProgressFromTask = recalculateFalabellaJobProgressFromTask;
+MarketplaceWebhookController._resolveFalabellaJobProductStatus = resolveFalabellaJobProductStatus;
+MarketplaceWebhookController._acquireFalabellaImageSyncLock = acquireFalabellaImageSyncLock;
+MarketplaceWebhookController._finalizeFalabellaImageSyncState = finalizeFalabellaImageSyncState;
+MarketplaceWebhookController._persistFalabellaProductState = persistFalabellaProductState;
+MarketplaceWebhookController._processFeedResultForTask = processFeedResultForTask;
 MarketplaceWebhookController._resolveFalabellaMarketplaceDisplayStatus = resolveFalabellaMarketplaceDisplayStatus;

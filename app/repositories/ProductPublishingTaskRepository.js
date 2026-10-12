@@ -27,6 +27,9 @@ const ProductPublishingTaskRepository = {
   },
 
   async fanoutPublicationState(task, updateData = {}, options = {}) {
+    // Cada intento de Falabella tiene su propio feed; no reescribir intentos anteriores.
+    if (task?.marketplace?.domain?.toLowerCase().includes('falabella') ||
+        ['ProductCreate', 'ProductUpdate'].includes(task?.error_details?.action)) return 0;
     if (!task?.id || !task?.external_id) {
       return 0;
     }
@@ -106,10 +109,11 @@ const ProductPublishingTaskRepository = {
 
   async updateStatus(task, status, updateData = {}, options = {}) {
     const update = { status, ...updateData };
+    const falabellaAttempt = ['ProductCreate', 'ProductUpdate'].includes(task.error_details?.action);
     logger.info(`[REPO] Actualizando estado de tarea ID ${task.id} a: ${status}`);
     try {
       await task.update(update, options);
-      await this.fanoutPublicationState(task, update, options);
+      if (!falabellaAttempt) await this.fanoutPublicationState(task, update, options);
       return task;
     } catch (error) {
       logger.error(`[REPO] ERROR al actualizar estado:`, error.message);
@@ -118,6 +122,7 @@ const ProductPublishingTaskRepository = {
   },
 
   async updateTask(task, updateData, options = {}) {
+    const falabellaAttempt = ['ProductCreate', 'ProductUpdate'].includes(task.error_details?.action);
     logger.info(`[REPO] Actualizando tarea ID ${task.id}`);
     try {
       const sanitizedUpdateData = { ...updateData };
@@ -134,12 +139,40 @@ const ProductPublishingTaskRepository = {
         }
       }
       await task.update(sanitizedUpdateData, options);
-      await this.fanoutPublicationState(task, sanitizedUpdateData, options);
+      if (!falabellaAttempt) await this.fanoutPublicationState(task, sanitizedUpdateData, options);
       return task;
     } catch (error) {
       logger.error(`[REPO] ERROR al actualizar tarea:`, error.message);
       throw error;
     }
+  },
+
+  async recordFalabellaSubmission(task, details) {
+    // El POST confirma recepción, no publicación. Un webhook puede haber llegado antes.
+    return sequelize.transaction(async (transaction) => {
+      const current = await ProductPublishingTask.findByPk(task.id, {
+        transaction, lock: transaction.LOCK.UPDATE
+      });
+      if (!current) throw new Error(`Tarea Falabella ${task.id} no encontrada`);
+      let existing = current.error_details || {};
+      if (typeof existing === 'string') {
+        try {
+          existing = JSON.parse(existing);
+        } catch (error) {
+          existing = {};
+        }
+      }
+      if (!existing || typeof existing !== 'object' || Array.isArray(existing)) existing = {};
+      await current.update({
+        error_details: {
+          ...details,
+          ...existing,
+          feed_id: details.feed_id || existing.feed_id || null,
+          action: details.action || existing.action || 'ProductCreate'
+        }
+      }, { transaction });
+      return current;
+    });
   },
 
   async findById(id) {

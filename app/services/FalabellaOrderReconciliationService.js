@@ -12,7 +12,7 @@ const FalabellaAdapter = require('./adapters/FalabellaAdapter');
 
 const CONFIG = {
   ORDER_RECONCILE_ENABLED: String(process.env.FB_RECONCILE_ENABLED || 'false').toLowerCase() === 'true',
-  PUBLICATION_RECONCILE_ENABLED: String(process.env.FB_PUBLICATION_RECONCILE_ENABLED || 'false').toLowerCase() === 'true',
+  PUBLICATION_RECONCILE_ENABLED: String(process.env.FB_PUBLICATION_RECONCILE_ENABLED || 'true').toLowerCase() === 'true',
   INTERVAL_MINUTES: parseInt(process.env.FB_RECONCILE_INTERVAL_MINUTES || '60', 10),
   LOOKBACK_MINUTES: parseInt(process.env.FB_RECONCILE_LOOKBACK_MINUTES || '180', 10),
   LIMIT: parseInt(process.env.FB_RECONCILE_LIMIT || '100', 10),
@@ -28,7 +28,7 @@ const CONFIG = {
   PUBLICATION_STATUS_ATTEMPTS: parseInt(process.env.FB_PUBLICATION_RECONCILE_STATUS_ATTEMPTS || '2', 10),
   PUBLICATION_STATUS_DELAY_MS: parseInt(process.env.FB_PUBLICATION_RECONCILE_STATUS_DELAY_MS || '1500', 10),
   PUBLICATION_LIMIT: parseInt(process.env.FB_PUBLICATION_RECONCILE_LIMIT || '50', 10),
-  PUBLICATION_STATUSES: (process.env.FB_PUBLICATION_RECONCILE_STATUSES || 'processing')
+  PUBLICATION_STATUSES: (process.env.FB_PUBLICATION_RECONCILE_STATUSES || 'processing,pending')
     .split(',')
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean)
@@ -207,40 +207,10 @@ function buildPublicationReconcileSummary(productStatus) {
 }
 
 function determinePublicationLifecycle(productStatus) {
-  const status = normalizeText(productStatus?.status);
-  const qcStatus = normalizeText(productStatus?.qc_status);
-  const productErrors = Array.isArray(productStatus?.product_errors) ? productStatus.product_errors : [];
-
-  if (!productStatus || productStatus.found === false) {
-    return { status: 'pending', isFinal: false, errorMessage: null };
-  }
-
-  if (productErrors.length > 0) {
-    return {
-      status: 'failed',
-      isFinal: true,
-      errorMessage: productErrors.map((err) => {
-        const field = err?.field ? `${err.field}: ` : '';
-        return `${field}${err?.message || 'unknown error'}`;
-      }).join(' | ')
-    };
-  }
-
-  if (qcStatus === 'rejected' || ['inactive', 'deleted'].includes(status)) {
-    return {
-      status: 'failed',
-      isFinal: true,
-      errorMessage: qcStatus === 'rejected'
-        ? `qc_status: ${qcStatus}`
-        : `status: ${status || 'unknown'}`
-    };
-  }
-
-  if (['active', 'live'].includes(status)) {
-    return { status: 'published', isFinal: true, errorMessage: null };
-  }
-
-  return { status: 'processing', isFinal: false, errorMessage: null };
+  return MarketplaceWebhookController._determineFalabellaTaskLifecycle(productStatus, {
+    realErrors: productStatus?.product_errors || [],
+    hasImage: productStatus?.has_image !== false
+  });
 }
 
 async function fetchFalabellaPublicationStatusWithRetry(adapter, sellerSku, options = {}) {
@@ -503,7 +473,7 @@ const FalabellaOrderReconciliationService = {
       return;
     }
 
-    if (normalizeText(latestTask.status) !== 'processing') {
+    if (!['processing', 'pending'].includes(normalizeText(latestTask.status))) {
       logger.info(
         `[FB Publication Reconcile] Task ${latestTask.id} ya no esta en processing (${latestTask.status}), se omite`
       );
@@ -620,9 +590,13 @@ const FalabellaOrderReconciliationService = {
         );
       }
 
+      await MarketplaceWebhookController._recalculateFalabellaJobProgressFromTask(latestTask);
       return;
     }
 
+    productStatus.images_pending = productStatus.has_image === false && Boolean(
+      details.image_upload?.success || details.image_sync?.success || details.image_sync?.in_progress
+    );
     const lifecycle = determinePublicationLifecycle(productStatus);
     const metadata = {
       last_checked_at: now.toISOString(),
@@ -636,6 +610,8 @@ const FalabellaOrderReconciliationService = {
 
     if (lifecycle.status === 'processing') {
       await ProductPublishingTaskRepository.updateTask(latestTask, {
+        status: 'processing',
+        error_message: 'Falabella está procesando tu producto. El estado se actualizará automáticamente.',
         error_details: {
           ...details,
           marketplace_item_state: productStatus,
@@ -648,6 +624,8 @@ const FalabellaOrderReconciliationService = {
         api_response: productStatus.raw || latestTask.api_response || null
       });
 
+      if (link) await link.update({ status: 'processing', last_synced_at: now });
+      await MarketplaceWebhookController._recalculateFalabellaJobProgressFromTask(latestTask);
       logger.info(
         `[FB Publication Reconcile] Task ${latestTask.id} sigue en processing por estado intermedio de Falabella`
       );
@@ -683,7 +661,7 @@ const FalabellaOrderReconciliationService = {
 
     if (link) {
       await link.update({
-        status: nextTaskStatus === 'published' ? 'active' : nextTaskStatus,
+        status: MarketplaceWebhookController._resolveFalabellaMarketplaceDisplayStatus(productStatus),
         external_url: productStatus.url || link.external_url,
         published_stock: persistedState.stock,
         published_payload: persistedState.payload,
@@ -698,7 +676,7 @@ const FalabellaOrderReconciliationService = {
           user_id: latestTask.user_id || null,
           company_id: latestTask.company_id != null ? latestTask.company_id : null,
           branch_id: latestTask.branch_id != null ? latestTask.branch_id : null,
-          status: nextTaskStatus === 'published' ? 'active' : nextTaskStatus,
+          status: MarketplaceWebhookController._resolveFalabellaMarketplaceDisplayStatus(productStatus),
           external_id: sellerSku,
           external_url: productStatus.url || null,
           published_stock: persistedState.stock,
@@ -715,6 +693,7 @@ const FalabellaOrderReconciliationService = {
       }
     }
 
+    await MarketplaceWebhookController._recalculateFalabellaJobProgressFromTask(latestTask);
     logger.info(
       `[FB Publication Reconcile] Task ${latestTask.id} actualizada a ${nextTaskStatus} por consulta directa a Falabella`
     );
