@@ -25,7 +25,9 @@ class MarketplaceStockSyncService {
     sourceMarketplaceId,
     companyId,
     branchId,
-    includeSourceMarketplace = false
+    includeSourceMarketplace = false,
+    saleContext = null,
+    localStockChanges = []
   }) {
     const links = await ProductMarketplaceLinkRepository.findByProduct(
       productId,
@@ -64,6 +66,17 @@ class MarketplaceStockSyncService {
     });
 
     const sku = await this._resolveSku(variantId);
+    const normalizedSaleContext = saleContext && typeof saleContext === 'object'
+      ? {
+          ...saleContext,
+          product_id: saleContext.product_id || productId,
+          variant_id: saleContext.variant_id || variantId,
+          sku: saleContext.sku || sku,
+          quantity: saleContext.quantity ?? null,
+          marketplace_id: saleContext.marketplace_id || sourceMarketplaceId
+        }
+      : null;
+    const syncCorrelationId = normalizedSaleContext?.correlation_id || null;
     const jobProductsData = [];
 
     for (const link of targets) {
@@ -121,6 +134,11 @@ class MarketplaceStockSyncService {
           source_stock: stockValue,
           published_stock_limit: publishedStockLimit,
           sku,
+          product_name: normalizedSaleContext?.product_name || null,
+          quantity_sold: normalizedSaleContext?.quantity ?? null,
+          order_id: normalizedSaleContext?.order_id || null,
+          marketplace_name: normalizedSaleContext?.marketplace_name || normalizedSaleContext?.marketplace || null,
+          sync_correlation_id: syncCorrelationId,
           external_id: externalId
         },
         marketplace_payload: {
@@ -149,7 +167,11 @@ class MarketplaceStockSyncService {
         variant_id: variantId,
         stock: stockValue,
         company_id: finalCompanyId,
-        branch_id: finalBranchId
+        branch_id: finalBranchId,
+        trigger: normalizedSaleContext ? 'sale' : 'manual',
+        correlation_id: syncCorrelationId,
+        sale: normalizedSaleContext,
+        local_stock_changes: Array.isArray(localStockChanges) ? localStockChanges : []
       }
     });
 
@@ -269,10 +291,14 @@ class MarketplaceStockSyncService {
       : [];
 
     if (variations.length > 0) {
+      let stockBefore = null;
       const updatedVariations = variations.map((v) => {
         const matchSku =
           sku &&
           (String(v.seller_custom_field || v.seller_sku || '') === String(sku));
+        if (matchSku) stockBefore = Number.isFinite(Number(v.available_quantity))
+          ? Number(v.available_quantity)
+          : null;
         return {
           id: v.id,
           available_quantity: matchSku ? stock : v.available_quantity
@@ -284,7 +310,7 @@ class MarketplaceStockSyncService {
         { variations: updatedVariations },
         { headers, timeout: 10000 }
       );
-      return { success: true };
+      return { success: true, stock_before: stockBefore, stock_after: stock };
     }
 
     await axios.put(
@@ -293,7 +319,13 @@ class MarketplaceStockSyncService {
       { headers, timeout: 10000 }
     );
 
-    return { success: true };
+    return {
+      success: true,
+      stock_before: Number.isFinite(Number(itemRes.data?.available_quantity))
+        ? Number(itemRes.data.available_quantity)
+        : null,
+      stock_after: stock
+    };
   }
 
   static async _updateFalabellaStock({ sku, stock, marketplace, credential }) {
@@ -336,6 +368,24 @@ class MarketplaceStockSyncService {
       'User-Agent': `${credential.seller_id || 'SC'}/Node/${process.versions.node}/STOCK_SYNC`
     };
 
+    let stockBefore = null;
+    try {
+      const adapter = PublishingAdapterFactory.getAdapter(
+        marketplace,
+        null,
+        null,
+        null,
+        credential
+      );
+      const products = await adapter.fetchProductsBySellerSku(sku);
+      const currentStock = products?.[0]?.stock;
+      if (Number.isFinite(Number(currentStock))) {
+        stockBefore = Number(currentStock);
+      }
+    } catch (error) {
+      logger.warn(`[StockSync] No se pudo consultar stock anterior de Falabella para ${sku}: ${error.message}`);
+    }
+
     const response = await axios.post(url, xmlPayload, { headers, timeout: 15000 });
 
     const body = response.data || '';
@@ -345,7 +395,7 @@ class MarketplaceStockSyncService {
       }
     }
 
-    return { success: true };
+    return { success: true, stock_before: stockBefore, stock_after: stock };
   }
 
   static _resolveFalabellaOperatorCode(country, domain) {

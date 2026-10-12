@@ -131,6 +131,34 @@ const AuditEventService = {
       logger.error(`[AuditEventService->safeRecordFromRequest] ${error.message}`);
       return null;
     }
+  },
+
+  async safeUpsertByDedupeKey(eventData, options = {}) {
+    try {
+      if (!eventData?.dedupe_key) return this.record(eventData, options);
+
+      const existing = await AuditEventRepository.findOneByDedupeKey(eventData.dedupe_key, options);
+      if (!existing) return this.record(eventData, options);
+
+      const payload = {
+        occurred_at: eventData.occurred_at || existing.occurred_at || new Date(),
+        result: RESULTS.SUCCESS,
+        ...eventData,
+        actor_id: normalizeId(eventData.actor_id),
+        resource_id: normalizeId(eventData.resource_id),
+        related_resource_id: normalizeId(eventData.related_resource_id),
+        previous_value: normalizeAuditValue(eventData.previous_value),
+        new_value: normalizeAuditValue(eventData.new_value),
+        changes: normalizeAuditValue(eventData.changes),
+        metadata: normalizeAuditValue(eventData.metadata)
+      };
+
+      await existing.update(payload, options);
+      return existing;
+    } catch (error) {
+      logger.error(`[AuditEventService->safeUpsertByDedupeKey] ${error.message}`);
+      return null;
+    }
   }
 };
 

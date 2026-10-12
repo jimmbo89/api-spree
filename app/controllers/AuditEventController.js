@@ -136,6 +136,7 @@ const ACTION_LABELS = {
   'sales.order_created': 'Orden creada en Spree',
   'sales.stock_deducted': 'Stock descontado',
   'sales.stock_reversed': 'Stock revertido',
+  'sales.stock_sync': 'Sincronización automática de Stock',
   'sales.synced': 'Venta sincronizada',
   'sales.status_changed': 'Estado de venta modificado',
   'sales.refreshed': 'Venta actualizada manualmente',
@@ -272,7 +273,7 @@ const FIELD_LABELS = {
   unit_price: 'Precio unitario',
   purchase_price: 'Precio de compra',
   stock_before: 'Stock anterior',
-  stock_after: 'Stock posterior',
+  stock_after: 'Stock resultante',
   initial_stock_total: 'Stock inicial total',
   attributes_updated: 'Atributos modificados',
   images_updated: 'Imágenes modificadas',
@@ -332,6 +333,17 @@ const FIELD_LABELS = {
   order_status: 'Estado de la venta',
   payment_status: 'Estado del pago',
   total_amount: 'Total de la venta',
+  product_name: 'Nombre del producto',
+  product_id: 'Producto',
+  order_id: 'Orden/venta',
+  marketplace_order_id: 'Orden/venta',
+  quantity_sold: 'Cantidad vendida',
+  variation: 'Variación',
+  destination: 'Destino',
+  destinos: 'Destinos',
+  successful_destinations: 'Destinos exitosos',
+  failed_destinations: 'Destinos con error',
+  error: 'Error',
   currency: 'Moneda',
   buyer_name: 'Comprador',
   seller_name: 'Vendedor',
@@ -1434,6 +1446,14 @@ function buildFunctionalContext(event) {
     }
     if (metadata.total_amount != null && metadata.total_amount !== '') {
       add('total_amount', 'Total de la venta', formatSaleAmount(metadata.total_amount, metadata.currency));
+    }
+    if (action === 'sales.stock_sync') {
+      add('product_label', 'Producto', metadata.product_label || metadata.producto);
+      add('sku', 'SKU', metadata.sku);
+      add('quantity_sold', 'Cantidad vendida', metadata.quantity_sold ?? metadata.quantity);
+      add('order_id', 'Orden/venta', metadata.order_id || metadata.local_order_id);
+      add('marketplace_name', 'Marketplace de origen', metadata.marketplace_name || metadata.marketplace);
+      add('destinos', 'Destinos', metadata.destinos);
     }
     if (action !== 'sales.status_changed') {
       add('payment_status', 'Estado del pago', metadata.payment_status);

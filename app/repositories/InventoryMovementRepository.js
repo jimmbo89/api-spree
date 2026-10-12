@@ -75,13 +75,15 @@ function mapInventoryMovement(record) {
   }
 
   // ⭐ Extraer variant_values del meta si existen
+  let movementMeta = {};
   let variantValues = null;
   let variantLabel = null;
   if (record.meta) {
     try {
-      const meta = typeof record.meta === 'string' ? JSON.parse(record.meta) : record.meta;
-      variantValues = meta.variant_values || null;
-      variantLabel = meta.variant_label || null;
+      movementMeta = typeof record.meta === 'string' ? JSON.parse(record.meta) : record.meta;
+      movementMeta = movementMeta && typeof movementMeta === 'object' ? movementMeta : {};
+      variantValues = movementMeta.variant_values || null;
+      variantLabel = movementMeta.variant_label || null;
     } catch (e) {
       // Ignorar si no se puede parsear
     }
@@ -127,6 +129,12 @@ function mapInventoryMovement(record) {
     user_id: record.user_id,
     reason: record.reason,
     notes: record.notes,
+    sale_quantity: movementMeta.sale_quantity ?? movementMeta.quantity_sold ?? null,
+    quantity_sold: movementMeta.quantity_sold ?? movementMeta.sale_quantity ?? null,
+    order_id: movementMeta.order_id || null,
+    marketplace: movementMeta.marketplace || null,
+    sync_correlation_id: movementMeta.sync_correlation_id || null,
+    meta: record.meta || null,
     createdAt: record.createdAt ? record.createdAt.toISOString().slice(0, 16).replace('T', ' ') : null,
 
     // ⭐ PRECIOS ACTUALES de la variante (enriquecidos)
@@ -153,7 +161,12 @@ function mapInventoryMovement(record) {
       name: record.destinationWarehouse.name,
       image: record.destinationWarehouse.image
     } : null,
-    product: record.product ? { id: record.product.id, name: record.product.name, first_image: productFirstImage } : null,
+    product: record.product ? {
+      id: record.product.id,
+      name: record.product.name,
+      sku: record.variant?.sku || record.product.sku || null,
+      first_image: productFirstImage
+    } : null,
     variant: record.variant ? {
       id: record.variant.id,
       sku: record.variant.sku,

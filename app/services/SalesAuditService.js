@@ -54,6 +54,170 @@ function getMarketplaceName(order, marketplace = null) {
   return marketplace?.name || marketplace?.domain || order?.credential?.marketplace?.name || order?.marketplace || 'Marketplace';
 }
 
+function buildSaleItemsSnapshot(items = []) {
+  const source = Array.isArray(items) ? items : [];
+
+  return source.map((item) => {
+    const plain = toPlain(item) || {};
+    const nested = plain.item || {};
+    const product = plain.product || {};
+    const variant = plain.variant || {};
+    const sku = plain.sku || plain.seller_custom_field || plain.seller_sku
+      || nested.sku || nested.seller_custom_field || nested.seller_sku || variant.sku || null;
+    const name = plain.product_name || plain.title || nested.title || nested.name || product.name || null;
+    const quantity = Number(plain.quantity ?? nested.quantity ?? 0);
+
+    return {
+      product_id: plain.product_id || product.id || null,
+      product_name: name,
+      producto: name,
+      sku,
+      quantity: Number.isFinite(quantity) ? quantity : 0
+    };
+  }).filter((item) => item.product_name || item.sku || item.product_id);
+}
+
+function parseJobConfig(job) {
+  const config = toPlain(job)?.config || {};
+  if (typeof config !== 'string') return config || {};
+
+  try {
+    return JSON.parse(config) || {};
+  } catch (error) {
+    return {};
+  }
+}
+
+function normalizeSyncResult(value) {
+  if (!value) return {};
+  if (typeof value === 'object') return value;
+  try {
+    return JSON.parse(value) || {};
+  } catch (error) {
+    return {};
+  }
+}
+
+function buildStockSyncDestinations(job, jobProducts = []) {
+  const config = parseJobConfig(job);
+  const sale = config.sale || {};
+  const localChanges = Array.isArray(config.local_stock_changes) ? config.local_stock_changes : [];
+  const warehouses = localChanges.map((change) => ({
+    destination_type: 'warehouse',
+    destination: change.warehouse_name || change.warehouse_label || `Almacén ${change.warehouse_id}`,
+    warehouse_id: change.warehouse_id || null,
+    status: change.status || 'success',
+    quantity: change.quantity ?? sale.quantity ?? null,
+    stock_before: change.stock_before ?? null,
+    stock_after: change.stock_after ?? null,
+    variation: change.variation ?? (change.quantity != null ? -Number(change.quantity) : null),
+    reason: change.reason || 'Venta',
+    inventory_movement_id: change.inventory_movement_id || null
+  }));
+
+  const marketplaces = jobProducts.map((jobProduct) => {
+    const payload = normalizeSyncResult(jobProduct.product_payload);
+    const syncResult = normalizeSyncResult(payload.sync_result);
+    const stockBefore = syncResult.stock_before ?? payload.stock_before ?? null;
+    const stockAfter = syncResult.stock_after ?? payload.stock ?? null;
+    const status = String(jobProduct.status || '').toLowerCase() === 'success' ? 'success' : 'error';
+
+    return {
+      destination_type: 'marketplace',
+      destination: jobProduct.marketplace?.name || payload.marketplace_name || `Marketplace ${jobProduct.marketplace_id}`,
+      marketplace_id: jobProduct.marketplace_id || null,
+      credential_id: jobProduct.credential_id || null,
+      external_id: jobProduct.external_id || payload.external_id || null,
+      status,
+      quantity: payload.quantity_sold ?? sale.quantity ?? null,
+      stock_before: stockBefore,
+      stock_after: stockAfter,
+      variation: stockBefore != null && stockAfter != null ? Number(stockAfter) - Number(stockBefore) : null,
+      error: status === 'error'
+        ? (jobProduct.error_message || syncResult.error || (jobProduct.status ? `estado_${jobProduct.status}` : null))
+        : null
+    };
+  });
+
+  return [...warehouses, ...marketplaces];
+}
+
+function buildStockSyncAuditPayload(job, jobProducts = [], options = {}) {
+  const plainJob = toPlain(job) || {};
+  const config = parseJobConfig(plainJob);
+  const sale = config.sale || {};
+  const firstJobProduct = jobProducts[0] || {};
+  const firstPayload = normalizeSyncResult(firstJobProduct.product_payload);
+  const productId = sale.product_id || firstJobProduct.product_id || firstPayload.product_id || null;
+  const productName = sale.product_name || firstJobProduct.product?.name || firstPayload.product_name || null;
+  const sku = sale.sku || firstPayload.sku || firstJobProduct.product?.sku || null;
+  const quantity = sale.quantity ?? firstPayload.quantity_sold ?? null;
+  const orderId = sale.order_id || sale.marketplace_order_id || null;
+  const localOrderId = sale.local_order_id || null;
+  const marketplaceName = sale.marketplace_name || sale.marketplace || getMarketplaceName({}, { name: sale.marketplace });
+  const destinations = buildStockSyncDestinations(plainJob, jobProducts);
+  const successful = destinations.filter((destination) => destination.status === 'success').length;
+  const failed = destinations.filter((destination) => destination.status === 'error').length;
+  const result = options.result || (failed === 0 ? 'success' : (successful > 0 ? 'warning' : 'error'));
+  const correlationId = String(
+    sale.correlation_id || config.correlation_id || plainJob.batch_id || `stock-sync:${plainJob.id || orderId || 'unknown'}`
+  ).slice(0, 100);
+  const productLabel = [sku, productName].filter(Boolean).join(' / ') || `Producto ${productId || 'sin identificar'}`;
+  const resourceId = localOrderId || orderId || `${correlationId}:${productId || 'unknown'}`;
+  const product = {
+    product_id: productId,
+    product_name: productName,
+    producto: productName,
+    sku,
+    quantity
+  };
+
+  return {
+    ...AuditEventService.automaticProcessActor(plainJob),
+    company_id: plainJob.company_id || sale.company_id || null,
+    module: 'sales',
+    action: 'sales.stock_sync',
+    result,
+    resource_type: 'marketplace_order',
+    resource_id: resourceId,
+    resource_label: `Venta ${marketplaceName || 'Marketplace'}${orderId ? ` #${orderId}` : ''}`,
+    related_resource_type: productId ? 'product' : null,
+    related_resource_id: productId,
+    marketplace_id: sale.marketplace_id || null,
+    marketplace_credential_id: sale.marketplace_credential_id || null,
+    job_id: plainJob.id || null,
+    branch_id: sale.branch_id || null,
+    correlation_id: correlationId,
+    dedupe_key: `automatic-stock-sync:${correlationId}`.slice(0, 190),
+    description: `Sincronización automática de Stock: ${productLabel}`,
+    new_value: {
+      producto: product,
+      order_id: orderId,
+      marketplace: marketplaceName,
+      destinos: destinations
+    },
+    metadata: {
+      source: 'sale',
+      order_id: orderId,
+      local_order_id: localOrderId,
+      marketplace: sale.marketplace || marketplaceName,
+      marketplace_name: marketplaceName,
+      marketplace_id: sale.marketplace_id || null,
+      product_id: productId,
+      product_name: productName,
+      product_label: productLabel,
+      producto: productName,
+      sku,
+      quantity,
+      quantity_sold: quantity,
+      successful_destinations: successful,
+      failed_destinations: failed,
+      destinos: destinations,
+      error: options.error || null
+    }
+  };
+}
+
 function buildOrderLabel(order) {
   const plain = toPlain(order) || {};
   const marketplaceName = getMarketplaceName(plain);
@@ -90,9 +254,15 @@ function buildOrderSnapshot(order) {
 
 function buildOrderMetadata(order, source, marketplace = null, extra = {}) {
   const plain = toPlain(order) || {};
+  const items = Array.isArray(extra.productos)
+    ? extra.productos
+    : buildSaleItemsSnapshot(plain.items || []);
+  const totalQuantity = items.reduce((total, item) => total + (Number(item.quantity) || 0), 0);
   return {
     source,
     marketplace_name: getMarketplaceName(plain, marketplace),
+    marketplace_order_id: plain.marketplace_order_id || null,
+    order_id: plain.marketplace_order_id || null,
     credential_name: plain.credential?.name || null,
     order_status: plain.order_status || null,
     payment_status: plain.payment_status || null,
@@ -108,6 +278,8 @@ function buildOrderMetadata(order, source, marketplace = null, extra = {}) {
     shipping_city: plain.shipping_city || null,
     shipping_region: plain.shipping_region || null,
     invoice_type: plain.invoice_type || null,
+    total_quantity: totalQuantity || null,
+    productos: items,
     ...redactSensitive(extra || {})
   };
 }
@@ -129,6 +301,7 @@ function buildOrderAuditPayload(order, data = {}) {
 const SalesAuditService = {
   redactSensitive,
   buildOrderSnapshot,
+  buildSaleItemsSnapshot,
 
   async recordMarketplaceEvent(marketplace, order, action, data = {}) {
     const actor = AuditEventService.marketplaceActor(marketplace || { name: getMarketplaceName(order) });
@@ -178,6 +351,12 @@ const SalesAuditService = {
       new_value: redactSensitive(data.new_value),
       changes: redactSensitive(data.changes)
     }));
+  },
+
+  async recordAutomaticStockSync(job, jobProducts = [], options = {}) {
+    return AuditEventService.safeUpsertByDedupeKey(
+      buildStockSyncAuditPayload(job, jobProducts, options)
+    );
   },
 
   getOrderChanges(previousOrder, nextOrder) {

@@ -20,4 +20,5 @@ docs/
 #vnm
 .nvmrc
 public/
+scripts/
 test/

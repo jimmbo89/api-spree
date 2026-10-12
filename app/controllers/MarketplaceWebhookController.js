@@ -652,7 +652,8 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
         metadata: {
           webhook_event_id: event.id,
           topic: payload?.topic || null,
-          resource: payload?.resource || null
+          resource: payload?.resource || null,
+          productos: SalesAuditService.buildSaleItemsSnapshot(items)
         }
       }
     );
@@ -788,6 +789,7 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
           orderId,
           marketplaceId: credential.marketplace_id,
           credentialId: credential.id,
+          marketplaceName: credential.marketplace?.name || ML_MARKETPLACE_KEY,
           companyId,
           branchId,
           orderIdLocal: savedOrder.id,
@@ -865,7 +867,11 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
         webhook_event_id: event.id,
         items_count: managedItemReferences.length,
         total_quantity: totalQuantity,
-        is_spree_managed: managedBySpree
+        is_spree_managed: managedBySpree,
+        productos: SalesAuditService.buildSaleItemsSnapshot(items),
+        order_id: orderId,
+        marketplace_order_id: orderId,
+        marketplace_name: credential.marketplace?.name || ML_MARKETPLACE_KEY
       }
     });
   }
@@ -3192,6 +3198,7 @@ async function processFalabellaEvent({ event, payload, orderId }) {
   // ✅ PARSEAR DATOS DE LA ORDEN COMPLETA
   const orderInfo = parseFalabellaOrderInfo(orderData, orderItemsData, payload);
   const items = parseFalabellaOrderItems(orderData, orderItemsData);
+  const totalQuantity = items.reduce((sum, item) => sum + (Number(item?.quantity || 0) || 0), 0);
 
   if (items.length === 0) {
     await MarketplaceWebhookEventRepository.updateById(event.id, {
@@ -3380,7 +3387,8 @@ async function processFalabellaEvent({ event, payload, orderId }) {
         metadata: {
           webhook_event_id: event.id,
           topic: event.topic || null,
-          resource: event.resource || null
+          resource: event.resource || null,
+          productos: SalesAuditService.buildSaleItemsSnapshot(items)
         }
       }
     );
@@ -3498,6 +3506,7 @@ async function processFalabellaEvent({ event, payload, orderId }) {
           orderId,
           marketplaceId: credential.marketplace_id,
           credentialId: credential.id,
+          marketplaceName: credential.marketplace?.name || FB_MARKETPLACE_KEY,
           companyId,
           branchId,
           orderIdLocal: savedOrder.id,
@@ -3557,7 +3566,12 @@ async function processFalabellaEvent({ event, payload, orderId }) {
         marketplace: FB_MARKETPLACE_KEY,
         webhook_event_id: event.id,
         items_count: managedItemReferences.length,
-        is_spree_managed: managedBySpree
+        total_quantity: totalQuantity,
+        is_spree_managed: managedBySpree,
+        productos: SalesAuditService.buildSaleItemsSnapshot(items),
+        order_id: orderId,
+        marketplace_order_id: orderId,
+        marketplace_name: credential.marketplace?.name || FB_MARKETPLACE_KEY
       }
     });
   }
@@ -5528,6 +5542,13 @@ async function processFalabellaOrderItem(item, ctx) {
   if (ctx.deductStock && !variant) {
     throw new Error(`variant_not_found:${sku}`);
   }
+  let productRecord = null;
+  try {
+    productRecord = productId ? await ProductRepository.findById(productId) : null;
+  } catch (error) {
+    logger.warn(`[Falabella] No se pudo enriquecer el nombre del producto ${productId}: ${error.message}`);
+  }
+  const productName = productRecord?.name || item?.title || item?.name || null;
 
   if (!ctx.deductStock) {
     return await saveFalabellaOrderItem({
@@ -5586,6 +5607,8 @@ async function processFalabellaOrderItem(item, ctx) {
     marketplaceKey: FB_MARKETPLACE_KEY,
     referencePrefix: "fb",
     reason: "falabella_sale",
+    productName,
+    sku,
     financialData: {
       unit_price: unitPrice,
       total_price: totalPrice,
@@ -5627,7 +5650,34 @@ async function processFalabellaOrderItem(item, ctx) {
       sourceMarketplaceId: ctx.marketplaceId,
       companyId: itemCompanyId,
       branchId: itemBranchId,
-      logPrefix: "FB Webhook"
+      logPrefix: "FB Webhook",
+      saleContext: {
+        order_id: ctx.orderId,
+        local_order_id: ctx.orderIdLocal,
+        marketplace_order_id: ctx.orderId,
+        marketplace: FB_MARKETPLACE_KEY,
+        marketplace_id: ctx.marketplaceId,
+        marketplace_credential_id: ctx.credentialId,
+        company_id: itemCompanyId,
+        branch_id: itemBranchId,
+        product_id: productId,
+        variant_id: variant.id,
+        product_name: productName,
+        marketplace_name: ctx.marketplaceName || FB_MARKETPLACE_KEY,
+        sku,
+        quantity,
+        correlation_id: `sale-stock-sync:${FB_MARKETPLACE_KEY}:${ctx.orderId}:${productId}:${variant.id}`
+      },
+      localStockChanges: exitResults.map((result) => ({
+        warehouse_id: result.warehouseId,
+        stock_before: result.stockBefore,
+        stock_after: result.stockAfter,
+        quantity: result.quantity,
+        variation: result.quantity != null ? -Number(result.quantity) : null,
+        inventory_movement_id: result.inventoryMovementId || null,
+        reason: 'Venta',
+        status: 'success'
+      }))
     });
   }
 
@@ -5798,6 +5848,13 @@ async function processOrderItem(orderItem, ctx) {
   if (!variant) {
     throw new Error(`variant_not_found:${sku || "no_sku"}`);
   }
+  let productRecord = null;
+  try {
+    productRecord = await ProductRepository.findById(productId);
+  } catch (error) {
+    logger.warn(`[Mercado Libre] No se pudo enriquecer el nombre del producto ${productId}: ${error.message}`);
+  }
+  const productName = productRecord?.name || orderItem?.item?.title || orderItem?.title || null;
 
   const warehouseIds = await resolveWarehouseCandidates({
     marketplaceId: ctx.marketplaceId,
@@ -5877,6 +5934,8 @@ async function processOrderItem(orderItem, ctx) {
     marketplaceKey: ML_MARKETPLACE_KEY,
     referencePrefix: "ml",
     reason: "mercadolibre_sale",
+    productName,
+    sku,
     financialData: {
       unit_price: unitPrice,
       total_price: totalPrice,
@@ -5961,7 +6020,34 @@ async function processOrderItem(orderItem, ctx) {
       sourceMarketplaceId: ctx.marketplaceId,
       companyId: itemCompanyId,
       branchId: itemBranchId,
-      logPrefix: "ML Webhook"
+      logPrefix: "ML Webhook",
+      saleContext: {
+        order_id: ctx.orderId,
+        local_order_id: ctx.orderIdLocal,
+        marketplace_order_id: ctx.orderId,
+        marketplace: ML_MARKETPLACE_KEY,
+        marketplace_id: ctx.marketplaceId,
+        marketplace_credential_id: ctx.credentialId,
+        company_id: itemCompanyId,
+        branch_id: itemBranchId,
+        product_id: productId,
+        variant_id: variant.id,
+        product_name: productName,
+        marketplace_name: ctx.marketplaceName || ML_MARKETPLACE_KEY,
+        sku,
+        quantity,
+        correlation_id: `sale-stock-sync:${ML_MARKETPLACE_KEY}:${ctx.orderId}:${productId}:${variant.id}`
+      },
+      localStockChanges: exitResults.map((result) => ({
+        warehouse_id: result.warehouseId,
+        stock_before: result.stockBefore,
+        stock_after: result.stockAfter,
+        quantity: result.quantity,
+        variation: result.quantity != null ? -Number(result.quantity) : null,
+        inventory_movement_id: result.inventoryMovementId || null,
+        reason: 'Venta',
+        status: 'success'
+      }))
     });
   }
 
@@ -6145,7 +6231,9 @@ async function applyStockExitByPlan({
   marketplaceKey,
   referencePrefix,
   reason,
-  financialData
+  financialData,
+  productName = null,
+  sku = null
 }) {
   const results = [];
   const transaction = await sequelize.transaction();
@@ -6168,12 +6256,16 @@ async function applyStockExitByPlan({
         referencePrefix,
         reason,
         financial_data: financialData,
+        productName,
+        sku,
         transaction
       });
 
       results.push({
         warehouseId: entry.warehouseId,
+        stockBefore: exitResult?.stockBefore,
         stockAfter: exitResult?.stockAfter,
+        quantity: qty,
         inventoryMovementId: exitResult?.inventoryMovementId || null
       });
     }
@@ -6199,6 +6291,8 @@ async function applyStockExit({
   referencePrefix,
   reason,
   financial_data = null,
+  productName = null,
+  sku = null,
   transaction: transactionOverride = null
 }) {
   const finalMarketplaceKey = marketplaceKey || "marketplace";
@@ -6247,17 +6341,20 @@ async function applyStockExit({
     )];
     let remaining = quantity;
     let firstInventoryMovementId = null;
+    const totalStockBefore = totalAvailable;
 
     // FIFO: cada lote recibe su propio movimiento para conservar trazabilidad
     // y permitir que una reversa restaure exactamente el lote original.
     for (const lot of lots) {
       if (remaining <= 0) break;
 
-      const stockBefore = parseInt(lot.stock, 10) || 0;
-      const deducted = Math.min(stockBefore, remaining);
+      const lotStockBefore = parseInt(lot.stock, 10) || 0;
+      const deducted = Math.min(lotStockBefore, remaining);
       if (deducted <= 0) continue;
 
-      const stockAfter = stockBefore - deducted;
+      const stockAfter = lotStockBefore - deducted;
+      const warehouseStockBefore = totalStockBefore - (quantity - remaining);
+      const warehouseStockAfter = warehouseStockBefore - deducted;
       const updateData = { stock: stockAfter };
 
       if (stockAfter === 0) {
@@ -6283,7 +6380,14 @@ async function applyStockExit({
           local_sku: lot.local_sku ?? null,
           active: lot.active ?? null,
           published: lot.published ?? null
-        }
+        },
+        product_name: productName,
+        sku: sku || null,
+        quantity_sold: quantity,
+        sale_quantity: quantity,
+        stock_before: warehouseStockBefore,
+        stock_after: warehouseStockAfter,
+        sync_correlation_id: stockItemReferenceId || null
       };
 
       if (financial_data) {
@@ -6299,14 +6403,14 @@ async function applyStockExit({
         branch_id: branchId,
         movement_type: "exit",
         quantity: deducted,
-        stock_before: stockBefore,
-        stock_after: stockAfter,
+        stock_before: warehouseStockBefore,
+        stock_after: warehouseStockAfter,
         unit_price: lot.price || null,
         total_value: lot.price ? lot.price * deducted : null,
         reference_type: finalMarketplaceKey,
         reference_id: `${finalReferencePrefix}:${orderId}:${listingId}`,
-        reason: reason || `${finalMarketplaceKey}_sale`,
-        notes: `order:${orderId}`,
+        reason: "Venta",
+        notes: `Venta ${finalMarketplaceKey} - order:${orderId}`,
         user_id: null,
         meta
       }, { transaction });
@@ -6319,7 +6423,9 @@ async function applyStockExit({
 
     if (ownsTransaction) await transaction.commit();
     return { 
+      stockBefore: totalAvailable,
       stockAfter: totalAvailable - quantity,
+      quantity,
       inventoryMovementId: firstInventoryMovementId
     };
   } catch (error) {
@@ -6338,7 +6444,9 @@ async function queueStockSync({
   companyId,
   branchId,
   logPrefix,
-  includeSourceMarketplace = false
+  includeSourceMarketplace = false,
+  saleContext = null,
+  localStockChanges = []
 }) {
   try {
     const job = await MarketplaceStockSyncService.enqueueStockSync({
@@ -6350,16 +6458,44 @@ async function queueStockSync({
       sourceMarketplaceId,
       companyId,
       branchId,
-      includeSourceMarketplace
+      includeSourceMarketplace,
+      saleContext,
+      localStockChanges
     });
 
-    if (!job) return;
+    if (!job) {
+      if (saleContext) {
+        await SalesAuditService.recordAutomaticStockSync({
+          id: null,
+          company_id: companyId,
+          config: {
+            trigger: 'sale',
+            correlation_id: saleContext.correlation_id,
+            sale: saleContext,
+            local_stock_changes: localStockChanges
+          }
+        }, [], { result: localStockChanges.length > 0 ? 'success' : 'warning', error: 'no_sync_targets' });
+      }
+      return;
+    }
 
     const prefix = logPrefix || "Webhook";
     logger.info(`[${prefix}] Job de sync creado: ${job.id}`);
   } catch (error) {
     const prefix = logPrefix || "Webhook";
     logger.warn(`[${prefix}] Error preparando sync: ${error.message}`);
+    if (saleContext) {
+      await SalesAuditService.recordAutomaticStockSync({
+        id: null,
+        company_id: companyId,
+        config: {
+          trigger: 'sale',
+          correlation_id: saleContext.correlation_id,
+          sale: saleContext,
+          local_stock_changes: localStockChanges
+        }
+      }, [], { result: 'warning', error: error.message });
+    }
   }
 }
 

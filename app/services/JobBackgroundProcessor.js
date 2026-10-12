@@ -4,6 +4,7 @@ const MarketplaceStockSyncService = require('./MarketplaceStockSyncService');
 const PublishingService = require('./PublishingService');
 const logger = require('../../config/logger');
 const PublicationAuditService = require('./PublicationAuditService');
+const SalesAuditService = require('./SalesAuditService');
 
 // ⚙️ Configuración ajustada para cPanel (recursos limitados)
 const CONFIG = {
@@ -47,6 +48,23 @@ function buildWarningMessage(warnings, fallbackMessage = null) {
 let processorInterval = null;
 let isRunning = false;
 const activeJobIds = new Set();
+
+function parseJsonObject(value) {
+  if (!value) return {};
+  if (typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value !== 'string') return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (error) {
+    return {};
+  }
+}
+
+function isSaleStockSync(job) {
+  const config = parseJsonObject(job?.config);
+  return job?.job_type === 'sync' && (config.trigger === 'sale' || config.origin === 'sale');
+}
 
 const JobBackgroundProcessor = {
 
@@ -145,6 +163,9 @@ const JobBackgroundProcessor = {
               elapsed_minutes: elapsedMin
             }
           });
+          if (isSaleStockSync(failedJob)) {
+            await this._recordSaleStockSyncAudit(failedJob);
+          }
           continue;
         }
       }
@@ -223,6 +244,9 @@ const JobBackgroundProcessor = {
           stage: 'job_process'
         }
       });
+      if (isSaleStockSync(failedJob)) {
+        await this._recordSaleStockSyncAudit(failedJob, { error: error.message, result: 'error' });
+      }
       await this._notifyPublicationFinished(failedJob, {
         total: failedJob.total_products || 0,
         successful: failedJob.successful || 0,
@@ -461,22 +485,30 @@ async _processProduct(jobProduct, parentJobId) {
         });
 
         const result = await MarketplaceStockSyncService.processJobProduct(jobProduct, syncJob);
+        const syncResultPayload = {
+          ...(product_payload || {}),
+          sync_result: result || { success: false, error: 'sync_failed' },
+          sync_result_at: new Date().toISOString()
+        };
 
         if (result?.success) {
           await JobProductRepository.update(jobProduct, {
             status: 'success',
             error_message: null,
-            error_details: null
+            error_details: null,
+            product_payload: syncResultPayload
           });
 
-          await PublicationAuditService.recordProcessSystemEvent(
-            syncJob,
-            'stock_sync.succeeded',
-            {
-              result: 'success',
-              metadata: auditMetadata
-            }
-          );
+          if (!isSaleStockSync(syncJob)) {
+            await PublicationAuditService.recordProcessSystemEvent(
+              syncJob,
+              'stock_sync.succeeded',
+              {
+                result: 'success',
+                metadata: auditMetadata
+              }
+            );
+          }
 
           return { success: true };
         }
@@ -485,21 +517,24 @@ async _processProduct(jobProduct, parentJobId) {
         await JobProductRepository.update(jobProduct, {
           status: 'error',
           error_message: errorMessage,
-          error_details: result?.details || null
+          error_details: result?.details || null,
+          product_payload: syncResultPayload
         });
 
-        await PublicationAuditService.recordProcessSystemEvent(
-          syncJob,
-          'stock_sync.failed',
-          {
-            result: 'error',
-            error: errorMessage,
-            metadata: {
-              ...auditMetadata,
-              details: result?.details || null
+        if (!isSaleStockSync(syncJob)) {
+          await PublicationAuditService.recordProcessSystemEvent(
+            syncJob,
+            'stock_sync.failed',
+            {
+              result: 'error',
+              error: errorMessage,
+              metadata: {
+                ...auditMetadata,
+                details: result?.details || null
+              }
             }
-          }
-        );
+          );
+        }
 
         return { success: false };
       } catch (syncError) {
@@ -508,18 +543,25 @@ async _processProduct(jobProduct, parentJobId) {
         await JobProductRepository.update(jobProduct, {
           status: 'error',
           error_message: errorMessage,
-          error_details: { stack: syncError.stack }
+          error_details: { stack: syncError.stack },
+          product_payload: {
+            ...(product_payload || {}),
+            sync_result: { success: false, error: errorMessage },
+            sync_result_at: new Date().toISOString()
+          }
         });
 
-        await PublicationAuditService.recordProcessSystemEvent(
-          syncJob,
-          'stock_sync.failed',
-          {
-            result: 'error',
-            error: errorMessage,
-            metadata: auditMetadata
-          }
-        );
+        if (!isSaleStockSync(syncJob)) {
+          await PublicationAuditService.recordProcessSystemEvent(
+            syncJob,
+            'stock_sync.failed',
+            {
+              result: 'error',
+              error: errorMessage,
+              metadata: auditMetadata
+            }
+          );
+        }
 
         return { success: false };
       }
@@ -703,10 +745,26 @@ async _processProduct(jobProduct, parentJobId) {
           : `Proceso #${jobId} finalizado correctamente`
       });
       await this._notifyPublicationFinished(completedJob, stats);
+      if (isSaleStockSync(completedJob)) {
+        await this._recordSaleStockSyncAudit(completedJob);
+      }
       logger.info(`[JobProcessor] 🏁 Job ${jobId} completado: ${stats.successful}/${stats.total}`);
       return true;
     }
     return false;
+  },
+
+  async _recordSaleStockSyncAudit(job, options = {}) {
+    try {
+      const jobProducts = await JobProductRepository.findAllByJob(job.id, {
+        includePayloads: true,
+        includeDetails: true,
+        limit: 100
+      });
+      await SalesAuditService.recordAutomaticStockSync(job, jobProducts, options);
+    } catch (error) {
+      logger.error(`[JobProcessor] No se pudo registrar auditoría de sincronización de stock del job ${job?.id}: ${error.message}`);
+    }
   },
 
   /**
