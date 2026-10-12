@@ -122,19 +122,26 @@ const JobBackgroundProcessor = {
         logger.debug(`[JobProcessor] Job ${job.id} ya está en ejecución, saltando ciclo duplicado`);
         continue;
       }
-      // Verificar timeout para jobs colgados
-      if (job.started_at) {
-        const elapsedMin = (Date.now() - new Date(job.started_at)) / 60000;
+      // Verificar timeout para jobs colgados. Un job pending no tiene
+      // started_at hasta que el worker lo toma; si el worker no arrancó,
+      // también debe dejar de aparecer indefinidamente como "cargando".
+      const timeoutReference = job.started_at || (job.status === 'pending' ? job.createdAt : null);
+      if (timeoutReference) {
+        const elapsedMin = (Date.now() - new Date(timeoutReference)) / 60000;
         if (elapsedMin > CONFIG.JOB_TIMEOUT_MINUTES) {
-          logger.warn(`[JobProcessor] Job ${job.id} excedió timeout (${elapsedMin}min)`);
-          const failedJob = await JobRepository.fail(job.id, 'timeout', { elapsed_minutes: elapsedMin });
+          const timeoutReason = job.started_at ? 'timeout' : 'pending_timeout';
+          logger.warn(`[JobProcessor] Job ${job.id} excedió timeout (${elapsedMin}min, status=${job.status})`);
+          const failedJob = await JobRepository.fail(job.id, timeoutReason, {
+            elapsed_minutes: elapsedMin,
+            previous_status: job.status
+          });
           await PublicationAuditService.recordProcessSystemEvent(failedJob, 'process.stopped', {
             result: 'error',
             previous_value: { status: job.status },
             new_value: { status: failedJob.status },
             description: `Proceso #${job.id} detenido por timeout`,
             metadata: {
-              reason: 'timeout',
+              reason: timeoutReason,
               elapsed_minutes: elapsedMin
             }
           });

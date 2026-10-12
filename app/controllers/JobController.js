@@ -143,6 +143,17 @@ function isJobPublicationActive(stats = {}, jobStatus = 'pending') {
   return derivedStatus === 'pending' || derivedStatus === 'processing';
 }
 
+const STALE_PENDING_JOB_TIMEOUT_MINUTES = 60;
+
+function isStalePendingJob(job, now = Date.now()) {
+  if (job?.status !== 'pending' || !job.createdAt) return false;
+
+  const createdAt = new Date(job.createdAt).getTime();
+  if (!Number.isFinite(createdAt)) return false;
+
+  return now - createdAt > STALE_PENDING_JOB_TIMEOUT_MINUTES * 60 * 1000;
+}
+
 async function refreshPausedMarketplaceItemStateForJob(job) {
   try {
     const jobProducts = await JobProductRepository.findAllErrorsByJob(job, {
@@ -448,13 +459,14 @@ async getActiveJobs(req, res) {
     const user_id = bodyUserId || getUserId();
       
     // 1. 🔹 Obtener jobs candidatos y filtrar por estado real de publicación
-      const activeJobs = await JobRepository.findAll({
+      const candidateJobs = await JobRepository.findAll({
       user_id,
       company_id,
       job_type: 'publish',
       status: { [Op.in]: ['pending', 'processing', 'completed', 'completed_with_errors', 'failed'] },
       limit: 50
     });
+    const activeJobs = candidateJobs.filter((job) => !isStalePendingJob(job));
     
     // 3. 🔹 Respuesta con jobs (formato requerido por UI)
     const jobsByChannel = await Promise.all(activeJobs.map(async (job) => {

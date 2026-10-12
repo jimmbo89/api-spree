@@ -79,3 +79,37 @@ test('JobBackgroundProcessor procesa sincronización de stock sin pool de public
     PublicationAuditService.recordProcessSystemEvent = originalRecordProcessSystemEvent;
   }
 });
+
+test('JobBackgroundProcessor cierra un job pending que nunca fue tomado por el worker', async () => {
+  const originalFindAll = JobRepository.findAll;
+  const originalFail = JobRepository.fail;
+  const originalRecordProcessSystemEvent = PublicationAuditService.recordProcessSystemEvent;
+  const audits = [];
+  const staleJob = {
+    id: 265,
+    status: 'pending',
+    createdAt: new Date(Date.now() - (61 * 60 * 1000))
+  };
+
+  JobRepository.findAll = async () => [staleJob];
+  JobRepository.fail = async (_jobId, reason, details) => ({
+    ...staleJob,
+    status: 'failed',
+    error_summary: { message: reason, details }
+  });
+  PublicationAuditService.recordProcessSystemEvent = async (_job, action, data) => {
+    audits.push({ action, data });
+  };
+
+  try {
+    await JobBackgroundProcessor._processPendingJobs();
+
+    assert.equal(audits.length, 1);
+    assert.equal(audits[0].action, 'process.stopped');
+    assert.equal(audits[0].data.metadata.reason, 'pending_timeout');
+  } finally {
+    JobRepository.findAll = originalFindAll;
+    JobRepository.fail = originalFail;
+    PublicationAuditService.recordProcessSystemEvent = originalRecordProcessSystemEvent;
+  }
+});

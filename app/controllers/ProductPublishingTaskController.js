@@ -29,6 +29,7 @@ const { getRequestMetadata } = require('../util/requestUtil');
 const PublishingAdapterFactory = require('../services/adapters/PublishingAdapterFactory');
 const MercadoLibreCapabilitiesService = require('../services/MercadoLibreCapabilitiesService');
 const PublicationAuditService = require('../services/PublicationAuditService');
+const JobBackgroundProcessor = require('../services/JobBackgroundProcessor');
 const {
   humanizeMarketplaceError,
   presentMarketplacePublicationError
@@ -1545,6 +1546,29 @@ async store(req, res) {
       success: false, 
       msg: "marketplaces_requeridos",
       details: "El campo 'marketplaces' es obligatorio cuando el modo no es 'draft'. Debe contener al menos un marketplace"
+    });
+  }
+
+  // El job se crea para ejecución en segundo plano. Si el proceso web se
+  // reinició y el worker todavía no quedó activo, iniciarlo aquí evita aceptar
+  // publicaciones que quedarían permanentemente en estado pending.
+  if (!isDraft && !JobBackgroundProcessor.getStatus().running) {
+    try {
+      logger.warn('[JobController] Background processor inactivo; iniciándolo antes de crear la publicación');
+      JobBackgroundProcessor.start();
+    } catch (error) {
+      logger.error(`[JobController] No se pudo iniciar el background processor: ${error.message}`);
+      return res.status(503).json({
+        success: false,
+        msg: 'publication_processor_unavailable'
+      });
+    }
+  }
+
+  if (!isDraft && !JobBackgroundProcessor.getStatus().running) {
+    return res.status(503).json({
+      success: false,
+      msg: 'publication_processor_unavailable'
     });
   }
 
