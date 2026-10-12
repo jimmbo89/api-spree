@@ -165,6 +165,21 @@ const AuditEventRepository = {
               warehouse_id: warehouseId,
               related_resource_type: 'inventory_movement',
               related_resource_id: { [Op.in]: movementIds }
+            },
+            // Las sincronizaciones de ventas agrupan los almacenes dentro de
+            // metadata.destinos y no pueden usar un solo warehouse_id raíz.
+            {
+              [Op.and]: [
+                {
+                  module: 'sales',
+                  action: 'sales.stock_sync',
+                  related_resource_type: 'product',
+                  related_resource_id: String(productId)
+                },
+                literal(
+                  `JSON_CONTAINS(JSON_EXTRACT(metadata, '$.destinos'), JSON_OBJECT('warehouse_id', ${warehouseId}))`
+                )
+              ]
             }
           ]
         }];

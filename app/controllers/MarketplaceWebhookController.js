@@ -820,6 +820,22 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
       } catch (error) {
         errors.push(error.message);
         logger.error(`[ML Webhook] Item error order=${orderId}: ${error.message}`);
+        const itemSnapshot = SalesAuditService.buildSaleItemsSnapshot([orderItem])[0] || {};
+        await recordSaleStockSyncFailure({
+          marketplaceKey: ML_MARKETPLACE_KEY,
+          marketplaceName: credential.marketplace?.name || ML_MARKETPLACE_KEY,
+          marketplaceId: credential.marketplace_id,
+          credentialId: credential.id,
+          orderId,
+          localOrderId: savedOrder.id,
+          companyId,
+          branchId,
+          productId: link?.product_id || null,
+          productName: itemSnapshot.product_name || null,
+          sku: itemSnapshot.sku || null,
+          quantity: itemSnapshot.quantity ?? null,
+          error
+        });
       }
     }
 
@@ -3518,6 +3534,22 @@ async function processFalabellaEvent({ event, payload, orderId }) {
       } catch (error) {
         errors.push(error.message);
         logger.error(`[FB Webhook] Item error order=${orderId}: ${error.message}`);
+        const itemSnapshot = SalesAuditService.buildSaleItemsSnapshot([item])[0] || {};
+        await recordSaleStockSyncFailure({
+          marketplaceKey: FB_MARKETPLACE_KEY,
+          marketplaceName: credential.marketplace?.name || FB_MARKETPLACE_KEY,
+          marketplaceId: credential.marketplace_id,
+          credentialId: credential.id,
+          orderId,
+          localOrderId: savedOrder.id,
+          companyId,
+          branchId,
+          productId: itemLinks[index]?.product_id || null,
+          productName: itemSnapshot.product_name || null,
+          sku: itemSnapshot.sku || item?.sku || null,
+          quantity: itemSnapshot.quantity ?? Number(item?.quantity || 0),
+          error
+        });
       }
     }
   }
@@ -5498,6 +5530,81 @@ function toBoolean(value) {
 function normalizeCustomerType(initialType) {
   const normalized = stringOrNull(initialType);
   return normalized || null;
+}
+
+async function recordSaleStockSyncFailure({
+  marketplaceKey,
+  marketplaceName,
+  marketplaceId,
+  credentialId,
+  orderId,
+  localOrderId,
+  companyId,
+  branchId,
+  productId,
+  variantId = null,
+  productName,
+  sku,
+  quantity,
+  warehouseIds = [],
+  error
+}) {
+  try {
+    let resolvedVariantId = variantId;
+    if (!resolvedVariantId && sku) {
+      const variant = await ProductVariantRepository.findBySku(sku);
+      if (variant && (!productId || Number(variant.product_id) === Number(productId))) {
+        resolvedVariantId = variant.id;
+      }
+    }
+
+    const correlationId = `sale-stock-sync:${marketplaceKey}:${orderId}:${productId || 'unknown'}:${resolvedVariantId || sku || 'unknown'}`;
+    const destinationIds = Array.isArray(warehouseIds) && warehouseIds.length > 0
+      ? warehouseIds
+      : [null];
+
+    await SalesAuditService.recordAutomaticStockSync({
+      id: null,
+      company_id: companyId,
+      config: {
+        trigger: 'sale',
+        correlation_id: correlationId,
+        sale: {
+          order_id: orderId,
+          local_order_id: localOrderId,
+          marketplace_order_id: orderId,
+          marketplace: marketplaceKey,
+          marketplace_name: marketplaceName || marketplaceKey,
+          marketplace_id: marketplaceId,
+          marketplace_credential_id: credentialId,
+          company_id: companyId,
+          branch_id: branchId,
+          product_id: productId || null,
+          variant_id: resolvedVariantId || null,
+          product_name: productName || null,
+          sku: sku || null,
+          quantity: quantity ?? null,
+          correlation_id: correlationId
+        },
+        local_stock_changes: destinationIds.map((warehouseId) => ({
+          warehouse_id: warehouseId,
+          warehouse_name: warehouseId ? null : 'Almacén no identificado',
+          status: 'error',
+          quantity: quantity ?? null,
+          stock_before: null,
+          stock_after: null,
+          variation: null,
+          reason: 'Venta',
+          error: error?.message || String(error || 'stock_deduction_failed')
+        }))
+      }
+    }, [], {
+      result: 'error',
+      error: error?.message || String(error || 'stock_deduction_failed')
+    });
+  } catch (auditError) {
+    logger.warn(`[${marketplaceKey}] No se pudo registrar el fallo de sincronización de stock: ${auditError.message}`);
+  }
 }
 
 async function processFalabellaOrderItem(item, ctx) {

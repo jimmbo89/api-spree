@@ -102,18 +102,22 @@ function buildStockSyncDestinations(job, jobProducts = []) {
   const config = parseJobConfig(job);
   const sale = config.sale || {};
   const localChanges = Array.isArray(config.local_stock_changes) ? config.local_stock_changes : [];
-  const warehouses = localChanges.map((change) => ({
-    destination_type: 'warehouse',
-    destination: change.warehouse_name || change.warehouse_label || `Almacén ${change.warehouse_id}`,
-    warehouse_id: change.warehouse_id || null,
-    status: change.status || 'success',
-    quantity: change.quantity ?? sale.quantity ?? null,
-    stock_before: change.stock_before ?? null,
-    stock_after: change.stock_after ?? null,
-    variation: change.variation ?? (change.quantity != null ? -Number(change.quantity) : null),
-    reason: change.reason || 'Venta',
-    inventory_movement_id: change.inventory_movement_id || null
-  }));
+  const warehouses = localChanges.map((change) => {
+    const destination = {
+      destination_type: 'warehouse',
+      destination: change.warehouse_name || change.warehouse_label || `Almacén ${change.warehouse_id}`,
+      warehouse_id: change.warehouse_id || null,
+      status: change.status || 'success',
+      quantity: change.quantity ?? sale.quantity ?? null,
+      stock_before: change.stock_before ?? null,
+      stock_after: change.stock_after ?? null,
+      variation: change.variation ?? (change.quantity != null ? -Number(change.quantity) : null),
+      reason: change.reason || 'Venta',
+      inventory_movement_id: change.inventory_movement_id || null
+    };
+    if (destination.status === 'error') destination.error = change.error || null;
+    return destination;
+  });
 
   const marketplaces = jobProducts.map((jobProduct) => {
     const payload = normalizeSyncResult(jobProduct.product_payload);
