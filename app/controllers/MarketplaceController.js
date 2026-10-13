@@ -4,7 +4,8 @@ const { sequelize } = require('../models');
 const {
   MarketplaceRepository,
   ProductFieldMappingRepository,
-  LogRepository
+  LogRepository,
+  UserCompanyRepository
 } = require('../repositories');
 const { getRequestMetadata } = require('../util/requestUtil');
 
@@ -12,13 +13,26 @@ const MarketplaceController = {
   async list(req, res) {
     logger.info(`${req.user?.name || 'Unknown'} - Lista marketplaces`);
     try {
+      const rawCompanyId = req.body?.company_id ?? req.query?.company_id ?? req.companyId ?? req.user?.company_id;
+      const companyId = rawCompanyId !== undefined && rawCompanyId !== null && rawCompanyId !== ''
+        ? Number(rawCompanyId)
+        : null;
+
+      if (!Number.isInteger(companyId) || companyId <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'company_id es requerido para listar los usuarios activos de la empresa'
+        });
+      }
+
       const marketplaces = await MarketplaceRepository.findAllWithCredentialCount();
+      const users = await UserCompanyRepository.findActiveUsersByCompanyId(companyId);
       // ⚠️ Eliminar client_secret de la respuesta
       const safeMarketplaces = marketplaces.map(mp => {
         const { client_secret, ...safeMp } = mp;
         return safeMp;
       });
-      res.status(200).json({ success:true, marketplaces: marketplaces });
+      res.status(200).json({ success: true, marketplaces, users });
     } catch (error) {
       logger.error('MarketplaceController->list: ' + error.message);
       res.status(500).json({ error: 'ServerError' });

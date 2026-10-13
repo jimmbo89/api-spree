@@ -299,8 +299,14 @@ router.post("/branch-status", requireRoles([ 'Backoffice', 'Admin', 'Seller Mana
 
 //Rutas de Almacénes
 router.post("/warehouse-branch-company", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager', 'Publicador', 'Viewer', 'User']), validateSchema(listWarehouseSchema), WarehouseController.list);
-router.post("/warehouse", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), checkPlanLimit('warehouse'), multerImage("image", "warehouses"), validateSchema(storeWarehouseSchema), WarehouseController.store);
-router.post("/warehouse-update", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), multerImage("image", "warehouses"), validateSchema(updateWarehouseSchema), WarehouseController.update);
+router.post("/warehouse", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), checkPlanLimit('warehouse'), multerImage("image", "warehouses"), validateSchema(storeWarehouseSchema, {
+  humanize: true,
+  message: 'No se pudo guardar el almacén'
+}), WarehouseController.store);
+router.post("/warehouse-update", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), multerImage("image", "warehouses"), validateSchema(updateWarehouseSchema, {
+  humanize: true,
+  message: 'No se pudo actualizar el almacén'
+}), WarehouseController.update);
 router.post("/warehouse-destroy", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(idWarehouseSchema), WarehouseController.destroy);
 router.post("/warehouse-metadata", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), WarehouseController.getWarehouseMetadata);
 

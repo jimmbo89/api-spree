@@ -17,6 +17,13 @@ const imageFieldSchema = Joi.alternatives().try(
   })
 );
 
+// En multipart/form-data el frontend envía este campo como texto JSON.
+// El controlador valida su estructura y pertenencia a la empresa.
+const accessUserIdsSchema = Joi.alternatives().try(
+  Joi.string(),
+  Joi.array().items(Joi.number().integer().positive())
+).optional();
+
 const baseSchema = {
   code: Joi.string().max(50).required(),
   name: Joi.string().max(255).required(),
@@ -35,7 +42,8 @@ const baseSchema = {
   company_id: Joi.number().integer().positive().optional().empty('').allow(null),
   branch_id: Joi.number().integer().positive().optional().empty('').allow(null),
   user_id: Joi.number().integer().positive().optional().empty('').allow(null),
-  image: imageFieldSchema.optional()
+  image: imageFieldSchema.optional(),
+  access_user_ids: accessUserIdsSchema
 };
 
 const storeWarehouseSchema = Joi.object(baseSchema);
@@ -58,7 +66,8 @@ const updateWarehouseSchema = Joi.object({
   company_id: Joi.number().integer().positive().optional().empty('').allow(null),
   branch_id: Joi.number().integer().positive().optional().empty('').allow(null),
   user_id: Joi.number().integer().positive().optional().empty('').allow(null),
-  image: imageFieldSchema.optional()
+  image: imageFieldSchema.optional(),
+  access_user_ids: accessUserIdsSchema
 });
 const idWarehouseSchema = Joi.object({ id: Joi.number().required() });
 const listWarehouseSchema = Joi.object({

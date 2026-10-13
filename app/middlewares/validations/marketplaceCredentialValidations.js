@@ -7,6 +7,11 @@ const Joi = require('joi');
 const storeSchema = Joi.object({
   marketplace_id: Joi.number().integer().positive().required(),
   company_id: Joi.number().integer().positive().required(),
+  user_id: Joi.number().integer().positive().optional(),
+  access_user_ids: Joi.array()
+    .items(Joi.number().integer().positive())
+    .unique()
+    .optional(),
   // 🔑 Solo tokens
   name: Joi.string().min(3).max(100).optional().messages({
     'string.min': 'El nombre debe tener al menos 3 caracteres',
@@ -39,6 +44,11 @@ const storeSchema = Joi.object({
 const updateSchema = Joi.object({
   id: Joi.number().integer().positive().required(),
   company_id: Joi.number().integer().positive().optional(),
+  user_id: Joi.number().integer().positive().optional(),
+  access_user_ids: Joi.array()
+    .items(Joi.number().integer().positive())
+    .unique()
+    .optional(),
   name: Joi.string().min(3).max(100).optional().messages({
     'string.min': 'El nombre debe tener al menos 3 caracteres',
     'string.max': 'El nombre debe tener máximo 100 caracteres'

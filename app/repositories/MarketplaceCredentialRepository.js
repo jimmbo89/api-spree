@@ -881,7 +881,10 @@ async deleteById(id) {
         conflictWhere.id = { [Op.ne]: id };
       }
 
-      const conflict = await MarketplaceCredential.findOne({ where: conflictWhere });
+      const conflict = await MarketplaceCredential.findOne({
+        where: conflictWhere,
+        transaction: options.transaction
+      });
       if (conflict) {
         throw new Error('Ya existe una credencial con este nombre para este usuario y marketplace');
       }
@@ -923,7 +926,9 @@ async deleteById(id) {
           where: { id },
           ...options
         });
-        record = await MarketplaceCredential.findByPk(id);
+        record = await MarketplaceCredential.findByPk(id, {
+          transaction: options.transaction
+        });
       } else {
         record = await MarketplaceCredential.create(dataToSave, options);
       }
@@ -941,10 +946,10 @@ async deleteById(id) {
    * @param {object} data - Campos a actualizar (solo los que se envían)
    * @returns {Promise<object>} - Registro actualizado en plano
    */
-  async updatePartial(id, data) {
+  async updatePartial(id, data, options = {}) {
     try {
       // 1. Verificar que el registro existe
-      const existing = await MarketplaceCredential.findByPk(id);
+      const existing = await MarketplaceCredential.findByPk(id, options);
       if (!existing) {
         throw new Error('credentialNotFound');
       }
@@ -1001,13 +1006,14 @@ async deleteById(id) {
 
       // 3. Ejecutar actualización (SIN returning: true para MySQL)
       await MarketplaceCredential.update(updateData, {
-        where: { id }
+        where: { id },
+        ...options
         // ⚠️ NO usar returning: true en MySQL
         // ⚠️ NO usar individualHooks: true (no soportado en update masivo)
       });
 
       // 4. Obtener y retornar el registro actualizado
-      const updated = await MarketplaceCredential.findByPk(id);
+      const updated = await MarketplaceCredential.findByPk(id, options);
       return updated.get({ plain: true });
 
     } catch (error) {

@@ -1,5 +1,5 @@
 const { Op } = require('sequelize');
-const { UserMarketplaceCredential, MarketplaceCredential, Marketplace, Company, User, ProductFieldMapping } = require('../models');
+const { UserMarketplaceCredential, MarketplaceCredential, Marketplace, Company, User, UserCompany, ProductFieldMapping } = require('../models');
 const EncryptionService = require('../services/EncryptionService');
 const logger = require('../../config/logger');
 
@@ -87,6 +87,170 @@ function decryptMarketplaceCredential(record) {
 }
 
 const UserMarketplaceCredentialRepository = {
+  async syncCredentialAccessUsers({ marketplaceCredentialId, companyId, userIds = [], transaction = null }) {
+    const normalizedCredentialId = Number(marketplaceCredentialId);
+    const normalizedCompanyId = Number(companyId);
+    if (!Array.isArray(userIds)) {
+      const error = new Error('access_user_ids debe ser un array');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const invalidUserIds = userIds.filter(id => {
+      const normalizedId = Number(id);
+      return !Number.isInteger(normalizedId) || normalizedId <= 0;
+    });
+    if (invalidUserIds.length > 0) {
+      const error = new Error('access_user_ids contiene usuarios inválidos');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const normalizedUserIds = [...new Set(
+      userIds.map(id => Number(id))
+    )];
+
+    if (!Number.isInteger(normalizedCredentialId) || normalizedCredentialId <= 0) {
+      throw new Error('marketplaceCredentialId inválido para sincronizar accesos');
+    }
+    if (!Number.isInteger(normalizedCompanyId) || normalizedCompanyId <= 0) {
+      throw new Error('companyId inválido para sincronizar accesos');
+    }
+
+    const credential = await MarketplaceCredential.findOne({
+      where: {
+        id: normalizedCredentialId,
+        company_id: normalizedCompanyId
+      },
+      attributes: ['id'],
+      transaction
+    });
+
+    if (!credential) {
+      const error = new Error('La credencial no pertenece a la empresa indicada');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (normalizedUserIds.length > 0) {
+      const activeMemberships = await UserCompany.findAll({
+        where: {
+          company_id: normalizedCompanyId,
+          status: 1,
+          user_id: { [Op.in]: normalizedUserIds }
+        },
+        attributes: ['user_id'],
+        include: [{
+          model: User,
+          as: 'user',
+          required: true,
+          where: { status: true },
+          attributes: ['id']
+        }],
+        transaction
+      });
+
+      const validUserIds = new Set(activeMemberships.map(record => Number(record.user_id)));
+      const invalidUserIds = normalizedUserIds.filter(userId => !validUserIds.has(userId));
+      if (invalidUserIds.length > 0) {
+        const error = new Error(
+          `Los usuarios ${invalidUserIds.join(', ')} no pertenecen a la empresa o no están activos`
+        );
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+
+    const existing = await UserMarketplaceCredential.findAll({
+      where: {
+        company_id: normalizedCompanyId,
+        marketplace_credential_id: normalizedCredentialId
+      },
+      transaction
+    });
+    const existingByUserId = new Map(existing.map(record => [Number(record.user_id), record]));
+    const requestedUserIds = new Set(normalizedUserIds);
+
+    for (const userId of normalizedUserIds) {
+      const existingRecord = existingByUserId.get(userId);
+      if (existingRecord) {
+        if (Number(existingRecord.status) !== 1) {
+          await existingRecord.update({ status: 1 }, { transaction });
+        }
+      } else {
+        await UserMarketplaceCredential.create({
+          user_id: userId,
+          company_id: normalizedCompanyId,
+          marketplace_credential_id: normalizedCredentialId,
+          status: 1
+        }, { transaction });
+      }
+    }
+
+    for (const existingRecord of existing) {
+      if (!requestedUserIds.has(Number(existingRecord.user_id))) {
+        await existingRecord.destroy({ transaction });
+      }
+    }
+
+    return normalizedUserIds;
+  },
+
+  async findActiveUsersByCredentialIds(credentialIds = [], companyId, transaction = null) {
+    const normalizedCredentialIds = [...new Set(
+      (Array.isArray(credentialIds) ? credentialIds : [])
+        .map(id => Number(id))
+        .filter(id => Number.isInteger(id) && id > 0)
+    )];
+
+    const usersByCredentialId = new Map();
+    if (normalizedCredentialIds.length === 0) return usersByCredentialId;
+
+    const where = {
+      marketplace_credential_id: { [Op.in]: normalizedCredentialIds },
+      status: 1
+    };
+
+    if (companyId !== null && companyId !== undefined) {
+      where.company_id = companyId;
+    }
+
+    const records = await UserMarketplaceCredential.findAll({
+      where,
+      attributes: ['marketplace_credential_id'],
+      include: [
+        {
+          model: User,
+          as: 'user',
+          required: true,
+          attributes: ['id', 'name', 'email', 'image']
+        }
+      ],
+      order: [['createdAt', 'ASC']],
+      transaction
+    });
+
+    for (const record of records) {
+      const plain = record.get({ plain: true });
+      const credentialId = Number(plain.marketplace_credential_id);
+      const user = plain.user;
+      if (!user || !Number.isInteger(credentialId)) continue;
+
+      if (!usersByCredentialId.has(credentialId)) {
+        usersByCredentialId.set(credentialId, []);
+      }
+
+      usersByCredentialId.get(credentialId).push({
+        id: Number(user.id),
+        name: user.name,
+        email: user.email,
+        image: user.image || null
+      });
+    }
+
+    return usersByCredentialId;
+  },
+
   async findByUserAndCompany(userId, companyId, transaction = null) {
     const records = await UserMarketplaceCredential.findAll({
       where: {
@@ -202,6 +366,44 @@ const UserMarketplaceCredentialRepository = {
     });
 
     return Boolean(access);
+  },
+
+  async hasAnyActiveAccess({ marketplaceCredentialId, companyId, transaction = null } = {}) {
+    const normalizedCredentialId = Number(marketplaceCredentialId);
+    const normalizedCompanyId = Number(companyId);
+
+    if (!Number.isInteger(normalizedCredentialId) || normalizedCredentialId <= 0) return false;
+    if (!Number.isInteger(normalizedCompanyId) || normalizedCompanyId <= 0) return false;
+
+    const access = await UserMarketplaceCredential.findOne({
+      where: {
+        marketplace_credential_id: normalizedCredentialId,
+        company_id: normalizedCompanyId,
+        status: 1
+      },
+      attributes: ['id'],
+      raw: true,
+      transaction
+    });
+
+    return Boolean(access);
+  },
+
+  async ensureActiveAccessIfNone({ userId, companyId, marketplaceCredentialId, transaction = null }) {
+    const hasAccess = await this.hasAnyActiveAccess({
+      marketplaceCredentialId,
+      companyId,
+      transaction
+    });
+
+    if (hasAccess) return null;
+
+    return this.ensureActiveAccess({
+      userId,
+      companyId,
+      marketplaceCredentialId,
+      transaction
+    });
   },
 
   async findActiveCredentialIdByMarketplace({ userId, marketplaceId, companyId = null, transaction = null } = {}) {

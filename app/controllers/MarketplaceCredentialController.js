@@ -1,6 +1,7 @@
 // controllers/MarketplaceCredentialController.js
 const { getUserId } = require('../../config/context');
 const logger = require('../../config/logger');
+const { sequelize } = require('../models');
 const {
   MarketplaceCredentialRepository,
   MarketplaceRepository,
@@ -192,6 +193,151 @@ function getSecretCredentialChanges(existing, updatePayload) {
     }));
 }
 
+function hasAccessUserIds(payload) {
+  return Object.prototype.hasOwnProperty.call(payload || {}, 'access_user_ids');
+}
+
+function normalizeAccessUserIds(userIds = []) {
+  return [...new Set(
+    (Array.isArray(userIds) ? userIds : [])
+      .map(userId => Number(userId))
+      .filter(userId => Number.isInteger(userId) && userId > 0)
+  )].sort((left, right) => left - right);
+}
+
+function accessUsersChanged(previousSnapshot, currentSnapshot) {
+  if (!previousSnapshot || !currentSnapshot) return false;
+
+  return JSON.stringify(normalizeAccessUserIds(previousSnapshot.access_user_ids)) !==
+    JSON.stringify(normalizeAccessUserIds(currentSnapshot.access_user_ids));
+}
+
+async function getCredentialAccessAuditSnapshot(credentialId, companyId) {
+  try {
+    const usersByCredentialId = await UserMarketplaceCredentialRepository.findActiveUsersByCredentialIds(
+      [credentialId],
+      companyId
+    );
+    const accessUsers = usersByCredentialId.get(Number(credentialId)) || [];
+
+    return {
+      access_user_ids: accessUsers.map(user => user.id),
+      access_users: accessUsers
+    };
+  } catch (error) {
+    logger.error(`[MarketplaceCredentialController->audit access] ${error.message}`);
+    return null;
+  }
+}
+
+async function syncCredentialAccess({
+  userId,
+  companyId,
+  credentialId,
+  accessUserIds,
+  accessUserIdsProvided,
+  transaction
+}) {
+  if (accessUserIdsProvided) {
+    return UserMarketplaceCredentialRepository.syncCredentialAccessUsers({
+      marketplaceCredentialId: credentialId,
+      companyId,
+      userIds: accessUserIds,
+      transaction
+    });
+  }
+
+  return UserMarketplaceCredentialRepository.ensureActiveAccess({
+    userId,
+    companyId,
+    marketplaceCredentialId: credentialId,
+    transaction
+  });
+}
+
+async function buildSafeCredentialData(credential, companyId) {
+  const plain = toPlain(credential) || {};
+  const accessUsersByCredentialId = await UserMarketplaceCredentialRepository.findActiveUsersByCredentialIds(
+    [plain.id],
+    companyId
+  );
+  const accessUsers = accessUsersByCredentialId.get(Number(plain.id)) || [];
+
+  return {
+    id: plain.id == null ? null : Number(plain.id),
+    user_id: plain.user_id == null ? null : Number(plain.user_id),
+    company_id: plain.company_id == null ? null : Number(plain.company_id),
+    marketplace_id: plain.marketplace_id == null ? null : Number(plain.marketplace_id),
+    name: plain.name,
+    country: plain.country,
+    active: plain.active,
+    access_user_ids: accessUsers.map(user => user.id),
+    access_users: accessUsers
+  };
+}
+
+async function createCredentialWithAccess({ credentialData, userId, companyId, accessUserIds, accessUserIdsProvided }) {
+  const transaction = await sequelize.transaction();
+
+  try {
+    const credential = await MarketplaceCredentialRepository.createOrUpdate(
+      credentialData,
+      { transaction }
+    );
+
+    await syncCredentialAccess({
+      userId,
+      companyId,
+      credentialId: credential.id,
+      accessUserIds,
+      accessUserIdsProvided,
+      transaction
+    });
+
+    await transaction.commit();
+    return credential;
+  } catch (error) {
+    await transaction.rollback();
+    throw error;
+  }
+}
+
+async function updateCredentialWithAccess({
+  credentialId,
+  updatePayload,
+  userId,
+  companyId,
+  accessUserIds,
+  accessUserIdsProvided
+}) {
+  const transaction = await sequelize.transaction();
+
+  try {
+    const credential = await MarketplaceCredentialRepository.updatePartial(
+      credentialId,
+      updatePayload,
+      { transaction }
+    );
+
+    if (accessUserIdsProvided) {
+      await syncCredentialAccess({
+        userId,
+        companyId,
+        credentialId,
+        accessUserIds,
+        accessUserIdsProvided,
+        transaction
+      });
+    }
+
+    await transaction.commit();
+    return credential;
+  } catch (error) {
+    await transaction.rollback();
+    throw error;
+  }
+}
+
 function webhookCredentialSummary(credential) {
   return {
     credential_id: credential.id,
@@ -380,10 +526,16 @@ const MarketplaceCredentialController = {
         req.user || userId || null
       );
 
+      const accessUsersByCredentialId = await UserMarketplaceCredentialRepository.findActiveUsersByCredentialIds(
+        credentials.map(credential => credential.id),
+        companyId
+      );
+
       const safeCredentials = credentials.map(cred => {
         const additionalData = cred.additional_data && typeof cred.additional_data === 'object'
           ? cred.additional_data
           : null;
+        const accessUsers = accessUsersByCredentialId.get(Number(cred.id)) || [];
         const item = {
           id: cred.id,
           user_id: cred.user_id,
@@ -404,6 +556,8 @@ const MarketplaceCredentialController = {
           user_name: cred.user?.name || null,
           user_email: cred.user?.email || null,
           user_avatar: cred.user?.image || null,
+          access_user_ids: accessUsers.map(user => user.id),
+          access_users: accessUsers,
           authenticated_by_user_id: additionalData?.authenticated_by_user_id || null,
           authenticated_by_user_name: additionalData?.authenticated_by_user_name || null,
           company_name: cred.company?.name || null
@@ -578,7 +732,8 @@ const MarketplaceCredentialController = {
   logger.info(`Datos recibidos: ${JSON.stringify(sanitizeAdditionalData(req.body))}`);
 
   const userId = req.user.id;
-   const { marketplace_id, name, seller_email, seller_id, api_key, country } = req.body;
+   const { marketplace_id, name, seller_email, seller_id, api_key, country, access_user_ids: accessUserIds } = req.body;
+   const accessUserIdsProvided = hasAccessUserIds(req.body);
    const companyId = resolveCompanyId(req);
    const metadata = getRequestMetadata(req);
    let newCredential = null;
@@ -594,7 +749,7 @@ const MarketplaceCredentialController = {
 
     if (!req.user?.role_id) {
       const membership = await UserCompanyRepository.findByUserIdAndCompanyId(userId, companyId);
-      if (!membership) {
+      if (!membership || Number(membership.status) !== 1) {
         return res.status(403).json({ success: false, message: 'No tienes acceso a la empresa indicada' });
       }
     }
@@ -603,6 +758,10 @@ const MarketplaceCredentialController = {
     const marketplace = await MarketplaceRepository.findById(marketplace_id);
     if (!marketplace) {
       return res.status(400).json({ success: false, message: "Marketplace no encontrado" });
+    }
+
+    if (!isActiveFlag(marketplace.active)) {
+      return res.status(400).json({ success: false, message: "El marketplace no está activo" });
     }
 
     await MarketplaceCredentialRepository.cleanupExpiredPendingOAuthCredentials({
@@ -645,24 +804,25 @@ const MarketplaceCredentialController = {
         });
       }
 
-      newCredential = await MarketplaceCredentialRepository.createOrUpdate({
-        marketplace_id,
-        user_id: userId,
-        company_id: companyId,
-        name,
-        country,
-        api_key,
-        seller_email,
-        seller_id,
-        expires_at: null,
-        active: true
-      });
-
-      await UserMarketplaceCredentialRepository.ensureActiveAccess({
+      newCredential = await createCredentialWithAccess({
+        credentialData: {
+          marketplace_id,
+          user_id: userId,
+          company_id: companyId,
+          name,
+          country,
+          api_key,
+          seller_email,
+          seller_id,
+          expires_at: null,
+          active: true
+        },
         userId,
         companyId,
-        marketplaceCredentialId: newCredential.id
+        accessUserIds,
+        accessUserIdsProvided
       });
+      const accessSnapshot = await getCredentialAccessAuditSnapshot(newCredential.id, companyId);
 
       await LogRepository.create({
         user_id: metadata.user_id,
@@ -677,24 +837,30 @@ const MarketplaceCredentialController = {
       await AuditEventService.safeRecordFromRequest(req, buildMarketplaceCredentialAuditPayload(newCredential, {
         action: 'marketplace.connection_created',
         result: 'success',
-        new_value: sanitizeCredentialForAudit(newCredential),
+        new_value: {
+          ...sanitizeCredentialForAudit(newCredential),
+          ...(accessSnapshot || {})
+        },
         description: `Conexión creada para marketplace ${marketplace.name || 'sin nombre'}`,
         metadata: {
           auth_type: 'manual',
           authenticated_by_user_id: userId,
           authenticated_by_user_name: req.user?.name || req.user?.email || null,
           marketplace_name: marketplace.name || null,
-          credential_name: newCredential.name || null
+          credential_name: newCredential.name || null,
+          ...(accessSnapshot || {})
         }
       }));
 
       const falabellaWebhook = isFalabellaMarketplace(marketplace)
         ? await synchronizeFalabellaWebhook(newCredential.id)
         : null;
+      const data = await buildSafeCredentialData(newCredential, companyId);
 
       return res.status(201).json({
         success: true,
         message: "Credenciales guardadas exitosamente",
+        data,
         ...(falabellaWebhook ? { falabella_webhook: falabellaWebhook } : {})
       });
     }
@@ -702,22 +868,29 @@ const MarketplaceCredentialController = {
    // 5. Flujo OAuth (MercadoLibre): Guardar + Iniciar flujo de autorizacion
     if (isOAuth) {
       // Guardar credenciales base y capturar el registro creado
-      newCredential = await MarketplaceCredentialRepository.createOrUpdate({
-        marketplace_id,
-        user_id: userId,
-        company_id: companyId,
-        name,
-        country,
-        // Tokens se obtendran despues de la autorizacion
-        access_token: null,
-        refresh_token: null,
-        expires_at: null,
-        active: false,
-        additional_data: {
-          connection_status: 'pending',
-          oauth_started_at: new Date().toISOString()
-        }
+      newCredential = await createCredentialWithAccess({
+        credentialData: {
+          marketplace_id,
+          user_id: userId,
+          company_id: companyId,
+          name,
+          country,
+          // Tokens se obtendran despues de la autorizacion
+          access_token: null,
+          refresh_token: null,
+          expires_at: null,
+          active: false,
+          additional_data: {
+            connection_status: 'pending',
+            oauth_started_at: new Date().toISOString()
+          }
+        },
+        userId,
+        companyId,
+        accessUserIds,
+        accessUserIdsProvided
       });
+      const accessSnapshot = await getCredentialAccessAuditSnapshot(newCredential.id, companyId);
 
         logger.info(`[store] Nueva credencial creada:`, {
         id: newCredential?.id,
@@ -756,43 +929,48 @@ const MarketplaceCredentialController = {
       if (status.valid) {
         // Ya esta conectado (caso raro al crear, pero posible)
         const connectedCredential = await MarketplaceCredentialRepository.findById(newCredential.id);
-        await UserMarketplaceCredentialRepository.ensureActiveAccess({
-          userId,
-          companyId,
-          marketplaceCredentialId: newCredential.id
-        });
+        const data = await buildSafeCredentialData(connectedCredential || newCredential, companyId);
         await AuditEventService.safeRecordFromRequest(req, buildMarketplaceCredentialAuditPayload(connectedCredential || newCredential, {
           action: 'marketplace.connection_created',
           result: 'success',
-          new_value: sanitizeCredentialForAudit(connectedCredential || newCredential),
+          new_value: {
+            ...sanitizeCredentialForAudit(connectedCredential || newCredential),
+            ...(accessSnapshot || {})
+          },
           description: `Conexión OAuth creada para marketplace ${marketplace.name || 'sin nombre'}`,
           metadata: {
             auth_type: 'oauth',
             authenticated_by_user_id: userId,
             authenticated_by_user_name: req.user?.name || req.user?.email || null,
             marketplace_name: marketplace.name || null,
-            credential_name: (connectedCredential || newCredential).name || null
+            credential_name: (connectedCredential || newCredential).name || null,
+            ...(accessSnapshot || {})
           }
         }));
 
         return res.status(201).json({ 
           success: true, 
           message: "Ya conectado",
-          credential_id: newCredential.id
+          credential_id: newCredential.id,
+          data
         });
       } else if (status.auth_required) {
         // Devolver URL de autorizacion
         await AuditEventService.safeRecordFromRequest(req, buildMarketplaceCredentialAuditPayload(newCredential, {
           action: 'marketplace.connection_created',
           result: 'pending',
-          new_value: sanitizeCredentialForAudit(newCredential),
+          new_value: {
+            ...sanitizeCredentialForAudit(newCredential),
+            ...(accessSnapshot || {})
+          },
           description: `Conexión OAuth creada pendiente de autenticación para marketplace ${marketplace.name || 'sin nombre'}`,
           metadata: {
             auth_type: 'oauth',
             auth_required: true,
             authenticated_by_user_name: req.user?.name || req.user?.email || null,
             marketplace_name: marketplace.name || null,
-            credential_name: newCredential.name || null
+            credential_name: newCredential.name || null,
+            ...(accessSnapshot || {})
           }
         }));
 
@@ -847,7 +1025,7 @@ const MarketplaceCredentialController = {
     });
     logger.error(`MarketplaceCredentialController->store: ${JSON.stringify(error)}`);
     
-    const statusCode = error.name === 'SequelizeValidationError' ? 400 : 500;
+    const statusCode = error.statusCode || (error.name === 'SequelizeValidationError' ? 400 : 500);
     return res.status(statusCode).json({
       success: false,
       message: errorMessage,
@@ -965,9 +1143,12 @@ const MarketplaceCredentialController = {
         api_key,
         expires_at,
         additional_data,
-        active
+        active,
+        access_user_ids: accessUserIds
       } = req.body;
+    const accessUserIdsProvided = hasAccessUserIds(req.body);
     const metadata = getRequestMetadata(req);
+    let credential = null;
 
     try {
       // 1. Obtener registro actual para validaciones
@@ -980,6 +1161,10 @@ const MarketplaceCredentialController = {
       if (!req.user?.role_id && Number(existing.company_id) !== Number(req.user?.company_id)) {
         return res.status(403).json({ msg: "No autorizado" });
       }
+
+      const previousAccessSnapshot = accessUserIdsProvided
+        ? await getCredentialAccessAuditSnapshot(id, existing.company_id)
+        : null;
 
       // 3. Validaciones de duplicados (solo si los campos cambiaron)
       if (name && name !== existing.name) {
@@ -1030,7 +1215,17 @@ const MarketplaceCredentialController = {
       if (active !== undefined) updatePayload.active = active;
 
       // 5. Ejecutar actualizacion parcial
-      const credential = await MarketplaceCredentialRepository.updatePartial(id, updatePayload);
+      credential = await updateCredentialWithAccess({
+        credentialId: id,
+        updatePayload,
+        userId: req.user.id,
+        companyId: existing.company_id,
+        accessUserIds,
+        accessUserIdsProvided
+      });
+      const currentAccessSnapshot = accessUserIdsProvided
+        ? await getCredentialAccessAuditSnapshot(credential.id, existing.company_id)
+        : null;
       const fieldChanges = detectChanges(
         sanitizeCredentialForAudit(existing),
         sanitizeCredentialForAudit(credential),
@@ -1049,6 +1244,13 @@ const MarketplaceCredentialController = {
         getExternalAccountSnapshot(credential),
         EXTERNAL_ACCOUNT_AUDIT_FIELDS
       );
+      const accessUserChanges = accessUsersChanged(previousAccessSnapshot, currentAccessSnapshot)
+        ? [{
+            field: 'access_users',
+            old_value: previousAccessSnapshot.access_users,
+            new_value: currentAccessSnapshot.access_users
+          }]
+        : [];
 
       // 6. Verificar conexion al marketplace (similar a warehouseMarketplaces)
       const marketplace = await MarketplaceRepository.findById(credential.marketplace_id);
@@ -1117,7 +1319,8 @@ const MarketplaceCredentialController = {
         ...(isDisconnecting
           ? fieldChanges.filter((change) => change.field !== 'active')
           : fieldChanges),
-        ...secretCredentialChanges
+        ...secretCredentialChanges,
+        ...accessUserChanges
       ];
 
       if (configurationChanges.length > 0) {
@@ -1140,7 +1343,15 @@ const MarketplaceCredentialController = {
             access_token_configured: !!credential.access_token,
             refresh_token_configured: !!credential.refresh_token,
             api_key_configured: !!credential.api_key,
-            additional_data_configured: !!credential.additional_data
+            additional_data_configured: !!credential.additional_data,
+            ...(accessUserChanges.length > 0
+              ? {
+                  previous_access_user_ids: previousAccessSnapshot.access_user_ids,
+                  access_user_ids: currentAccessSnapshot.access_user_ids,
+                  previous_access_users: previousAccessSnapshot.access_users,
+                  access_users: currentAccessSnapshot.access_users
+                }
+              : {})
           }
         }));
       }
@@ -1180,9 +1391,12 @@ const MarketplaceCredentialController = {
 
       // 8. Respuesta segura (sin tokens) + estado de conexion
       const { access_token: _, refresh_token: __, api_key: ___, ...safeCredential } = credential;
+      const data = await buildSafeCredentialData(credential, existing.company_id);
       res.status(200).json({
+        success: true,
         message: "Credenciales actualizadas correctamente",
         credential: safeCredential,
+        data,
         connection: {
           valid: connectionStatus.valid,
           auth_required: connectionStatus.auth_required,
@@ -1212,7 +1426,11 @@ const MarketplaceCredentialController = {
         return res.status(409).json({ msg: error.message });
       }
       
-      res.status(500).json({ error: 'ServerError' });
+      const statusCode = error.statusCode || 500;
+      res.status(statusCode).json({
+        success: false,
+        error: statusCode === 400 ? error.message : 'ServerError'
+      });
     }
   },
 

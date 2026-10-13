@@ -2918,7 +2918,7 @@ const OAuthController = {
         active: true,
         additional_data: reconnectedAdditionalData
       });
-      await UserMarketplaceCredentialRepository.ensureActiveAccess({
+      await UserMarketplaceCredentialRepository.ensureActiveAccessIfNone({
         userId,
         companyId,
         marketplaceCredentialId: duplicateCredential.id
@@ -3045,7 +3045,7 @@ const OAuthController = {
       active: true,
       additional_data: updatedAdditionalData  // ← NUEVO: Incluir ml_user_id
     });
-    await UserMarketplaceCredentialRepository.ensureActiveAccess({
+    await UserMarketplaceCredentialRepository.ensureActiveAccessIfNone({
       userId,
       companyId,
       marketplaceCredentialId: credential.id

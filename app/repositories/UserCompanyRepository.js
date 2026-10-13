@@ -320,7 +320,41 @@ async activateMembership({ user_id, company_id }, transaction = null) {
     logger.error(`Error al obtener usuarios de la empresa ${company_id}:`, error);
     throw new Error(`Error al obtener usuarios: ${error.message}`);
   }
-},
+  },
+
+  async findActiveUsersByCompanyId(company_id) {
+    const memberships = await UserCompany.findAll({
+      where: {
+        company_id,
+        status: 1
+      },
+      include: [
+        {
+          model: User,
+          as: 'user',
+          required: true,
+          where: { status: true },
+          attributes: ['id', 'name', 'email', 'image']
+        }
+      ],
+      order: [['id', 'ASC']]
+    });
+
+    const usersById = new Map();
+    memberships.forEach((membership) => {
+      const user = membership.user;
+      if (!user || usersById.has(Number(user.id))) return;
+
+      usersById.set(Number(user.id), {
+        id: Number(user.id),
+        name: user.name,
+        email: user.email,
+        image: user.image || null
+      });
+    });
+
+    return Array.from(usersById.values());
+  },
 
 async getAvailableCompaniesForUser(user_id) {
   try {

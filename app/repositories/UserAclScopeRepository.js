@@ -1,5 +1,6 @@
 // app/repositories/UserAclScopeRepository.js
-const { UserAclScope, User, Company, Warehouse, Pool } = require('../models');
+const { UserAclScope, User, UserCompany, Company, Branch, Warehouse, Pool } = require('../models');
+const { Op } = require('sequelize');
 const logger = require('../../config/logger');
 
 function mapScope(record) {
@@ -40,6 +41,170 @@ const UserAclScopeRepository = {
       logger.error(`Error al obtener scopes para usuario ${user_id} y empresa ${company_id}:`, error);
       throw new Error(`Error al obtener scopes: ${error.message}`);
     }
+  },
+
+  async findActiveUsersByWarehouseIds(warehouseIds = [], companyId) {
+    const normalizedWarehouseIds = [...new Set(
+      (Array.isArray(warehouseIds) ? warehouseIds : [])
+        .map(warehouseId => Number(warehouseId))
+        .filter(warehouseId => Number.isInteger(warehouseId) && warehouseId > 0)
+    )];
+    const normalizedCompanyId = Number(companyId);
+    const usersByWarehouseId = new Map();
+
+    if (
+      normalizedWarehouseIds.length === 0 ||
+      !Number.isInteger(normalizedCompanyId) ||
+      normalizedCompanyId <= 0
+    ) {
+      return usersByWarehouseId;
+    }
+
+    const records = await UserAclScope.findAll({
+      where: {
+        company_id: normalizedCompanyId,
+        warehouse_id: { [Op.in]: normalizedWarehouseIds }
+      },
+      attributes: ['warehouse_id'],
+      include: [{
+        model: User,
+        as: 'user',
+        required: true,
+        where: { status: true },
+        attributes: ['id', 'name', 'email', 'image'],
+        include: [{
+          model: UserCompany,
+          as: 'memberships',
+          required: true,
+          where: {
+            company_id: normalizedCompanyId,
+            status: 1
+          },
+          attributes: []
+        }]
+      }],
+      order: [['id', 'ASC']]
+    });
+
+    for (const record of records) {
+      const plain = record.get({ plain: true });
+      const warehouseId = Number(plain.warehouse_id);
+      const user = plain.user;
+
+      if (!user || !Number.isInteger(warehouseId)) continue;
+
+      if (!usersByWarehouseId.has(warehouseId)) {
+        usersByWarehouseId.set(warehouseId, []);
+      }
+
+      usersByWarehouseId.get(warehouseId).push({
+        id: Number(user.id),
+        name: user.name,
+        email: user.email,
+        image: user.image || null
+      });
+    }
+
+    return usersByWarehouseId;
+  },
+
+  async syncWarehouseAccessUsers({ warehouseId, companyId, userIds = [], transaction = null }) {
+    const normalizedWarehouseId = Number(warehouseId);
+    const normalizedCompanyId = Number(companyId);
+    const normalizedUserIds = [...new Set(
+      (Array.isArray(userIds) ? userIds : [])
+        .map(userId => Number(userId))
+        .filter(userId => Number.isInteger(userId) && userId > 0)
+    )];
+
+    if (!Number.isInteger(normalizedWarehouseId) || normalizedWarehouseId <= 0) {
+      const error = new Error('warehouseId inválido para sincronizar accesos');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (!Number.isInteger(normalizedCompanyId) || normalizedCompanyId <= 0) {
+      const error = new Error('companyId inválido para sincronizar accesos');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const warehouse = await Warehouse.findByPk(normalizedWarehouseId, {
+      attributes: ['id', 'company_id', 'branch_id'],
+      include: [{
+        model: Branch,
+        as: 'branch',
+        attributes: ['company_id'],
+        required: false
+      }],
+      transaction
+    });
+    const warehouseCompanyId = warehouse?.company_id || warehouse?.branch?.company_id;
+
+    if (!warehouse || Number(warehouseCompanyId) !== normalizedCompanyId) {
+      const error = new Error('El almacén no pertenece a la empresa indicada');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (normalizedUserIds.length > 0) {
+      const activeMemberships = await UserCompany.findAll({
+        where: {
+          company_id: normalizedCompanyId,
+          status: 1,
+          user_id: { [Op.in]: normalizedUserIds }
+        },
+        attributes: ['user_id'],
+        include: [{
+          model: User,
+          as: 'user',
+          required: true,
+          where: { status: true },
+          attributes: ['id']
+        }],
+        transaction
+      });
+      const validUserIds = new Set(activeMemberships.map(record => Number(record.user_id)));
+      const invalidUserIds = normalizedUserIds.filter(userId => !validUserIds.has(userId));
+
+      if (invalidUserIds.length > 0) {
+        const error = new Error(
+          `Los usuarios ${invalidUserIds.join(', ')} no pertenecen a la empresa o no están activos`
+        );
+        error.statusCode = 400;
+        error.field = 'access_user_ids';
+        throw error;
+      }
+    }
+
+    const existing = await UserAclScope.findAll({
+      where: { warehouse_id: normalizedWarehouseId },
+      transaction
+    });
+    const requestedUserIds = new Set(normalizedUserIds);
+    const existingByUserId = new Map(existing.map(record => [Number(record.user_id), record]));
+
+    for (const userId of normalizedUserIds) {
+      const existingRecord = existingByUserId.get(userId);
+      if (!existingRecord) {
+        await UserAclScope.create({
+          user_id: userId,
+          company_id: normalizedCompanyId,
+          warehouse_id: normalizedWarehouseId,
+          pool_id: null
+        }, { transaction });
+      } else if (Number(existingRecord.company_id) !== normalizedCompanyId) {
+        await existingRecord.update({ company_id: normalizedCompanyId }, { transaction });
+      }
+    }
+
+    for (const existingRecord of existing) {
+      if (!requestedUserIds.has(Number(existingRecord.user_id))) {
+        await existingRecord.destroy({ transaction });
+      }
+    }
+
+    return normalizedUserIds;
   },
 
 async create(data, transaction = null) {

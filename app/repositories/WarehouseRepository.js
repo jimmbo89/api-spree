@@ -416,7 +416,7 @@ async checkUniqueName(data, excludeId = null) {
     return warehouse;
   },
 
-  async update(warehouse, body, file) {
+  async update(warehouse, body, file, transaction = null) {
     const fieldsToUpdate = [
       'code', 'name', 'description', 'type', 'address', 'city',
       'region', 'country', 'latitude', 'longitude', 'capacity_max_units',
@@ -440,7 +440,7 @@ async checkUniqueName(data, excludeId = null) {
     }
 
     if (Object.keys(updatedData).length > 0) {
-      await warehouse.update(updatedData);
+      await warehouse.update(updatedData, { transaction });
       logger.info(`Almacén actualizado (ID: ${warehouse.id})`);
     }
 

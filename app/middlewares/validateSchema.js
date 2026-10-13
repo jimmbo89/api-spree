@@ -43,6 +43,24 @@ const validateSchema = (schemas, options = {}) => {
     return obj;
   };
 
+  const humanizeValidationMessage = (error) => {
+    if (error.path === 'access_user_ids' || error.path.startsWith('access_user_ids.')) {
+      if (error.code === 'any.unknown' || error.message.includes('is not allowed')) {
+        return 'La lista de usuarios con acceso debe enviarse como un arreglo JSON de IDs de usuarios.';
+      }
+
+      if (error.code === 'array.base' || error.code?.startsWith('alternatives.')) {
+        return 'La lista de usuarios con acceso debe enviarse como un arreglo JSON de IDs de usuarios.';
+      }
+
+      if (error.code?.startsWith('number.')) {
+        return 'Cada usuario con acceso debe identificarse con un ID entero positivo.';
+      }
+    }
+
+    return error.message;
+  };
+
   return (req, res, next) => {
     const sources = ['body', 'params', 'query'];
     const errors = [];
@@ -55,6 +73,7 @@ const validateSchema = (schemas, options = {}) => {
           errors.push(...error.details.map(err => ({
             source,
             message: err.message,
+            code: err.code || err.type,
             path: err.path.join('.')
           })));
         }
@@ -68,7 +87,7 @@ const validateSchema = (schemas, options = {}) => {
 
       // Crear mensajes de error más descriptivos y amigables
       const friendlyMessages = errors.map(e => {
-        let message = e.message;
+        let message = humanizeValidationMessage(e);
         
         // Mensajes personalizados para campos comunes
         if (e.path.includes('mode')) {
