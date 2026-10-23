@@ -53,6 +53,8 @@ const MarketplaceOrderEventRepository = require("./MarketplaceOrderEventReposito
 const MarketplaceOrderCustomerRepository = require("./MarketplaceOrderCustomerRepository");
 const DashboardRepository = require("./DashboardRepository");
 const UserMarketplaceCredentialRepository = require("./UserMarketplaceCredentialRepository");
+const MarketplacePreviewRepository = require("./MarketplacePreviewRepository");
+const MarketplaceImportRepository = require("./MarketplaceImportRepository");
 
 module.exports = {
     AuditEventRepository,
@@ -109,5 +111,7 @@ module.exports = {
     MarketplaceOrderEventRepository,
     MarketplaceOrderCustomerRepository,
     DashboardRepository,
-    UserMarketplaceCredentialRepository
+    UserMarketplaceCredentialRepository,
+    MarketplacePreviewRepository,
+    MarketplaceImportRepository
 };

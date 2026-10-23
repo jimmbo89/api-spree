@@ -10,7 +10,7 @@ const fs = require("fs");
 const { UPLOAD_BASE_PATH } = require("../../config/upload");
 
 const ProductRepository = {
-  async findFiltered({ companyId, userId, branchId, warehouseId, categoryId, brand, state, hasGtin, productId }) {
+  async findFiltered({ companyId, userId, branchId, warehouseId, categoryId, brand, state, hasGtin, productId, includeInactive = false }) {
     const where = { };
     
     // ✅ FILTRAR POR EMPRESA (obligatorio para seguridad)
@@ -22,9 +22,13 @@ const ProductRepository = {
     if (brand !== undefined && brand !== '') where.brand = brand;
     const normalizedState = state === null || state === "" ? undefined : Number(state);
     if (normalizedState !== undefined && Number.isFinite(normalizedState)) {
-      // state = 0 se considera eliminación lógica y no debe aparecer en el listado
-      where.state = normalizedState === 0 ? { [Op.ne]: 0 } : normalizedState;
-    } else {
+      if (includeInactive) {
+        where.state = normalizedState;
+      } else {
+        // state = 0 se considera eliminación lógica y no debe aparecer en el listado
+        where.state = normalizedState === 0 ? { [Op.ne]: 0 } : normalizedState;
+      }
+    } else if (!includeInactive) {
       where.state = { [Op.ne]: 0 };
     }
     if (hasGtin === true) where.gtin = { [Op.not]: null };

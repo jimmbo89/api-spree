@@ -39,6 +39,21 @@ const { storeProductPublishingTaskSchema, updateProductPublishingTaskStatusSchem
 const ProductPublishingTaskController = require("./controllers/ProductPublishingTaskController.js");
 const { storeMarketplaceCredentialSchema, findByMarketplaceCredentialSchema, updateMarketplaceCredentialSchema, idMarketplaceCredentialSchema, marketplaceCredentialsByUserSchema, falabellaWebhookStatusSchema, falabellaWebhookActionSchema, falabellaWebhookSyncSchema } = require("./middlewares/validations/marketplaceCredentialValidations.js");
 const MarketplaceCredentialController = require("./controllers/MarketplaceCredentialController.js");
+const MarketplacePreviewController = require("./controllers/MarketplacePreviewController.js");
+const MarketplaceImportController = require("./controllers/MarketplaceImportController.js");
+const {
+  startMarketplacePreviewSchema,
+  statusMarketplacePreviewSchema,
+  itemsMarketplacePreviewSchema,
+  detailMarketplacePreviewSchema,
+  cancelMarketplacePreviewSchema
+} = require("./middlewares/validations/marketplacePreviewValidations.js");
+const {
+  startMarketplaceImportSchema,
+  statusMarketplaceImportSchema,
+  itemsMarketplaceImportSchema,
+  cancelMarketplaceImportSchema
+} = require("./middlewares/validations/marketplaceImportValidations.js");
 const OAuthController = require("./controllers/OAuthController.js");
 const { listPoolsSchema, updatePoolSchema, storePoolSchema, idPoolSchema } = require("./middlewares/validations/poolValidations.js");
 const PoolController = require("./controllers/PoolController.js");
@@ -413,6 +428,64 @@ router.post('/falabella-webhooks-status', requireRoles([ 'Backoffice' ]), valida
 router.post('/falabella-webhooks-sync', requireRoles([ 'Backoffice' ]), validateSchema(falabellaWebhookSyncSchema), MarketplaceCredentialController.falabellaWebhooksSync);
 router.post('/falabella-webhook-enable', requireRoles([ 'Backoffice' ]), validateSchema(falabellaWebhookActionSchema), MarketplaceCredentialController.falabellaWebhookEnable);
 router.post('/falabella-webhook-disable', requireRoles([ 'Backoffice' ]), validateSchema(falabellaWebhookActionSchema), MarketplaceCredentialController.falabellaWebhookDisable);
+
+// Consulta asíncrona y de solo lectura de publicaciones externas.
+router.post(
+  "/marketplace-publications-preview",
+  requireRoles([ 'Backoffice', 'Admin', 'Seller Manager', 'Publicador' ]),
+  validateSchema(startMarketplacePreviewSchema),
+  MarketplacePreviewController.start
+);
+router.post(
+  "/marketplace-publications-preview-status",
+  requireRoles([ 'Backoffice', 'Admin', 'Seller Manager', 'Publicador' ]),
+  validateSchema(statusMarketplacePreviewSchema),
+  MarketplacePreviewController.status
+);
+router.post(
+  "/marketplace-publications-preview-items",
+  requireRoles([ 'Backoffice', 'Admin', 'Seller Manager', 'Publicador' ]),
+  validateSchema(itemsMarketplacePreviewSchema),
+  MarketplacePreviewController.items
+);
+router.post(
+  "/marketplace-publications-preview-item-detail",
+  requireRoles([ 'Backoffice', 'Admin', 'Seller Manager', 'Publicador' ]),
+  validateSchema(detailMarketplacePreviewSchema),
+  MarketplacePreviewController.detail
+);
+router.post(
+  "/marketplace-publications-preview-cancel",
+  requireRoles([ 'Backoffice', 'Admin', 'Seller Manager', 'Publicador' ]),
+  validateSchema(cancelMarketplacePreviewSchema),
+  MarketplacePreviewController.cancel
+);
+
+// Importación confirmada de una o varias publicaciones, sin volver a publicarlas.
+router.post(
+  "/marketplace-publications-import",
+  requireRoles([ 'Backoffice', 'Admin', 'Seller Manager', 'Publicador' ]),
+  validateSchema(startMarketplaceImportSchema),
+  MarketplaceImportController.start
+);
+router.post(
+  "/marketplace-publications-import-status",
+  requireRoles([ 'Backoffice', 'Admin', 'Seller Manager', 'Publicador' ]),
+  validateSchema(statusMarketplaceImportSchema),
+  MarketplaceImportController.status
+);
+router.post(
+  "/marketplace-publications-import-items",
+  requireRoles([ 'Backoffice', 'Admin', 'Seller Manager', 'Publicador' ]),
+  validateSchema(itemsMarketplaceImportSchema),
+  MarketplaceImportController.items
+);
+router.post(
+  "/marketplace-publications-import-cancel",
+  requireRoles([ 'Backoffice', 'Admin', 'Seller Manager', 'Publicador' ]),
+  validateSchema(cancelMarketplaceImportSchema),
+  MarketplaceImportController.cancel
+);
 
 // Metadatos de los marketplaces
 router.post("/product-field-mapping", requireRoles([ 'Backoffice', 'Admin', 'Seller Manager']), validateSchema(createProductFieldMappingSchema), ProductFieldMappingController.store);

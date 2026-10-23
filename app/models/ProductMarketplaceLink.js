@@ -59,6 +59,11 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.STRING,
       allowNull: true
     },
+    external_variant_id: {
+      type: DataTypes.STRING(150),
+      allowNull: true,
+      comment: 'ID de variante de la publicación externa'
+    },
     external_url: {
       type: DataTypes.STRING,
       allowNull: true

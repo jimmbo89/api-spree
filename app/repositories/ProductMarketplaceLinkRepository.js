@@ -13,6 +13,9 @@ const ProductMarketplaceLinkRepository = {
     if (linkData.branch_id != null) where.branch_id = linkData.branch_id;
     if (linkData.credential_id != null) where.credential_id = linkData.credential_id;
     if (linkData.external_id != null) where.external_id = linkData.external_id;
+    if (Object.prototype.hasOwnProperty.call(linkData, 'external_variant_id')) {
+      where.external_variant_id = linkData.external_variant_id;
+    }
 
     return where;
   },
@@ -66,6 +69,7 @@ const ProductMarketplaceLinkRepository = {
 
       const existing = await ProductMarketplaceLink.findOne({
         where: scopeWhere,
+        transaction: options.transaction,
         order: [['updatedAt', 'DESC'], ['id', 'DESC']]
       });
 

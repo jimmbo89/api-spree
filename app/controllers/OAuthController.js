@@ -557,11 +557,11 @@ const getCoverageDiscounts = (coverage) => {
   return Array.isArray(coverage.discount) ? coverage.discount : [coverage.discount];
 };
 
-const hasMandatoryCoverageDiscount = (coverage) =>
-  getCoverageDiscounts(coverage).some((discount) =>
-    typeof discount === "object"
-      && String(discount?.type || "").trim().toLowerCase() === "mandatory"
-  );
+const extractMarketplaceShippingTags = (payload) => {
+  return Array.isArray(payload?.shipping?.tags)
+    ? payload.shipping.tags
+    : null;
+};
 
 const extractCoverageSubsidy = (coverage) => {
   return getCoverageDiscounts(coverage).reduce((total, discount) => {
@@ -1386,6 +1386,27 @@ const fetchMercadoLibreShippingOrigin = async (credential, mlUserId) => {
   }
 };
 
+const fetchMercadoLibreItemPolicy = async (credential, itemId, { bypassCache = false } = {}) => {
+  if (!credential?.access_token || !itemId) return null;
+
+  const itemCacheKey = `item_shipping_policy_${itemId}`;
+  const cachedItemData = bypassCache
+    ? null
+    : getFromCache(`credential_${credential?.id}`, 'item_shipping_policy', itemCacheKey);
+  if (cachedItemData) return cachedItemData;
+
+  const itemResponse = await axios.get(
+    `https://api.mercadolibre.com/items/${itemId}`,
+    {
+      headers: { Authorization: `Bearer ${credential.access_token}` },
+      timeout: 12000
+    }
+  );
+  const itemData = itemResponse.data || null;
+  saveToCache(`credential_${credential?.id}`, 'item_shipping_policy', itemCacheKey, itemData, 900);
+  return itemData;
+};
+
 const buildMercadoLibreShippingBaseParams = ({
   product,
   categoryId,
@@ -1964,6 +1985,7 @@ const buildMlSelectionCategoryPayload = ({
   effectiveListingType,
   effectiveShippingMode,
   effectiveLogisticType,
+  mandatoryFreeShipping = null,
   selectionWarnings
 }) => {
   const logisticTypesByShippingMode = {};
@@ -2067,6 +2089,11 @@ const buildMlSelectionCategoryPayload = ({
       listing_type_id: effectiveListingType,
       shipping_mode: effectiveShippingMode,
       logistic_type: effectiveLogisticType,
+      mandatory_free_shipping: mandatoryFreeShipping === true
+        ? true
+        : mandatoryFreeShipping === false
+          ? false
+          : null,
       shipping_resolution_state: defaultCombo?.shipping_resolution_state || defaultMode?.shipping_resolution_state || null,
       shipping_complexity: defaultCombo?.shipping_complexity || defaultMode?.shipping_complexity || null,
       shipping_ui: buildShippingUi(
@@ -3916,53 +3943,28 @@ async calculateMercadoLibreShippingCosts(credential, product, categoryId, siteId
 
     const buyerCoverage = buyerPaysResponse.data?.coverage?.all_country || {};
     const sellerCoverage = sellerPaysResponse.data?.coverage?.all_country || {};
-    const buyerTags = Array.isArray(buyerPaysResponse.data?.tags) ? buyerPaysResponse.data.tags : [];
-    const sellerTags = Array.isArray(sellerPaysResponse.data?.tags) ? sellerPaysResponse.data.tags : [];
-    const mandatoryFreeShippingByTag = ['mandatory_free_shipping'].some(tag =>
-      buyerTags.includes(tag) || sellerTags.includes(tag)
-    );
-    const mandatoryFreeShippingByCoverage = hasMandatoryCoverageDiscount(buyerCoverage)
-      || hasMandatoryCoverageDiscount(sellerCoverage);
-    let mandatoryFreeShipping = mandatoryFreeShippingByTag || mandatoryFreeShippingByCoverage;
+    const buyerTags = extractMarketplaceShippingTags(buyerPaysResponse.data);
+    const sellerTags = extractMarketplaceShippingTags(sellerPaysResponse.data);
+    const hasOfficialShippingTags = Array.isArray(buyerTags) || Array.isArray(sellerTags);
+    const mandatoryFreeShippingByTag = [buyerTags, sellerTags]
+      .filter(Array.isArray)
+      .some(tags => tags.includes('mandatory_free_shipping'));
+    let mandatoryFreeShipping = hasOfficialShippingTags
+      ? mandatoryFreeShippingByTag
+      : null;
     let mandatoryFreeShippingStatus = mandatoryFreeShipping
       ? "confirmed"
       : "unknown";
     let effectiveRequestedFreeShipping = requestedFreeShipping;
     if (!mandatoryFreeShipping && itemId) {
       try {
-        const itemCacheKey = `item_shipping_policy_${itemId}`;
-        const cachedItemData = bypassCache
-          ? null
-          : getFromCache(`credential_${credential?.id}`, 'item_shipping_policy', itemCacheKey);
-        let itemData = cachedItemData;
-        if (!itemData) {
-          /*logger.info(`[ML ENDPOINT TRACE] shipping.item_policy.request`, {
-            endpoint: `https://api.mercadolibre.com/items/${itemId}`,
-            method: "GET",
-            item_id: itemId,
-            category_id: categoryId
-          });*/
-          const itemResponse = await axios.get(
-            `https://api.mercadolibre.com/items/${itemId}`,
-            {
-              headers: { Authorization: `Bearer ${credential.access_token}` },
-              timeout: 12000
-            }
-          );
-          /*logger.info(`[ML ENDPOINT TRACE] shipping.item_policy.response`, {
-            endpoint: `https://api.mercadolibre.com/items/${itemId}`,
-            method: "GET",
-            item_id: itemId,
-            category_id: categoryId,
-            response: itemResponse.data
-          });*/
-          itemData = itemResponse.data || null;
-          saveToCache(`credential_${credential?.id}`, 'item_shipping_policy', itemCacheKey, itemData, 900);
-        }
-        const itemTags = Array.isArray(itemData?.tags) ? itemData.tags : [];
-        if (itemTags.includes('mandatory_free_shipping')) {
-          mandatoryFreeShipping = true;
-          mandatoryFreeShippingStatus = "confirmed";
+        const itemData = await fetchMercadoLibreItemPolicy(credential, itemId, { bypassCache });
+        const itemTags = extractMarketplaceShippingTags(itemData);
+        if (Array.isArray(itemTags)) {
+          mandatoryFreeShipping = itemTags.includes('mandatory_free_shipping');
+          mandatoryFreeShippingStatus = mandatoryFreeShipping
+            ? "confirmed"
+            : "unknown";
         }
         if (effectiveRequestedFreeShipping === null || effectiveRequestedFreeShipping === undefined) {
           const itemFreeShipping = itemData?.shipping?.free_shipping;
@@ -4522,6 +4524,19 @@ async mercadoLibreShippingCosts(req, res) {
         const nameFixed = product.name.trim();
         const productCondition = String(product.condition || "new").toLowerCase();
         const productPrice = Number.isFinite(Number(product.price)) ? Number(product.price) : null;
+        let productMandatoryFreeShipping = null;
+        const productItemId = product?.ml_item_id || product?.item_id || null;
+        if (productItemId) {
+          try {
+            const itemData = await fetchMercadoLibreItemPolicy(credential, productItemId);
+            const itemTags = extractMarketplaceShippingTags(itemData);
+            productMandatoryFreeShipping = Array.isArray(itemTags)
+              ? itemTags.includes('mandatory_free_shipping')
+              : null;
+          } catch (itemShippingErr) {
+            logger.warn(`[ML] No se pudo validar shipping policy del item ${productItemId}: ${itemShippingErr.message}`);
+          }
+        }
         const shippingMeasurementInput = buildShippingMeasurementInput(product);
         const requestFingerprint = stableStringify({
           strategy: selectedStrategy,
@@ -4737,6 +4752,7 @@ async mercadoLibreShippingCosts(req, res) {
             effectiveListingType,
             effectiveShippingMode,
             effectiveLogisticType,
+            mandatoryFreeShipping: productMandatoryFreeShipping,
             selectionWarnings
           });
 

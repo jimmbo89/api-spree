@@ -202,6 +202,43 @@ function firstNonEmptyPublishedPayload(...payloads) {
   return null;
 }
 
+function normalizePublicationDate(value) {
+  if (!value) return null;
+
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function resolvePublicationOrigin(task, marketplaceLink = null) {
+  const sources = [
+    normalizePublishedPayload(marketplaceLink?.published_payload),
+    normalizePublishedPayload(task?.payload),
+    normalizePublishedPayload(task?.api_response),
+    normalizeErrorDetails(task?.error_details)
+  ].filter(Boolean);
+
+  const importedSource = sources.find((source) => (
+    String(source.origin || '').trim().toLowerCase() === 'imported'
+    || String(source.source || '').trim().toLowerCase() === 'marketplace_import'
+  ));
+
+  if (!importedSource) {
+    return {
+      origin: 'spree',
+      importedAt: null
+    };
+  }
+
+  const importedAt = sources
+    .map((source) => source.imported_at)
+    .find((value) => normalizePublicationDate(value));
+
+  return {
+    origin: 'imported',
+    importedAt: normalizePublicationDate(importedAt)
+  };
+}
+
 function resolveFalabellaFeedId(task, marketplaceLink = null) {
   const sources = [
     normalizeErrorDetails(task?.error_details),
@@ -3238,6 +3275,7 @@ async publishedProducts(req, res) {
         task.credential_id || null,
         task.user_id || null
       );
+      const publicationOrigin = resolvePublicationOrigin(task, marketplaceLink);
 
       // ✅ DETECTAR MARKETPLACE
       const marketplaceKey = resolveMarketplaceKey(marketplace);
@@ -3378,6 +3416,11 @@ async publishedProducts(req, res) {
         published_at_iso: task.published_at || task.createdAt || task.updatedAt
           ? new Date(task.published_at || task.createdAt || task.updatedAt).toISOString()
           : null,
+        origin: publicationOrigin.origin,
+        imported_at: publicationOrigin.importedAt
+          ? formatDateTimeDisplay(publicationOrigin.importedAt)
+          : null,
+        imported_at_iso: publicationOrigin.importedAt,
         user_id: task.user_id,
         user_name: task.user?.name || 'N/A',
         user_email: task.user?.email || null,

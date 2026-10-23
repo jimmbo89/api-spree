@@ -9,6 +9,8 @@ const logger = require('../config/logger');
 const { getUploadPathDiagnostics } = require('../config/upload');
 const JobBackgroundProcessor = require('./services/JobBackgroundProcessor');
 const FalabellaOrderReconciliationService = require('./services/FalabellaOrderReconciliationService');
+const MarketplacePreviewWorker = require('./services/MarketplacePreviewWorker');
+const MarketplaceImportWorker = require('./services/MarketplaceImportWorker');
 const { waitForPendingOperations, getPendingOperationCount } = require('./utils/pendingOperations');
 
 // // Sesión
@@ -78,6 +80,10 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
     logger.info('✅ JobBackgroundProcessor iniciado');
     FalabellaOrderReconciliationService.start();
     logger.info('✅ FalabellaOrderReconciliationService iniciado');
+    MarketplacePreviewWorker.start();
+    logger.info('✅ MarketplacePreviewWorker iniciado');
+    MarketplaceImportWorker.start();
+    logger.info('✅ MarketplaceImportWorker iniciado');
 
   } catch (error) {
     logger.error('❌ Error al iniciar servidor:', error);
@@ -105,6 +111,10 @@ async function gracefulShutdown() {
     logger.info('🔄 Background processor detenido');
     FalabellaOrderReconciliationService.stop();
     logger.info('🔄 FalabellaOrderReconciliationService detenido');
+    MarketplacePreviewWorker.stop();
+    logger.info('🔄 MarketplacePreviewWorker detenido');
+    MarketplaceImportWorker.stop();
+    logger.info('🔄 MarketplaceImportWorker detenido');
 
     logger.info(`⏳ Esperando operaciones en curso: ${getPendingOperationCount()}`);
     await waitForPendingOperations(25000);
