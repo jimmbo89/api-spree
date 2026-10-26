@@ -2678,8 +2678,12 @@ class MercadoLibreAdapter extends BaseAdapter {
   // ✅ EXTRAER marketplace DE LA CREDENCIAL
   const credential = this.credential;
   const marketplace = credential?.marketplace || {};
-  logger.info(`credential value: ${JSON.stringify(credential)}`);
-  logger.info(`marketplace value: ${JSON.stringify(marketplace)}`);
+  logger.info('[MercadoLibreAdapter] Preparando refresh de credencial', {
+    credential_id: credential?.id || null,
+    marketplace_id: credential?.marketplace_id || marketplace?.id || null,
+    has_refresh_token: Boolean(credential?.refresh_token),
+    has_client_id: Boolean(marketplace?.client_id)
+  });
   // ✅ VALIDAR CON LOS CAMPOS CORRECTOS
   if (!credential?.refresh_token) throw new Error("refresh_token_not_available");
   if (!marketplace.client_id || !marketplace.client_secret) throw new Error("client_credentials_missing");

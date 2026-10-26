@@ -15,12 +15,16 @@ const validateSchema = (schemas, options = {}) => {
   )
     ? { body: schemas }
     : (schemas || {});
+  const preserveStringKeys = new Set(
+    Array.isArray(options.preserveStringKeys) ? options.preserveStringKeys : []
+  );
 
   // Normalización recursiva
   const normalizeValue = (value, key = '') => {
     if (value === "" || value === null) return null;
     if (key === 'password') return value;
     if (key === 'phone') return value;
+    if (preserveStringKeys.has(key)) return value;
     if (typeof value === "string") {
       const num = Number(value);
       if (!isNaN(num) && value.trim() === value) return num;
