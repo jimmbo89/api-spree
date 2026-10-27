@@ -71,7 +71,7 @@ const VariantDefinitionController = {
 
       const existing = await VariantDefinitionRepository.findByName(name, company_id);
       if (existing) {
-        const scope = company_id ? `en la empresa ${company_id}` : 'como variante global';
+        const scope = company_id ? 'en la empresa seleccionada' : 'como variante global';
         return res.status(409).json({
           error: "DuplicateName",
           message: `Ya existe una variante con el nombre "${name}" ${scope}`
@@ -123,7 +123,7 @@ const VariantDefinitionController = {
             await t.rollback();
             return res.status(409).json({
               error: "DuplicateName",
-              message: `Ya existe una variante con el nombre "${effectiveName}" en la empresa ${company_id}`
+              message: `Ya existe una variante con el nombre "${effectiveName}" en la empresa seleccionada`
             });
           }
 
@@ -169,7 +169,7 @@ const VariantDefinitionController = {
         const targetCompanyId = company_id !== undefined ? company_id : variant.company_id;
         const existing = await VariantDefinitionRepository.findByNameExcludingId(name, targetCompanyId, variantId);
         if (existing) {
-          const scope = targetCompanyId ? `en la empresa ${targetCompanyId}` : 'como variante global';
+          const scope = targetCompanyId ? 'en la empresa seleccionada' : 'como variante global';
           return res.status(409).json({
             error: "DuplicateName",
             message: `Ya existe una variante con el nombre "${name}" ${scope}`
