@@ -122,10 +122,18 @@ function buildMarketplaceItemStateSnapshot(item, verification, source = 'jobs-fi
 function deriveJobPublicationStatus(stats = {}, jobStatus = 'pending') {
   const total = Number(stats.total || 0);
   const processed = Number(stats.processed || 0);
+  const errors = Number(stats.errors || 0);
+
+  // Un job fallido/cancelado con productos aún no terminales es terminal para
+  // el proceso. Si una reconciliación posterior deja todos los productos
+  // terminales, se permite reflejar su resultado real de publicación.
+  if (jobStatus === 'cancelled' || (jobStatus === 'failed' && !(total > 0 && processed >= total))) {
+    return jobStatus;
+  }
+
   const pending = Number(stats.pending || 0);
   const processing = Number(stats.processing || 0);
   const retrying = Number(stats.retrying || 0);
-  const errors = Number(stats.errors || 0);
 
   if (total > 0 && processed >= total) {
     return errors > 0 ? 'completed_with_errors' : 'completed';

@@ -411,12 +411,21 @@ async findById(id, options = {}) {
       let status = job.status;
       const hasActiveItems = (stats.pending || 0) > 0 || (stats.processing || 0) > 0 || (stats.retrying || 0) > 0;
 
-      if (processed >= total && total > 0) {
-        status = errors_count > 0 ? 'completed_with_errors' : 'completed';
-      } else if (hasActiveItems || processed > 0) {
-        status = 'processing';
-      } else if (job.status === 'pending') {
-        status = 'processing'; // Si hay al menos un producto procesado, el job está en proceso
+      // Un timeout/fallo crítico o una cancelación cierran el proceso mientras
+      // haya productos no terminales. Los webhooks pueden seguir actualizando
+      // JobProduct y las tareas; si todos terminan, se conserva la
+      // reconciliación normal a completed/completed_with_errors.
+      const failedWithActiveItems = job.status === 'failed'
+        && !(processed >= total && total > 0);
+
+      if (job.status !== 'cancelled' && !failedWithActiveItems) {
+        if (processed >= total && total > 0) {
+          status = errors_count > 0 ? 'completed_with_errors' : 'completed';
+        } else if (hasActiveItems || processed > 0) {
+          status = 'processing';
+        } else if (job.status === 'pending') {
+          status = 'processing'; // Si hay al menos un producto procesado, el job está en proceso
+        }
       }
 
       // Actualizar job

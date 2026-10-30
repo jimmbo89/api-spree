@@ -4,6 +4,8 @@ const assert = require('node:assert/strict');
 const JobBackgroundProcessor = require('../app/services/JobBackgroundProcessor');
 const MarketplaceStockSyncService = require('../app/services/MarketplaceStockSyncService');
 const PublicationAuditService = require('../app/services/PublicationAuditService');
+const JobController = require('../app/controllers/JobController');
+const { Job } = require('../app/models');
 const {
   JobRepository,
   JobProductRepository
@@ -111,5 +113,200 @@ test('JobBackgroundProcessor cierra un job pending que nunca fue tomado por el w
     JobRepository.findAll = originalFindAll;
     JobRepository.fail = originalFail;
     PublicationAuditService.recordProcessSystemEvent = originalRecordProcessSystemEvent;
+  }
+});
+
+test('un job failed con productos pendientes no vuelve a aparecer como activo', async () => {
+  const originalFindAll = JobRepository.findAll;
+  const originalGetStatsByJob = JobProductRepository.getStatsByJob;
+  const originalGetStatsByJobAndMarketplace = JobProductRepository.getStatsByJobAndMarketplace;
+  const originalFindAllErrorsByJob = JobProductRepository.findAllErrorsByJob;
+  let payload;
+
+  JobRepository.findAll = async () => [{
+    id: 265,
+    user_id: 40,
+    company_id: 19,
+    batch_id: 'e52eee50-9eb7-4252-9459-ce6fe319ce56',
+    job_type: 'publish',
+    status: 'failed',
+    createdAt: '2026-10-06T19:02:55.000Z'
+  }];
+  JobProductRepository.getStatsByJob = async () => ({
+    total: 1,
+    processed: 0,
+    successful: 0,
+    errors: 0,
+    pending: 1,
+    processing: 0,
+    retrying: 0
+  });
+  JobProductRepository.getStatsByJobAndMarketplace = async () => [];
+  JobProductRepository.findAllErrorsByJob = async () => [];
+
+  try {
+    await JobController.getActiveJobs(
+      { body: { company_id: 19, user_id: 40 } },
+      { json: (value) => { payload = value; } }
+    );
+
+    assert.deepEqual(payload.data.jobs, []);
+  } finally {
+    JobRepository.findAll = originalFindAll;
+    JobProductRepository.getStatsByJob = originalGetStatsByJob;
+    JobProductRepository.getStatsByJobAndMarketplace = originalGetStatsByJobAndMarketplace;
+    JobProductRepository.findAllErrorsByJob = originalFindAllErrorsByJob;
+  }
+});
+
+test('un job processing conserva la sincronización activa por marketplace', async () => {
+  const originalFindAll = JobRepository.findAll;
+  const originalGetStatsByJob = JobProductRepository.getStatsByJob;
+  const originalGetStatsByJobAndMarketplace = JobProductRepository.getStatsByJobAndMarketplace;
+  const originalFindAllErrorsByJob = JobProductRepository.findAllErrorsByJob;
+  let payload;
+
+  JobRepository.findAll = async () => [{
+    id: 266,
+    user_id: 40,
+    company_id: 19,
+    batch_id: 'active-batch-266',
+    job_type: 'publish',
+    status: 'processing',
+    createdAt: new Date().toISOString()
+  }];
+  JobProductRepository.getStatsByJob = async () => ({
+    total: 2,
+    processed: 0,
+    successful: 0,
+    errors: 0,
+    pending: 1,
+    processing: 1,
+    retrying: 0
+  });
+  JobProductRepository.getStatsByJobAndMarketplace = async () => [
+    {
+      marketplace_name: 'MercadoLibre Chile',
+      credential_id: 55,
+      total: 1,
+      published: 0,
+      failed: 0,
+      pending: 0,
+      processing: 1,
+      retrying: 0,
+      percentage: 0
+    },
+    {
+      marketplace_name: 'Falabella',
+      credential_id: 56,
+      total: 1,
+      published: 0,
+      failed: 0,
+      pending: 1,
+      processing: 0,
+      retrying: 0,
+      percentage: 0
+    }
+  ];
+  JobProductRepository.findAllErrorsByJob = async () => [];
+
+  try {
+    await JobController.getActiveJobs(
+      { body: { company_id: 19, user_id: 40 } },
+      { json: (value) => { payload = value; } }
+    );
+
+    assert.deepEqual(
+      payload.data.jobs.map(({ marketplace_name, status, job_status }) => ({ marketplace_name, status, job_status })),
+      [
+        { marketplace_name: 'MercadoLibre Chile', status: 'processing', job_status: 'processing' },
+        { marketplace_name: 'Falabella', status: 'processing', job_status: 'processing' }
+      ]
+    );
+  } finally {
+    JobRepository.findAll = originalFindAll;
+    JobProductRepository.getStatsByJob = originalGetStatsByJob;
+    JobProductRepository.getStatsByJobAndMarketplace = originalGetStatsByJobAndMarketplace;
+    JobProductRepository.findAllErrorsByJob = originalFindAllErrorsByJob;
+  }
+});
+
+test('la reconciliación de publicaciones no reabre un job failed', async () => {
+  const originalFindByPk = Job.findByPk;
+  const originalGetStatsByJob = JobProductRepository.getStatsByJob;
+  const originalUpdate = JobRepository.update;
+  const updates = [];
+  const job = {
+    id: 265,
+    status: 'failed',
+    total_products: 1,
+    get() {
+      return this;
+    }
+  };
+
+  Job.findByPk = async () => job;
+  JobProductRepository.getStatsByJob = async () => ({
+    total: 1,
+    processed: 0,
+    successful: 0,
+    errors: 0,
+    pending: 1,
+    processing: 0,
+    retrying: 0
+  });
+  JobRepository.update = async (_job, data) => {
+    updates.push(data);
+    return job;
+  };
+
+  try {
+    await JobRepository.recalculateProgress(265);
+    assert.equal(updates.length, 1);
+    assert.equal(updates[0].status, 'failed');
+  } finally {
+    Job.findByPk = originalFindByPk;
+    JobProductRepository.getStatsByJob = originalGetStatsByJob;
+    JobRepository.update = originalUpdate;
+  }
+});
+
+test('la reconciliación puede cerrar un job failed cuando la publicación terminó', async () => {
+  const originalFindByPk = Job.findByPk;
+  const originalGetStatsByJob = JobProductRepository.getStatsByJob;
+  const originalUpdate = JobRepository.update;
+  const updates = [];
+  const job = {
+    id: 267,
+    status: 'failed',
+    total_products: 1,
+    get() {
+      return this;
+    }
+  };
+
+  Job.findByPk = async () => job;
+  JobProductRepository.getStatsByJob = async () => ({
+    total: 1,
+    processed: 1,
+    successful: 1,
+    errors: 0,
+    pending: 0,
+    processing: 0,
+    retrying: 0
+  });
+  JobRepository.update = async (_job, data) => {
+    updates.push(data);
+    return job;
+  };
+
+  try {
+    await JobRepository.recalculateProgress(267);
+    assert.equal(updates.length, 1);
+    assert.equal(updates[0].status, 'completed');
+  } finally {
+    Job.findByPk = originalFindByPk;
+    JobProductRepository.getStatsByJob = originalGetStatsByJob;
+    JobRepository.update = originalUpdate;
   }
 });
