@@ -16,6 +16,7 @@ const {
 } = require('../models');
 const { Op, fn, col, literal } = require('sequelize');
 const logger = require('../../config/logger');
+const { mergeTopProducts } = require('../util/dashboardTopProducts');
 
 const DashboardRepository = {
   /**
@@ -104,8 +105,10 @@ async getCriticalStockCount(companyId, threshold = 5) {
   try {
     const productWhere = {};
     if (companyId) productWhere.company_id = companyId;
+    productWhere.state = { [Op.ne]: 0 };
 
     const lowStockVariants = await WarehouseProductVariant.findAll({
+      where: { active: true },
       include: [{
         model: WarehouseProduct,
         as: 'warehouseProduct',
@@ -150,6 +153,7 @@ async getOutOfStockCount(companyId) {
   try {
     const productWhere = {};
     if (companyId) productWhere.company_id = companyId;
+    productWhere.state = { [Op.ne]: 0 };
 
     const outOfStockVariants = await WarehouseProductVariant.findAll({
       include: [{
@@ -167,6 +171,7 @@ async getOutOfStockCount(companyId) {
         attributes: []
       }],
       where: {
+        active: true,
         stock: {
           [Op.eq]: 0
         }
@@ -238,46 +243,53 @@ async getOutOfStockCount(companyId) {
       };
       if (companyId) orderWhere.company_id = companyId;
 
-      const results = await MarketplaceOrderItem.findAll({
-        include: [{
-          model: Product,
-          as: 'product',
-          attributes: ['id', 'name', 'images']
-        }, {
-          model: MarketplaceOrder,
-          as: 'order',
-          attributes: [],
-          where: orderWhere
-        }],
-        attributes: [
-          'product_id',
-          [fn('SUM', col('quantity')), 'total_quantity']
-        ],
-        group: ['product_id', 'product.id', 'product.name', 'product.images'],
-        order: [[fn('SUM', col('quantity')), 'DESC']],
-        limit: limit,
-        raw: true
-      });
+      const [linkedItems, unlinkedItems] = await Promise.all([
+        MarketplaceOrderItem.findAll({
+          where: { product_id: { [Op.not]: null } },
+          include: [{
+            model: Product,
+            as: 'product',
+            attributes: ['id', 'name', 'images'],
+            required: true
+          }, {
+            model: MarketplaceOrder,
+            as: 'order',
+            attributes: [],
+            where: orderWhere
+          }],
+          attributes: [
+            'product_id',
+            [fn('SUM', col('quantity')), 'total_quantity']
+          ],
+          group: ['product_id', 'product.id', 'product.name', 'product.images'],
+          order: [[fn('SUM', col('quantity')), 'DESC']],
+          limit,
+          raw: true
+        }),
+        MarketplaceOrderItem.findAll({
+          where: { product_id: { [Op.is]: null } },
+          include: [{
+            model: MarketplaceOrder,
+            as: 'order',
+            attributes: [],
+            where: orderWhere
+          }],
+          attributes: [
+            [col('order.marketplace'), 'marketplace'],
+            'listing_id',
+            'marketplace_item_id',
+            'sku',
+            'title',
+            [fn('SUM', col('quantity')), 'total_quantity']
+          ],
+          group: ['order.marketplace', 'listing_id', 'marketplace_item_id', 'sku', 'title'],
+          order: [[fn('SUM', col('quantity')), 'DESC']],
+          limit,
+          raw: true
+        })
+      ]);
 
-      return results.map(row => {
-        // Parsear imagen principal
-        let mainImage = null;
-        try {
-          const images = typeof row['product.images'] === 'string' 
-            ? JSON.parse(row['product.images']) 
-            : row['product.images'];
-          mainImage = images && images.length > 0 ? images[0] : null;
-        } catch (e) {
-          mainImage = null;
-        }
-
-        return {
-          id: row.product_id,
-          name: row['product.name'],
-          value: parseInt(row.total_quantity || 0),
-          image: mainImage
-        };
-      });
+      return mergeTopProducts(linkedItems, unlinkedItems, limit);
     } catch (error) {
       logger.error('[DashboardRepository] Error en getTopProducts:', error.message);
       throw error;
@@ -294,11 +306,13 @@ async getProblemProducts(companyId, limit = 3) {
   try {
     const productWhere = {};
     if (companyId) productWhere.company_id = companyId;
+    productWhere.state = { [Op.ne]: 0 };
 
     const problemProductsMap = {};
 
     // 1. Productos con stock bajo - consulta corregida con validaciones
     const lowStockVariants = await WarehouseProductVariant.findAll({
+      where: { active: true },
       include: [
         {
           model: WarehouseProduct,

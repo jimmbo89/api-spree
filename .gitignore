@@ -22,3 +22,6 @@ docs/
 public/
 scripts/
 test/
+!test/
+test/*
+!test/dashboard-top-products.test.js
