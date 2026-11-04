@@ -67,4 +67,31 @@ function getMercadoLibreSiteId(countryCodeOrDomain, domainArg) {
   return "MLC"; // Default fallback
 }
 
-module.exports = { getMercadoLibreSiteId };
+function normalizeMarketplaceIdentifier(value) {
+  if (value == null) return null;
+
+  const normalized = String(value).trim();
+  if (!normalized) return null;
+
+  const scientificMatch = normalized.match(/^(\+?)(\d+)(?:\.(\d*))?[eE]([+-]?\d+)$/);
+  if (!scientificMatch) return normalized;
+
+  const integerPart = scientificMatch[2];
+  const fractionalPart = scientificMatch[3] || '';
+  const exponent = Number(scientificMatch[4]);
+  if (!Number.isSafeInteger(exponent)) return normalized;
+
+  const digits = `${integerPart}${fractionalPart}`;
+  const decimalPosition = integerPart.length + exponent;
+  if (decimalPosition <= 0 || decimalPosition > 100) return normalized;
+
+  if (decimalPosition < digits.length) {
+    const fractionalRemainder = digits.slice(decimalPosition);
+    if (!/^0*$/.test(fractionalRemainder)) return normalized;
+    return digits.slice(0, decimalPosition).replace(/^0+(?=\d)/, '');
+  }
+
+  return `${digits}${'0'.repeat(decimalPosition - digits.length)}`.replace(/^0+(?=\d)/, '');
+}
+
+module.exports = { getMercadoLibreSiteId, normalizeMarketplaceIdentifier };

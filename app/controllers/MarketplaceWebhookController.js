@@ -32,6 +32,7 @@ const { humanizeFalabellaMessage } = require('../utils/marketplaceErrorHumanizer
 const { trackPendingOperation } = require("../utils/pendingOperations");
 const PublicationAuditService = require("../services/PublicationAuditService");
 const SalesAuditService = require("../services/SalesAuditService");
+const { normalizeMarketplaceIdentifier } = require('../util/marketplaceUtil');
 
 const ML_MARKETPLACE_KEY = "mercadolibre";
 const FB_MARKETPLACE_KEY = "falabella";
@@ -508,7 +509,7 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
     payment_date: order?.payments?.[0]?.date_created || null,
     refunded_amount: resolveMercadoLibreRefundedAmount(order),
     sale_date: order?.date_created || null,
-    pack_id: order?.pack_id || null,
+    pack_id: normalizeMarketplaceIdentifier(order?.pack_id),
     shipment_id: shipmentData?.id || order?.shipping?.id || null,
     ...shippingSnapshot,
     managed_by_spree: managedBySpree,
@@ -520,7 +521,9 @@ async function processMercadoLibreEvent({ event, payload, orderId, userId }) {
       ]) || buildShippingAddress(order.shipping),
     shipping_city: customerSnapshot.shipping_city || order?.shipping?.receiver_address?.city_name || null,
     shipping_region: customerSnapshot.shipping_state || order?.shipping?.receiver_address?.state_name || null,
-    messages_snapshot: buildMercadoLibreMessagesSnapshot(messagesData),
+    messages_snapshot: messagesData == null
+      ? existingOrder?.messages_snapshot || null
+      : buildMercadoLibreMessagesSnapshot(messagesData),
     raw_payload: {
       order,
       shipment: shipmentData,
@@ -1017,7 +1020,7 @@ async function fetchMercadoLibreOrderDiscountsWithRetry(orderId, accessToken) {
 }
 
 async function fetchMercadoLibreMessagesWithRetry({ orderId, order, accessToken, sellerId }) {
-  const packId = order?.pack_id || orderId;
+  const packId = normalizeMarketplaceIdentifier(order?.pack_id) || normalizeMarketplaceIdentifier(orderId);
   const finalSellerId = sellerId || order?.seller?.id || order?.seller_id || null;
 
   if (!packId || !finalSellerId) {
@@ -1025,7 +1028,7 @@ async function fetchMercadoLibreMessagesWithRetry({ orderId, order, accessToken,
   }
 
   return await fetchMercadoLibreResourceWithRetry({
-    resourcePath: `messages/packs/${packId}/sellers/${finalSellerId}?tag=post_sale&mark_as_read=false`,
+    resourcePath: `messages/packs/${encodeURIComponent(packId)}/sellers/${encodeURIComponent(finalSellerId)}?tag=post_sale&mark_as_read=false`,
     accessToken,
     resourceLabel: `messages pack ${packId}`,
     allowNotFound: true

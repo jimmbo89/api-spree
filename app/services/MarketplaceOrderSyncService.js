@@ -1,6 +1,7 @@
 const axios = require('axios');
 const logger = require('../../config/logger');
 const FalabellaOrderSyncService = require('./FalabellaOrderSyncService');
+const { normalizeMarketplaceIdentifier } = require('../util/marketplaceUtil');
 const {
   MarketplaceOrderRepository,
   MarketplaceOrderFeeRepository,
@@ -31,6 +32,8 @@ const MarketplaceOrderSyncService = {
       order: serializeOrderForResponse(order),
       refreshed_at: new Date().toISOString(),
       source: 'local_fallback',
+      sync_status: 'local_fallback',
+      synchronized: false,
       error: error || null
     });
 
@@ -99,7 +102,7 @@ const MarketplaceOrderSyncService = {
         payment_date: remoteOrder?.payments?.[0]?.date_created || null,
         refunded_amount: resolveMercadoLibreRefundedAmount(remoteOrder),
         sale_date: remoteOrder?.date_created || null,
-        pack_id: remoteOrder?.pack_id || null,
+        pack_id: normalizeMarketplaceIdentifier(remoteOrder?.pack_id),
         shipment_id: shipmentData?.id || remoteOrder?.shipping?.id || null,
         ...shippingSnapshot,
         shipping_address:
@@ -110,10 +113,7 @@ const MarketplaceOrderSyncService = {
           ]) || buildShippingAddress(remoteOrder.shipping),
         shipping_city: customerSnapshot.shipping_city || remoteOrder?.shipping?.receiver_address?.city_name || null,
         shipping_region: customerSnapshot.shipping_state || remoteOrder?.shipping?.receiver_address?.state_name || null,
-        messages_snapshot: mergeSpreeSenderMetadata(
-          order.messages_snapshot,
-          buildMercadoLibreMessagesSnapshot(messagesData)
-        ),
+        messages_snapshot: resolveMercadoLibreMessagesSnapshot(order.messages_snapshot, messagesData),
         raw_payload: {
           order: remoteOrder,
           shipment: shipmentData,
@@ -179,7 +179,12 @@ const MarketplaceOrderSyncService = {
       return {
         order: serializeOrderForResponse(refreshedOrder),
         refreshed_at: new Date().toISOString(),
-        source: 'mercadolibre'
+        source: 'mercadolibre',
+        sync_status: 'synchronized',
+        synchronized: true,
+        sync_details: {
+          messages: summarizeMercadoLibreMessagesSync(messagesData)
+        }
       };
     } catch (error) {
       logger.error(`[ML Refresh] Error refrescando orden ${orderId}: ${error.message}`);
@@ -403,13 +408,13 @@ async function fetchMercadoLibreOrderDiscountsWithRetry(orderId, accessToken) {
 }
 
 async function fetchMercadoLibreMessagesWithRetry({ orderId, order, accessToken, sellerId }) {
-  const packId = order?.pack_id || orderId;
+  const packId = normalizeMarketplaceIdentifier(order?.pack_id) || normalizeMarketplaceIdentifier(orderId);
   const finalSellerId = sellerId || order?.seller?.id || order?.seller_id || null;
 
   if (!packId || !finalSellerId) return null;
 
   return await fetchMercadoLibreResourceWithRetry({
-    resourcePath: `messages/packs/${packId}/sellers/${finalSellerId}?tag=post_sale&mark_as_read=false`,
+    resourcePath: `messages/packs/${encodeURIComponent(packId)}/sellers/${encodeURIComponent(finalSellerId)}?tag=post_sale&mark_as_read=false`,
     accessToken,
     resourceLabel: `messages pack ${packId}`,
     allowNotFound: true
@@ -591,7 +596,42 @@ function buildMercadoLibreMessagesSnapshot(messagesData) {
     .sort((a, b) => (a.received_at ? new Date(a.received_at).getTime() : 0) - (b.received_at ? new Date(b.received_at).getTime() : 0));
 }
 
-function mergeSpreeSenderMetadata(previousSnapshot, nextSnapshot) {
+function resolveMercadoLibreMessagesSnapshot(previousSnapshot, messagesData) {
+  if (messagesData == null) return previousSnapshot;
+  const messages = buildMercadoLibreMessagesSnapshot(messagesData);
+  return mergeSpreeSenderMetadata(
+    previousSnapshot,
+    messages,
+    { preserveMissing: isMercadoLibreMessagesResponsePartial(messagesData, messages.length) }
+  );
+}
+
+function summarizeMercadoLibreMessagesSync(messagesData) {
+  if (messagesData == null) {
+    return { status: 'unavailable', preserved_previous_snapshot: true };
+  }
+
+  const messages = buildMercadoLibreMessagesSnapshot(messagesData);
+  const rawTotal = Number(messagesData?.paging?.total);
+  const total = Number.isFinite(rawTotal) ? rawTotal : messages.length;
+  const partial = total > messages.length;
+  return {
+    status: partial ? 'partial' : 'synchronized',
+    preserved_previous_snapshot: partial,
+    received_count: messages.length,
+    total,
+    conversation_status: messagesData?.conversation_status || null,
+    seller_max_message_length: messagesData?.seller_max_message_length ?? null,
+    buyer_max_message_length: messagesData?.buyer_max_message_length ?? null
+  };
+}
+
+function isMercadoLibreMessagesResponsePartial(messagesData, receivedCount) {
+  const total = Number(messagesData?.paging?.total);
+  return Number.isFinite(total) && total > receivedCount;
+}
+
+function mergeSpreeSenderMetadata(previousSnapshot, nextSnapshot, { preserveMissing = false } = {}) {
   const previousMessages = parseJsonMaybe(previousSnapshot);
   const nextMessages = Array.isArray(nextSnapshot) ? nextSnapshot : [];
   const previousByMessageId = new Map(
@@ -624,7 +664,7 @@ function mergeSpreeSenderMetadata(previousSnapshot, nextSnapshot) {
   const localMessagesMissingFromMarketplace = (Array.isArray(previousMessages) ? previousMessages : [])
     .filter((message) => (
       message?.message_id &&
-      message?.spree_sender &&
+      (preserveMissing || message?.spree_sender) &&
       !nextMessageIds.has(String(message.message_id))
     ));
 
@@ -662,9 +702,18 @@ function buildMercadoLibreCustomerSnapshot({ order, shipment, billingInfo }) {
     ]),
     shipping_address_line_2: address?.comment || address?.reference || null,
     shipping_reference: address?.reference || null,
-    shipping_city: address?.city_name || address?.city || null,
-    shipping_state: address?.state_name || address?.state || null,
-    shipping_country: address?.country_name || address?.country || null,
+    shipping_city:
+      address?.city?.name ||
+      address?.city_name ||
+      (typeof address?.city === 'string' ? address.city : null),
+    shipping_state:
+      address?.state?.name ||
+      address?.state_name ||
+      (typeof address?.state === 'string' ? address.state : null),
+    shipping_country:
+      address?.country?.name ||
+      address?.country_name ||
+      (typeof address?.country === 'string' ? address.country : null),
     raw: { buyer, billing_info: billingInfo, receiver_address: address }
   };
 }

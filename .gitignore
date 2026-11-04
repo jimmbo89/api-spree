@@ -25,3 +25,4 @@ test/
 !test/
 test/*
 !test/dashboard-top-products.test.js
+!test/marketplace-order-sync.test.js

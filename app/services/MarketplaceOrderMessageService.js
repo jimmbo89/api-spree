@@ -4,6 +4,7 @@ const {
   MarketplaceCredentialRepository
 } = require('../repositories');
 const MarketplaceOrderSyncService = require('./MarketplaceOrderSyncService');
+const { normalizeMarketplaceIdentifier } = require('../util/marketplaceUtil');
 
 class MercadoLibreError extends Error {
   constructor(status, message) {
@@ -55,7 +56,7 @@ const MarketplaceOrderMessageService = {
 async function sendMercadoLibreOrderMessage(orderId, text, accessToken, credential = null) {
   const cleanText = sanitizeMessageText(text);
   const remoteOrder = await fetchMercadoLibreOrder(orderId, accessToken);
-  const packId = remoteOrder?.pack_id || orderId;
+  const packId = normalizeMarketplaceIdentifier(remoteOrder?.pack_id) || normalizeMarketplaceIdentifier(orderId);
   const sellerId = resolveSellerId(remoteOrder, credential);
   const buyerId = remoteOrder?.buyer?.id || remoteOrder?.buyer_id || null;
 
@@ -68,7 +69,7 @@ async function sendMercadoLibreOrderMessage(orderId, text, accessToken, credenti
   }
 
   const response = await mercadolibreRequestJsonWithRetry(
-    `https://api.mercadolibre.com/messages/packs/${packId}/sellers/${sellerId}?tag=post_sale`,
+    `https://api.mercadolibre.com/messages/packs/${encodeURIComponent(packId)}/sellers/${encodeURIComponent(sellerId)}?tag=post_sale`,
     {
       method: 'POST',
       headers: {

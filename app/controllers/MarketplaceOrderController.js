@@ -14,6 +14,10 @@ const MarketplaceOrderController = {
 
       const report = await MarketplaceOrderSyncService.refreshById(id);
       const refreshedOrder = await MarketplaceOrderRepository.findById(id);
+      const synchronized = Boolean(report) && (
+        report.synchronized === true || report.source !== 'local_fallback'
+      );
+      const syncStatus = synchronized ? 'synchronized' : 'local_fallback';
       // Se mantiene temporalmente comentado para no registrar cada consulta de una orden.
       // if (refreshedOrder) {
       //   await SalesAuditService.recordFromRequest(req, refreshedOrder, 'sales.refreshed', {
@@ -26,9 +30,15 @@ const MarketplaceOrderController = {
       //   });
       // }
 
-      logger.info(`${req.user?.user || 'Unknown'} - Refresh de orden marketplace exitoso`);
+      logger.info(
+        synchronized
+          ? `${req.user?.user || 'Unknown'} - Refresh de orden marketplace exitoso`
+          : `${req.user?.user || 'Unknown'} - Refresh de orden marketplace respondido con datos locales`
+      );
       return res.json({
         success: true,
+        synchronized,
+        sync_status: syncStatus,
         data: report
       });
     } catch (error) {
